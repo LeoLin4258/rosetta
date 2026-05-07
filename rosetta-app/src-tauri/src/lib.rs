@@ -5,7 +5,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
-            rwkv_runtime::get_rwkv_runtime_status
+            rwkv_runtime::get_rwkv_runtime_status,
+            rwkv_runtime::initialize_rwkv_runtime_layout
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -92,15 +92,38 @@ export type RwkvConnectionConfig = {
   mode: TranslationMode;
 };
 
-export type RwkvRuntimeState = "not-installed" | "installed";
+export type RwkvRuntimeState =
+  | "not-installed"
+  | "partial"
+  | "installed"
+  | "invalid";
+
+export type RwkvArtifactManifest = {
+  id: string;
+  version?: string;
+  source?: string;
+  filename?: string;
+  sha256?: string;
+  sizeBytes?: number;
+  contextTokens?: number;
+  supportedDirections?: string[];
+  installedAt?: string;
+};
 
 export type RwkvRuntimeStatus = {
   state: RwkvRuntimeState;
   apiUrl: string;
   runtimeDir: string;
   modelDir: string;
+  logsDir: string;
+  runtimeDirExists: boolean;
+  modelDirExists: boolean;
+  logsDirExists: boolean;
   runtimeManifestExists: boolean;
   modelManifestExists: boolean;
+  runtimeManifest?: RwkvArtifactManifest;
+  modelManifest?: RwkvArtifactManifest;
+  manifestError?: string;
   logFile: string;
   message: string;
 };

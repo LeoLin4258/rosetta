@@ -1,6 +1,9 @@
 import { useEffect, useState, type ChangeEvent } from "react";
-import { RefreshCw } from "lucide-react";
-import { getRwkvRuntimeStatus } from "../../lib/rwkvRuntime";
+import { FolderPlus, RefreshCw } from "lucide-react";
+import {
+  getRwkvRuntimeStatus,
+  initializeRwkvRuntimeLayout,
+} from "../../lib/rwkvRuntime";
 import { useRosettaStore } from "../../store/useRosettaStore";
 import type {
   AppThemeMode,
@@ -43,7 +46,9 @@ const themeOptions: Array<{ label: string; value: AppThemeMode }> = [
 
 const runtimeStateLabel: Record<RwkvRuntimeStatus["state"], string> = {
   "not-installed": "未安装",
+  partial: "目录已准备",
   installed: "已安装",
+  invalid: "需检查",
 };
 
 export function SettingsPage() {
@@ -56,6 +61,7 @@ export function SettingsPage() {
     useState<RwkvRuntimeStatus | null>(null);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [isCheckingRuntime, setIsCheckingRuntime] = useState(false);
+  const [isPreparingRuntime, setIsPreparingRuntime] = useState(false);
 
   async function refreshRuntimeStatus() {
     setIsCheckingRuntime(true);
@@ -76,6 +82,21 @@ export function SettingsPage() {
   useEffect(() => {
     void refreshRuntimeStatus();
   }, []);
+
+  async function prepareRuntimeLayout() {
+    setIsPreparingRuntime(true);
+    setRuntimeError(null);
+
+    try {
+      setRuntimeStatus(await initializeRwkvRuntimeLayout());
+    } catch (error) {
+      setRuntimeError(
+        error instanceof Error ? error.message : "无法准备本地 RWKV 目录。"
+      );
+    } finally {
+      setIsPreparingRuntime(false);
+    }
+  }
 
   function updateTextField(field: keyof Pick<RwkvConnectionConfig, "baseUrl">) {
     return (event: ChangeEvent<HTMLInputElement>) => {
@@ -128,18 +149,30 @@ export function SettingsPage() {
                 Rosetta 托管的本地翻译模型运行时
               </CardDescription>
             </div>
-            <Button
-              disabled={isCheckingRuntime}
-              onClick={() => void refreshRuntimeStatus()}
-              size="icon"
-              title="刷新本地 RWKV 状态"
-              type="button"
-              variant="outline"
-            >
-              <RefreshCw
-                className={isCheckingRuntime ? "animate-spin" : undefined}
-              />
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button
+                disabled={isCheckingRuntime || isPreparingRuntime}
+                onClick={() => void prepareRuntimeLayout()}
+                title="准备本地 RWKV 目录"
+                type="button"
+                variant="outline"
+              >
+                <FolderPlus />
+                准备目录
+              </Button>
+              <Button
+                disabled={isCheckingRuntime || isPreparingRuntime}
+                onClick={() => void refreshRuntimeStatus()}
+                size="icon"
+                title="刷新本地 RWKV 状态"
+                type="button"
+                variant="outline"
+              >
+                <RefreshCw
+                  className={isCheckingRuntime ? "animate-spin" : undefined}
+                />
+              </Button>
+            </div>
           </div>
         </CardHeader>
 
@@ -167,8 +200,15 @@ export function SettingsPage() {
                 <RuntimePath label="API" value={runtimeStatus.apiUrl} />
                 <RuntimePath label="Runtime" value={runtimeStatus.runtimeDir} />
                 <RuntimePath label="Model" value={runtimeStatus.modelDir} />
+                <RuntimePath label="Logs" value={runtimeStatus.logsDir} />
                 <RuntimePath label="Log" value={runtimeStatus.logFile} />
               </div>
+            ) : null}
+
+            {runtimeStatus?.manifestError ? (
+              <p className="text-sm text-destructive">
+                {runtimeStatus.manifestError}
+              </p>
             ) : null}
           </div>
         </CardContent>
