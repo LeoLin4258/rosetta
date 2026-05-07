@@ -66,7 +66,7 @@
   - Tauri 主窗口设置 `transparent: true`
   - Tauri 主窗口设置 `decorations: false`
   - Tauri 主窗口设置 `shadow: true`
-  - Tauri 主窗口默认设置 `theme: "dark"`
+  - Tauri 主窗口默认设置 `theme: "Dark"`，运行时 API 使用 `"dark" | "light" | null`
   - Tauri 主窗口设置 `windowEffects.effects: ["mica"]`
   - App 外层和 `body` 保持透明
   - 标题栏和侧边栏使用半透明 sidebar token

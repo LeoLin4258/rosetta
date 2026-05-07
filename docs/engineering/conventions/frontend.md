@@ -84,7 +84,7 @@ Tailwind CSS 和 shadcn/ui 是默认样式方式。全局样式只放入 `src/st
 - 侧边栏信息架构固定为：顶部 `新项目`，中间项目列表，底部 `设置`。不要把导入、任务、设置作为同一层工作台导航混放。
 - 桌面侧边栏宽度为 `14.4rem`，即 shadcn 默认 `16rem` 的 90%。不允许通过中间 rail 调整宽度，`SidebarRail` 当前不渲染。
 - 侧边栏展开/合并动画使用 CSS width/position transition，当前为 `duration-300 ease-out`，菜单文本使用 opacity transition 辅助隐藏。
-- Windows 桌面端使用 Tauri `windowEffects.mica` 和自绘标题栏。主题模式支持 `light`、`dark`、`system`，并同步到 Tauri window theme。外层 app wrapper 和 `body` 必须保持透明，标题栏与侧边栏通过半透明 `--sidebar` token 露出系统材质，主内容区保持 `bg-background` 以保证长文本阅读对比度。
+- Windows 桌面端使用 Tauri `windowEffects.mica` 和自绘标题栏。主题模式支持 `light`、`dark`、`system`，并同步到 Tauri window theme。注意：`tauri.conf.json` 的默认窗口 theme 使用 `Dark` / `Light`，前端运行时 `setTheme` API 使用 `"dark"` / `"light"` / `null`。外层 app wrapper 和 `body` 必须保持透明，标题栏与侧边栏通过半透明 `--sidebar` token 露出系统材质，主内容区保持 `bg-background` 以保证长文本阅读对比度。
 - Mica 的壁纸采样强度由 Windows 控制。Rosetta 通过 `--sidebar`、`--sidebar-primary`、`--sidebar-accent` 的 alpha 值控制前端覆盖层透明度；调低 alpha 会让桌面颜色更明显。
 - 窗口标题栏由 `src/components/window-title-bar.tsx` 渲染。不要改回原生 decorations，除非新增 ADR 说明原因。
 - `src/components/ui/sidebar.tsx` 的 desktop fixed sidebar 必须从 `--window-titlebar-height` 下方开始，不能延伸到 title bar 后面，否则半透明 `--sidebar` 会在左上角叠加两次并造成色差。

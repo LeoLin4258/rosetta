@@ -19,7 +19,7 @@
         "minHeight": 640,
         "decorations": false,
         "shadow": true,
-        "theme": "dark",
+        "theme": "Dark",
         "transparent": true,
         "windowEffects": {
           "effects": ["mica"]
