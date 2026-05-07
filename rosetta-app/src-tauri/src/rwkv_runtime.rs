@@ -8,6 +8,10 @@ use tauri::{AppHandle, Manager};
 
 const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 8000;
+const EXPECTED_RUNTIME_ID_PREFIX: &str = "rwkv-lightning-";
+const EXPECTED_MODEL_ID: &str = "rwkv-v7-g1-translate-1.5b";
+const EXPECTED_CONTEXT_TOKENS: u32 = 4096;
+const EXPECTED_DIRECTIONS: [&str; 2] = ["en-zh", "zh-en"];
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -125,13 +129,20 @@ fn build_status(paths: RwkvRuntimePaths) -> RwkvRuntimeStatus {
     let runtime_manifest = read_manifest(&runtime_manifest_path);
     let model_manifest = read_manifest(&model_manifest_path);
 
-    let manifest_error = runtime_manifest
+    let parse_error = runtime_manifest
         .as_ref()
         .err()
         .or_else(|| model_manifest.as_ref().err())
         .map(ToString::to_string);
     let runtime_manifest = runtime_manifest.ok().flatten();
     let model_manifest = model_manifest.ok().flatten();
+    let validation_error = match (&runtime_manifest, &model_manifest) {
+        (Some(runtime_manifest), Some(model_manifest)) => {
+            validate_manifests(runtime_manifest, model_manifest).err()
+        }
+        _ => None,
+    };
+    let manifest_error = parse_error.or(validation_error);
 
     let has_any_layout = runtime_dir_exists
         || model_dir_exists
@@ -188,6 +199,67 @@ fn read_manifest(path: &Path) -> Result<Option<RwkvArtifactManifest>, String> {
         .map_err(|error| format!("Could not parse {}: {error}", display_path(path)))?;
 
     Ok(Some(manifest))
+}
+
+fn validate_manifests(
+    runtime_manifest: &RwkvArtifactManifest,
+    model_manifest: &RwkvArtifactManifest,
+) -> Result<(), String> {
+    if !runtime_manifest.id.starts_with(EXPECTED_RUNTIME_ID_PREFIX) {
+        return Err(format!(
+            "Runtime manifest id must start with `{EXPECTED_RUNTIME_ID_PREFIX}`."
+        ));
+    }
+
+    if runtime_manifest
+        .sha256
+        .as_deref()
+        .is_some_and(invalid_sha256)
+    {
+        return Err(
+            "Runtime manifest sha256 must be a 64-character lowercase hex string.".to_string(),
+        );
+    }
+
+    if model_manifest.id != EXPECTED_MODEL_ID {
+        return Err(format!("Model manifest id must be `{EXPECTED_MODEL_ID}`."));
+    }
+
+    if model_manifest.context_tokens != Some(EXPECTED_CONTEXT_TOKENS) {
+        return Err(format!(
+            "Model manifest contextTokens must be {EXPECTED_CONTEXT_TOKENS}."
+        ));
+    }
+
+    let Some(supported_directions) = model_manifest.supported_directions.as_ref() else {
+        return Err("Model manifest supportedDirections is required.".to_string());
+    };
+
+    for direction in EXPECTED_DIRECTIONS {
+        if !supported_directions
+            .iter()
+            .any(|supported_direction| supported_direction == direction)
+        {
+            return Err(format!(
+                "Model manifest supportedDirections must include `{direction}`."
+            ));
+        }
+    }
+
+    if model_manifest.sha256.as_deref().is_some_and(invalid_sha256) {
+        return Err(
+            "Model manifest sha256 must be a 64-character lowercase hex string.".to_string(),
+        );
+    }
+
+    Ok(())
+}
+
+fn invalid_sha256(value: &str) -> bool {
+    value.len() != 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn display_path(path: &Path) -> String {
@@ -249,12 +321,12 @@ mod tests {
         fs::create_dir_all(&paths.logs_dir).expect("logs dir should be created");
         fs::write(
             paths.runtime_dir.join("runtime-manifest.json"),
-            r#"{"id":"rwkv-lightning-windows-x64-cpu","version":"2026.05.07"}"#,
+            r#"{"id":"rwkv-lightning-windows-x64-cpu","version":"2026.05.07","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
         )
         .expect("runtime manifest should be written");
         fs::write(
             paths.model_dir.join("model-manifest.json"),
-            r#"{"id":"rwkv-v7-g1-translate-1.5b","contextTokens":4096,"supportedDirections":["en-zh","zh-en"]}"#,
+            r#"{"id":"rwkv-v7-g1-translate-1.5b","contextTokens":4096,"supportedDirections":["en-zh","zh-en"],"sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}"#,
         )
         .expect("model manifest should be written");
 
@@ -281,6 +353,69 @@ mod tests {
     }
 
     #[test]
+    fn status_is_invalid_when_model_id_is_unexpected() {
+        let root = unique_temp_root("unexpected-model-id");
+        let paths = runtime_paths(root.clone());
+        write_valid_runtime_manifest(&paths);
+        write_model_manifest(
+            &paths,
+            r#"{"id":"other-model","contextTokens":4096,"supportedDirections":["en-zh","zh-en"]}"#,
+        );
+
+        let status = build_status(paths);
+
+        assert_eq!(status.state, RwkvRuntimeState::Invalid);
+        assert!(status
+            .manifest_error
+            .as_deref()
+            .is_some_and(|error| error.contains("Model manifest id")));
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn status_is_invalid_when_model_direction_is_missing() {
+        let root = unique_temp_root("missing-direction");
+        let paths = runtime_paths(root.clone());
+        write_valid_runtime_manifest(&paths);
+        write_model_manifest(
+            &paths,
+            r#"{"id":"rwkv-v7-g1-translate-1.5b","contextTokens":4096,"supportedDirections":["en-zh"]}"#,
+        );
+
+        let status = build_status(paths);
+
+        assert_eq!(status.state, RwkvRuntimeState::Invalid);
+        assert!(status
+            .manifest_error
+            .as_deref()
+            .is_some_and(|error| error.contains("zh-en")));
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn status_is_invalid_when_sha256_is_malformed() {
+        let root = unique_temp_root("bad-sha");
+        let paths = runtime_paths(root.clone());
+        write_valid_runtime_manifest(&paths);
+        write_model_manifest(
+            &paths,
+            r#"{"id":"rwkv-v7-g1-translate-1.5b","contextTokens":4096,"supportedDirections":["en-zh","zh-en"],"sha256":"NOT-A-SHA"}"#,
+        );
+
+        let status = build_status(paths);
+
+        assert_eq!(status.state, RwkvRuntimeState::Invalid);
+        assert!(status
+            .manifest_error
+            .as_deref()
+            .is_some_and(|error| error.contains("sha256")));
+
+        cleanup(root);
+    }
+
+    #[test]
     fn status_is_invalid_when_manifest_json_is_invalid() {
         let root = unique_temp_root("invalid-layout");
         let paths = runtime_paths(root.clone());
@@ -296,6 +431,22 @@ mod tests {
         assert!(status.runtime_manifest.is_none());
 
         cleanup(root);
+    }
+
+    fn write_valid_runtime_manifest(paths: &RwkvRuntimePaths) {
+        fs::create_dir_all(&paths.runtime_dir).expect("runtime dir should be created");
+        fs::create_dir_all(&paths.model_dir).expect("model dir should be created");
+        fs::write(
+            paths.runtime_dir.join("runtime-manifest.json"),
+            r#"{"id":"rwkv-lightning-windows-x64-cpu"}"#,
+        )
+        .expect("runtime manifest should be written");
+    }
+
+    fn write_model_manifest(paths: &RwkvRuntimePaths, contents: &str) {
+        fs::create_dir_all(&paths.model_dir).expect("model dir should be created");
+        fs::write(paths.model_dir.join("model-manifest.json"), contents)
+            .expect("model manifest should be written");
     }
 
     fn unique_temp_root(name: &str) -> PathBuf {
