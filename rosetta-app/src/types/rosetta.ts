@@ -91,3 +91,16 @@ export type RwkvConnectionConfig = {
   timeoutMs: number;
   mode: TranslationMode;
 };
+
+export type RwkvRuntimeState = "not-installed" | "installed";
+
+export type RwkvRuntimeStatus = {
+  state: RwkvRuntimeState;
+  apiUrl: string;
+  runtimeDir: string;
+  modelDir: string;
+  runtimeManifestExists: boolean;
+  modelManifestExists: boolean;
+  logFile: string;
+  message: string;
+};
