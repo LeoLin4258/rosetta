@@ -18,6 +18,8 @@ Rosetta 采用以下基础技术栈：
 - React + TypeScript 作为前端 UI 层
 - Vite 作为前端构建工具
 - Tailwind CSS 作为基础样式系统
+- shadcn/ui 作为 UI 组件源码体系
+- shadcn preset `bJMSkhvs`，主题色使用 `stone`
 - Zustand 作为轻量状态管理
 - React Router 作为页面路由
 - `@tanstack/react-virtual` 支持大文档虚拟滚动
@@ -30,6 +32,8 @@ Rosetta 采用以下基础技术栈：
 - 长列表和双语预览必须按虚拟滚动设计，不能直接渲染全部 segment。
 - 状态管理先保持轻量，MVP 阶段不引入复杂数据层。
 - UI 应保持桌面工具气质，不做聊天式 AI 产品布局。
+- 新增通用 UI 控件时应优先通过 shadcn CLI 添加组件源码，再在业务组件中组合使用。
+- 前端样式应优先使用 shadcn/Tailwind semantic tokens，例如 `bg-background`、`text-muted-foreground`、`border-border`，避免直接写固定色值。
 
 ## Verification
 
@@ -40,3 +44,11 @@ corepack pnpm typecheck
 corepack pnpm build
 cargo check
 ```
+
+shadcn 接入后已通过：
+
+```bash
+corepack pnpm typecheck
+```
+
+`corepack pnpm build` 由用户本地自行执行。

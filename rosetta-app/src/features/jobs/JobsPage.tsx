@@ -1,38 +1,49 @@
 import { SegmentPreviewList } from "../preview/SegmentPreviewList";
 import { useRosettaStore } from "../../store/useRosettaStore";
+import { Badge } from "@/components/ui/badge";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 export function JobsPage() {
   const jobs = useRosettaStore((state) => state.jobs);
 
   return (
     <section className="grid min-h-full grid-rows-[auto_1fr] gap-6 px-6 py-6">
-      <div className="overflow-hidden rounded-lg border border-zinc-800">
-        <table className="w-full border-collapse text-left text-sm">
-          <thead className="bg-zinc-900 text-zinc-400">
-            <tr>
-              <th className="px-4 py-3 font-medium">文件</th>
-              <th className="px-4 py-3 font-medium">状态</th>
-              <th className="px-4 py-3 font-medium">进度</th>
-              <th className="px-4 py-3 font-medium">失败</th>
-              <th className="px-4 py-3 font-medium">更新时间</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-zinc-800 bg-zinc-950">
+      <div className="overflow-hidden rounded-lg border bg-card">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead className="px-4">文件</TableHead>
+              <TableHead>状态</TableHead>
+              <TableHead>进度</TableHead>
+              <TableHead>失败</TableHead>
+              <TableHead>更新时间</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {jobs.map((job) => (
-              <tr className="text-zinc-300" key={job.id}>
-                <td className="px-4 py-3 text-zinc-100">{job.filename}</td>
-                <td className="px-4 py-3">{job.status}</td>
-                <td className="px-4 py-3">
+              <TableRow key={job.id}>
+                <TableCell className="px-4 font-medium">{job.filename}</TableCell>
+                <TableCell>
+                  <Badge variant="secondary">{job.status}</Badge>
+                </TableCell>
+                <TableCell>
                   {job.completedSegments} / {job.segmentCount}
-                </td>
-                <td className="px-4 py-3">{job.failedSegments}</td>
-                <td className="px-4 py-3 text-zinc-500">
+                </TableCell>
+                <TableCell>{job.failedSegments}</TableCell>
+                <TableCell className="text-muted-foreground">
                   {new Date(job.updatedAt).toLocaleString()}
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             ))}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       </div>
 
       <SegmentPreviewList />

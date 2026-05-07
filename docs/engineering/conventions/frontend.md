@@ -9,7 +9,9 @@
 ```txt
 src/
   app/        应用壳、路由、导航等跨功能结构
+  components/ shadcn/ui 组件源码和共享组件
   features/   按业务功能组织的页面和组件
+  lib/        通用工具，例如 cn()
   store/      Zustand store
   styles/     全局样式入口
   types/      跨模块共享的领域类型
@@ -19,6 +21,8 @@ src/
 
 - `app/` 只放应用级结构，不放具体翻译业务逻辑。
 - `features/` 以业务功能命名，例如 `import`、`jobs`、`preview`、`settings`。
+- `components/ui/` 由 shadcn CLI 管理，不手写替代组件来绕过 shadcn。
+- `lib/utils.ts` 提供 `cn()`，条件 className 使用 `cn()`。
 - 跨多个 feature 使用的领域类型放入 `types/`。
 - 全局状态先集中在 `store/`，后续复杂后再按功能拆分。
 
@@ -65,4 +69,13 @@ Rosetta 是本地长文本翻译工作台，不是聊天产品或营销页。
 
 ## Styling
 
-Tailwind CSS 是默认样式方式。全局样式只放入 `src/styles/index.css`，避免分散的全局 CSS。
+Tailwind CSS 和 shadcn/ui 是默认样式方式。全局样式只放入 `src/styles/index.css`，避免分散的全局 CSS。
+
+主题约定：
+
+- shadcn preset 使用 `bJMSkhvs`。
+- 主题色使用 `stone`。
+- 业务组件优先使用 semantic tokens：`bg-background`、`bg-card`、`text-foreground`、`text-muted-foreground`、`border-border`。
+- 不在业务组件里直接使用 `zinc-*`、`emerald-*` 等固定色值作为主要视觉体系。
+- 通用按钮、卡片、表格、输入框、选择器、徽标等优先使用 `src/components/ui/` 中的 shadcn 组件。
+- 新增 shadcn 组件时使用 `corepack pnpm dlx shadcn@latest add <component>`。

@@ -1,6 +1,8 @@
 import { useRef } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useRosettaStore } from "../../store/useRosettaStore";
+import { Badge } from "@/components/ui/badge";
+import { Card } from "@/components/ui/card";
 
 export function SegmentPreviewList() {
   const segments = useRosettaStore((state) => state.previewSegments);
@@ -13,9 +15,9 @@ export function SegmentPreviewList() {
   });
 
   return (
-    <div className="min-h-0 rounded-lg border border-zinc-800 bg-zinc-950">
-      <div className="grid grid-cols-2 border-b border-zinc-800 bg-zinc-900 text-sm text-zinc-400">
-        <div className="border-r border-zinc-800 px-4 py-3">原文</div>
+    <Card className="min-h-0 py-0">
+      <div className="grid grid-cols-2 border-b bg-muted/40 text-sm text-muted-foreground">
+        <div className="border-r px-4 py-3">原文</div>
         <div className="px-4 py-3">译文</div>
       </div>
       <div className="h-[420px] overflow-auto" ref={parentRef}>
@@ -28,19 +30,21 @@ export function SegmentPreviewList() {
 
             return (
               <div
-                className="absolute left-0 top-0 grid w-full grid-cols-2 border-b border-zinc-900 text-sm"
+                className="absolute left-0 top-0 grid w-full grid-cols-2 border-b text-sm"
                 key={segment.id}
                 style={{
                   height: `${item.size}px`,
                   transform: `translateY(${item.start}px)`,
                 }}
               >
-                <div className="border-r border-zinc-900 px-4 py-3 text-zinc-300">
-                  <div className="mb-2 text-xs text-zinc-600">#{segment.order}</div>
+                <div className="border-r px-4 py-3 text-muted-foreground">
+                  <div className="mb-2 text-xs">#{segment.order}</div>
                   {segment.sourceText}
                 </div>
-                <div className="px-4 py-3 text-zinc-200">
-                  <div className="mb-2 text-xs text-zinc-600">{segment.status}</div>
+                <div className="px-4 py-3">
+                  <div className="mb-2">
+                    <Badge variant="outline">{segment.status}</Badge>
+                  </div>
                   {segment.translatedText ?? "等待翻译"}
                 </div>
               </div>
@@ -48,6 +52,6 @@ export function SegmentPreviewList() {
           })}
         </div>
       </div>
-    </div>
+    </Card>
   );
 }

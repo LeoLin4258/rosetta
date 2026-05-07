@@ -1,6 +1,24 @@
 import type { ChangeEvent } from "react";
 import { useRosettaStore } from "../../store/useRosettaStore";
 import type { RwkvConnectionConfig, TranslationMode } from "../../types/rosetta";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 
 const modeOptions: Array<{ label: string; value: TranslationMode }> = [
   { label: "极速", value: "fast" },
@@ -21,60 +39,76 @@ export function SettingsPage() {
 
   return (
     <section className="mx-auto max-w-3xl px-6 py-6">
-      <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-5">
-        <h2 className="text-base font-semibold text-zinc-50">RWKV 连接</h2>
+      <Card>
+        <CardHeader>
+          <CardTitle>RWKV 连接</CardTitle>
+          <CardDescription>配置本地翻译 API 和默认调度模式</CardDescription>
+        </CardHeader>
 
-        <div className="mt-5 grid gap-4">
-          <label className="grid gap-2 text-sm">
-            <span className="text-zinc-300">API 地址</span>
-            <input
-              className="h-10 rounded-md border border-zinc-700 bg-zinc-950 px-3 text-zinc-100 outline-none transition-colors placeholder:text-zinc-600 focus:border-emerald-500"
+        <CardContent>
+          <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="rwkv-base-url">API 地址</Label>
+            <Input
+              id="rwkv-base-url"
               onChange={updateTextField("baseUrl")}
               value={rwkv.baseUrl}
             />
-          </label>
+          </div>
 
-          <label className="grid gap-2 text-sm">
-            <span className="text-zinc-300">Batch 端点</span>
-            <select
-              className="h-10 rounded-md border border-zinc-700 bg-zinc-950 px-3 text-zinc-100 outline-none transition-colors focus:border-emerald-500"
-              onChange={(event) =>
+          <div className="flex flex-col gap-2">
+            <Label>Batch 端点</Label>
+            <Select
+              onValueChange={(value) =>
                 updateRwkvConfig({
-                  batchEndpoint: event.currentTarget
-                    .value as RwkvConnectionConfig["batchEndpoint"],
+                  batchEndpoint: value as RwkvConnectionConfig["batchEndpoint"],
                 })
               }
               value={rwkv.batchEndpoint}
             >
-              <option value="/translate/v1/batch-translate">
-                /translate/v1/batch-translate
-              </option>
-              <option value="/big_batch/completions">/big_batch/completions</option>
-            </select>
-          </label>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectItem value="/translate/v1/batch-translate">
+                    /translate/v1/batch-translate
+                  </SelectItem>
+                  <SelectItem value="/big_batch/completions">
+                    /big_batch/completions
+                  </SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </div>
 
-          <div className="grid gap-2 text-sm">
-            <span className="text-zinc-300">翻译模式</span>
-            <div className="grid grid-cols-3 overflow-hidden rounded-md border border-zinc-700">
+          <div className="flex flex-col gap-2">
+            <Label>翻译模式</Label>
+            <ToggleGroup
+              className="w-full"
+              onValueChange={(value) => {
+                if (value) {
+                  setTranslationMode(value as TranslationMode);
+                }
+              }}
+              type="single"
+              value={rwkv.mode}
+              variant="outline"
+            >
               {modeOptions.map((option) => (
-                <button
-                  className={[
-                    "h-10 border-r border-zinc-700 text-sm last:border-r-0",
-                    rwkv.mode === option.value
-                      ? "bg-emerald-500 text-zinc-950"
-                      : "bg-zinc-950 text-zinc-300 hover:bg-zinc-800",
-                  ].join(" ")}
+                <ToggleGroupItem
+                  className="flex-1"
                   key={option.value}
-                  onClick={() => setTranslationMode(option.value)}
-                  type="button"
+                  value={option.value}
                 >
                   {option.label}
-                </button>
+                </ToggleGroupItem>
               ))}
-            </div>
+            </ToggleGroup>
           </div>
-        </div>
-      </div>
+          </div>
+        </CardContent>
+      </Card>
     </section>
   );
 }
