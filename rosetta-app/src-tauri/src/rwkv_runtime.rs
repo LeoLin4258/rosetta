@@ -1,9 +1,12 @@
 use std::{
     fs,
+    fs::File,
+    io::Read,
     path::{Path, PathBuf},
 };
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager};
 
 const DEFAULT_HOST: &str = "127.0.0.1";
@@ -138,7 +141,7 @@ fn build_status(paths: RwkvRuntimePaths) -> RwkvRuntimeStatus {
     let model_manifest = model_manifest.ok().flatten();
     let validation_error = match (&runtime_manifest, &model_manifest) {
         (Some(runtime_manifest), Some(model_manifest)) => {
-            validate_manifests(runtime_manifest, model_manifest).err()
+            validate_manifests(runtime_manifest, model_manifest, &paths).err()
         }
         _ => None,
     };
@@ -204,6 +207,7 @@ fn read_manifest(path: &Path) -> Result<Option<RwkvArtifactManifest>, String> {
 fn validate_manifests(
     runtime_manifest: &RwkvArtifactManifest,
     model_manifest: &RwkvArtifactManifest,
+    paths: &RwkvRuntimePaths,
 ) -> Result<(), String> {
     if !runtime_manifest.id.starts_with(EXPECTED_RUNTIME_ID_PREFIX) {
         return Err(format!(
@@ -220,6 +224,8 @@ fn validate_manifests(
             "Runtime manifest sha256 must be a 64-character lowercase hex string.".to_string(),
         );
     }
+
+    verify_optional_artifact("Runtime", runtime_manifest, &paths.runtime_dir)?;
 
     if model_manifest.id != EXPECTED_MODEL_ID {
         return Err(format!("Model manifest id must be `{EXPECTED_MODEL_ID}`."));
@@ -252,6 +258,8 @@ fn validate_manifests(
         );
     }
 
+    verify_required_artifact("Model", model_manifest, &paths.model_dir)?;
+
     Ok(())
 }
 
@@ -260,6 +268,98 @@ fn invalid_sha256(value: &str) -> bool {
         || !value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn verify_optional_artifact(
+    label: &str,
+    manifest: &RwkvArtifactManifest,
+    base_dir: &Path,
+) -> Result<(), String> {
+    if manifest.filename.is_none() && manifest.sha256.is_none() && manifest.size_bytes.is_none() {
+        return Ok(());
+    }
+
+    verify_required_artifact(label, manifest, base_dir)
+}
+
+fn verify_required_artifact(
+    label: &str,
+    manifest: &RwkvArtifactManifest,
+    base_dir: &Path,
+) -> Result<(), String> {
+    let filename = manifest
+        .filename
+        .as_deref()
+        .ok_or_else(|| format!("{label} manifest filename is required."))?;
+    let expected_sha256 = manifest
+        .sha256
+        .as_deref()
+        .ok_or_else(|| format!("{label} manifest sha256 is required."))?;
+
+    let artifact_path = safe_artifact_path(base_dir, filename).ok_or_else(|| {
+        format!("{label} manifest filename must stay inside its managed directory.")
+    })?;
+
+    let metadata = fs::metadata(&artifact_path)
+        .map_err(|error| format!("Could not read {label} artifact metadata: {error}"))?;
+
+    if !metadata.is_file() {
+        return Err(format!("{label} artifact must be a file."));
+    }
+
+    if let Some(expected_size_bytes) = manifest.size_bytes {
+        if metadata.len() != expected_size_bytes {
+            return Err(format!(
+                "{label} artifact size mismatch: expected {expected_size_bytes}, got {}.",
+                metadata.len()
+            ));
+        }
+    }
+
+    let actual_sha256 = sha256_file(&artifact_path)?;
+
+    if actual_sha256 != expected_sha256 {
+        return Err(format!(
+            "{label} artifact sha256 mismatch: expected {expected_sha256}, got {actual_sha256}."
+        ));
+    }
+
+    Ok(())
+}
+
+fn safe_artifact_path(base_dir: &Path, filename: &str) -> Option<PathBuf> {
+    let filename_path = Path::new(filename);
+
+    if filename_path.is_absolute()
+        || filename_path
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return None;
+    }
+
+    Some(base_dir.join(filename_path))
+}
+
+fn sha256_file(path: &Path) -> Result<String, String> {
+    let mut file = File::open(path)
+        .map_err(|error| format!("Could not open artifact for sha256 verification: {error}"))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+
+    loop {
+        let bytes_read = file
+            .read(&mut buffer)
+            .map_err(|error| format!("Could not read artifact for sha256 verification: {error}"))?;
+
+        if bytes_read == 0 {
+            break;
+        }
+
+        hasher.update(&buffer[..bytes_read]);
+    }
+
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn display_path(path: &Path) -> String {
@@ -321,12 +421,21 @@ mod tests {
         fs::create_dir_all(&paths.logs_dir).expect("logs dir should be created");
         fs::write(
             paths.runtime_dir.join("runtime-manifest.json"),
-            r#"{"id":"rwkv-lightning-windows-x64-cpu","version":"2026.05.07","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
+            r#"{"id":"rwkv-lightning-windows-x64-cpu","version":"2026.05.07"}"#,
         )
         .expect("runtime manifest should be written");
+        let model_filename = "model.pth";
+        let model_contents = b"rwkv model bytes";
+        fs::write(paths.model_dir.join(model_filename), model_contents)
+            .expect("model artifact should be written");
+        let model_sha256 =
+            sha256_file(&paths.model_dir.join(model_filename)).expect("model sha should compute");
         fs::write(
             paths.model_dir.join("model-manifest.json"),
-            r#"{"id":"rwkv-v7-g1-translate-1.5b","contextTokens":4096,"supportedDirections":["en-zh","zh-en"],"sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}"#,
+            format!(
+                r#"{{"id":"rwkv-v7-g1-translate-1.5b","filename":"{model_filename}","sha256":"{model_sha256}","sizeBytes":{},"contextTokens":4096,"supportedDirections":["en-zh","zh-en"]}}"#,
+                model_contents.len()
+            ),
         )
         .expect("model manifest should be written");
 
@@ -416,6 +525,96 @@ mod tests {
     }
 
     #[test]
+    fn status_is_invalid_when_model_artifact_is_missing() {
+        let root = unique_temp_root("missing-artifact");
+        let paths = runtime_paths(root.clone());
+        write_valid_runtime_manifest(&paths);
+        write_model_manifest(
+            &paths,
+            r#"{"id":"rwkv-v7-g1-translate-1.5b","filename":"model.pth","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","contextTokens":4096,"supportedDirections":["en-zh","zh-en"]}"#,
+        );
+
+        let status = build_status(paths);
+
+        assert_eq!(status.state, RwkvRuntimeState::Invalid);
+        assert!(status
+            .manifest_error
+            .as_deref()
+            .is_some_and(|error| error.contains("artifact metadata")));
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn status_is_invalid_when_model_artifact_size_mismatches() {
+        let root = unique_temp_root("size-mismatch");
+        let paths = runtime_paths(root.clone());
+        write_valid_runtime_manifest(&paths);
+        write_model_artifact(&paths, "model.pth", b"model bytes");
+        let model_sha256 =
+            sha256_file(&paths.model_dir.join("model.pth")).expect("model sha should compute");
+        write_model_manifest(
+            &paths,
+            &format!(
+                r#"{{"id":"rwkv-v7-g1-translate-1.5b","filename":"model.pth","sha256":"{model_sha256}","sizeBytes":999,"contextTokens":4096,"supportedDirections":["en-zh","zh-en"]}}"#
+            ),
+        );
+
+        let status = build_status(paths);
+
+        assert_eq!(status.state, RwkvRuntimeState::Invalid);
+        assert!(status
+            .manifest_error
+            .as_deref()
+            .is_some_and(|error| error.contains("size mismatch")));
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn status_is_invalid_when_model_artifact_hash_mismatches() {
+        let root = unique_temp_root("hash-mismatch");
+        let paths = runtime_paths(root.clone());
+        write_valid_runtime_manifest(&paths);
+        write_model_artifact(&paths, "model.pth", b"model bytes");
+        write_model_manifest(
+            &paths,
+            r#"{"id":"rwkv-v7-g1-translate-1.5b","filename":"model.pth","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","contextTokens":4096,"supportedDirections":["en-zh","zh-en"]}"#,
+        );
+
+        let status = build_status(paths);
+
+        assert_eq!(status.state, RwkvRuntimeState::Invalid);
+        assert!(status
+            .manifest_error
+            .as_deref()
+            .is_some_and(|error| error.contains("sha256 mismatch")));
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn status_is_invalid_when_model_filename_escapes_managed_directory() {
+        let root = unique_temp_root("path-escape");
+        let paths = runtime_paths(root.clone());
+        write_valid_runtime_manifest(&paths);
+        write_model_manifest(
+            &paths,
+            r#"{"id":"rwkv-v7-g1-translate-1.5b","filename":"../model.pth","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","contextTokens":4096,"supportedDirections":["en-zh","zh-en"]}"#,
+        );
+
+        let status = build_status(paths);
+
+        assert_eq!(status.state, RwkvRuntimeState::Invalid);
+        assert!(status
+            .manifest_error
+            .as_deref()
+            .is_some_and(|error| error.contains("managed directory")));
+
+        cleanup(root);
+    }
+
+    #[test]
     fn status_is_invalid_when_manifest_json_is_invalid() {
         let root = unique_temp_root("invalid-layout");
         let paths = runtime_paths(root.clone());
@@ -447,6 +646,12 @@ mod tests {
         fs::create_dir_all(&paths.model_dir).expect("model dir should be created");
         fs::write(paths.model_dir.join("model-manifest.json"), contents)
             .expect("model manifest should be written");
+    }
+
+    fn write_model_artifact(paths: &RwkvRuntimePaths, filename: &str, contents: &[u8]) {
+        fs::create_dir_all(&paths.model_dir).expect("model dir should be created");
+        fs::write(paths.model_dir.join(filename), contents)
+            .expect("model artifact should be written");
     }
 
     fn unique_temp_root(name: &str) -> PathBuf {
