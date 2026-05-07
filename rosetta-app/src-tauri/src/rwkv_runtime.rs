@@ -29,7 +29,7 @@ pub struct RwkvRuntimeStatus {
     message: String,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 enum RwkvRuntimeState {
     NotInstalled,
@@ -38,7 +38,7 @@ enum RwkvRuntimeState {
     Invalid,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RwkvArtifactManifest {
     id: String,
@@ -192,4 +192,124 @@ fn read_manifest(path: &Path) -> Result<Option<RwkvArtifactManifest>, String> {
 
 fn display_path(path: &Path) -> String {
     path.to_string_lossy().into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use super::*;
+
+    #[test]
+    fn status_is_not_installed_when_layout_is_missing() {
+        let root = unique_temp_root("missing-layout");
+        let status = build_status(runtime_paths(root.clone()));
+
+        assert_eq!(status.state, RwkvRuntimeState::NotInstalled);
+        assert!(!status.runtime_dir_exists);
+        assert!(!status.model_dir_exists);
+        assert!(!status.logs_dir_exists);
+        assert!(!status.runtime_manifest_exists);
+        assert!(!status.model_manifest_exists);
+        assert!(status.runtime_manifest.is_none());
+        assert!(status.model_manifest.is_none());
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn status_is_partial_when_layout_exists_without_manifests() {
+        let root = unique_temp_root("partial-layout");
+        let paths = runtime_paths(root.clone());
+        fs::create_dir_all(&paths.runtime_dir).expect("runtime dir should be created");
+        fs::create_dir_all(&paths.model_dir).expect("model dir should be created");
+        fs::create_dir_all(&paths.logs_dir).expect("logs dir should be created");
+
+        let status = build_status(paths);
+
+        assert_eq!(status.state, RwkvRuntimeState::Partial);
+        assert!(status.runtime_dir_exists);
+        assert!(status.model_dir_exists);
+        assert!(status.logs_dir_exists);
+        assert!(!status.runtime_manifest_exists);
+        assert!(!status.model_manifest_exists);
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn status_is_installed_when_both_manifests_are_valid() {
+        let root = unique_temp_root("installed-layout");
+        let paths = runtime_paths(root.clone());
+        fs::create_dir_all(&paths.runtime_dir).expect("runtime dir should be created");
+        fs::create_dir_all(&paths.model_dir).expect("model dir should be created");
+        fs::create_dir_all(&paths.logs_dir).expect("logs dir should be created");
+        fs::write(
+            paths.runtime_dir.join("runtime-manifest.json"),
+            r#"{"id":"rwkv-lightning-windows-x64-cpu","version":"2026.05.07"}"#,
+        )
+        .expect("runtime manifest should be written");
+        fs::write(
+            paths.model_dir.join("model-manifest.json"),
+            r#"{"id":"rwkv-v7-g1-translate-1.5b","contextTokens":4096,"supportedDirections":["en-zh","zh-en"]}"#,
+        )
+        .expect("model manifest should be written");
+
+        let status = build_status(paths);
+
+        assert_eq!(status.state, RwkvRuntimeState::Installed);
+        assert_eq!(
+            status
+                .runtime_manifest
+                .as_ref()
+                .map(|manifest| manifest.id.as_str()),
+            Some("rwkv-lightning-windows-x64-cpu")
+        );
+        assert_eq!(
+            status
+                .model_manifest
+                .as_ref()
+                .map(|manifest| manifest.id.as_str()),
+            Some("rwkv-v7-g1-translate-1.5b")
+        );
+        assert!(status.manifest_error.is_none());
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn status_is_invalid_when_manifest_json_is_invalid() {
+        let root = unique_temp_root("invalid-layout");
+        let paths = runtime_paths(root.clone());
+        fs::create_dir_all(&paths.runtime_dir).expect("runtime dir should be created");
+        fs::create_dir_all(&paths.model_dir).expect("model dir should be created");
+        fs::write(paths.runtime_dir.join("runtime-manifest.json"), "{not-json")
+            .expect("runtime manifest should be written");
+
+        let status = build_status(paths);
+
+        assert_eq!(status.state, RwkvRuntimeState::Invalid);
+        assert!(status.manifest_error.is_some());
+        assert!(status.runtime_manifest.is_none());
+
+        cleanup(root);
+    }
+
+    fn unique_temp_root(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after epoch")
+            .as_nanos();
+
+        std::env::temp_dir().join(format!("rosetta-rwkv-runtime-test-{name}-{nanos}"))
+    }
+
+    fn cleanup(root: PathBuf) {
+        if root.exists() {
+            fs::remove_dir_all(root).expect("test temp directory should be removed");
+        }
+    }
 }
