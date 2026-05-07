@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Frontend build output
+dist/
+dist-ssr/
+
+# Tauri / Rust build output
+target/
+rosetta-app/src-tauri/target/
+
+# Local runtime data
+.rosetta/
+rosetta-data/
+
+# Logs and local environment
+*.log
+*.local
+.env
+.env.*
+
+# Editors and OS files
+.idea/
+.vscode/*
+!.vscode/extensions.json
+.DS_Store
+Thumbs.db

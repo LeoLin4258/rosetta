@@ -1,0 +1,74 @@
+# Data Model Conventions
+
+## Scope
+
+本文档记录 Rosetta 核心数据模型约定。当前类型定义位于：
+
+```txt
+rosetta-app/src/types/rosetta.ts
+```
+
+## Core Model
+
+Rosetta 的核心数据流是：
+
+```txt
+Document
+  -> RosettaDocument
+  -> RosettaBlock[]
+  -> Segment[]
+  -> translated Segment[]
+  -> export result
+```
+
+## RosettaDocument
+
+`RosettaDocument` 表示导入文档的统一中间格式。
+
+约定：
+
+- importer 负责把不同格式转换为 `RosettaDocument`。
+- translator 不直接处理原始文件格式。
+- preview 和 exporter 应尽量基于同一套 IR，避免预览和导出结果分叉。
+
+## RosettaBlock
+
+`RosettaBlock` 表示文档结构单元，例如标题、段落、列表项、表格单元格、代码块。
+
+约定：
+
+- `order` 必须保留原文档顺序。
+- `shouldTranslate` 决定是否进入翻译调度。
+- 代码块、URL、文件路径、公式等内容应尽量标记为不翻译或在 segment 阶段保护。
+- `style` 只记录结构和导出需要的信息，不放 UI 临时状态。
+
+## Segment
+
+`Segment` 是翻译调度的最小单位。
+
+约定：
+
+- 一个 block 可以拆成多个 segment。
+- `blockId` 必须能追溯回原始 block。
+- `order` 必须能恢复翻译前顺序。
+- `preserveWhitespace` 用于提示合并和导出阶段保留空白。
+- 用户编辑后的译文状态应标记为 `edited`，后续重翻不能静默覆盖。
+
+## Job
+
+`RosettaJob` 表示一个本地翻译任务。
+
+约定：
+
+- Job 状态变化应可恢复，不能只存在内存中。
+- MVP 阶段任务缓存优先使用 JSON 文件。
+- 后续如果引入 SQLite，需要新增 ADR 说明原因和迁移策略。
+
+## Compatibility
+
+核心类型一旦被任务缓存使用，就视为持久化格式的一部分。修改字段时需要考虑：
+
+- 是否需要版本号
+- 旧任务是否还能读取
+- 是否需要迁移脚本
+- 导出结果是否受影响
