@@ -37,6 +37,8 @@ export type JobStatus =
 
 export type TranslationMode = "fast" | "balanced" | "coherent";
 
+export type AppThemeMode = "light" | "dark" | "system";
+
 export type RosettaDocument = {
   id: string;
   filename: string;

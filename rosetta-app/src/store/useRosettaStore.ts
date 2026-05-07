@@ -1,5 +1,7 @@
 import { create } from "zustand";
+import { persist } from "zustand/middleware";
 import type {
+  AppThemeMode,
   RosettaJob,
   RwkvConnectionConfig,
   Segment,
@@ -7,9 +9,11 @@ import type {
 } from "../types/rosetta";
 
 type RosettaState = {
+  themeMode: AppThemeMode;
   rwkv: RwkvConnectionConfig;
   jobs: RosettaJob[];
   previewSegments: Segment[];
+  setThemeMode: (mode: AppThemeMode) => void;
   updateRwkvConfig: (config: Partial<RwkvConnectionConfig>) => void;
   setTranslationMode: (mode: TranslationMode) => void;
   createDemoJob: () => void;
@@ -64,32 +68,45 @@ const demoJob: RosettaJob = {
   failedSegments: 0,
 };
 
-export const useRosettaStore = create<RosettaState>((set) => ({
-  rwkv: {
-    baseUrl: "http://127.0.0.1:8000",
-    batchEndpoint: "/translate/v1/batch-translate",
-    timeoutMs: 120_000,
-    mode: "balanced",
-  },
-  jobs: [demoJob],
-  previewSegments: demoSegments,
-  updateRwkvConfig: (config) =>
-    set((state) => ({
+export const useRosettaStore = create<RosettaState>()(
+  persist(
+    (set) => ({
+      themeMode: "dark",
       rwkv: {
-        ...state.rwkv,
-        ...config,
+        baseUrl: "http://127.0.0.1:8000",
+        batchEndpoint: "/translate/v1/batch-translate",
+        timeoutMs: 120_000,
+        mode: "balanced",
       },
-    })),
-  setTranslationMode: (mode) =>
-    set((state) => ({
-      rwkv: {
-        ...state.rwkv,
-        mode,
-      },
-    })),
-  createDemoJob: () =>
-    set((state) => ({
-      jobs: [demoJob, ...state.jobs.filter((job) => job.id !== demoJob.id)],
+      jobs: [demoJob],
       previewSegments: demoSegments,
-    })),
-}));
+      setThemeMode: (mode) => set({ themeMode: mode }),
+      updateRwkvConfig: (config) =>
+        set((state) => ({
+          rwkv: {
+            ...state.rwkv,
+            ...config,
+          },
+        })),
+      setTranslationMode: (mode) =>
+        set((state) => ({
+          rwkv: {
+            ...state.rwkv,
+            mode,
+          },
+        })),
+      createDemoJob: () =>
+        set((state) => ({
+          jobs: [demoJob, ...state.jobs.filter((job) => job.id !== demoJob.id)],
+          previewSegments: demoSegments,
+        })),
+    }),
+    {
+      name: "rosetta-app-settings",
+      partialize: (state) => ({
+        themeMode: state.themeMode,
+        rwkv: state.rwkv,
+      }),
+    }
+  )
+);

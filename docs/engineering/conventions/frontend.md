@@ -62,6 +62,7 @@ Rosetta 是本地长文本翻译工作台，不是聊天产品或营销页。
 - 纯 UI 临时状态优先放组件本地。
 - 不把大型文档全文长期塞进 React 组件状态。
 - 大文档内容后续应以任务缓存和增量读取为主。
+- 应用级设置使用 Zustand persist 持久化，当前包括主题模式和 RWKV 连接配置。
 
 ## Icons
 
@@ -79,3 +80,10 @@ Tailwind CSS 和 shadcn/ui 是默认样式方式。全局样式只放入 `src/st
 - 不在业务组件里直接使用 `zinc-*`、`emerald-*` 等固定色值作为主要视觉体系。
 - 通用按钮、卡片、表格、输入框、选择器、徽标等优先使用 `src/components/ui/` 中的 shadcn 组件。
 - 新增 shadcn 组件时使用 `corepack pnpm dlx shadcn@latest add <component>`。
+- 主应用侧边栏基于 shadcn sidebar block 和 `src/components/ui/sidebar.tsx`，业务入口在 `src/components/app-sidebar.tsx` 中定制。
+- 桌面侧边栏宽度为 `14.4rem`，即 shadcn 默认 `16rem` 的 90%。不允许通过中间 rail 调整宽度，`SidebarRail` 当前不渲染。
+- 侧边栏展开/合并动画使用 CSS width/position transition，当前为 `duration-300 ease-out`，菜单文本使用 opacity transition 辅助隐藏。
+- Windows 桌面端使用 Tauri `windowEffects.mica` 和自绘标题栏。主题模式支持 `light`、`dark`、`system`，并同步到 Tauri window theme。外层 app wrapper 和 `body` 必须保持透明，标题栏与侧边栏通过半透明 `--sidebar` token 露出系统材质，主内容区保持 `bg-background` 以保证长文本阅读对比度。
+- Mica 的壁纸采样强度由 Windows 控制。Rosetta 通过 `--sidebar`、`--sidebar-primary`、`--sidebar-accent` 的 alpha 值控制前端覆盖层透明度；调低 alpha 会让桌面颜色更明显。
+- 窗口标题栏由 `src/components/window-title-bar.tsx` 渲染。不要改回原生 decorations，除非新增 ADR 说明原因。
+- `src/components/ui/sidebar.tsx` 的 desktop fixed sidebar 必须从 `--window-titlebar-height` 下方开始，不能延伸到 title bar 后面，否则半透明 `--sidebar` 会在左上角叠加两次并造成色差。

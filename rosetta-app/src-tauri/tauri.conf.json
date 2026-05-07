@@ -16,7 +16,14 @@
         "width": 1200,
         "height": 780,
         "minWidth": 960,
-        "minHeight": 640
+        "minHeight": 640,
+        "decorations": false,
+        "shadow": true,
+        "theme": "dark",
+        "transparent": true,
+        "windowEffects": {
+          "effects": ["mica"]
+        }
       }
     ],
     "security": {

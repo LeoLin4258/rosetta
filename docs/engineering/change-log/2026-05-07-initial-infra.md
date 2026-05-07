@@ -57,12 +57,50 @@
   - Toggle Group
   - Separator
   - Badge
+- 接入 shadcn `sidebar-10` block：
+  - 保留 `ui/sidebar` primitives
+  - 使用 `SidebarProvider`、`SidebarInset`、`SidebarTrigger`
+  - 将示例侧边栏替换为 Rosetta 专用导航
+  - 删除 block 自带的无关示例业务组件
+- 启用 Windows Mica 系统材质：
+  - Tauri 主窗口设置 `transparent: true`
+  - Tauri 主窗口设置 `decorations: false`
+  - Tauri 主窗口设置 `shadow: true`
+  - Tauri 主窗口默认设置 `theme: "dark"`
+  - Tauri 主窗口设置 `windowEffects.effects: ["mica"]`
+  - App 外层和 `body` 保持透明
+  - 标题栏和侧边栏使用半透明 sidebar token
+  - 主内容区保持不透明背景
+- 新增自绘窗口标题栏：
+  - `src/components/window-title-bar.tsx`
+  - 支持拖动窗口
+  - 支持双击最大化
+  - 支持最小化、最大化、关闭
+  - 在 capabilities 中添加必要的 `core:window:*` 权限
+- 修正 shadcn sidebar 与自绘标题栏的透明背景叠加问题：
+  - `SidebarProvider` 设置 `--window-titlebar-height`
+  - desktop sidebar fixed container 从 title bar 下方开始
+  - sidebar gap 高度扣除 title bar 高度
+- 优化侧边栏交互：
+  - 桌面宽度从 `16rem` 缩小到 `14.4rem`
+  - `SidebarRail` 不再渲染，避免出现中间调整/切换区域
+  - 展开/合并动画改为 `duration-300 ease-out`
+  - 菜单文本在 icon 折叠状态下用 opacity 过渡隐藏
+- 新增应用主题设置：
+  - 支持浅色、深色、跟随系统
+  - 主题设置使用 Zustand persist 持久化
+  - AppShell 根据主题模式切换 `.dark`
+  - Tauri window theme 同步为 `light`、`dark` 或 `null`
 
 ## Impact
 
 后续功能开发应基于当前骨架继续扩展，不再回到模板式页面结构。
 
 后续通用 UI 控件应优先使用 shadcn CLI 添加的源码组件，业务组件使用 semantic tokens 适配 stone 主题。
+
+主导航应继续在 `src/app/navigation.ts` 中维护，并由 `src/components/app-sidebar.tsx` 渲染。
+
+不要把根容器或 `body` 改回不透明背景，否则 Windows Mica 材质会被遮住。不要恢复原生 title bar，否则标题栏和侧边栏的材质颜色会重新出现落差。
 
 当前应用还没有真实文件导入、RWKV 连接、任务持久化或文档解析能力。现有页面是为了固定产品结构和开发边界。
 
