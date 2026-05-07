@@ -117,7 +117,7 @@ textarea {
 }
 
 .dark {
-  --background: oklch(0.147 0.004 49.25);
+  --background: oklch(17.593% 0.00644 55.832);
   --foreground: oklch(0.985 0.001 106.423);
   --card: oklch(0.216 0.006 56.043);
   --card-foreground: oklch(0.985 0.001 106.423);

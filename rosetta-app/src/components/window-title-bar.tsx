@@ -43,11 +43,11 @@ export function WindowTitleBar() {
           type="button"
           variant="ghost"
         >
-          <SquareIcon />
+          <SquareIcon className="size-3"/>
         </Button>
         <Button
           aria-label="Close window"
-          className="h-full rounded-none px-3 hover:bg-destructive/20 hover:text-destructive"
+          className="h-full rounded-none px-3 hover:bg-destructive/20! hover:text-destructive"
           onClick={() => void appWindow.close()}
           size="icon"
           type="button"
