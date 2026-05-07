@@ -14,7 +14,8 @@ import { useRosettaStore } from "@/store/useRosettaStore";
 import { cn } from "@/lib/utils";
 
 const pageTitles: Record<string, string> = {
-  "/": "导入",
+  "/": "Rosetta",
+  "/new": "新项目",
   "/jobs": "任务",
   "/settings": "设置",
 };
@@ -67,14 +68,13 @@ export function AppShell() {
           }
         >
           <AppSidebar />
-          <SidebarInset className="min-h-0 border-l border-t rounded-tl-lg overflow-hidden">
-            <header className="flex h-14 shrink-0 items-center justify-between border-b bg-background px-4">
-              <div className="flex items-center gap-3">
+          <SidebarInset className="min-h-0  rounded-tl-lg overflow-hidden">
+            <header className="flex h-14 shrink-0 items-center justify-between px-4">
+              <div className="flex items-center justify-center gap-3">
                 <SidebarTrigger />
-                <Separator className="h-5" orientation="vertical" />
+                <Separator className="h-6" orientation="vertical" />
                 <h1 className="text-lg font-semibold">{title}</h1>
               </div>
-              <div className="text-sm text-muted-foreground">Stage 0 / 1</div>
             </header>
 
             <div className="min-h-0 flex-1 overflow-auto">

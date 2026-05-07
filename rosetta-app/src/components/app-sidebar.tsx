@@ -26,7 +26,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton asChild size="lg" tooltip="新项目">
-              <NavLink end to="/">
+              <NavLink to="/new">
                 <PlusIcon />
                 <span>新项目</span>
               </NavLink>
