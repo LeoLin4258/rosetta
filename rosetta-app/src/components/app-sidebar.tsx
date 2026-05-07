@@ -1,7 +1,7 @@
 import { NavLink, useLocation } from "react-router-dom";
-import { LanguagesIcon, ShieldCheckIcon } from "lucide-react";
+import { FileTextIcon, PlusIcon, SettingsIcon } from "lucide-react";
 
-import { navigationItems } from "@/app/navigation";
+import { useRosettaStore } from "@/store/useRosettaStore";
 import {
   Sidebar,
   SidebarContent,
@@ -18,22 +18,18 @@ import {
 
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const location = useLocation();
+  const jobs = useRosettaStore((state) => state.jobs);
 
   return (
     <Sidebar collapsible="icon" {...props}>
       <SidebarHeader>
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton size="lg" tooltip="Rosetta">
-              <div className="flex aspect-square size-8 items-center justify-center rounded-lg">
-                <img src="/src-tauri/icons/64x64.png" alt="Rosetta" />
-              </div>
-              <div className="grid flex-1 text-left text-sm leading-tight">
-                <span className="truncate font-medium">Rosetta</span>
-                <span className="truncate text-xs text-muted-foreground">
-                  本地长文本翻译
-                </span>
-              </div>
+            <SidebarMenuButton asChild size="lg" tooltip="新项目">
+              <NavLink end to="/">
+                <PlusIcon />
+                <span>新项目</span>
+              </NavLink>
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>
@@ -41,31 +37,32 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
 
       <SidebarContent>
         <SidebarGroup>
-          <SidebarGroupLabel>工作台</SidebarGroupLabel>
+          <SidebarGroupLabel>项目</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {navigationItems.map((item) => {
-                const Icon = item.icon;
-                const isActive =
-                  item.path === "/"
-                    ? location.pathname === "/"
-                    : location.pathname.startsWith(item.path);
+              {jobs.map((job) => (
+                <SidebarMenuItem key={job.id}>
+                  <SidebarMenuButton
+                    asChild
+                    isActive={location.pathname === "/jobs"}
+                    tooltip={job.filename}
+                  >
+                    <NavLink to="/jobs">
+                      <FileTextIcon />
+                      <span>{job.filename}</span>
+                    </NavLink>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              ))}
 
-                return (
-                  <SidebarMenuItem key={item.path}>
-                    <SidebarMenuButton
-                      asChild
-                      isActive={isActive}
-                      tooltip={item.label}
-                    >
-                      <NavLink end={item.path === "/"} to={item.path}>
-                        <Icon />
-                        <span>{item.label}</span>
-                      </NavLink>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                );
-              })}
+              {jobs.length === 0 && (
+                <SidebarMenuItem>
+                  <SidebarMenuButton className="text-muted-foreground" disabled>
+                    <FileTextIcon />
+                    <span>暂无项目</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              )}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
@@ -74,9 +71,15 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
       <SidebarFooter>
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton tooltip="文件留在本机">
-              <ShieldCheckIcon />
-              <span>本地优先</span>
+            <SidebarMenuButton
+              asChild
+              isActive={location.pathname === "/settings"}
+              tooltip="设置"
+            >
+              <NavLink to="/settings">
+                <SettingsIcon />
+                <span>设置</span>
+              </NavLink>
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>
