@@ -1,12 +1,14 @@
 import { useEffect, useState, type ChangeEvent } from "react";
-import { FolderPlus, PackageCheck, RefreshCw } from "lucide-react";
+import { Archive, FolderPlus, PackageCheck, RefreshCw, ScanLine } from "lucide-react";
 import {
+  extractRwkvRuntimeArtifact,
   getRwkvRuntimeArtifactCatalog,
   getRwkvRuntimeInstallProgress,
   getRwkvRuntimeInstallPlan,
   getRwkvRuntimeStatus,
   initializeRwkvRuntimeLayout,
   prepareRwkvRuntimeInstall,
+  scanRwkvRuntimeArtifacts,
 } from "../../lib/rwkvRuntime";
 import { useRosettaStore } from "../../store/useRosettaStore";
 import type {
@@ -14,6 +16,8 @@ import type {
   RwkvConnectionConfig,
   RwkvRuntimeArtifactCatalog,
   RwkvRuntimeArtifactCatalogItem,
+  RwkvRuntimeArtifactScanResult,
+  RwkvRuntimeExtractionResult,
   RwkvRuntimeInstallPlan,
   RwkvRuntimeInstallPlanItem,
   RwkvRuntimeInstallProgress,
@@ -105,10 +109,16 @@ export function SettingsPage() {
     useState<RwkvRuntimeInstallProgress | null>(null);
   const [artifactCatalog, setArtifactCatalog] =
     useState<RwkvRuntimeArtifactCatalog | null>(null);
+  const [scanResult, setScanResult] =
+    useState<RwkvRuntimeArtifactScanResult | null>(null);
+  const [extractionResult, setExtractionResult] =
+    useState<RwkvRuntimeExtractionResult | null>(null);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [isCheckingRuntime, setIsCheckingRuntime] = useState(false);
   const [isPreparingRuntime, setIsPreparingRuntime] = useState(false);
   const [isPreparingInstall, setIsPreparingInstall] = useState(false);
+  const [isScanningArtifacts, setIsScanningArtifacts] = useState(false);
+  const [isExtractingRuntime, setIsExtractingRuntime] = useState(false);
 
   async function refreshRuntimeStatus() {
     setIsCheckingRuntime(true);
@@ -132,6 +142,8 @@ export function SettingsPage() {
       setInstallPlan(null);
       setInstallProgress(null);
       setArtifactCatalog(null);
+      setScanResult(null);
+      setExtractionResult(null);
       setRuntimeError(
         error instanceof Error ? error.message : "无法读取本地 RWKV 状态。"
       );
@@ -177,6 +189,46 @@ export function SettingsPage() {
       );
     } finally {
       setIsPreparingInstall(false);
+    }
+  }
+
+  async function scanArtifacts() {
+    setIsScanningArtifacts(true);
+    setRuntimeError(null);
+
+    try {
+      const nextScanResult = await scanRwkvRuntimeArtifacts();
+      setScanResult(nextScanResult);
+      setInstallPlan(nextScanResult.plan);
+      setRuntimeStatus(await getRwkvRuntimeStatus());
+      setInstallProgress(await getRwkvRuntimeInstallProgress());
+      setArtifactCatalog(await getRwkvRuntimeArtifactCatalog());
+    } catch (error) {
+      setRuntimeError(
+        error instanceof Error ? error.message : "无法扫描本地 RWKV artifact。"
+      );
+    } finally {
+      setIsScanningArtifacts(false);
+    }
+  }
+
+  async function extractRuntime() {
+    setIsExtractingRuntime(true);
+    setRuntimeError(null);
+
+    try {
+      const nextExtractionResult = await extractRwkvRuntimeArtifact();
+      setExtractionResult(nextExtractionResult);
+      setInstallPlan(nextExtractionResult.plan);
+      setRuntimeStatus(await getRwkvRuntimeStatus());
+      setInstallProgress(await getRwkvRuntimeInstallProgress());
+      setArtifactCatalog(await getRwkvRuntimeArtifactCatalog());
+    } catch (error) {
+      setRuntimeError(
+        error instanceof Error ? error.message : "无法解压本地 RWKV runtime。"
+      );
+    } finally {
+      setIsExtractingRuntime(false);
     }
   }
 
@@ -234,7 +286,12 @@ export function SettingsPage() {
             <div className="flex items-center gap-2">
               <Button
                 disabled={
-                  isCheckingRuntime || isPreparingRuntime || isPreparingInstall
+                  runtimeStatus?.runtimeExecutableExists ||
+                  isCheckingRuntime ||
+                  isPreparingRuntime ||
+                  isPreparingInstall ||
+                  isScanningArtifacts ||
+                  isExtractingRuntime
                 }
                 onClick={() => void prepareRuntimeLayout()}
                 title="准备本地 RWKV 目录"
@@ -246,7 +303,11 @@ export function SettingsPage() {
               </Button>
               <Button
                 disabled={
-                  isCheckingRuntime || isPreparingRuntime || isPreparingInstall
+                  isCheckingRuntime ||
+                  isPreparingRuntime ||
+                  isPreparingInstall ||
+                  isScanningArtifacts ||
+                  isExtractingRuntime
                 }
                 onClick={() => void prepareInstall()}
                 title="准备本地 RWKV 安装任务"
@@ -258,7 +319,43 @@ export function SettingsPage() {
               </Button>
               <Button
                 disabled={
-                  isCheckingRuntime || isPreparingRuntime || isPreparingInstall
+                  isCheckingRuntime ||
+                  isPreparingRuntime ||
+                  isPreparingInstall ||
+                  isScanningArtifacts ||
+                  isExtractingRuntime
+                }
+                onClick={() => void scanArtifacts()}
+                title="扫描已放入管理目录的 RWKV 文件"
+                type="button"
+                variant="outline"
+              >
+                <ScanLine />
+                扫描文件
+              </Button>
+              <Button
+                disabled={
+                  isCheckingRuntime ||
+                  isPreparingRuntime ||
+                  isPreparingInstall ||
+                  isScanningArtifacts ||
+                  isExtractingRuntime
+                }
+                onClick={() => void extractRuntime()}
+                title="解压已校验的 RWKV runtime"
+                type="button"
+                variant="outline"
+              >
+                <Archive />
+                {runtimeStatus?.runtimeExecutableExists ? "已解压" : "解压运行时"}
+              </Button>
+              <Button
+                disabled={
+                  isCheckingRuntime ||
+                  isPreparingRuntime ||
+                  isPreparingInstall ||
+                  isScanningArtifacts ||
+                  isExtractingRuntime
                 }
                 onClick={() => void refreshRuntimeStatus()}
                 size="icon"
@@ -297,6 +394,14 @@ export function SettingsPage() {
               <div className="grid gap-3 rounded-md border border-border bg-muted/30 p-3 text-xs">
                 <RuntimePath label="API" value={runtimeStatus.apiUrl} />
                 <RuntimePath label="Runtime" value={runtimeStatus.runtimeDir} />
+                <RuntimePath
+                  label="Runtime bundle"
+                  value={runtimeStatus.runtimeBundleDir}
+                />
+                <RuntimePath
+                  label="Executable"
+                  value={runtimeStatus.runtimeExecutablePath}
+                />
                 <RuntimePath label="Model" value={runtimeStatus.modelDir} />
                 <RuntimePath label="Logs" value={runtimeStatus.logsDir} />
                 <RuntimePath label="Log" value={runtimeStatus.logFile} />
@@ -368,6 +473,63 @@ export function SettingsPage() {
                       key={`catalog-${item.kind}-${item.id}`}
                     />
                   ))}
+                </div>
+              </div>
+            ) : null}
+
+            {scanResult ? (
+              <div className="grid gap-3 rounded-md border border-border bg-muted/30 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="font-medium text-foreground">扫描结果</span>
+                  <Badge variant="outline">
+                    {scanResult.errors.length > 0 ? "需检查" : "已扫描"}
+                  </Badge>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {scanResult.message}
+                </p>
+                {scanResult.installedManifests.length > 0 ? (
+                  <div className="grid gap-2">
+                    {scanResult.installedManifests.map((manifestPath) => (
+                      <RuntimePath
+                        key={manifestPath}
+                        label="Manifest"
+                        value={manifestPath}
+                      />
+                    ))}
+                  </div>
+                ) : null}
+                {scanResult.errors.length > 0 ? (
+                  <div className="grid gap-1 text-xs text-destructive">
+                    {scanResult.errors.map((error) => (
+                      <p key={error}>{error}</p>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
+            {extractionResult ? (
+              <div className="grid gap-3 rounded-md border border-border bg-muted/30 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="font-medium text-foreground">解压结果</span>
+                  <Badge variant="outline">
+                    {extractionResult.extracted ? "已解压" : "未解压"}
+                  </Badge>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {extractionResult.message}
+                </p>
+                <div className="grid gap-2">
+                  <RuntimePath label="Runtime bundle" value={extractionResult.targetDir} />
+                  <RuntimePath
+                    label="Executable"
+                    value={extractionResult.executablePath}
+                  />
+                  <p className="font-mono text-xs text-muted-foreground">
+                    {extractionResult.filesExtracted} files /{" "}
+                    {extractionResult.bytesExtracted} bytes
+                  </p>
                 </div>
               </div>
             ) : null}

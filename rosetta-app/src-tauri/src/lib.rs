@@ -10,7 +10,9 @@ pub fn run() {
             rwkv_runtime::get_rwkv_runtime_install_plan,
             rwkv_runtime::get_rwkv_runtime_status,
             rwkv_runtime::initialize_rwkv_runtime_layout,
-            rwkv_runtime::prepare_rwkv_runtime_install
+            rwkv_runtime::prepare_rwkv_runtime_install,
+            rwkv_runtime::extract_rwkv_runtime_artifact,
+            rwkv_runtime::scan_rwkv_runtime_artifacts
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

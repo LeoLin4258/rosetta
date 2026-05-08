@@ -1,7 +1,7 @@
 use std::{
     fs,
     fs::File,
-    io::Read,
+    io::{self, Read},
     path::{Path, PathBuf},
 };
 
@@ -21,6 +21,8 @@ const RUNTIME_ARTIFACT_SHA256: &str =
 const RUNTIME_ARTIFACT_DOWNLOAD_URL: &str = "https://modelscope.cn/models/AlicLi/RWKV_v7_G1_Translate/resolve/master/rwkv_lightning_libtorch2.10.0+cu132_sm75-120_Windows_amd64.zip";
 const RUNTIME_ARTIFACT_SOURCE_PAGE: &str =
     "https://www.modelscope.cn/models/AlicLi/RWKV_v7_G1_Translate/files";
+const RUNTIME_EXTRACTED_DIR: &str = "runtime-bundle";
+const RUNTIME_EXECUTABLE_FILENAME: &str = "rwkv_lightning.exe";
 const EXPECTED_MODEL_ID: &str = "rwkv-v7-g1-translate-1.5b";
 const EXPECTED_CONTEXT_TOKENS: u32 = 4096;
 const EXPECTED_DIRECTIONS: [&str; 2] = ["en-zh", "zh-en"];
@@ -43,6 +45,10 @@ pub struct RwkvRuntimeStatus {
     runtime_dir_exists: bool,
     model_dir_exists: bool,
     logs_dir_exists: bool,
+    runtime_bundle_dir: String,
+    runtime_bundle_exists: bool,
+    runtime_executable_path: String,
+    runtime_executable_exists: bool,
     runtime_manifest_exists: bool,
     model_manifest_exists: bool,
     runtime_manifest: Option<RwkvArtifactManifest>,
@@ -118,6 +124,28 @@ pub struct RwkvRuntimeArtifactCatalogItem {
     message: String,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RwkvRuntimeArtifactScanResult {
+    scanned: bool,
+    installed_manifests: Vec<String>,
+    errors: Vec<String>,
+    plan: RwkvRuntimeInstallPlan,
+    message: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RwkvRuntimeExtractionResult {
+    extracted: bool,
+    target_dir: String,
+    executable_path: String,
+    files_extracted: usize,
+    bytes_extracted: u64,
+    plan: RwkvRuntimeInstallPlan,
+    message: String,
+}
+
 #[derive(Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 enum RwkvRuntimeState {
@@ -185,6 +213,17 @@ pub struct RwkvArtifactManifest {
     supported_directions: Option<Vec<String>>,
     #[serde(default)]
     installed_at: Option<String>,
+}
+
+struct ExpectedArtifact<'a> {
+    kind: RwkvRuntimeInstallItemKind,
+    id: &'a str,
+    label: &'a str,
+    filename: &'a str,
+    sha256: &'a str,
+    size_bytes: u64,
+    base_dir: &'a Path,
+    manifest_path: PathBuf,
 }
 
 #[tauri::command]
@@ -271,6 +310,48 @@ pub fn get_rwkv_runtime_install_progress(
     ))))
 }
 
+#[tauri::command]
+pub fn scan_rwkv_runtime_artifacts(
+    app: AppHandle,
+) -> Result<RwkvRuntimeArtifactScanResult, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Could not resolve Rosetta app data directory: {error}"))?;
+
+    let paths = runtime_paths(app_data_dir);
+
+    fs::create_dir_all(&paths.runtime_dir)
+        .map_err(|error| format!("Could not create RWKV runtime directory: {error}"))?;
+    fs::create_dir_all(&paths.model_dir)
+        .map_err(|error| format!("Could not create RWKV model directory: {error}"))?;
+    fs::create_dir_all(&paths.logs_dir)
+        .map_err(|error| format!("Could not create RWKV logs directory: {error}"))?;
+
+    scan_staged_artifacts(paths)
+}
+
+#[tauri::command]
+pub fn extract_rwkv_runtime_artifact(
+    app: AppHandle,
+) -> Result<RwkvRuntimeExtractionResult, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Could not resolve Rosetta app data directory: {error}"))?;
+
+    let paths = runtime_paths(app_data_dir);
+
+    fs::create_dir_all(&paths.runtime_dir)
+        .map_err(|error| format!("Could not create RWKV runtime directory: {error}"))?;
+    fs::create_dir_all(&paths.model_dir)
+        .map_err(|error| format!("Could not create RWKV model directory: {error}"))?;
+    fs::create_dir_all(&paths.logs_dir)
+        .map_err(|error| format!("Could not create RWKV logs directory: {error}"))?;
+
+    extract_runtime_zip(paths)
+}
+
 struct RwkvRuntimePaths {
     runtime_dir: PathBuf,
     model_dir: PathBuf,
@@ -302,6 +383,10 @@ fn build_status(paths: RwkvRuntimePaths) -> RwkvRuntimeStatus {
     let runtime_dir_exists = paths.runtime_dir.is_dir();
     let model_dir_exists = paths.model_dir.is_dir();
     let logs_dir_exists = paths.logs_dir.is_dir();
+    let runtime_bundle_dir = paths.runtime_dir.join(RUNTIME_EXTRACTED_DIR);
+    let runtime_executable_path = runtime_bundle_dir.join(RUNTIME_EXECUTABLE_FILENAME);
+    let runtime_bundle_exists = runtime_bundle_dir.is_dir();
+    let runtime_executable_exists = runtime_executable_path.is_file();
     let runtime_manifest_exists = runtime_manifest_path.is_file();
     let model_manifest_exists = model_manifest_path.is_file();
     let runtime_manifest = read_manifest(&runtime_manifest_path);
@@ -353,6 +438,10 @@ fn build_status(paths: RwkvRuntimePaths) -> RwkvRuntimeStatus {
         runtime_dir_exists,
         model_dir_exists,
         logs_dir_exists,
+        runtime_bundle_dir: display_path(&runtime_bundle_dir),
+        runtime_bundle_exists,
+        runtime_executable_path: display_path(&runtime_executable_path),
+        runtime_executable_exists,
         runtime_manifest_exists,
         model_manifest_exists,
         runtime_manifest,
@@ -443,6 +532,294 @@ fn build_artifact_catalog(paths: RwkvRuntimePaths) -> RwkvRuntimeArtifactCatalog
         items,
         message,
     }
+}
+
+fn scan_staged_artifacts(paths: RwkvRuntimePaths) -> Result<RwkvRuntimeArtifactScanResult, String> {
+    let runtime_manifest_path = paths.runtime_dir.join("runtime-manifest.json");
+    let model_manifest_path = paths.model_dir.join("model-manifest.json");
+    let expected_artifacts = [
+        ExpectedArtifact {
+            kind: RwkvRuntimeInstallItemKind::Runtime,
+            id: RUNTIME_ARTIFACT_ID,
+            label: "RWKV Lightning runtime",
+            filename: RUNTIME_ARTIFACT_FILENAME,
+            sha256: RUNTIME_ARTIFACT_SHA256,
+            size_bytes: RUNTIME_ARTIFACT_SIZE_BYTES,
+            base_dir: &paths.runtime_dir,
+            manifest_path: runtime_manifest_path,
+        },
+        ExpectedArtifact {
+            kind: RwkvRuntimeInstallItemKind::Model,
+            id: EXPECTED_MODEL_ID,
+            label: "RWKV v7 G1 Translate 1.5B",
+            filename: MODEL_ARTIFACT_FILENAME,
+            sha256: MODEL_ARTIFACT_SHA256,
+            size_bytes: MODEL_ARTIFACT_SIZE_BYTES,
+            base_dir: &paths.model_dir,
+            manifest_path: model_manifest_path,
+        },
+    ];
+    let mut installed_manifests = Vec::new();
+    let mut errors = Vec::new();
+
+    for artifact in expected_artifacts {
+        match scan_expected_artifact(&artifact) {
+            Ok(Some(manifest_path)) => installed_manifests.push(display_path(&manifest_path)),
+            Ok(None) => {}
+            Err(error) => errors.push(error),
+        }
+    }
+
+    let plan = build_install_plan(paths);
+    let message = match (installed_manifests.is_empty(), errors.is_empty()) {
+        (true, true) => "未发现已放入管理目录的 RWKV artifact。".to_string(),
+        (false, true) => "已为通过校验的 RWKV artifact 写入 manifest。".to_string(),
+        (true, false) => "发现 RWKV artifact，但校验未通过。".to_string(),
+        (false, false) => "部分 RWKV artifact 已写入 manifest，部分校验失败。".to_string(),
+    };
+
+    Ok(RwkvRuntimeArtifactScanResult {
+        scanned: true,
+        installed_manifests,
+        errors,
+        plan,
+        message,
+    })
+}
+
+fn scan_expected_artifact(artifact: &ExpectedArtifact<'_>) -> Result<Option<PathBuf>, String> {
+    let artifact_path = artifact.base_dir.join(artifact.filename);
+
+    if !artifact_path.exists() {
+        return Ok(None);
+    }
+
+    verify_expected_artifact_file(
+        artifact.label,
+        &artifact_path,
+        artifact.size_bytes,
+        artifact.sha256,
+    )?;
+
+    let manifest = manifest_for_expected_artifact(artifact);
+    let manifest_contents = serde_json::to_string_pretty(&manifest)
+        .map_err(|error| format!("Could not serialize {} manifest: {error}", artifact.label))?;
+
+    fs::write(&artifact.manifest_path, manifest_contents)
+        .map_err(|error| format!("Could not write {} manifest: {error}", artifact.label))?;
+
+    Ok(Some(artifact.manifest_path.clone()))
+}
+
+fn manifest_for_expected_artifact(artifact: &ExpectedArtifact<'_>) -> RwkvArtifactManifest {
+    let (context_tokens, supported_directions) = match artifact.kind {
+        RwkvRuntimeInstallItemKind::Runtime => (None, None),
+        RwkvRuntimeInstallItemKind::Model => (
+            Some(EXPECTED_CONTEXT_TOKENS),
+            Some(
+                EXPECTED_DIRECTIONS
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect(),
+            ),
+        ),
+    };
+
+    RwkvArtifactManifest {
+        id: artifact.id.to_string(),
+        version: None,
+        source: Some("modelscope".to_string()),
+        filename: Some(artifact.filename.to_string()),
+        sha256: Some(artifact.sha256.to_string()),
+        size_bytes: Some(artifact.size_bytes),
+        context_tokens,
+        supported_directions,
+        installed_at: None,
+    }
+}
+
+fn verify_expected_artifact_file(
+    label: &str,
+    artifact_path: &Path,
+    expected_size_bytes: u64,
+    expected_sha256: &str,
+) -> Result<(), String> {
+    let metadata = fs::metadata(artifact_path)
+        .map_err(|error| format!("Could not read {label} artifact metadata: {error}"))?;
+
+    if !metadata.is_file() {
+        return Err(format!("{label} artifact must be a file."));
+    }
+
+    if metadata.len() != expected_size_bytes {
+        return Err(format!(
+            "{label} artifact size mismatch: expected {expected_size_bytes}, got {}.",
+            metadata.len()
+        ));
+    }
+
+    let actual_sha256 = sha256_file(artifact_path)?;
+
+    if actual_sha256 != expected_sha256 {
+        return Err(format!(
+            "{label} artifact sha256 mismatch: expected {expected_sha256}, got {actual_sha256}."
+        ));
+    }
+
+    Ok(())
+}
+
+fn extract_runtime_zip(paths: RwkvRuntimePaths) -> Result<RwkvRuntimeExtractionResult, String> {
+    extract_runtime_zip_from_artifact(
+        paths,
+        RUNTIME_ARTIFACT_FILENAME,
+        RUNTIME_ARTIFACT_SIZE_BYTES,
+    )
+}
+
+fn extract_runtime_zip_from_artifact(
+    paths: RwkvRuntimePaths,
+    runtime_artifact_filename: &str,
+    runtime_artifact_size_bytes: u64,
+) -> Result<RwkvRuntimeExtractionResult, String> {
+    let runtime_zip_path = paths.runtime_dir.join(runtime_artifact_filename);
+    let target_dir = paths.runtime_dir.join(RUNTIME_EXTRACTED_DIR);
+    let executable_path = target_dir.join(RUNTIME_EXECUTABLE_FILENAME);
+
+    if executable_path.is_file() {
+        return Ok(RwkvRuntimeExtractionResult {
+            extracted: true,
+            target_dir: display_path(&target_dir),
+            executable_path: display_path(&executable_path),
+            files_extracted: 0,
+            bytes_extracted: 0,
+            plan: build_install_plan(paths),
+            message: "RWKV Lightning runtime 已存在，无需重复解压。".to_string(),
+        });
+    }
+
+    ensure_runtime_artifact_ready_for_extraction(
+        &paths,
+        runtime_artifact_filename,
+        runtime_artifact_size_bytes,
+    )?;
+
+    fs::create_dir_all(&target_dir)
+        .map_err(|error| format!("Could not create RWKV runtime extraction directory: {error}"))?;
+
+    let runtime_zip = File::open(&runtime_zip_path)
+        .map_err(|error| format!("Could not open RWKV runtime zip: {error}"))?;
+    let mut archive = zip::ZipArchive::new(runtime_zip)
+        .map_err(|error| format!("Could not read RWKV runtime zip: {error}"))?;
+    let mut files_extracted = 0;
+    let mut bytes_extracted = 0;
+
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|error| format!("Could not read RWKV runtime zip entry: {error}"))?;
+        let Some(entry_name) = entry.enclosed_name().map(PathBuf::from) else {
+            return Err("RWKV runtime zip contains an unsafe entry path.".to_string());
+        };
+        let Some(output_path) = safe_zip_entry_path(&target_dir, &entry_name) else {
+            return Err("RWKV runtime zip contains an unsupported entry path.".to_string());
+        };
+
+        if entry.is_dir() {
+            fs::create_dir_all(&output_path)
+                .map_err(|error| format!("Could not create runtime directory from zip: {error}"))?;
+            continue;
+        }
+
+        if let Some(parent) = output_path.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                format!("Could not create runtime file parent directory from zip: {error}")
+            })?;
+        }
+
+        let mut output_file = File::create(&output_path)
+            .map_err(|error| format!("Could not create runtime file from zip: {error}"))?;
+        let bytes_written = io::copy(&mut entry, &mut output_file)
+            .map_err(|error| format!("Could not extract runtime file from zip: {error}"))?;
+        files_extracted += 1;
+        bytes_extracted += bytes_written;
+    }
+
+    if !executable_path.is_file() {
+        return Err(format!(
+            "Extracted RWKV runtime is missing `{RUNTIME_EXECUTABLE_FILENAME}`."
+        ));
+    }
+
+    Ok(RwkvRuntimeExtractionResult {
+        extracted: true,
+        target_dir: display_path(&target_dir),
+        executable_path: display_path(&executable_path),
+        files_extracted,
+        bytes_extracted,
+        plan: build_install_plan(paths),
+        message: "RWKV Lightning runtime 已解压。".to_string(),
+    })
+}
+
+fn ensure_runtime_artifact_ready_for_extraction(
+    paths: &RwkvRuntimePaths,
+    runtime_artifact_filename: &str,
+    runtime_artifact_size_bytes: u64,
+) -> Result<(), String> {
+    let runtime_manifest_path = paths.runtime_dir.join("runtime-manifest.json");
+    let runtime_manifest = read_manifest(&runtime_manifest_path)?;
+
+    match runtime_manifest {
+        Some(runtime_manifest) => validate_runtime_manifest(&runtime_manifest, paths),
+        None => {
+            let runtime_zip_path = paths.runtime_dir.join(runtime_artifact_filename);
+            let metadata = fs::metadata(&runtime_zip_path)
+                .map_err(|error| format!("Could not read RWKV runtime artifact: {error}"))?;
+
+            if !metadata.is_file() {
+                return Err("RWKV runtime artifact must be a file.".to_string());
+            }
+
+            if metadata.len() != runtime_artifact_size_bytes {
+                return Err(format!(
+                    "RWKV runtime artifact size mismatch: expected {runtime_artifact_size_bytes}, got {}.",
+                    metadata.len()
+                ));
+            }
+
+            let expected_artifact = ExpectedArtifact {
+                kind: RwkvRuntimeInstallItemKind::Runtime,
+                id: RUNTIME_ARTIFACT_ID,
+                label: "RWKV Lightning runtime",
+                filename: runtime_artifact_filename,
+                sha256: RUNTIME_ARTIFACT_SHA256,
+                size_bytes: runtime_artifact_size_bytes,
+                base_dir: &paths.runtime_dir,
+                manifest_path: runtime_manifest_path,
+            };
+            let manifest = manifest_for_expected_artifact(&expected_artifact);
+            let manifest_contents = serde_json::to_string_pretty(&manifest)
+                .map_err(|error| format!("Could not serialize RWKV runtime manifest: {error}"))?;
+
+            fs::write(&expected_artifact.manifest_path, manifest_contents)
+                .map_err(|error| format!("Could not write RWKV runtime manifest: {error}"))?;
+
+            Ok(())
+        }
+    }
+}
+
+fn safe_zip_entry_path(base_dir: &Path, entry_name: &Path) -> Option<PathBuf> {
+    if entry_name.is_absolute()
+        || entry_name
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return None;
+    }
+
+    Some(base_dir.join(entry_name))
 }
 
 fn build_install_progress(plan: RwkvRuntimeInstallPlan) -> RwkvRuntimeInstallProgress {
@@ -596,7 +973,7 @@ fn read_manifest(path: &Path) -> Result<Option<RwkvArtifactManifest>, String> {
 
     let contents = fs::read_to_string(path)
         .map_err(|error| format!("Could not read {}: {error}", display_path(path)))?;
-    let manifest = serde_json::from_str(&contents)
+    let manifest = serde_json::from_str(contents.trim_start_matches('\u{feff}'))
         .map_err(|error| format!("Could not parse {}: {error}", display_path(path)))?;
 
     Ok(Some(manifest))
@@ -648,7 +1025,7 @@ fn validate_runtime_manifest(
         );
     }
 
-    verify_optional_artifact("Runtime", runtime_manifest, &paths.runtime_dir)?;
+    verify_optional_artifact_fast("Runtime", runtime_manifest, &paths.runtime_dir)?;
 
     Ok(())
 }
@@ -688,7 +1065,7 @@ fn validate_model_manifest(
         );
     }
 
-    verify_required_artifact("Model", model_manifest, &paths.model_dir)?;
+    verify_required_artifact_fast("Model", model_manifest, &paths.model_dir)?;
 
     Ok(())
 }
@@ -700,7 +1077,7 @@ fn invalid_sha256(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-fn verify_optional_artifact(
+fn verify_optional_artifact_fast(
     label: &str,
     manifest: &RwkvArtifactManifest,
     base_dir: &Path,
@@ -709,10 +1086,10 @@ fn verify_optional_artifact(
         return Ok(());
     }
 
-    verify_required_artifact(label, manifest, base_dir)
+    verify_required_artifact_fast(label, manifest, base_dir)
 }
 
-fn verify_required_artifact(
+fn verify_required_artifact_fast(
     label: &str,
     manifest: &RwkvArtifactManifest,
     base_dir: &Path,
@@ -721,10 +1098,10 @@ fn verify_required_artifact(
         .filename
         .as_deref()
         .ok_or_else(|| format!("{label} manifest filename is required."))?;
-    let expected_sha256 = manifest
-        .sha256
-        .as_deref()
-        .ok_or_else(|| format!("{label} manifest sha256 is required."))?;
+
+    if manifest.sha256.is_none() {
+        return Err(format!("{label} manifest sha256 is required."));
+    }
 
     let artifact_path = safe_artifact_path(base_dir, filename).ok_or_else(|| {
         format!("{label} manifest filename must stay inside its managed directory.")
@@ -744,14 +1121,6 @@ fn verify_required_artifact(
                 metadata.len()
             ));
         }
-    }
-
-    let actual_sha256 = sha256_file(&artifact_path)?;
-
-    if actual_sha256 != expected_sha256 {
-        return Err(format!(
-            "{label} artifact sha256 mismatch: expected {expected_sha256}, got {actual_sha256}."
-        ));
     }
 
     Ok(())
@@ -800,6 +1169,7 @@ fn display_path(path: &Path) -> String {
 mod tests {
     use std::{
         fs,
+        io::Write,
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -1022,8 +1392,8 @@ mod tests {
     }
 
     #[test]
-    fn status_is_invalid_when_model_artifact_hash_mismatches() {
-        let root = unique_temp_root("hash-mismatch");
+    fn status_does_not_hash_large_model_artifact_on_refresh() {
+        let root = unique_temp_root("status-fast-hash");
         let paths = runtime_paths(root.clone());
         write_valid_runtime_manifest(&paths);
         write_model_artifact(&paths, "model.pth", b"model bytes");
@@ -1034,11 +1404,8 @@ mod tests {
 
         let status = build_status(paths);
 
-        assert_eq!(status.state, RwkvRuntimeState::Invalid);
-        assert!(status
-            .manifest_error
-            .as_deref()
-            .is_some_and(|error| error.contains("sha256 mismatch")));
+        assert_eq!(status.state, RwkvRuntimeState::Installed);
+        assert!(status.manifest_error.is_none());
 
         cleanup(root);
     }
@@ -1078,6 +1445,26 @@ mod tests {
         assert_eq!(status.state, RwkvRuntimeState::Invalid);
         assert!(status.manifest_error.is_some());
         assert!(status.runtime_manifest.is_none());
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn manifest_reader_accepts_utf8_bom() {
+        let root = unique_temp_root("manifest-bom");
+        let paths = runtime_paths(root.clone());
+        fs::create_dir_all(&paths.model_dir).expect("model dir should be created");
+        fs::write(
+            paths.model_dir.join("model-manifest.json"),
+            "\u{feff}{\"id\":\"rwkv-v7-g1-translate-1.5b\"}",
+        )
+        .expect("model manifest should be written");
+
+        let manifest = read_manifest(&paths.model_dir.join("model-manifest.json"))
+            .expect("manifest should parse")
+            .expect("manifest should exist");
+
+        assert_eq!(manifest.id, EXPECTED_MODEL_ID);
 
         cleanup(root);
     }
@@ -1251,6 +1638,189 @@ mod tests {
         cleanup(root);
     }
 
+    #[test]
+    fn scan_staged_artifacts_reports_no_files_without_writing_manifests() {
+        let root = unique_temp_root("scan-empty");
+        let paths = runtime_paths(root.clone());
+        fs::create_dir_all(&paths.runtime_dir).expect("runtime dir should be created");
+        fs::create_dir_all(&paths.model_dir).expect("model dir should be created");
+
+        let scan = scan_staged_artifacts(paths).expect("scan should complete");
+
+        assert!(scan.scanned);
+        assert!(scan.installed_manifests.is_empty());
+        assert!(scan.errors.is_empty());
+        assert!(!scan.plan.ready);
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn scan_expected_artifact_writes_manifest_for_valid_file() {
+        let root = unique_temp_root("scan-valid");
+        let paths = runtime_paths(root.clone());
+        let filename = "tiny-model.pth";
+        let contents = b"tiny model";
+        write_model_artifact(&paths, filename, contents);
+        let artifact_path = paths.model_dir.join(filename);
+        let artifact_sha256 = sha256_file(&artifact_path).expect("sha should compute");
+        let manifest_path = paths.model_dir.join("model-manifest.json");
+        let expected_artifact = ExpectedArtifact {
+            kind: RwkvRuntimeInstallItemKind::Model,
+            id: EXPECTED_MODEL_ID,
+            label: "Test model",
+            filename,
+            sha256: &artifact_sha256,
+            size_bytes: contents.len() as u64,
+            base_dir: &paths.model_dir,
+            manifest_path: manifest_path.clone(),
+        };
+
+        let scanned_manifest_path =
+            scan_expected_artifact(&expected_artifact).expect("scan should pass");
+
+        assert_eq!(scanned_manifest_path, Some(manifest_path.clone()));
+        assert!(manifest_path.is_file());
+
+        let manifest = read_manifest(&manifest_path)
+            .expect("manifest should read")
+            .expect("manifest should exist");
+        assert_eq!(manifest.id, EXPECTED_MODEL_ID);
+        assert_eq!(manifest.filename.as_deref(), Some(filename));
+        assert_eq!(manifest.sha256.as_deref(), Some(artifact_sha256.as_str()));
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn scan_expected_artifact_rejects_hash_mismatch() {
+        let root = unique_temp_root("scan-bad-hash");
+        let paths = runtime_paths(root.clone());
+        let filename = "tiny-model.pth";
+        let contents = b"tiny model";
+        write_model_artifact(&paths, filename, contents);
+        let manifest_path = paths.model_dir.join("model-manifest.json");
+        let expected_artifact = ExpectedArtifact {
+            kind: RwkvRuntimeInstallItemKind::Model,
+            id: EXPECTED_MODEL_ID,
+            label: "Test model",
+            filename,
+            sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            size_bytes: contents.len() as u64,
+            base_dir: &paths.model_dir,
+            manifest_path,
+        };
+
+        let error = scan_expected_artifact(&expected_artifact).expect_err("scan should fail");
+
+        assert!(error.contains("sha256 mismatch"));
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn extract_runtime_zip_writes_bundle_and_reports_executable() {
+        let root = unique_temp_root("extract-runtime");
+        let paths = runtime_paths(root.clone());
+        let zip_filename = "tiny-runtime.zip";
+        fs::create_dir_all(&paths.runtime_dir).expect("runtime dir should be created");
+        write_test_runtime_zip(
+            &paths.runtime_dir.join(zip_filename),
+            &[
+                (RUNTIME_EXECUTABLE_FILENAME, b"exe bytes".as_slice()),
+                ("rwkv_vocab_v20230424.txt", b"vocab bytes".as_slice()),
+            ],
+        );
+        let zip_path = paths.runtime_dir.join(zip_filename);
+        let zip_size = fs::metadata(&zip_path)
+            .expect("zip metadata should read")
+            .len();
+
+        let result = extract_runtime_zip_from_artifact(paths, zip_filename, zip_size)
+            .expect("runtime zip should extract");
+
+        assert!(result.extracted);
+        assert_eq!(result.files_extracted, 2);
+        assert!(Path::new(&result.executable_path).is_file());
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn extract_runtime_zip_rejects_missing_executable() {
+        let root = unique_temp_root("extract-missing-exe");
+        let paths = runtime_paths(root.clone());
+        let zip_filename = "tiny-runtime.zip";
+        fs::create_dir_all(&paths.runtime_dir).expect("runtime dir should be created");
+        write_test_runtime_zip(
+            &paths.runtime_dir.join(zip_filename),
+            &[("rwkv_vocab_v20230424.txt", b"vocab bytes".as_slice())],
+        );
+        let zip_path = paths.runtime_dir.join(zip_filename);
+        let zip_size = fs::metadata(&zip_path)
+            .expect("zip metadata should read")
+            .len();
+
+        let error = match extract_runtime_zip_from_artifact(paths, zip_filename, zip_size) {
+            Ok(_) => panic!("runtime zip should be rejected"),
+            Err(error) => error,
+        };
+
+        assert!(error.contains(RUNTIME_EXECUTABLE_FILENAME));
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn extract_runtime_zip_returns_fast_when_executable_exists() {
+        let root = unique_temp_root("extract-existing");
+        let paths = runtime_paths(root.clone());
+        let bundle_dir = paths.runtime_dir.join(RUNTIME_EXTRACTED_DIR);
+        fs::create_dir_all(&bundle_dir).expect("bundle dir should be created");
+        fs::write(bundle_dir.join(RUNTIME_EXECUTABLE_FILENAME), b"exe bytes")
+            .expect("executable should be written");
+
+        let result = extract_runtime_zip_from_artifact(paths, "missing-runtime.zip", 999)
+            .expect("existing executable should be reused");
+
+        assert!(result.extracted);
+        assert_eq!(result.files_extracted, 0);
+        assert_eq!(result.bytes_extracted, 0);
+        assert!(result.message.contains("无需重复解压"));
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn extract_runtime_zip_rejects_size_mismatch_before_unzip() {
+        let root = unique_temp_root("extract-size-mismatch");
+        let paths = runtime_paths(root.clone());
+        let zip_filename = "tiny-runtime.zip";
+        fs::create_dir_all(&paths.runtime_dir).expect("runtime dir should be created");
+        write_test_runtime_zip(
+            &paths.runtime_dir.join(zip_filename),
+            &[(RUNTIME_EXECUTABLE_FILENAME, b"exe bytes".as_slice())],
+        );
+
+        let error = match extract_runtime_zip_from_artifact(paths, zip_filename, 999) {
+            Ok(_) => panic!("runtime zip should be rejected"),
+            Err(error) => error,
+        };
+
+        assert!(error.contains("size mismatch"));
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn safe_zip_entry_path_rejects_escape_components() {
+        let base_dir = Path::new("runtime-bundle");
+
+        assert!(safe_zip_entry_path(base_dir, Path::new("rwkv_lightning.exe")).is_some());
+        assert!(safe_zip_entry_path(base_dir, Path::new("../rwkv_lightning.exe")).is_none());
+        assert!(safe_zip_entry_path(base_dir, Path::new("nested/../rwkv_lightning.exe")).is_none());
+    }
+
     fn write_valid_runtime_manifest(paths: &RwkvRuntimePaths) {
         fs::create_dir_all(&paths.runtime_dir).expect("runtime dir should be created");
         fs::create_dir_all(&paths.model_dir).expect("model dir should be created");
@@ -1288,6 +1858,22 @@ mod tests {
         fs::create_dir_all(&paths.model_dir).expect("model dir should be created");
         fs::write(paths.model_dir.join(filename), contents)
             .expect("model artifact should be written");
+    }
+
+    fn write_test_runtime_zip(path: &Path, entries: &[(&str, &[u8])]) {
+        let zip_file = File::create(path).expect("test runtime zip should be created");
+        let mut zip = zip::ZipWriter::new(zip_file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+
+        for (name, contents) in entries {
+            zip.start_file(name, options)
+                .expect("test runtime zip entry should start");
+            zip.write_all(contents)
+                .expect("test runtime zip entry should write");
+        }
+
+        zip.finish().expect("test runtime zip should finish");
     }
 
     fn unique_temp_root(name: &str) -> PathBuf {

@@ -119,6 +119,10 @@ export type RwkvRuntimeStatus = {
   runtimeDirExists: boolean;
   modelDirExists: boolean;
   logsDirExists: boolean;
+  runtimeBundleDir: string;
+  runtimeBundleExists: boolean;
+  runtimeExecutablePath: string;
+  runtimeExecutableExists: boolean;
   runtimeManifestExists: boolean;
   modelManifestExists: boolean;
   runtimeManifest?: RwkvArtifactManifest;
@@ -196,5 +200,23 @@ export type RwkvRuntimeArtifactCatalogItem = {
 export type RwkvRuntimeArtifactCatalog = {
   readyForDownload: boolean;
   items: RwkvRuntimeArtifactCatalogItem[];
+  message: string;
+};
+
+export type RwkvRuntimeArtifactScanResult = {
+  scanned: boolean;
+  installedManifests: string[];
+  errors: string[];
+  plan: RwkvRuntimeInstallPlan;
+  message: string;
+};
+
+export type RwkvRuntimeExtractionResult = {
+  extracted: boolean;
+  targetDir: string;
+  executablePath: string;
+  filesExtracted: number;
+  bytesExtracted: number;
+  plan: RwkvRuntimeInstallPlan;
   message: string;
 };

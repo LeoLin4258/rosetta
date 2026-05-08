@@ -27,6 +27,8 @@ get_rwkv_runtime_install_plan
 get_rwkv_runtime_install_progress
 prepare_rwkv_runtime_install
 get_rwkv_runtime_artifact_catalog
+scan_rwkv_runtime_artifacts
+extract_rwkv_runtime_artifact
 ```
 
 这些 commands 均为窄接口，不暴露任意 shell 执行。
@@ -67,6 +69,10 @@ invalid
 - 本地 artifact SHA-256 必须匹配 manifest
 - artifact filename 不允许绝对路径或 `..` 逃逸
 
+普通状态刷新和安装计划只做轻量校验，不重新读取大文件计算 SHA-256，避免设置页在已放入 1.3GB runtime zip 和 3GB model 后卡住。完整 SHA-256 校验只在用户显式点击扫描文件或解压运行时时执行。
+
+Manifest reader 已兼容 UTF-8 BOM，避免 Windows 手动写入 manifest 时导致 `expected value at line 1 column 1`。
+
 ### Install Plan And Progress
 
 已实现：
@@ -91,20 +97,69 @@ invalid
 - `rwkv_lightning_libtorch2.10.0+cu132_sm75-120_Windows_amd64.zip`
 - `RWKV_v7_G1c_1.5B_Translate_ctx4096_20260118.pth`
 
+### Manual Artifact Scan
+
+已实现离线/手动下载文件扫描：
+
+- 扫描固定管理目录，不接受任意前端文件路径
+- 只识别固定的 expected filenames
+- 校验文件大小
+- 校验 SHA-256
+- 通过校验后写入 runtime/model manifest
+- 扫描结果返回已写入 manifest 路径和错误列表
+
+当前扫描目标：
+
+```txt
+runtime/rwkv-lightning/rwkv_lightning_libtorch2.10.0+cu132_sm75-120_Windows_amd64.zip
+models/rwkv-v7-g1-translate/1.5b/RWKV_v7_G1c_1.5B_Translate_ctx4096_20260118.pth
+```
+
+这一步不下载大文件，只消费用户已经放入管理目录的文件。
+
+### Runtime Extraction
+
+已实现受限 runtime zip 解压：
+
+- 解压前快速校验 runtime manifest 或 runtime zip size
+- 只解压 Rosetta 管理目录内的固定 runtime artifact
+- 解压目标固定为 `runtime/rwkv-lightning/runtime-bundle/`
+- 拒绝 unsafe zip entry path
+- 解压完成后必须存在 `rwkv_lightning.exe`
+- 如果 `runtime-bundle/rwkv_lightning.exe` 已存在，则直接返回，不重复解压
+
+解压动作不再隐式扫描 model，也不重复读取大文件计算 SHA-256。完整 SHA-256 校验由用户显式点击扫描文件触发。
+
+本地真实 zip 检查确认该包包含 Windows 可执行文件和 DLL，不需要用户安装 Python：
+
+```txt
+rwkv_lightning.exe
+rwkv_vocab_v20230424.txt
+torch_cpu.dll
+torch_cuda.dll
+cudnn64_9.dll
+```
+
+`rwkv_lightning.exe --help` 和 missing-model 启动探针均以 exit code 1 退出且无 CLI 输出。后续启动管理不能依赖 help text 或 stderr，需要使用进程状态、端口 readiness 和 HTTP probe。
+
 ### Settings UI
 
 设置页已展示：
 
 - 本地 RWKV 状态
 - app data 路径
+- runtime bundle 路径
+- `rwkv_lightning.exe` 路径
 - 安装计划
 - 安装进度
 - artifact catalog
+- 手动扫描已放入管理目录的 RWKV 文件
+- 解压已校验的 RWKV runtime
 - 手动 RWKV API 配置
 
 ## Tests
 
-当前 Rust runtime 相关测试：20 个。
+当前 Rust runtime 相关测试：26 个。
 
 覆盖：
 
@@ -123,6 +178,16 @@ invalid
 - install progress queued/ready/blocked
 - artifact catalog metadata pending
 - catalog target directory contract
+- 手动扫描空目录
+- 扫描有效 artifact 后写 manifest
+- 扫描 artifact hash mismatch
+- runtime zip 解压成功路径
+- runtime zip 缺少 executable
+- zip entry path escape 拒绝
+- 设置页状态刷新不 hash 大模型文件
+- 已解压 runtime 直接快速返回
+- runtime zip size mismatch 在解压前拒绝
+- UTF-8 BOM manifest 读取
 
 最近验证命令：
 
@@ -280,13 +345,14 @@ Source:
 
 ## Recommended Next Step
 
-不要继续增加更多 placeholder command。下一步应进入 Stage 0 runtime spike：
+当前已经具备不由 App 下载大文件的离线扫描路径。下一步应进入 Stage 0 runtime spike：
 
-1. 下载或定位 1.5B 模型。
-2. 手动启动 RWKV Lightning。
-3. 用最小 text list 调 `/translate/v1/batch-translate`。
-4. 记录响应格式、错误格式和性能指标。
-5. 将真实 artifact metadata 回填到 catalog 或形成 ADR。
+1. 通过 App command 或设置页完成扫描与解压。
+2. 设计并实现受控启动 command。
+3. 启动后检查进程状态和 `127.0.0.1:8000` 端口 readiness。
+4. 用最小 text list 调 `/translate/v1/batch-translate`。
+5. 记录响应格式、错误格式和性能指标。
+6. 形成 runtime launch ADR。
 
 ## Stage Status
 
@@ -298,11 +364,14 @@ Manifest read/validation               Done
 Artifact file validation               Done
 Install plan skeleton                  Done
 Install progress skeleton              Done
-Artifact catalog skeleton              Done, ModelScope model/runtime metadata confirmed
+Artifact catalog                       Done, ModelScope model/runtime metadata confirmed
+Manual artifact scan                   Done
+Runtime zip extraction                 Done
+Settings extracted-state display       Done
 Runtime ADR                            Pending Stage 0
-Real model download                    Pending Stage 0
-RWKV Lightning launch                  Pending Stage 0
+Local model/runtime files              Done on current workstation
+RWKV Lightning launch                  Pending process/port probe
 Translation connector                  Pending runtime validation
-One-click install                      Pending artifact metadata
+One-click install                      Pending download strategy
 One-click start                        Pending runtime launch validation
 ```

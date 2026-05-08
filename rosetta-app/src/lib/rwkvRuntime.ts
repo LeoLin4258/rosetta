@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   RwkvRuntimeArtifactCatalog,
+  RwkvRuntimeArtifactScanResult,
+  RwkvRuntimeExtractionResult,
   RwkvRuntimeInstallPlan,
   RwkvRuntimeInstallProgress,
   RwkvRuntimeStatus,
@@ -30,4 +32,12 @@ export function initializeRwkvRuntimeLayout() {
 
 export function prepareRwkvRuntimeInstall() {
   return invoke<RwkvRuntimeInstallProgress>("prepare_rwkv_runtime_install");
+}
+
+export function scanRwkvRuntimeArtifacts() {
+  return invoke<RwkvRuntimeArtifactScanResult>("scan_rwkv_runtime_artifacts");
+}
+
+export function extractRwkvRuntimeArtifact() {
+  return invoke<RwkvRuntimeExtractionResult>("extract_rwkv_runtime_artifact");
 }
