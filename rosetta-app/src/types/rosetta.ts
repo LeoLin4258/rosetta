@@ -176,9 +176,7 @@ export type RwkvRuntimeInstallProgress = {
   message: string;
 };
 
-export type RwkvRuntimeArtifactCatalogItemState =
-  | "metadata-pending"
-  | "ready";
+export type RwkvRuntimeArtifactCatalogItemState = "ready";
 
 export type RwkvRuntimeArtifactCatalogItem = {
   id: string;

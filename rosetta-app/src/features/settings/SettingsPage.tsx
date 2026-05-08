@@ -88,7 +88,6 @@ const catalogItemStateLabel: Record<
   RwkvRuntimeArtifactCatalogItem["state"],
   string
 > = {
-  "metadata-pending": "待确认",
   ready: "可下载",
 };
 

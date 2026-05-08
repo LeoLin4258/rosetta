@@ -12,9 +12,25 @@ use tauri::{AppHandle, Manager};
 const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 8000;
 const EXPECTED_RUNTIME_ID_PREFIX: &str = "rwkv-lightning-";
+const RUNTIME_ARTIFACT_ID: &str = "rwkv-lightning-libtorch-cu132-windows-amd64";
+const RUNTIME_ARTIFACT_FILENAME: &str =
+    "rwkv_lightning_libtorch2.10.0+cu132_sm75-120_Windows_amd64.zip";
+const RUNTIME_ARTIFACT_SIZE_BYTES: u64 = 1_321_825_122;
+const RUNTIME_ARTIFACT_SHA256: &str =
+    "e4957c0dc771ea949d24f1d15123848dc2243546db62f4928c695c799c99e881";
+const RUNTIME_ARTIFACT_DOWNLOAD_URL: &str = "https://modelscope.cn/models/AlicLi/RWKV_v7_G1_Translate/resolve/master/rwkv_lightning_libtorch2.10.0+cu132_sm75-120_Windows_amd64.zip";
+const RUNTIME_ARTIFACT_SOURCE_PAGE: &str =
+    "https://www.modelscope.cn/models/AlicLi/RWKV_v7_G1_Translate/files";
 const EXPECTED_MODEL_ID: &str = "rwkv-v7-g1-translate-1.5b";
 const EXPECTED_CONTEXT_TOKENS: u32 = 4096;
 const EXPECTED_DIRECTIONS: [&str; 2] = ["en-zh", "zh-en"];
+const MODEL_ARTIFACT_FILENAME: &str = "RWKV_v7_G1c_1.5B_Translate_ctx4096_20260118.pth";
+const MODEL_ARTIFACT_SIZE_BYTES: u64 = 3_055_445_546;
+const MODEL_ARTIFACT_SHA256: &str =
+    "b51051a35949cbd6189da3d99b2bd9ae632d5665716a8e647abbe208f21120fa";
+const MODEL_ARTIFACT_DOWNLOAD_URL: &str = "https://modelscope.cn/models/AlicLi/RWKV_v7_G1_Translate/resolve/master/RWKV_v7_G1c_1.5B_Translate_ctx4096_20260118.pth";
+const MODEL_ARTIFACT_SOURCE_PAGE: &str =
+    "https://www.modelscope.cn/models/AlicLi/RWKV_v7_G1_Translate/files";
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -146,7 +162,6 @@ enum RwkvRuntimeInstallProgressItemState {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 enum RwkvRuntimeArtifactCatalogItemState {
-    MetadataPending,
     Ready,
 }
 
@@ -385,34 +400,33 @@ fn build_install_plan(paths: RwkvRuntimePaths) -> RwkvRuntimeInstallPlan {
 fn build_artifact_catalog(paths: RwkvRuntimePaths) -> RwkvRuntimeArtifactCatalog {
     let items = vec![
         RwkvRuntimeArtifactCatalogItem {
-            id: "rwkv-lightning-windows-x64".to_string(),
+            id: RUNTIME_ARTIFACT_ID.to_string(),
             kind: RwkvRuntimeInstallItemKind::Runtime,
-            state: RwkvRuntimeArtifactCatalogItemState::MetadataPending,
+            state: RwkvRuntimeArtifactCatalogItemState::Ready,
             label: "RWKV Lightning runtime".to_string(),
             target_dir: display_path(&paths.runtime_dir),
             manifest_path: display_path(&paths.runtime_dir.join("runtime-manifest.json")),
-            artifact_filename: None,
-            download_url: None,
-            source_page: Some("https://github.com/RWKV-Vibe/rwkv_lightning".to_string()),
-            size_bytes: None,
-            sha256: None,
-            message: "等待 Stage 0 确认 runtime 打包方式、文件名、大小和 hash。".to_string(),
+            artifact_filename: Some(RUNTIME_ARTIFACT_FILENAME.to_string()),
+            download_url: Some(RUNTIME_ARTIFACT_DOWNLOAD_URL.to_string()),
+            source_page: Some(RUNTIME_ARTIFACT_SOURCE_PAGE.to_string()),
+            size_bytes: Some(RUNTIME_ARTIFACT_SIZE_BYTES),
+            sha256: Some(RUNTIME_ARTIFACT_SHA256.to_string()),
+            message: "已通过 ModelScope metadata 确认 Windows amd64 runtime 包。".to_string(),
         },
         RwkvRuntimeArtifactCatalogItem {
             id: EXPECTED_MODEL_ID.to_string(),
             kind: RwkvRuntimeInstallItemKind::Model,
-            state: RwkvRuntimeArtifactCatalogItemState::MetadataPending,
+            state: RwkvRuntimeArtifactCatalogItemState::Ready,
             label: "RWKV v7 G1 Translate 1.5B".to_string(),
             target_dir: display_path(&paths.model_dir),
             manifest_path: display_path(&paths.model_dir.join("model-manifest.json")),
-            artifact_filename: None,
-            download_url: None,
-            source_page: Some(
-                "https://www.modelscope.cn/models/AlicLi/RWKV_v7_G1_Translate/files".to_string(),
-            ),
-            size_bytes: None,
-            sha256: None,
-            message: "等待 Stage 0 确认 ModelScope 1.5B 文件名、大小和 hash。".to_string(),
+            artifact_filename: Some(MODEL_ARTIFACT_FILENAME.to_string()),
+            download_url: Some(MODEL_ARTIFACT_DOWNLOAD_URL.to_string()),
+            source_page: Some(MODEL_ARTIFACT_SOURCE_PAGE.to_string()),
+            size_bytes: Some(MODEL_ARTIFACT_SIZE_BYTES),
+            sha256: Some(MODEL_ARTIFACT_SHA256.to_string()),
+            message: "已通过 ModelScope metadata 确认，且与 Hugging Face mirror hash 一致。"
+                .to_string(),
         },
     ];
     let ready_for_download = items
@@ -505,9 +519,8 @@ fn progress_item_from_plan_item(
 
 fn expected_install_size_bytes(kind: &RwkvRuntimeInstallItemKind) -> Option<u64> {
     match kind {
-        // Placeholders until Stage 0 produces real packaged artifact sizes.
-        RwkvRuntimeInstallItemKind::Runtime => None,
-        RwkvRuntimeInstallItemKind::Model => None,
+        RwkvRuntimeInstallItemKind::Runtime => Some(RUNTIME_ARTIFACT_SIZE_BYTES),
+        RwkvRuntimeInstallItemKind::Model => Some(MODEL_ARTIFACT_SIZE_BYTES),
     }
 }
 
@@ -1189,16 +1202,26 @@ mod tests {
     }
 
     #[test]
-    fn artifact_catalog_is_not_ready_while_metadata_is_pending() {
-        let root = unique_temp_root("catalog-pending");
+    fn artifact_catalog_is_ready_when_modelscope_metadata_is_confirmed() {
+        let root = unique_temp_root("catalog-ready");
         let catalog = build_artifact_catalog(runtime_paths(root.clone()));
 
-        assert!(!catalog.ready_for_download);
+        assert!(catalog.ready_for_download);
         assert_eq!(catalog.items.len(), 2);
-        assert!(catalog.items.iter().all(|item| {
-            item.state == RwkvRuntimeArtifactCatalogItemState::MetadataPending
-                && item.download_url.is_none()
-                && item.sha256.is_none()
+        assert!(catalog
+            .items
+            .iter()
+            .any(|item| item.kind == RwkvRuntimeInstallItemKind::Runtime
+                && item.state == RwkvRuntimeArtifactCatalogItemState::Ready
+                && item.download_url.as_deref() == Some(RUNTIME_ARTIFACT_DOWNLOAD_URL)
+                && item.sha256.as_deref() == Some(RUNTIME_ARTIFACT_SHA256)
+                && item.size_bytes == Some(RUNTIME_ARTIFACT_SIZE_BYTES)));
+        assert!(catalog.items.iter().any(|item| {
+            item.kind == RwkvRuntimeInstallItemKind::Model
+                && item.state == RwkvRuntimeArtifactCatalogItemState::Ready
+                && item.download_url.as_deref() == Some(MODEL_ARTIFACT_DOWNLOAD_URL)
+                && item.sha256.as_deref() == Some(MODEL_ARTIFACT_SHA256)
+                && item.size_bytes == Some(MODEL_ARTIFACT_SIZE_BYTES)
         }));
 
         cleanup(root);
