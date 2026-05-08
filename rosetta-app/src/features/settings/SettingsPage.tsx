@@ -1,6 +1,7 @@
 import { useEffect, useState, type ChangeEvent } from "react";
 import { FolderPlus, RefreshCw } from "lucide-react";
 import {
+  getRwkvRuntimeInstallPlan,
   getRwkvRuntimeStatus,
   initializeRwkvRuntimeLayout,
 } from "../../lib/rwkvRuntime";
@@ -8,6 +9,8 @@ import { useRosettaStore } from "../../store/useRosettaStore";
 import type {
   AppThemeMode,
   RwkvConnectionConfig,
+  RwkvRuntimeInstallPlan,
+  RwkvRuntimeInstallPlanItem,
   RwkvRuntimeStatus,
   TranslationMode,
 } from "../../types/rosetta";
@@ -51,6 +54,13 @@ const runtimeStateLabel: Record<RwkvRuntimeStatus["state"], string> = {
   invalid: "需检查",
 };
 
+const installItemStateLabel: Record<RwkvRuntimeInstallPlanItem["state"], string> =
+  {
+    missing: "待准备",
+    ready: "就绪",
+    invalid: "需检查",
+  };
+
 export function SettingsPage() {
   const themeMode = useRosettaStore((state) => state.themeMode);
   const setThemeMode = useRosettaStore((state) => state.setThemeMode);
@@ -59,6 +69,8 @@ export function SettingsPage() {
   const setTranslationMode = useRosettaStore((state) => state.setTranslationMode);
   const [runtimeStatus, setRuntimeStatus] =
     useState<RwkvRuntimeStatus | null>(null);
+  const [installPlan, setInstallPlan] =
+    useState<RwkvRuntimeInstallPlan | null>(null);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [isCheckingRuntime, setIsCheckingRuntime] = useState(false);
   const [isPreparingRuntime, setIsPreparingRuntime] = useState(false);
@@ -68,9 +80,15 @@ export function SettingsPage() {
     setRuntimeError(null);
 
     try {
-      setRuntimeStatus(await getRwkvRuntimeStatus());
+      const [nextRuntimeStatus, nextInstallPlan] = await Promise.all([
+        getRwkvRuntimeStatus(),
+        getRwkvRuntimeInstallPlan(),
+      ]);
+      setRuntimeStatus(nextRuntimeStatus);
+      setInstallPlan(nextInstallPlan);
     } catch (error) {
       setRuntimeStatus(null);
+      setInstallPlan(null);
       setRuntimeError(
         error instanceof Error ? error.message : "无法读取本地 RWKV 状态。"
       );
@@ -89,6 +107,7 @@ export function SettingsPage() {
 
     try {
       setRuntimeStatus(await initializeRwkvRuntimeLayout());
+      setInstallPlan(await getRwkvRuntimeInstallPlan());
     } catch (error) {
       setRuntimeError(
         error instanceof Error ? error.message : "无法准备本地 RWKV 目录。"
@@ -210,6 +229,25 @@ export function SettingsPage() {
                 {runtimeStatus.manifestError}
               </p>
             ) : null}
+
+            {installPlan ? (
+              <div className="grid gap-3 rounded-md border border-border bg-muted/30 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="font-medium text-foreground">安装计划</span>
+                  <Badge variant="outline">
+                    {installPlan.ready ? "已满足" : "未完成"}
+                  </Badge>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {installPlan.message}
+                </p>
+                <div className="grid gap-2">
+                  {installPlan.items.map((item) => (
+                    <InstallPlanItem key={`${item.kind}-${item.id}`} item={item} />
+                  ))}
+                </div>
+              </div>
+            ) : null}
           </div>
         </CardContent>
       </Card>
@@ -293,6 +331,22 @@ function RuntimePath({ label, value }: { label: string; value: string }) {
     <div className="grid gap-1">
       <span className="font-medium text-foreground">{label}</span>
       <span className="break-all font-mono text-muted-foreground">{value}</span>
+    </div>
+  );
+}
+
+function InstallPlanItem({ item }: { item: RwkvRuntimeInstallPlanItem }) {
+  return (
+    <div className="grid gap-1 rounded-md border border-border bg-background/60 p-2 text-xs">
+      <div className="flex items-center justify-between gap-3">
+        <span className="font-medium text-foreground">{item.label}</span>
+        <Badge variant="outline">{installItemStateLabel[item.state]}</Badge>
+      </div>
+      <p className="text-muted-foreground">{item.message}</p>
+      <RuntimePath label="Manifest" value={item.manifestPath} />
+      {item.artifactPath ? (
+        <RuntimePath label="Artifact" value={item.artifactPath} />
+      ) : null}
     </div>
   );
 }

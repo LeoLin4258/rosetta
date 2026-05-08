@@ -127,3 +127,24 @@ export type RwkvRuntimeStatus = {
   logFile: string;
   message: string;
 };
+
+export type RwkvRuntimeInstallItemKind = "runtime" | "model";
+
+export type RwkvRuntimeInstallItemState = "missing" | "ready" | "invalid";
+
+export type RwkvRuntimeInstallPlanItem = {
+  id: string;
+  kind: RwkvRuntimeInstallItemKind;
+  state: RwkvRuntimeInstallItemState;
+  label: string;
+  targetDir: string;
+  manifestPath: string;
+  artifactPath?: string;
+  message: string;
+};
+
+export type RwkvRuntimeInstallPlan = {
+  ready: boolean;
+  items: RwkvRuntimeInstallPlanItem[];
+  message: string;
+};

@@ -36,12 +36,48 @@ pub struct RwkvRuntimeStatus {
     message: String,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RwkvRuntimeInstallPlan {
+    ready: bool,
+    items: Vec<RwkvRuntimeInstallPlanItem>,
+    message: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RwkvRuntimeInstallPlanItem {
+    id: String,
+    kind: RwkvRuntimeInstallItemKind,
+    state: RwkvRuntimeInstallItemState,
+    label: String,
+    target_dir: String,
+    manifest_path: String,
+    artifact_path: Option<String>,
+    message: String,
+}
+
 #[derive(Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 enum RwkvRuntimeState {
     NotInstalled,
     Partial,
     Installed,
+    Invalid,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum RwkvRuntimeInstallItemKind {
+    Runtime,
+    Model,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum RwkvRuntimeInstallItemState {
+    Missing,
+    Ready,
     Invalid,
 }
 
@@ -96,6 +132,16 @@ pub fn initialize_rwkv_runtime_layout(app: AppHandle) -> Result<RwkvRuntimeStatu
     Ok(build_status(paths))
 }
 
+#[tauri::command]
+pub fn get_rwkv_runtime_install_plan(app: AppHandle) -> Result<RwkvRuntimeInstallPlan, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Could not resolve Rosetta app data directory: {error}"))?;
+
+    Ok(build_install_plan(runtime_paths(app_data_dir)))
+}
+
 struct RwkvRuntimePaths {
     runtime_dir: PathBuf,
     model_dir: PathBuf,
@@ -139,12 +185,9 @@ fn build_status(paths: RwkvRuntimePaths) -> RwkvRuntimeStatus {
         .map(ToString::to_string);
     let runtime_manifest = runtime_manifest.ok().flatten();
     let model_manifest = model_manifest.ok().flatten();
-    let validation_error = match (&runtime_manifest, &model_manifest) {
-        (Some(runtime_manifest), Some(model_manifest)) => {
-            validate_manifests(runtime_manifest, model_manifest, &paths).err()
-        }
-        _ => None,
-    };
+    let validation_error =
+        validate_available_manifests(runtime_manifest.as_ref(), model_manifest.as_ref(), &paths)
+            .err();
     let manifest_error = parse_error.or(validation_error);
 
     let has_any_layout = runtime_dir_exists
@@ -191,6 +234,105 @@ fn build_status(paths: RwkvRuntimePaths) -> RwkvRuntimeStatus {
     }
 }
 
+fn build_install_plan(paths: RwkvRuntimePaths) -> RwkvRuntimeInstallPlan {
+    let runtime_item = build_install_item(
+        RwkvRuntimeInstallItemKind::Runtime,
+        "RWKV Lightning runtime",
+        "rwkv-lightning",
+        &paths.runtime_dir,
+        "runtime-manifest.json",
+        |manifest| validate_runtime_manifest(manifest, &paths),
+    );
+    let model_item = build_install_item(
+        RwkvRuntimeInstallItemKind::Model,
+        "RWKV v7 G1 Translate 1.5B",
+        EXPECTED_MODEL_ID,
+        &paths.model_dir,
+        "model-manifest.json",
+        |manifest| validate_model_manifest(manifest, &paths),
+    );
+    let items = vec![runtime_item, model_item];
+    let ready = items
+        .iter()
+        .all(|item| item.state == RwkvRuntimeInstallItemState::Ready);
+    let message = if ready {
+        "本地 RWKV 安装计划已满足。".to_string()
+    } else {
+        "本地 RWKV 仍需要准备运行时或模型文件。".to_string()
+    };
+
+    RwkvRuntimeInstallPlan {
+        ready,
+        items,
+        message,
+    }
+}
+
+fn build_install_item(
+    kind: RwkvRuntimeInstallItemKind,
+    label: &str,
+    id: &str,
+    target_dir: &Path,
+    manifest_filename: &str,
+    validate: impl FnOnce(&RwkvArtifactManifest) -> Result<(), String>,
+) -> RwkvRuntimeInstallPlanItem {
+    let manifest_path = target_dir.join(manifest_filename);
+    let manifest = read_manifest(&manifest_path);
+
+    match manifest {
+        Ok(Some(manifest)) => {
+            let artifact_path = manifest
+                .filename
+                .as_deref()
+                .and_then(|filename| safe_artifact_path(target_dir, filename))
+                .map(|path| display_path(&path));
+
+            match validate(&manifest) {
+                Ok(()) => RwkvRuntimeInstallPlanItem {
+                    id: id.to_string(),
+                    kind,
+                    state: RwkvRuntimeInstallItemState::Ready,
+                    label: label.to_string(),
+                    target_dir: display_path(target_dir),
+                    manifest_path: display_path(&manifest_path),
+                    artifact_path,
+                    message: "已就绪。".to_string(),
+                },
+                Err(error) => RwkvRuntimeInstallPlanItem {
+                    id: id.to_string(),
+                    kind,
+                    state: RwkvRuntimeInstallItemState::Invalid,
+                    label: label.to_string(),
+                    target_dir: display_path(target_dir),
+                    manifest_path: display_path(&manifest_path),
+                    artifact_path,
+                    message: error,
+                },
+            }
+        }
+        Ok(None) => RwkvRuntimeInstallPlanItem {
+            id: id.to_string(),
+            kind,
+            state: RwkvRuntimeInstallItemState::Missing,
+            label: label.to_string(),
+            target_dir: display_path(target_dir),
+            manifest_path: display_path(&manifest_path),
+            artifact_path: None,
+            message: "尚未安装。".to_string(),
+        },
+        Err(error) => RwkvRuntimeInstallPlanItem {
+            id: id.to_string(),
+            kind,
+            state: RwkvRuntimeInstallItemState::Invalid,
+            label: label.to_string(),
+            target_dir: display_path(target_dir),
+            manifest_path: display_path(&manifest_path),
+            artifact_path: None,
+            message: error,
+        },
+    }
+}
+
 fn read_manifest(path: &Path) -> Result<Option<RwkvArtifactManifest>, String> {
     if !path.is_file() {
         return Ok(None);
@@ -207,6 +349,31 @@ fn read_manifest(path: &Path) -> Result<Option<RwkvArtifactManifest>, String> {
 fn validate_manifests(
     runtime_manifest: &RwkvArtifactManifest,
     model_manifest: &RwkvArtifactManifest,
+    paths: &RwkvRuntimePaths,
+) -> Result<(), String> {
+    validate_runtime_manifest(runtime_manifest, paths)?;
+    validate_model_manifest(model_manifest, paths)?;
+
+    Ok(())
+}
+
+fn validate_available_manifests(
+    runtime_manifest: Option<&RwkvArtifactManifest>,
+    model_manifest: Option<&RwkvArtifactManifest>,
+    paths: &RwkvRuntimePaths,
+) -> Result<(), String> {
+    match (runtime_manifest, model_manifest) {
+        (Some(runtime_manifest), Some(model_manifest)) => {
+            validate_manifests(runtime_manifest, model_manifest, paths)
+        }
+        (Some(runtime_manifest), None) => validate_runtime_manifest(runtime_manifest, paths),
+        (None, Some(model_manifest)) => validate_model_manifest(model_manifest, paths),
+        (None, None) => Ok(()),
+    }
+}
+
+fn validate_runtime_manifest(
+    runtime_manifest: &RwkvArtifactManifest,
     paths: &RwkvRuntimePaths,
 ) -> Result<(), String> {
     if !runtime_manifest.id.starts_with(EXPECTED_RUNTIME_ID_PREFIX) {
@@ -227,6 +394,13 @@ fn validate_manifests(
 
     verify_optional_artifact("Runtime", runtime_manifest, &paths.runtime_dir)?;
 
+    Ok(())
+}
+
+fn validate_model_manifest(
+    model_manifest: &RwkvArtifactManifest,
+    paths: &RwkvRuntimePaths,
+) -> Result<(), String> {
     if model_manifest.id != EXPECTED_MODEL_ID {
         return Err(format!("Model manifest id must be `{EXPECTED_MODEL_ID}`."));
     }
@@ -483,6 +657,26 @@ mod tests {
     }
 
     #[test]
+    fn status_is_invalid_when_only_model_manifest_is_invalid() {
+        let root = unique_temp_root("only-bad-model");
+        let paths = runtime_paths(root.clone());
+        write_model_manifest(
+            &paths,
+            r#"{"id":"other-model","contextTokens":4096,"supportedDirections":["en-zh","zh-en"]}"#,
+        );
+
+        let status = build_status(paths);
+
+        assert_eq!(status.state, RwkvRuntimeState::Invalid);
+        assert!(status
+            .manifest_error
+            .as_deref()
+            .is_some_and(|error| error.contains("Model manifest id")));
+
+        cleanup(root);
+    }
+
+    #[test]
     fn status_is_invalid_when_model_direction_is_missing() {
         let root = unique_temp_root("missing-direction");
         let paths = runtime_paths(root.clone());
@@ -632,6 +826,72 @@ mod tests {
         cleanup(root);
     }
 
+    #[test]
+    fn install_plan_reports_missing_items_when_no_manifests_exist() {
+        let root = unique_temp_root("plan-missing");
+        let plan = build_install_plan(runtime_paths(root.clone()));
+
+        assert!(!plan.ready);
+        assert_eq!(plan.items.len(), 2);
+        assert!(plan
+            .items
+            .iter()
+            .all(|item| item.state == RwkvRuntimeInstallItemState::Missing));
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn install_plan_reports_ready_when_runtime_and_model_are_valid() {
+        let root = unique_temp_root("plan-ready");
+        let paths = runtime_paths(root.clone());
+        write_valid_runtime_manifest(&paths);
+        write_valid_model_manifest_with_artifact(&paths, "model.pth", b"rwkv model bytes");
+
+        let plan = build_install_plan(paths);
+
+        assert!(plan.ready);
+        assert_eq!(plan.items.len(), 2);
+        assert!(plan
+            .items
+            .iter()
+            .all(|item| item.state == RwkvRuntimeInstallItemState::Ready));
+        assert!(plan.items.iter().any(|item| item.artifact_path.is_some()));
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn install_plan_reports_invalid_item_when_manifest_is_bad() {
+        let root = unique_temp_root("plan-invalid");
+        let paths = runtime_paths(root.clone());
+        write_valid_runtime_manifest(&paths);
+        write_model_manifest(
+            &paths,
+            r#"{"id":"other-model","contextTokens":4096,"supportedDirections":["en-zh","zh-en"]}"#,
+        );
+
+        let plan = build_install_plan(paths);
+
+        assert!(!plan.ready);
+        assert_eq!(
+            plan.items
+                .iter()
+                .find(|item| item.kind == RwkvRuntimeInstallItemKind::Runtime)
+                .map(|item| &item.state),
+            Some(&RwkvRuntimeInstallItemState::Ready)
+        );
+        assert_eq!(
+            plan.items
+                .iter()
+                .find(|item| item.kind == RwkvRuntimeInstallItemKind::Model)
+                .map(|item| &item.state),
+            Some(&RwkvRuntimeInstallItemState::Invalid)
+        );
+
+        cleanup(root);
+    }
+
     fn write_valid_runtime_manifest(paths: &RwkvRuntimePaths) {
         fs::create_dir_all(&paths.runtime_dir).expect("runtime dir should be created");
         fs::create_dir_all(&paths.model_dir).expect("model dir should be created");
@@ -646,6 +906,23 @@ mod tests {
         fs::create_dir_all(&paths.model_dir).expect("model dir should be created");
         fs::write(paths.model_dir.join("model-manifest.json"), contents)
             .expect("model manifest should be written");
+    }
+
+    fn write_valid_model_manifest_with_artifact(
+        paths: &RwkvRuntimePaths,
+        filename: &str,
+        contents: &[u8],
+    ) {
+        write_model_artifact(paths, filename, contents);
+        let model_sha256 =
+            sha256_file(&paths.model_dir.join(filename)).expect("model sha should compute");
+        write_model_manifest(
+            paths,
+            &format!(
+                r#"{{"id":"rwkv-v7-g1-translate-1.5b","filename":"{filename}","sha256":"{model_sha256}","sizeBytes":{},"contextTokens":4096,"supportedDirections":["en-zh","zh-en"]}}"#,
+                contents.len()
+            ),
+        );
     }
 
     fn write_model_artifact(paths: &RwkvRuntimePaths, filename: &str, contents: &[u8]) {

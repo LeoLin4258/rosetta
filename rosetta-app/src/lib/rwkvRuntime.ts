@@ -1,8 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { RwkvRuntimeStatus } from "../types/rosetta";
+import type {
+  RwkvRuntimeInstallPlan,
+  RwkvRuntimeStatus,
+} from "../types/rosetta";
 
 export function getRwkvRuntimeStatus() {
   return invoke<RwkvRuntimeStatus>("get_rwkv_runtime_status");
+}
+
+export function getRwkvRuntimeInstallPlan() {
+  return invoke<RwkvRuntimeInstallPlan>("get_rwkv_runtime_install_plan");
 }
 
 export function initializeRwkvRuntimeLayout() {
