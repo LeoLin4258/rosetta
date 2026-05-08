@@ -10,6 +10,7 @@ import {
   SidebarTrigger,
 } from "@/components/ui/sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { listRosettaJobs } from "@/lib/rosettaJobs";
 import { useRosettaStore } from "@/store/useRosettaStore";
 import { cn } from "@/lib/utils";
 
@@ -24,8 +25,11 @@ const appWindow = getCurrentWindow();
 
 export function AppShell() {
   const location = useLocation();
-  const title = pageTitles[location.pathname] ?? "Rosetta";
+  const title =
+    pageTitles[location.pathname] ??
+    (location.pathname.startsWith("/jobs/") ? "任务" : "Rosetta");
   const themeMode = useRosettaStore((state) => state.themeMode);
+  const setJobList = useRosettaStore((state) => state.setJobList);
   const [systemPrefersDark, setSystemPrefersDark] = useState(true);
   const isDark = themeMode === "system" ? systemPrefersDark : themeMode === "dark";
 
@@ -49,6 +53,14 @@ export function AppShell() {
       // Plain browser dev mode does not expose the Tauri window API.
     });
   }, [themeMode]);
+
+  useEffect(() => {
+    void listRosettaJobs()
+      .then(setJobList)
+      .catch(() => {
+        setJobList([]);
+      });
+  }, [setJobList]);
 
   return (
     <TooltipProvider>

@@ -40,10 +40,11 @@ export type TranslationMode = "fast" | "balanced" | "coherent";
 export type AppThemeMode = "light" | "dark" | "system";
 
 export type RosettaDocument = {
+  schemaVersion: number;
   id: string;
   filename: string;
-  format: RosettaDocumentFormat;
-  sourceLang?: string;
+  format: Extract<RosettaDocumentFormat, "txt" | "markdown">;
+  sourceLang?: string | null;
   targetLang: string;
   blocks: RosettaBlock[];
 };
@@ -52,11 +53,11 @@ export type RosettaBlock = {
   id: string;
   type: RosettaBlockType;
   sourceText: string;
-  translatedText?: string;
+  translatedText?: string | null;
   shouldTranslate: boolean;
   order: number;
-  path?: string;
-  style?: Record<string, unknown>;
+  path?: string | null;
+  style?: Record<string, unknown> | null;
   status: SegmentStatus;
 };
 
@@ -65,24 +66,52 @@ export type Segment = {
   blockId: string;
   order: number;
   sourceText: string;
-  translatedText?: string;
-  sourceLang?: string;
+  translatedText?: string | null;
+  sourceLang?: string | null;
   targetLang: string;
   kind: RosettaBlockType;
   preserveWhitespace: boolean;
   status: SegmentStatus;
+  blockOrder?: number | null;
+  segmentIndexInBlock?: number | null;
+  error?: string | null;
 };
 
 export type RosettaJob = {
+  schemaVersion: number;
   id: string;
   filename: string;
+  format: Extract<RosettaDocumentFormat, "txt" | "markdown">;
+  sourcePath?: string | null;
+  sourceFilename: string;
   status: JobStatus;
   createdAt: string;
   updatedAt: string;
+  exportedAt?: string | null;
+  lastError?: string | null;
   targetLang: string;
   segmentCount: number;
   completedSegments: number;
   failedSegments: number;
+};
+
+export type RosettaJobSummary = RosettaJob;
+
+export type RosettaJobBundle = {
+  schemaVersion: number;
+  job: RosettaJobSummary;
+  document: RosettaDocument;
+  segments: Segment[];
+};
+
+export type RosettaExportKind = "translation" | "bilingual";
+
+export type RosettaExportResult = {
+  job: RosettaJobSummary;
+  targetPath: string;
+  kind: RosettaExportKind;
+  bytesWritten: number;
+  message: string;
 };
 
 export type RwkvConnectionConfig = {

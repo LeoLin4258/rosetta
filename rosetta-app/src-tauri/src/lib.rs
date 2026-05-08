@@ -1,3 +1,4 @@
+mod rosetta_jobs;
 mod rwkv_api;
 mod rwkv_runtime;
 
@@ -5,7 +6,16 @@ mod rwkv_runtime;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
+            rosetta_jobs::delete_rosetta_job,
+            rosetta_jobs::export_rosetta_job,
+            rosetta_jobs::import_rosetta_document_from_path,
+            rosetta_jobs::list_rosetta_jobs,
+            rosetta_jobs::load_rosetta_job,
+            rosetta_jobs::pick_rosetta_export_path,
+            rosetta_jobs::pick_rosetta_import_path,
+            rosetta_jobs::save_rosetta_segments,
             rwkv_api::probe_rwkv_translation_api,
             rwkv_api::translate_rwkv_texts_with_api,
             rwkv_runtime::get_rwkv_runtime_artifact_catalog,

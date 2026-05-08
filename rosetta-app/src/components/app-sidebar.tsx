@@ -19,6 +19,7 @@ import {
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const location = useLocation();
   const jobs = useRosettaStore((state) => state.jobs);
+  const activeJobId = useRosettaStore((state) => state.activeJobId);
 
   return (
     <Sidebar collapsible="icon" {...props}>
@@ -44,10 +45,13 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                 <SidebarMenuItem key={job.id}>
                   <SidebarMenuButton
                     asChild
-                    isActive={location.pathname === "/jobs"}
+                    isActive={
+                      activeJobId === job.id ||
+                      location.pathname === `/jobs/${job.id}`
+                    }
                     tooltip={job.filename}
                   >
-                    <NavLink to="/jobs">
+                    <NavLink to={`/jobs/${job.id}`}>
                       <FileTextIcon />
                       <span>{job.filename}</span>
                     </NavLink>

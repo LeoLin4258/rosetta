@@ -13,6 +13,7 @@ export const router = createHashRouter([
       { index: true, element: <HomePage /> },
       { path: "new", element: <ImportPage /> },
       { path: "jobs", element: <JobsPage /> },
+      { path: "jobs/:jobId", element: <JobsPage /> },
       { path: "settings", element: <SettingsPage /> },
     ],
   },

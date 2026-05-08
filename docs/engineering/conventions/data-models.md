@@ -61,8 +61,39 @@ Document
 约定：
 
 - Job 状态变化应可恢复，不能只存在内存中。
-- MVP 阶段任务缓存优先使用 JSON 文件。
+- MVP 阶段任务缓存使用 JSON 文件，根目录固定在 app data 的 `jobs/` 下。
+- Job store 的持久化文件必须带 `schemaVersion: 1`，后续格式变化需要迁移路径。
+- `RosettaJobBundle` 是前端加载项目的最小完整单位，包含 `job`、`document`、`segments`。
+- `index.json` 只保存 `RosettaJobSummary[]`，完整文档和 segments 分别保存在项目目录下。
+- 删除项目只删除 Rosetta 自己的 job cache，不删除用户原始文件，也不删除已经导出的文件。
 - 后续如果引入 SQLite，需要新增 ADR 说明原因和迁移策略。
+
+当前 JSON 布局：
+
+```txt
+AppData/Rosetta/jobs/
+  index.json
+  <jobId>/
+    source.txt 或 source.md
+    document.json
+    segments.json
+    exports/
+```
+
+导入约定：
+
+- 当前只支持 TXT、Markdown。
+- 文件由 Tauri command 读取，前端不直接获得宽泛文件系统权限。
+- TXT 按空行切分为段落。
+- Markdown 使用轻量 block parser，首版只保留标题、段落、列表、引用、代码块和空行等基础结构。
+- fenced code block、纯 URL 行和空白行默认 `skipped`。
+
+导出约定：
+
+- `translation` 导出纯译文。
+- `bilingual` 导出双语对照。
+- 未完成或失败 segment 导出时使用原文占位，避免输出断裂。
+- Markdown 导出只承诺保留基础 marker，不承诺完整 CommonMark AST 级别还原。
 
 ## RWKV API Config
 

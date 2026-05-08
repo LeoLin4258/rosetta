@@ -14,6 +14,16 @@ export function SegmentPreviewList() {
     overscan: 6,
   });
 
+  if (segments.length === 0) {
+    return (
+      <Card className="min-h-0 py-0">
+        <div className="flex h-[420px] items-center justify-center text-sm text-muted-foreground">
+          当前没有可预览的段落。
+        </div>
+      </Card>
+    );
+  }
+
   return (
     <Card className="min-h-0 py-0">
       <div className="grid grid-cols-2 border-b bg-muted/40 text-sm text-muted-foreground">
@@ -46,6 +56,9 @@ export function SegmentPreviewList() {
                     <Badge variant="outline">{segment.status}</Badge>
                   </div>
                   {segment.translatedText ?? "等待翻译"}
+                  {segment.error ? (
+                    <p className="mt-2 text-xs text-destructive">{segment.error}</p>
+                  ) : null}
                 </div>
               </div>
             );
