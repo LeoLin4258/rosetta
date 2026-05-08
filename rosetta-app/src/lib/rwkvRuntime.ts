@@ -5,7 +5,10 @@ import type {
   RwkvRuntimeExtractionResult,
   RwkvRuntimeInstallPlan,
   RwkvRuntimeInstallProgress,
+  RwkvRuntimeProcessStatus,
+  RwkvRuntimeStartResult,
   RwkvRuntimeStatus,
+  RwkvRuntimeTranslationProbeResult,
 } from "../types/rosetta";
 
 export function getRwkvRuntimeArtifactCatalog() {
@@ -40,4 +43,18 @@ export function scanRwkvRuntimeArtifacts() {
 
 export function extractRwkvRuntimeArtifact() {
   return invoke<RwkvRuntimeExtractionResult>("extract_rwkv_runtime_artifact");
+}
+
+export function getRwkvRuntimeProcessStatus() {
+  return invoke<RwkvRuntimeProcessStatus>("get_rwkv_runtime_process_status");
+}
+
+export function startRwkvRuntime() {
+  return invoke<RwkvRuntimeStartResult>("start_rwkv_runtime");
+}
+
+export function probeRwkvRuntimeTranslation() {
+  return invoke<RwkvRuntimeTranslationProbeResult>(
+    "probe_rwkv_runtime_translation"
+  );
 }

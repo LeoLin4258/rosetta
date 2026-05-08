@@ -2,7 +2,17 @@
 
 ## 状态
 
-Draft
+Paused
+
+## 暂停说明
+
+2026-05-08 决定暂停 Rosetta 内置/托管 RWKV runtime 的继续开发。当前阶段先跳过“一键本地运行 RWKV LLM”，改为连接 RWKV 工程师部署好的翻译模型 API，优先推进长文档翻译 pipeline 和产品闭环。
+
+本计划保留为未来恢复本地 runtime 工作时的历史上下文，不再作为当前开发队列。恢复条件和当前开发规则见：
+
+- `docs/engineering/decisions/0002-pause-managed-rwkv-runtime.md`
+
+在恢复本地 runtime 工作前，不要继续扩展下载器、installer、进程启动、runtime artifact 管理或 one-click launch UI。
 
 ## 背景
 
@@ -573,4 +583,3 @@ logs/rwkv-runtime.log
 - RWKV Lightning 是否能稳定避免在日志里输出源文本？
 - 是否提供 0.4B 作为低内存机器 fallback？
 - AI00 是否足够兼容，能否成为长期默认 runtime？
-

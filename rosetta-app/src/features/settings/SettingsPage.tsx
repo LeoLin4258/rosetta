@@ -1,14 +1,25 @@
 import { useEffect, useState, type ChangeEvent } from "react";
-import { Archive, FolderPlus, PackageCheck, RefreshCw, ScanLine } from "lucide-react";
+import {
+  Activity,
+  Archive,
+  FolderPlus,
+  PackageCheck,
+  Play,
+  RefreshCw,
+  ScanLine,
+} from "lucide-react";
 import {
   extractRwkvRuntimeArtifact,
   getRwkvRuntimeArtifactCatalog,
   getRwkvRuntimeInstallProgress,
   getRwkvRuntimeInstallPlan,
+  getRwkvRuntimeProcessStatus,
   getRwkvRuntimeStatus,
   initializeRwkvRuntimeLayout,
+  probeRwkvRuntimeTranslation,
   prepareRwkvRuntimeInstall,
   scanRwkvRuntimeArtifacts,
+  startRwkvRuntime,
 } from "../../lib/rwkvRuntime";
 import { useRosettaStore } from "../../store/useRosettaStore";
 import type {
@@ -22,7 +33,9 @@ import type {
   RwkvRuntimeInstallPlanItem,
   RwkvRuntimeInstallProgress,
   RwkvRuntimeInstallProgressItem,
+  RwkvRuntimeProcessStatus,
   RwkvRuntimeStatus,
+  RwkvRuntimeTranslationProbeResult,
   TranslationMode,
 } from "../../types/rosetta";
 import { Badge } from "@/components/ui/badge";
@@ -95,6 +108,12 @@ const catalogItemStateLabel: Record<
   ready: "可下载",
 };
 
+const processStateLabel: Record<RwkvRuntimeProcessStatus["state"], string> = {
+  stopped: "未启动",
+  starting: "启动中",
+  ready: "端口就绪",
+};
+
 export function SettingsPage() {
   const themeMode = useRosettaStore((state) => state.themeMode);
   const setThemeMode = useRosettaStore((state) => state.setThemeMode);
@@ -113,12 +132,18 @@ export function SettingsPage() {
     useState<RwkvRuntimeArtifactScanResult | null>(null);
   const [extractionResult, setExtractionResult] =
     useState<RwkvRuntimeExtractionResult | null>(null);
+  const [processStatus, setProcessStatus] =
+    useState<RwkvRuntimeProcessStatus | null>(null);
+  const [translationProbeResult, setTranslationProbeResult] =
+    useState<RwkvRuntimeTranslationProbeResult | null>(null);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [isCheckingRuntime, setIsCheckingRuntime] = useState(false);
   const [isPreparingRuntime, setIsPreparingRuntime] = useState(false);
   const [isPreparingInstall, setIsPreparingInstall] = useState(false);
   const [isScanningArtifacts, setIsScanningArtifacts] = useState(false);
   const [isExtractingRuntime, setIsExtractingRuntime] = useState(false);
+  const [isStartingRuntime, setIsStartingRuntime] = useState(false);
+  const [isProbingTranslation, setIsProbingTranslation] = useState(false);
 
   async function refreshRuntimeStatus() {
     setIsCheckingRuntime(true);
@@ -133,10 +158,12 @@ export function SettingsPage() {
         getRwkvRuntimeInstallProgress(),
         getRwkvRuntimeArtifactCatalog(),
       ]);
+      const nextProcessStatus = await getRwkvRuntimeProcessStatus();
       setRuntimeStatus(nextRuntimeStatus);
       setInstallPlan(nextInstallPlan);
       setInstallProgress(nextInstallProgress);
       setArtifactCatalog(nextArtifactCatalog);
+      setProcessStatus(nextProcessStatus);
     } catch (error) {
       setRuntimeStatus(null);
       setInstallPlan(null);
@@ -144,6 +171,8 @@ export function SettingsPage() {
       setArtifactCatalog(null);
       setScanResult(null);
       setExtractionResult(null);
+      setProcessStatus(null);
+      setTranslationProbeResult(null);
       setRuntimeError(
         error instanceof Error ? error.message : "无法读取本地 RWKV 状态。"
       );
@@ -165,6 +194,7 @@ export function SettingsPage() {
       setInstallPlan(await getRwkvRuntimeInstallPlan());
       setInstallProgress(await getRwkvRuntimeInstallProgress());
       setArtifactCatalog(await getRwkvRuntimeArtifactCatalog());
+      setProcessStatus(await getRwkvRuntimeProcessStatus());
     } catch (error) {
       setRuntimeError(
         error instanceof Error ? error.message : "无法准备本地 RWKV 目录。"
@@ -183,6 +213,7 @@ export function SettingsPage() {
       setRuntimeStatus(await getRwkvRuntimeStatus());
       setInstallPlan(await getRwkvRuntimeInstallPlan());
       setArtifactCatalog(await getRwkvRuntimeArtifactCatalog());
+      setProcessStatus(await getRwkvRuntimeProcessStatus());
     } catch (error) {
       setRuntimeError(
         error instanceof Error ? error.message : "无法准备本地 RWKV 安装任务。"
@@ -203,6 +234,7 @@ export function SettingsPage() {
       setRuntimeStatus(await getRwkvRuntimeStatus());
       setInstallProgress(await getRwkvRuntimeInstallProgress());
       setArtifactCatalog(await getRwkvRuntimeArtifactCatalog());
+      setProcessStatus(await getRwkvRuntimeProcessStatus());
     } catch (error) {
       setRuntimeError(
         error instanceof Error ? error.message : "无法扫描本地 RWKV artifact。"
@@ -223,12 +255,49 @@ export function SettingsPage() {
       setRuntimeStatus(await getRwkvRuntimeStatus());
       setInstallProgress(await getRwkvRuntimeInstallProgress());
       setArtifactCatalog(await getRwkvRuntimeArtifactCatalog());
+      setProcessStatus(await getRwkvRuntimeProcessStatus());
     } catch (error) {
       setRuntimeError(
         error instanceof Error ? error.message : "无法解压本地 RWKV runtime。"
       );
     } finally {
       setIsExtractingRuntime(false);
+    }
+  }
+
+  async function startRuntime() {
+    setIsStartingRuntime(true);
+    setRuntimeError(null);
+
+    try {
+      const startResult = await startRwkvRuntime();
+      setProcessStatus(startResult.process);
+      setRuntimeStatus(await getRwkvRuntimeStatus());
+      setInstallPlan(await getRwkvRuntimeInstallPlan());
+      setInstallProgress(await getRwkvRuntimeInstallProgress());
+    } catch (error) {
+      setRuntimeError(
+        error instanceof Error ? error.message : "无法启动本地 RWKV runtime。"
+      );
+    } finally {
+      setIsStartingRuntime(false);
+    }
+  }
+
+  async function probeTranslation() {
+    setIsProbingTranslation(true);
+    setRuntimeError(null);
+
+    try {
+      const probeResult = await probeRwkvRuntimeTranslation();
+      setTranslationProbeResult(probeResult);
+      setProcessStatus(probeResult.process);
+    } catch (error) {
+      setRuntimeError(
+        error instanceof Error ? error.message : "无法测试本地 RWKV 翻译接口。"
+      );
+    } finally {
+      setIsProbingTranslation(false);
     }
   }
 
@@ -291,7 +360,9 @@ export function SettingsPage() {
                   isPreparingRuntime ||
                   isPreparingInstall ||
                   isScanningArtifacts ||
-                  isExtractingRuntime
+                  isExtractingRuntime ||
+                  isStartingRuntime ||
+                  isProbingTranslation
                 }
                 onClick={() => void prepareRuntimeLayout()}
                 title="准备本地 RWKV 目录"
@@ -307,7 +378,9 @@ export function SettingsPage() {
                   isPreparingRuntime ||
                   isPreparingInstall ||
                   isScanningArtifacts ||
-                  isExtractingRuntime
+                  isExtractingRuntime ||
+                  isStartingRuntime ||
+                  isProbingTranslation
                 }
                 onClick={() => void prepareInstall()}
                 title="准备本地 RWKV 安装任务"
@@ -323,7 +396,9 @@ export function SettingsPage() {
                   isPreparingRuntime ||
                   isPreparingInstall ||
                   isScanningArtifacts ||
-                  isExtractingRuntime
+                  isExtractingRuntime ||
+                  isStartingRuntime ||
+                  isProbingTranslation
                 }
                 onClick={() => void scanArtifacts()}
                 title="扫描已放入管理目录的 RWKV 文件"
@@ -339,7 +414,9 @@ export function SettingsPage() {
                   isPreparingRuntime ||
                   isPreparingInstall ||
                   isScanningArtifacts ||
-                  isExtractingRuntime
+                  isExtractingRuntime ||
+                  isStartingRuntime ||
+                  isProbingTranslation
                 }
                 onClick={() => void extractRuntime()}
                 title="解压已校验的 RWKV runtime"
@@ -351,11 +428,53 @@ export function SettingsPage() {
               </Button>
               <Button
                 disabled={
+                  runtimeStatus?.compatibility.compatible === false ||
+                  !installPlan?.ready ||
+                  processStatus?.state === "ready" ||
                   isCheckingRuntime ||
                   isPreparingRuntime ||
                   isPreparingInstall ||
                   isScanningArtifacts ||
-                  isExtractingRuntime
+                  isExtractingRuntime ||
+                  isStartingRuntime ||
+                  isProbingTranslation
+                }
+                onClick={() => void startRuntime()}
+                title="启动本地 RWKV runtime"
+                type="button"
+                variant="outline"
+              >
+                <Play />
+                {processStatus?.state === "ready" ? "已启动" : "启动"}
+              </Button>
+              <Button
+                disabled={
+                  processStatus?.state !== "ready" ||
+                  isCheckingRuntime ||
+                  isPreparingRuntime ||
+                  isPreparingInstall ||
+                  isScanningArtifacts ||
+                  isExtractingRuntime ||
+                  isStartingRuntime ||
+                  isProbingTranslation
+                }
+                onClick={() => void probeTranslation()}
+                title="测试本地 RWKV 翻译接口"
+                type="button"
+                variant="outline"
+              >
+                <Activity />
+                {isProbingTranslation ? "测试中" : "测试翻译"}
+              </Button>
+              <Button
+                disabled={
+                  isCheckingRuntime ||
+                  isPreparingRuntime ||
+                  isPreparingInstall ||
+                  isScanningArtifacts ||
+                  isExtractingRuntime ||
+                  isStartingRuntime ||
+                  isProbingTranslation
                 }
                 onClick={() => void refreshRuntimeStatus()}
                 size="icon"
@@ -414,6 +533,35 @@ export function SettingsPage() {
               </p>
             ) : null}
 
+            {runtimeStatus ? (
+              <div className="grid gap-3 rounded-md border border-border bg-muted/30 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="font-medium text-foreground">硬件兼容性</span>
+                  <Badge variant="outline">
+                    {runtimeStatus.compatibility.compatible ? "可尝试" : "不兼容"}
+                  </Badge>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {runtimeStatus.compatibility.message}
+                </p>
+                <div className="grid gap-1 font-mono text-xs text-muted-foreground">
+                  <p>backend: {runtimeStatus.compatibility.runtimeBackend}</p>
+                  <p>
+                    requires: {runtimeStatus.compatibility.hardwareRequirement}
+                  </p>
+                  <p>
+                    display:{" "}
+                    {runtimeStatus.compatibility.detectedDisplayAdapters.length >
+                    0
+                      ? runtimeStatus.compatibility.detectedDisplayAdapters.join(
+                          " / "
+                        )
+                      : "unknown"}
+                  </p>
+                </div>
+              </div>
+            ) : null}
+
             {installPlan ? (
               <div className="grid gap-3 rounded-md border border-border bg-muted/30 p-3">
                 <div className="flex items-center justify-between gap-3">
@@ -452,6 +600,67 @@ export function SettingsPage() {
                     />
                   ))}
                 </div>
+              </div>
+            ) : null}
+
+            {processStatus ? (
+              <div className="grid gap-3 rounded-md border border-border bg-muted/30 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="font-medium text-foreground">运行进程</span>
+                  <Badge variant="outline">
+                    {processStateLabel[processStatus.state]}
+                  </Badge>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {processStatus.message}
+                </p>
+                <div className="grid gap-2 text-xs">
+                  <RuntimePath label="API" value={processStatus.apiUrl} />
+                  <RuntimePath label="PID file" value={processStatus.pidFile} />
+                  <RuntimePath label="Log" value={processStatus.logFile} />
+                  <p className="font-mono text-muted-foreground">
+                    pid: {processStatus.pid ?? "none"} / port:{" "}
+                    {processStatus.port} / open:{" "}
+                    {processStatus.portOpen ? "yes" : "no"}
+                  </p>
+                  <p className="font-mono text-muted-foreground">
+                    process:{" "}
+                    {processStatus.processRunning == null
+                      ? "unknown"
+                      : processStatus.processRunning
+                        ? "running"
+                        : "stopped"}{" "}
+                    / http: {processStatus.httpReady ? "ready" : "not-ready"} /
+                    status: {processStatus.httpStatusCode ?? "none"}
+                  </p>
+                  {processStatus.logTail.length > 0 ? (
+                    <pre className="max-h-40 overflow-auto rounded-sm bg-background/80 p-2 font-mono text-[11px] leading-relaxed text-muted-foreground">
+                      {processStatus.logTail.join("\n")}
+                    </pre>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
+
+            {translationProbeResult ? (
+              <div className="grid gap-3 rounded-md border border-border bg-muted/30 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="font-medium text-foreground">翻译探测</span>
+                  <Badge variant="outline">
+                    {translationProbeResult.ok ? "成功" : "失败"}
+                  </Badge>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {translationProbeResult.message}
+                </p>
+                <p className="font-mono text-xs text-muted-foreground">
+                  status: {translationProbeResult.statusCode ?? "none"}
+                </p>
+                {translationProbeResult.responseBodyPreview ? (
+                  <pre className="max-h-40 overflow-auto rounded-sm bg-background/80 p-2 font-mono text-[11px] leading-relaxed text-muted-foreground">
+                    {translationProbeResult.responseBodyPreview}
+                  </pre>
+                ) : null}
               </div>
             ) : null}
 

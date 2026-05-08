@@ -113,6 +113,7 @@ export type RwkvArtifactManifest = {
 export type RwkvRuntimeStatus = {
   state: RwkvRuntimeState;
   apiUrl: string;
+  compatibility: RwkvRuntimeCompatibility;
   runtimeDir: string;
   modelDir: string;
   logsDir: string;
@@ -129,6 +130,14 @@ export type RwkvRuntimeStatus = {
   modelManifest?: RwkvArtifactManifest;
   manifestError?: string;
   logFile: string;
+  message: string;
+};
+
+export type RwkvRuntimeCompatibility = {
+  runtimeBackend: string;
+  hardwareRequirement: string;
+  detectedDisplayAdapters: string[];
+  compatible: boolean;
   message: string;
 };
 
@@ -218,5 +227,37 @@ export type RwkvRuntimeExtractionResult = {
   filesExtracted: number;
   bytesExtracted: number;
   plan: RwkvRuntimeInstallPlan;
+  message: string;
+};
+
+export type RwkvRuntimeProcessState = "stopped" | "starting" | "ready";
+
+export type RwkvRuntimeProcessStatus = {
+  state: RwkvRuntimeProcessState;
+  pid: number | null;
+  processRunning: boolean | null;
+  pidFile: string;
+  apiUrl: string;
+  port: number;
+  portOpen: boolean;
+  httpReady: boolean;
+  httpStatusCode: number | null;
+  logFile: string;
+  logTail: string[];
+  message: string;
+};
+
+export type RwkvRuntimeStartResult = {
+  started: boolean;
+  command: string[];
+  process: RwkvRuntimeProcessStatus;
+  message: string;
+};
+
+export type RwkvRuntimeTranslationProbeResult = {
+  ok: boolean;
+  statusCode: number | null;
+  responseBodyPreview: string;
+  process: RwkvRuntimeProcessStatus;
   message: string;
 };

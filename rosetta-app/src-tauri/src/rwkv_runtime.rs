@@ -1,9 +1,15 @@
 use std::{
     fs,
     fs::File,
-    io::{self, Read},
+    io::{self, Read, Seek, SeekFrom, Write},
+    net::{TcpStream, ToSocketAddrs},
     path::{Path, PathBuf},
+    process::{Command, Stdio},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
+
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -23,6 +29,7 @@ const RUNTIME_ARTIFACT_SOURCE_PAGE: &str =
     "https://www.modelscope.cn/models/AlicLi/RWKV_v7_G1_Translate/files";
 const RUNTIME_EXTRACTED_DIR: &str = "runtime-bundle";
 const RUNTIME_EXECUTABLE_FILENAME: &str = "rwkv_lightning.exe";
+const RUNTIME_VOCAB_FILENAME: &str = "rwkv_vocab_v20230424.txt";
 const EXPECTED_MODEL_ID: &str = "rwkv-v7-g1-translate-1.5b";
 const EXPECTED_CONTEXT_TOKENS: u32 = 4096;
 const EXPECTED_DIRECTIONS: [&str; 2] = ["en-zh", "zh-en"];
@@ -33,12 +40,20 @@ const MODEL_ARTIFACT_SHA256: &str =
 const MODEL_ARTIFACT_DOWNLOAD_URL: &str = "https://modelscope.cn/models/AlicLi/RWKV_v7_G1_Translate/resolve/master/RWKV_v7_G1c_1.5B_Translate_ctx4096_20260118.pth";
 const MODEL_ARTIFACT_SOURCE_PAGE: &str =
     "https://www.modelscope.cn/models/AlicLi/RWKV_v7_G1_Translate/files";
+const RUNTIME_PID_FILENAME: &str = "rwkv-runtime.pid";
+const RUNTIME_PASSWORD_FILENAME: &str = "rwkv-runtime.token";
+const RUNTIME_LOG_TAIL_BYTES: u64 = 8 * 1024;
+const RUNTIME_PROBE_TIMEOUT: Duration = Duration::from_millis(800);
+const RUNTIME_TRANSLATION_PROBE_TEXT: &str = "Hello world!";
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RwkvRuntimeStatus {
     state: RwkvRuntimeState,
     api_url: String,
+    compatibility: RwkvRuntimeCompatibility,
     runtime_dir: String,
     model_dir: String,
     logs_dir: String,
@@ -146,6 +161,52 @@ pub struct RwkvRuntimeExtractionResult {
     message: String,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RwkvRuntimeCompatibility {
+    runtime_backend: String,
+    hardware_requirement: String,
+    detected_display_adapters: Vec<String>,
+    compatible: bool,
+    message: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RwkvRuntimeProcessStatus {
+    state: RwkvRuntimeProcessState,
+    pid: Option<u32>,
+    process_running: Option<bool>,
+    pid_file: String,
+    api_url: String,
+    port: u16,
+    port_open: bool,
+    http_ready: bool,
+    http_status_code: Option<u16>,
+    log_file: String,
+    log_tail: Vec<String>,
+    message: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RwkvRuntimeStartResult {
+    started: bool,
+    command: Vec<String>,
+    process: RwkvRuntimeProcessStatus,
+    message: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RwkvRuntimeTranslationProbeResult {
+    ok: bool,
+    status_code: Option<u16>,
+    response_body_preview: String,
+    process: RwkvRuntimeProcessStatus,
+    message: String,
+}
+
 #[derive(Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 enum RwkvRuntimeState {
@@ -190,6 +251,14 @@ enum RwkvRuntimeInstallProgressItemState {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 enum RwkvRuntimeArtifactCatalogItemState {
+    Ready,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum RwkvRuntimeProcessState {
+    Stopped,
+    Starting,
     Ready,
 }
 
@@ -352,11 +421,50 @@ pub fn extract_rwkv_runtime_artifact(
     extract_runtime_zip(paths)
 }
 
+#[tauri::command]
+pub fn get_rwkv_runtime_process_status(app: AppHandle) -> Result<RwkvRuntimeProcessStatus, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Could not resolve Rosetta app data directory: {error}"))?;
+
+    Ok(build_process_status(&runtime_paths(app_data_dir)))
+}
+
+#[tauri::command]
+pub fn start_rwkv_runtime(app: AppHandle) -> Result<RwkvRuntimeStartResult, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Could not resolve Rosetta app data directory: {error}"))?;
+    let paths = runtime_paths(app_data_dir);
+
+    fs::create_dir_all(&paths.logs_dir)
+        .map_err(|error| format!("Could not create RWKV logs directory: {error}"))?;
+
+    start_runtime_process(paths)
+}
+
+#[tauri::command]
+pub fn probe_rwkv_runtime_translation(
+    app: AppHandle,
+) -> Result<RwkvRuntimeTranslationProbeResult, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Could not resolve Rosetta app data directory: {error}"))?;
+    let paths = runtime_paths(app_data_dir);
+
+    probe_runtime_translation(paths)
+}
+
 struct RwkvRuntimePaths {
     runtime_dir: PathBuf,
     model_dir: PathBuf,
     logs_dir: PathBuf,
     log_file: PathBuf,
+    pid_file: PathBuf,
+    password_file: PathBuf,
 }
 
 fn runtime_paths(app_data_dir: PathBuf) -> RwkvRuntimePaths {
@@ -367,12 +475,16 @@ fn runtime_paths(app_data_dir: PathBuf) -> RwkvRuntimePaths {
         .join("1.5b");
     let logs_dir = app_data_dir.join("logs");
     let log_file = logs_dir.join("rwkv-runtime.log");
+    let pid_file = logs_dir.join(RUNTIME_PID_FILENAME);
+    let password_file = logs_dir.join(RUNTIME_PASSWORD_FILENAME);
 
     RwkvRuntimePaths {
         runtime_dir,
         model_dir,
         logs_dir,
         log_file,
+        pid_file,
+        password_file,
     }
 }
 
@@ -432,6 +544,7 @@ fn build_status(paths: RwkvRuntimePaths) -> RwkvRuntimeStatus {
     RwkvRuntimeStatus {
         state,
         api_url: format!("http://{DEFAULT_HOST}:{DEFAULT_PORT}"),
+        compatibility: runtime_compatibility(runtime_manifest.as_ref()),
         runtime_dir: display_path(&paths.runtime_dir),
         model_dir: display_path(&paths.model_dir),
         logs_dir: display_path(&paths.logs_dir),
@@ -820,6 +933,531 @@ fn safe_zip_entry_path(base_dir: &Path, entry_name: &Path) -> Option<PathBuf> {
     }
 
     Some(base_dir.join(entry_name))
+}
+
+fn runtime_compatibility(
+    runtime_manifest: Option<&RwkvArtifactManifest>,
+) -> RwkvRuntimeCompatibility {
+    let runtime_backend = runtime_backend(runtime_manifest);
+    let detected_display_adapters = detect_display_adapters();
+    let has_nvidia = detected_display_adapters
+        .iter()
+        .any(|adapter| adapter.to_lowercase().contains("nvidia"));
+
+    if runtime_backend == "cuda-nvidia" && !detected_display_adapters.is_empty() && !has_nvidia {
+        return RwkvRuntimeCompatibility {
+            runtime_backend,
+            hardware_requirement: "NVIDIA GPU with CUDA support".to_string(),
+            detected_display_adapters,
+            compatible: false,
+            message: "当前已安装的是 CUDA/NVIDIA RWKV runtime，但这台机器没有检测到 NVIDIA 显卡。请改用 Vulkan/CPU runtime 后再启动。".to_string(),
+        };
+    }
+
+    if runtime_backend == "cuda-nvidia" && detected_display_adapters.is_empty() {
+        return RwkvRuntimeCompatibility {
+            runtime_backend,
+            hardware_requirement: "NVIDIA GPU with CUDA support".to_string(),
+            detected_display_adapters,
+            compatible: true,
+            message: "当前 runtime 是 CUDA/NVIDIA 包，但 Rosetta 未能读取显示设备信息，启动前请确认本机有 NVIDIA CUDA 显卡。".to_string(),
+        };
+    }
+
+    let hardware_requirement = runtime_hardware_requirement(&runtime_backend);
+
+    RwkvRuntimeCompatibility {
+        runtime_backend,
+        hardware_requirement,
+        detected_display_adapters,
+        compatible: true,
+        message: "当前 runtime 与已检测硬件未发现明确冲突。".to_string(),
+    }
+}
+
+fn runtime_hardware_requirement(runtime_backend: &str) -> String {
+    match runtime_backend {
+        "cuda-nvidia" => "NVIDIA GPU with CUDA support".to_string(),
+        _ => "Unknown runtime package requirements".to_string(),
+    }
+}
+
+fn runtime_backend(runtime_manifest: Option<&RwkvArtifactManifest>) -> String {
+    let Some(runtime_manifest) = runtime_manifest else {
+        return "unknown".to_string();
+    };
+
+    let id = runtime_manifest.id.to_lowercase();
+    let filename = runtime_manifest
+        .filename
+        .as_deref()
+        .unwrap_or_default()
+        .to_lowercase();
+
+    if id.contains("cuda") || id.contains("cu132") || filename.contains("+cu") {
+        "cuda-nvidia".to_string()
+    } else {
+        "unknown".to_string()
+    }
+}
+
+#[cfg(windows)]
+fn detect_display_adapters() -> Vec<String> {
+    let mut command = Command::new("pnputil");
+    command.args(["/enum-devices", "/class", "Display"]);
+    configure_runtime_command(&mut command);
+    let output = command.output();
+
+    match output {
+        Ok(output) if output.status.success() => {
+            parse_display_adapters(&String::from_utf8_lossy(&output.stdout))
+        }
+        _ => Vec::new(),
+    }
+}
+
+#[cfg(not(windows))]
+fn detect_display_adapters() -> Vec<String> {
+    Vec::new()
+}
+
+fn parse_display_adapters(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .filter_map(|line| line.split_once("Device Description:"))
+        .map(|(_, name)| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .collect()
+}
+
+fn start_runtime_process(paths: RwkvRuntimePaths) -> Result<RwkvRuntimeStartResult, String> {
+    let plan = build_install_plan(runtime_paths_from_paths(&paths));
+
+    if !plan.ready {
+        return Err("本地 RWKV runtime/model 尚未就绪，不能启动。".to_string());
+    }
+
+    let runtime_manifest_path = paths.runtime_dir.join("runtime-manifest.json");
+    let runtime_manifest = read_manifest(&runtime_manifest_path)?;
+    let compatibility = runtime_compatibility(runtime_manifest.as_ref());
+    if !compatibility.compatible {
+        return Err(compatibility.message);
+    }
+
+    let process_status = build_process_status(&paths);
+
+    if process_status.port_open {
+        return Ok(RwkvRuntimeStartResult {
+            started: false,
+            command: runtime_start_command_preview(&paths)?,
+            process: process_status,
+            message: "RWKV runtime 端口已可连接，无需重复启动。".to_string(),
+        });
+    }
+
+    if matches!(process_status.process_running, Some(false)) && paths.pid_file.exists() {
+        let _ = fs::remove_file(&paths.pid_file);
+    }
+
+    let executable_path = runtime_executable_path(&paths);
+    if !executable_path.is_file() {
+        return Err(format!(
+            "RWKV runtime executable is missing: {}",
+            display_path(&executable_path)
+        ));
+    }
+
+    let vocab_path = runtime_vocab_path(&paths);
+    if !vocab_path.is_file() {
+        return Err(format!(
+            "RWKV runtime vocab is missing: {}",
+            display_path(&vocab_path)
+        ));
+    }
+
+    let model_path = installed_model_path(&paths)?;
+    let password = read_or_create_runtime_password(&paths)?;
+    let port = DEFAULT_PORT.to_string();
+    let log_file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&paths.log_file)
+        .map_err(|error| format!("Could not open RWKV runtime log file: {error}"))?;
+    let log_file_for_stderr = log_file
+        .try_clone()
+        .map_err(|error| format!("Could not clone RWKV runtime log file handle: {error}"))?;
+
+    let mut command = Command::new(&executable_path);
+    command
+        .arg("--model-path")
+        .arg(&model_path)
+        .arg("--vocab-path")
+        .arg(&vocab_path)
+        .arg("--port")
+        .arg(&port)
+        .arg("--password")
+        .arg(&password)
+        .current_dir(paths.runtime_dir.join(RUNTIME_EXTRACTED_DIR))
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log_file))
+        .stderr(Stdio::from(log_file_for_stderr));
+    configure_runtime_command(&mut command);
+
+    let child = command
+        .spawn()
+        .map_err(|error| format!("Could not start RWKV runtime process: {error}"))?;
+    let pid = child.id();
+
+    fs::write(&paths.pid_file, pid.to_string())
+        .map_err(|error| format!("Could not write RWKV runtime pid file: {error}"))?;
+
+    Ok(RwkvRuntimeStartResult {
+        started: true,
+        command: runtime_start_command_preview(&paths)?,
+        process: build_process_status(&paths),
+        message: "RWKV runtime 已启动，模型加载可能还需要一段时间。".to_string(),
+    })
+}
+
+fn runtime_paths_from_paths(paths: &RwkvRuntimePaths) -> RwkvRuntimePaths {
+    RwkvRuntimePaths {
+        runtime_dir: paths.runtime_dir.clone(),
+        model_dir: paths.model_dir.clone(),
+        logs_dir: paths.logs_dir.clone(),
+        log_file: paths.log_file.clone(),
+        pid_file: paths.pid_file.clone(),
+        password_file: paths.password_file.clone(),
+    }
+}
+
+fn runtime_start_command_preview(paths: &RwkvRuntimePaths) -> Result<Vec<String>, String> {
+    Ok(vec![
+        display_path(&runtime_executable_path(paths)),
+        "--model-path".to_string(),
+        display_path(&installed_model_path(paths)?),
+        "--vocab-path".to_string(),
+        display_path(&runtime_vocab_path(paths)),
+        "--port".to_string(),
+        DEFAULT_PORT.to_string(),
+        "--password".to_string(),
+        "<redacted>".to_string(),
+    ])
+}
+
+fn runtime_executable_path(paths: &RwkvRuntimePaths) -> PathBuf {
+    paths
+        .runtime_dir
+        .join(RUNTIME_EXTRACTED_DIR)
+        .join(RUNTIME_EXECUTABLE_FILENAME)
+}
+
+fn runtime_vocab_path(paths: &RwkvRuntimePaths) -> PathBuf {
+    paths
+        .runtime_dir
+        .join(RUNTIME_EXTRACTED_DIR)
+        .join(RUNTIME_VOCAB_FILENAME)
+}
+
+fn installed_model_path(paths: &RwkvRuntimePaths) -> Result<PathBuf, String> {
+    let manifest_path = paths.model_dir.join("model-manifest.json");
+    let manifest = read_manifest(&manifest_path)?
+        .ok_or_else(|| "RWKV model manifest is missing.".to_string())?;
+
+    validate_model_manifest(&manifest, paths)?;
+
+    let filename = manifest
+        .filename
+        .as_deref()
+        .ok_or_else(|| "RWKV model manifest filename is missing.".to_string())?;
+
+    safe_artifact_path(&paths.model_dir, filename)
+        .ok_or_else(|| "RWKV model manifest filename must stay inside model directory.".to_string())
+}
+
+fn build_process_status(paths: &RwkvRuntimePaths) -> RwkvRuntimeProcessStatus {
+    let pid = read_runtime_pid(&paths.pid_file);
+    let port_open = is_tcp_port_open(DEFAULT_HOST, DEFAULT_PORT, Duration::from_millis(200));
+    let process_running = pid.and_then(is_process_running);
+    let password = read_runtime_password(paths);
+    let http_probe = probe_runtime_http(
+        "GET",
+        "/v1/models",
+        None,
+        password.as_deref(),
+        RUNTIME_PROBE_TIMEOUT,
+    );
+    let http_ready = http_probe.status_code.is_some();
+    let state = process_state_from_signals(pid, process_running, port_open, http_ready);
+    let message = match state {
+        RwkvRuntimeProcessState::Stopped if matches!(process_running, Some(false)) => {
+            "RWKV runtime PID 已失效，进程未运行。".to_string()
+        }
+        RwkvRuntimeProcessState::Stopped => "RWKV runtime 尚未启动。".to_string(),
+        RwkvRuntimeProcessState::Starting if port_open => {
+            "RWKV runtime 端口已打开，等待 HTTP API 就绪。".to_string()
+        }
+        RwkvRuntimeProcessState::Starting => "RWKV runtime 进程已启动，等待端口就绪。".to_string(),
+        RwkvRuntimeProcessState::Ready => "RWKV runtime HTTP API 已就绪。".to_string(),
+    };
+
+    RwkvRuntimeProcessStatus {
+        state,
+        pid,
+        process_running,
+        pid_file: display_path(&paths.pid_file),
+        api_url: format!("http://{DEFAULT_HOST}:{DEFAULT_PORT}"),
+        port: DEFAULT_PORT,
+        port_open,
+        http_ready,
+        http_status_code: http_probe.status_code,
+        log_file: display_path(&paths.log_file),
+        log_tail: read_log_tail(&paths.log_file),
+        message,
+    }
+}
+
+fn process_state_from_signals(
+    pid: Option<u32>,
+    process_running: Option<bool>,
+    port_open: bool,
+    http_ready: bool,
+) -> RwkvRuntimeProcessState {
+    if port_open && http_ready {
+        RwkvRuntimeProcessState::Ready
+    } else if matches!(process_running, Some(false)) {
+        RwkvRuntimeProcessState::Stopped
+    } else if pid.is_some() || port_open {
+        RwkvRuntimeProcessState::Starting
+    } else {
+        RwkvRuntimeProcessState::Stopped
+    }
+}
+
+fn read_runtime_pid(path: &Path) -> Option<u32> {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|contents| contents.trim().parse::<u32>().ok())
+}
+
+fn is_tcp_port_open(host: &str, port: u16, timeout: Duration) -> bool {
+    let Ok(mut addresses) = (host, port).to_socket_addrs() else {
+        return false;
+    };
+    let Some(address) = addresses.next() else {
+        return false;
+    };
+
+    TcpStream::connect_timeout(&address, timeout).is_ok()
+}
+
+fn read_or_create_runtime_password(paths: &RwkvRuntimePaths) -> Result<String, String> {
+    if let Some(password) = read_runtime_password(paths) {
+        return Ok(password);
+    }
+
+    fs::create_dir_all(&paths.logs_dir)
+        .map_err(|error| format!("Could not create RWKV logs directory: {error}"))?;
+    let password = generate_runtime_password();
+    fs::write(&paths.password_file, &password)
+        .map_err(|error| format!("Could not write RWKV runtime token file: {error}"))?;
+
+    Ok(password)
+}
+
+fn read_runtime_password(paths: &RwkvRuntimePaths) -> Option<String> {
+    fs::read_to_string(&paths.password_file)
+        .ok()
+        .map(|contents| contents.trim().to_string())
+        .filter(|password| !password.is_empty())
+}
+
+fn generate_runtime_password() -> String {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+
+    format!("rosetta-local-{timestamp}-{}", std::process::id())
+}
+
+#[cfg(windows)]
+fn configure_runtime_command(command: &mut Command) {
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(windows))]
+fn configure_runtime_command(_command: &mut Command) {}
+
+#[cfg(windows)]
+fn is_process_running(pid: u32) -> Option<bool> {
+    let output = Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+        .output()
+        .ok()?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Some(stdout.contains(&format!("\"{pid}\"")) || stdout.contains(&format!(",\"{pid}\",")))
+}
+
+#[cfg(not(windows))]
+fn is_process_running(_pid: u32) -> Option<bool> {
+    None
+}
+
+struct HttpProbeResult {
+    status_code: Option<u16>,
+    body: String,
+}
+
+fn probe_runtime_http(
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+    password: Option<&str>,
+    timeout: Duration,
+) -> HttpProbeResult {
+    let Ok(mut addresses) = (DEFAULT_HOST, DEFAULT_PORT).to_socket_addrs() else {
+        return HttpProbeResult {
+            status_code: None,
+            body: String::new(),
+        };
+    };
+    let Some(address) = addresses.next() else {
+        return HttpProbeResult {
+            status_code: None,
+            body: String::new(),
+        };
+    };
+    let Ok(mut stream) = TcpStream::connect_timeout(&address, timeout) else {
+        return HttpProbeResult {
+            status_code: None,
+            body: String::new(),
+        };
+    };
+
+    let _ = stream.set_read_timeout(Some(timeout));
+    let _ = stream.set_write_timeout(Some(timeout));
+
+    let body = body.unwrap_or("");
+    let auth_header = password
+        .map(|password| format!("Authorization: Bearer {password}\r\n"))
+        .unwrap_or_default();
+    let content_type_header = if body.is_empty() {
+        String::new()
+    } else {
+        "Content-Type: application/json\r\n".to_string()
+    };
+    let request = format!(
+        "{method} {path} HTTP/1.1\r\nHost: {DEFAULT_HOST}:{DEFAULT_PORT}\r\n{auth_header}{content_type_header}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+
+    if stream.write_all(request.as_bytes()).is_err() {
+        return HttpProbeResult {
+            status_code: None,
+            body: String::new(),
+        };
+    }
+
+    let mut response = String::new();
+    let _ = stream.read_to_string(&mut response);
+    let status_code = parse_http_status_code(&response);
+    let body = response
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body.to_string())
+        .unwrap_or_default();
+
+    HttpProbeResult { status_code, body }
+}
+
+fn parse_http_status_code(response: &str) -> Option<u16> {
+    response
+        .lines()
+        .next()?
+        .split_whitespace()
+        .nth(1)?
+        .parse::<u16>()
+        .ok()
+}
+
+fn probe_runtime_translation(
+    paths: RwkvRuntimePaths,
+) -> Result<RwkvRuntimeTranslationProbeResult, String> {
+    let process = build_process_status(&paths);
+    if !process.http_ready {
+        return Ok(RwkvRuntimeTranslationProbeResult {
+            ok: false,
+            status_code: process.http_status_code,
+            response_body_preview: String::new(),
+            process,
+            message: "RWKV runtime HTTP API 尚未就绪，无法测试翻译。".to_string(),
+        });
+    }
+
+    let password = read_runtime_password(&paths);
+    let request_body = format!(
+        r#"{{"source_lang":"en","target_lang":"zh-CN","text_list":["{RUNTIME_TRANSLATION_PROBE_TEXT}"]}}"#
+    );
+    let probe = probe_runtime_http(
+        "POST",
+        "/translate/v1/batch-translate",
+        Some(&request_body),
+        password.as_deref(),
+        Duration::from_secs(120),
+    );
+    let ok = probe
+        .status_code
+        .map(|status_code| (200..300).contains(&status_code))
+        .unwrap_or(false);
+    let response_body_preview = preview_text(&probe.body, 1200);
+    let message = if ok {
+        "RWKV runtime 最小翻译探测成功。".to_string()
+    } else {
+        "RWKV runtime 最小翻译探测失败，请查看状态和日志。".to_string()
+    };
+
+    Ok(RwkvRuntimeTranslationProbeResult {
+        ok,
+        status_code: probe.status_code,
+        response_body_preview,
+        process: build_process_status(&paths),
+        message,
+    })
+}
+
+fn read_log_tail(path: &Path) -> Vec<String> {
+    let Ok(mut file) = File::open(path) else {
+        return Vec::new();
+    };
+    let file_len = file.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+    let start = file_len.saturating_sub(RUNTIME_LOG_TAIL_BYTES);
+
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return Vec::new();
+    }
+
+    let mut tail = String::new();
+    if file.read_to_string(&mut tail).is_err() {
+        return Vec::new();
+    }
+
+    tail.lines()
+        .rev()
+        .take(12)
+        .map(|line| preview_text(line, 240))
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect()
+}
+
+fn preview_text(text: &str, max_chars: usize) -> String {
+    let mut preview = String::new();
+    for character in text.chars().take(max_chars) {
+        preview.push(character);
+    }
+
+    preview
 }
 
 fn build_install_progress(plan: RwkvRuntimeInstallPlan) -> RwkvRuntimeInstallProgress {
@@ -1819,6 +2457,79 @@ mod tests {
         assert!(safe_zip_entry_path(base_dir, Path::new("rwkv_lightning.exe")).is_some());
         assert!(safe_zip_entry_path(base_dir, Path::new("../rwkv_lightning.exe")).is_none());
         assert!(safe_zip_entry_path(base_dir, Path::new("nested/../rwkv_lightning.exe")).is_none());
+    }
+
+    #[test]
+    fn missing_log_tail_is_empty() {
+        let root = unique_temp_root("missing-log-tail");
+        let paths = runtime_paths(root.clone());
+
+        assert!(read_log_tail(&paths.log_file).is_empty());
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn process_state_uses_port_and_http_readiness() {
+        assert_eq!(
+            process_state_from_signals(None, None, false, false),
+            RwkvRuntimeProcessState::Stopped
+        );
+        assert_eq!(
+            process_state_from_signals(Some(12345), None, false, false),
+            RwkvRuntimeProcessState::Starting
+        );
+        assert_eq!(
+            process_state_from_signals(Some(12345), Some(false), false, false),
+            RwkvRuntimeProcessState::Stopped
+        );
+        assert_eq!(
+            process_state_from_signals(Some(12345), Some(true), true, false),
+            RwkvRuntimeProcessState::Starting
+        );
+        assert_eq!(
+            process_state_from_signals(Some(12345), Some(true), true, true),
+            RwkvRuntimeProcessState::Ready
+        );
+    }
+
+    #[test]
+    fn parse_display_adapters_reads_pnputil_device_descriptions() {
+        let output = r#"Microsoft PnP Utility
+
+Instance ID:                ROOT\DISPLAY\0000
+Device Description:         Parsec Virtual Display Adapter
+Class Name:                 Display
+
+Instance ID:                PCI\VEN_1002&DEV_1900
+Device Description:         AMD Radeon 780M Graphics
+Class Name:                 Display
+"#;
+
+        assert_eq!(
+            parse_display_adapters(output),
+            vec![
+                "Parsec Virtual Display Adapter".to_string(),
+                "AMD Radeon 780M Graphics".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn cuda_runtime_is_incompatible_without_nvidia_display_adapter() {
+        let runtime_manifest = RwkvArtifactManifest {
+            id: RUNTIME_ARTIFACT_ID.to_string(),
+            version: None,
+            source: None,
+            filename: Some(RUNTIME_ARTIFACT_FILENAME.to_string()),
+            sha256: Some(RUNTIME_ARTIFACT_SHA256.to_string()),
+            size_bytes: Some(RUNTIME_ARTIFACT_SIZE_BYTES),
+            context_tokens: None,
+            supported_directions: None,
+            installed_at: None,
+        };
+
+        assert_eq!(runtime_backend(Some(&runtime_manifest)), "cuda-nvidia");
     }
 
     fn write_valid_runtime_manifest(paths: &RwkvRuntimePaths) {

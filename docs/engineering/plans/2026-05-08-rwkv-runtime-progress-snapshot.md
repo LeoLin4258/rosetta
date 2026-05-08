@@ -6,15 +6,42 @@
 
 ## Summary
 
-RWKV runtime 模块已经完成本地托管运行时的管理骨架，当前没有接入真实下载、安装 Python、启动 RWKV Lightning 或模型推理。
+RWKV runtime 模块已经完成本地托管运行时的管理骨架，但 2026-05-08 已决定暂停继续开发 Rosetta 内置/托管 RWKV runtime。
 
-当前重点应从继续堆 skeleton 转向 Stage 0 实测：
+当前阶段先跳过“一键本地运行 RWKV LLM”，改为连接 RWKV 工程师部署好的翻译模型 API。内置 runtime 仍是最终目标，但需要等 RWKV 模型工程师确认 runtime 方案、模型格式、backend 和 API 契约后再恢复。
 
-- 确认 RWKV Lightning 启动命令和最小依赖
-- 确认 `/translate/v1/batch-translate` 的真实响应格式、错误格式和稳定 batch size
-- 确认 Windows 上 CPU/GPU 可用性和首发 runtime 包策略
+记录该暂停决策的 ADR：
+
+- `docs/engineering/decisions/0002-pause-managed-rwkv-runtime.md`
+
+本快照保留为未来恢复本地 runtime 工作时的上下文。后续开发 Rosetta 其它功能时，不要把这里列出的 runtime skeleton 当作当前必须继续推进的依赖。
+
+暂停前已知 blocker：当前开发机是 AMD Radeon 780M，不兼容已暂存的 CUDA/NVIDIA runtime artifact，因此本机不能继续以 `cu132_sm75-120` 包作为“跑起来”的目标。
+
+暂停前待确认事项包括：
+
+- RWKV Lightning 启动命令和最小依赖
+- `/translate/v1/batch-translate` 的真实响应格式、错误格式和稳定 batch size
+- Windows 上 CPU/GPU 可用性和首发 runtime 包策略
+- AMD / Intel / NVIDIA 非 CUDA-only 设备的 Vulkan 或 CPU runtime 路径
+
+当前开发重点改为：
+
+- 面向已存在的 RWKV 翻译 API base URL 实现 connector
+- 推进 TXT/Markdown pipeline、segment 调度、进度和预览
+- 不让翻译 pipeline 依赖 Rosetta 托管 runtime readiness
+
+这里的 API base URL 不只限于工程师临时部署环境。未来 Rosetta 可以支持用户显式选择的多种 RWKV 后端：
+
+- 用户本机或局域网自部署 RWKV API
+- 用户自己配置的远程 / 云端 RWKV API
+- 未来恢复开发后的 Rosetta 托管本机 RWKV runtime
+
+远程 / 云端 API 只能作为明确 opt-in 的后端选项，不能改变 Rosetta 的 local-first 默认定位。UI 和设置需要清楚提示文档内容会离开本机。
 
 ## Implemented In App
+
+以下内容是已实现但已暂停继续扩展的 runtime skeleton。它可以保留在代码中作为后续恢复工作的基础，但不是当前产品路径。
 
 ### Tauri Commands
 
@@ -29,6 +56,9 @@ prepare_rwkv_runtime_install
 get_rwkv_runtime_artifact_catalog
 scan_rwkv_runtime_artifacts
 extract_rwkv_runtime_artifact
+get_rwkv_runtime_process_status
+start_rwkv_runtime
+probe_rwkv_runtime_translation
 ```
 
 这些 commands 均为窄接口，不暴露任意 shell 执行。
@@ -142,6 +172,14 @@ cudnn64_9.dll
 
 `rwkv_lightning.exe --help` 和 missing-model 启动探针均以 exit code 1 退出且无 CLI 输出。后续启动管理不能依赖 help text 或 stderr，需要使用进程状态、端口 readiness 和 HTTP probe。
 
+当前 packaged executable 字符串显示 `--vocab-path` 必填，且支持 `--password`。启动命令应包含：
+
+```txt
+rwkv_lightning.exe --model-path <model> --vocab-path <vocab> --port 8000 --password <local-token>
+```
+
+该 artifact 内部可见默认监听地址字符串为 `0.0.0.0`，暂未确认是否支持显式绑定 `127.0.0.1`。
+
 ### Settings UI
 
 设置页已展示：
@@ -155,11 +193,14 @@ cudnn64_9.dll
 - artifact catalog
 - 手动扫描已放入管理目录的 RWKV 文件
 - 解压已校验的 RWKV runtime
+- runtime 进程状态、PID、端口、HTTP readiness 和日志尾部
+- 最小翻译探测入口
+- runtime 硬件兼容性
 - 手动 RWKV API 配置
 
 ## Tests
 
-当前 Rust runtime 相关测试：26 个。
+当前 Rust runtime 相关测试：31 个。
 
 覆盖：
 
@@ -188,6 +229,8 @@ cudnn64_9.dll
 - 已解压 runtime 直接快速返回
 - runtime zip size mismatch 在解压前拒绝
 - UTF-8 BOM manifest 读取
+- process state readiness 判断
+- display adapter parser
 
 最近验证命令：
 
@@ -321,6 +364,22 @@ Source:
 
 ## Current Gaps
 
+### Current Workstation Blocker
+
+当前开发机 GPU 是：
+
+```txt
+AMD Radeon 780M Graphics
+```
+
+已暂存 runtime artifact 是：
+
+```txt
+rwkv_lightning_libtorch2.10.0+cu132_sm75-120_Windows_amd64.zip
+```
+
+这是 CUDA/NVIDIA runtime。手动启动后进程曾出现，但 `127.0.0.1:8000` 多分钟未就绪，stdout/stderr 没有可用诊断输出。Rosetta 现在会在 Windows 下通过 `pnputil /enum-devices /class Display` 做窄范围显示设备探测；如果已安装 runtime 是 CUDA/NVIDIA 且未检测到 NVIDIA 显卡，则启动前阻断。
+
 ### Must Confirm Before Real Download
 
 - 是否首发只支持 Windows amd64 + CUDA 13.2 / sm75-120 runtime 包
@@ -345,14 +404,13 @@ Source:
 
 ## Recommended Next Step
 
-当前已经具备不由 App 下载大文件的离线扫描路径。下一步应进入 Stage 0 runtime spike：
+Runtime 工作暂停后的下一步不是继续找 runtime 包，而是先接 RWKV 工程师部署好的翻译 API：
 
-1. 通过 App command 或设置页完成扫描与解压。
-2. 设计并实现受控启动 command。
-3. 启动后检查进程状态和 `127.0.0.1:8000` 端口 readiness。
-4. 用最小 text list 调 `/translate/v1/batch-translate`。
-5. 记录响应格式、错误格式和性能指标。
-6. 形成 runtime launch ADR。
+1. 确认工程师部署 API 的 base URL、endpoint、请求/响应/错误格式和认证方式。
+2. 建立 Rosetta translation connector，不依赖 `start_rwkv_runtime` 或 managed runtime status。
+3. 用最小 text list 验证批量翻译顺序、错误格式和超时行为。
+4. 基于该 API 推进 document pipeline、segment scheduler 和预览。
+5. 等 RWKV 工程侧 runtime 方案确认后，再恢复本地一键运行工作并新增 runtime choice ADR。
 
 ## Stage Status
 
@@ -368,10 +426,11 @@ Artifact catalog                       Done, ModelScope model/runtime metadata c
 Manual artifact scan                   Done
 Runtime zip extraction                 Done
 Settings extracted-state display       Done
-Runtime ADR                            Pending Stage 0
+Runtime process launch command          Parked, blocked on CUDA/NVIDIA compatibility on current AMD workstation
+Runtime ADR                            Paused, pending RWKV engineer input
 Local model/runtime files              Done on current workstation
-RWKV Lightning launch                  Pending process/port probe
-Translation connector                  Pending runtime validation
-One-click install                      Pending download strategy
-One-click start                        Pending runtime launch validation
+RWKV Lightning launch                  Paused, do not continue before runtime scheme is confirmed
+Translation connector                  Next, target engineer-deployed RWKV translation API
+One-click install                      Paused
+One-click start                        Paused
 ```
