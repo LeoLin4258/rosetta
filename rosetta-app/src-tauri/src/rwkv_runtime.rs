@@ -57,6 +57,51 @@ pub struct RwkvRuntimeInstallPlanItem {
     message: String,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RwkvRuntimeInstallProgress {
+    state: RwkvRuntimeInstallProgressState,
+    items: Vec<RwkvRuntimeInstallProgressItem>,
+    message: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RwkvRuntimeInstallProgressItem {
+    id: String,
+    kind: RwkvRuntimeInstallItemKind,
+    state: RwkvRuntimeInstallProgressItemState,
+    label: String,
+    bytes_total: Option<u64>,
+    bytes_done: u64,
+    message: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RwkvRuntimeArtifactCatalog {
+    ready_for_download: bool,
+    items: Vec<RwkvRuntimeArtifactCatalogItem>,
+    message: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RwkvRuntimeArtifactCatalogItem {
+    id: String,
+    kind: RwkvRuntimeInstallItemKind,
+    state: RwkvRuntimeArtifactCatalogItemState,
+    label: String,
+    target_dir: String,
+    manifest_path: String,
+    artifact_filename: Option<String>,
+    download_url: Option<String>,
+    source_page: Option<String>,
+    size_bytes: Option<u64>,
+    sha256: Option<String>,
+    message: String,
+}
+
 #[derive(Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 enum RwkvRuntimeState {
@@ -66,19 +111,43 @@ enum RwkvRuntimeState {
     Invalid,
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 enum RwkvRuntimeInstallItemKind {
     Runtime,
     Model,
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 enum RwkvRuntimeInstallItemState {
     Missing,
     Ready,
     Invalid,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum RwkvRuntimeInstallProgressState {
+    NotStarted,
+    Queued,
+    Ready,
+    Blocked,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum RwkvRuntimeInstallProgressItemState {
+    Pending,
+    Ready,
+    Blocked,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum RwkvRuntimeArtifactCatalogItemState {
+    MetadataPending,
+    Ready,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -140,6 +209,51 @@ pub fn get_rwkv_runtime_install_plan(app: AppHandle) -> Result<RwkvRuntimeInstal
         .map_err(|error| format!("Could not resolve Rosetta app data directory: {error}"))?;
 
     Ok(build_install_plan(runtime_paths(app_data_dir)))
+}
+
+#[tauri::command]
+pub fn get_rwkv_runtime_artifact_catalog(
+    app: AppHandle,
+) -> Result<RwkvRuntimeArtifactCatalog, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Could not resolve Rosetta app data directory: {error}"))?;
+
+    Ok(build_artifact_catalog(runtime_paths(app_data_dir)))
+}
+
+#[tauri::command]
+pub fn prepare_rwkv_runtime_install(app: AppHandle) -> Result<RwkvRuntimeInstallProgress, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Could not resolve Rosetta app data directory: {error}"))?;
+
+    let paths = runtime_paths(app_data_dir);
+
+    fs::create_dir_all(&paths.runtime_dir)
+        .map_err(|error| format!("Could not create RWKV runtime directory: {error}"))?;
+    fs::create_dir_all(&paths.model_dir)
+        .map_err(|error| format!("Could not create RWKV model directory: {error}"))?;
+    fs::create_dir_all(&paths.logs_dir)
+        .map_err(|error| format!("Could not create RWKV logs directory: {error}"))?;
+
+    Ok(build_install_progress(build_install_plan(paths)))
+}
+
+#[tauri::command]
+pub fn get_rwkv_runtime_install_progress(
+    app: AppHandle,
+) -> Result<RwkvRuntimeInstallProgress, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Could not resolve Rosetta app data directory: {error}"))?;
+
+    Ok(build_install_progress(build_install_plan(runtime_paths(
+        app_data_dir,
+    ))))
 }
 
 struct RwkvRuntimePaths {
@@ -265,6 +379,135 @@ fn build_install_plan(paths: RwkvRuntimePaths) -> RwkvRuntimeInstallPlan {
         ready,
         items,
         message,
+    }
+}
+
+fn build_artifact_catalog(paths: RwkvRuntimePaths) -> RwkvRuntimeArtifactCatalog {
+    let items = vec![
+        RwkvRuntimeArtifactCatalogItem {
+            id: "rwkv-lightning-windows-x64".to_string(),
+            kind: RwkvRuntimeInstallItemKind::Runtime,
+            state: RwkvRuntimeArtifactCatalogItemState::MetadataPending,
+            label: "RWKV Lightning runtime".to_string(),
+            target_dir: display_path(&paths.runtime_dir),
+            manifest_path: display_path(&paths.runtime_dir.join("runtime-manifest.json")),
+            artifact_filename: None,
+            download_url: None,
+            source_page: Some("https://github.com/RWKV-Vibe/rwkv_lightning".to_string()),
+            size_bytes: None,
+            sha256: None,
+            message: "等待 Stage 0 确认 runtime 打包方式、文件名、大小和 hash。".to_string(),
+        },
+        RwkvRuntimeArtifactCatalogItem {
+            id: EXPECTED_MODEL_ID.to_string(),
+            kind: RwkvRuntimeInstallItemKind::Model,
+            state: RwkvRuntimeArtifactCatalogItemState::MetadataPending,
+            label: "RWKV v7 G1 Translate 1.5B".to_string(),
+            target_dir: display_path(&paths.model_dir),
+            manifest_path: display_path(&paths.model_dir.join("model-manifest.json")),
+            artifact_filename: None,
+            download_url: None,
+            source_page: Some(
+                "https://www.modelscope.cn/models/AlicLi/RWKV_v7_G1_Translate/files".to_string(),
+            ),
+            size_bytes: None,
+            sha256: None,
+            message: "等待 Stage 0 确认 ModelScope 1.5B 文件名、大小和 hash。".to_string(),
+        },
+    ];
+    let ready_for_download = items
+        .iter()
+        .all(|item| item.state == RwkvRuntimeArtifactCatalogItemState::Ready);
+    let message = if ready_for_download {
+        "本地 RWKV artifact catalog 已可用于下载。".to_string()
+    } else {
+        "本地 RWKV artifact catalog 仍缺少可下载 metadata。".to_string()
+    };
+
+    RwkvRuntimeArtifactCatalog {
+        ready_for_download,
+        items,
+        message,
+    }
+}
+
+fn build_install_progress(plan: RwkvRuntimeInstallPlan) -> RwkvRuntimeInstallProgress {
+    let items: Vec<RwkvRuntimeInstallProgressItem> = plan
+        .items
+        .iter()
+        .map(progress_item_from_plan_item)
+        .collect();
+    let state = if items
+        .iter()
+        .any(|item| item.state == RwkvRuntimeInstallProgressItemState::Blocked)
+    {
+        RwkvRuntimeInstallProgressState::Blocked
+    } else if items
+        .iter()
+        .all(|item| item.state == RwkvRuntimeInstallProgressItemState::Ready)
+    {
+        RwkvRuntimeInstallProgressState::Ready
+    } else if items
+        .iter()
+        .any(|item| item.state == RwkvRuntimeInstallProgressItemState::Pending)
+    {
+        RwkvRuntimeInstallProgressState::Queued
+    } else {
+        RwkvRuntimeInstallProgressState::NotStarted
+    };
+    let message = match state {
+        RwkvRuntimeInstallProgressState::NotStarted => "本地 RWKV 安装尚未开始。".to_string(),
+        RwkvRuntimeInstallProgressState::Queued => {
+            "本地 RWKV 安装任务已准备，等待下载实现接入。".to_string()
+        }
+        RwkvRuntimeInstallProgressState::Ready => "本地 RWKV 已就绪。".to_string(),
+        RwkvRuntimeInstallProgressState::Blocked => {
+            "本地 RWKV 安装被无效 manifest 或文件状态阻塞。".to_string()
+        }
+    };
+
+    RwkvRuntimeInstallProgress {
+        state,
+        items,
+        message,
+    }
+}
+
+fn progress_item_from_plan_item(
+    item: &RwkvRuntimeInstallPlanItem,
+) -> RwkvRuntimeInstallProgressItem {
+    let state = match item.state {
+        RwkvRuntimeInstallItemState::Missing => RwkvRuntimeInstallProgressItemState::Pending,
+        RwkvRuntimeInstallItemState::Ready => RwkvRuntimeInstallProgressItemState::Ready,
+        RwkvRuntimeInstallItemState::Invalid => RwkvRuntimeInstallProgressItemState::Blocked,
+    };
+    let bytes_total = if state == RwkvRuntimeInstallProgressItemState::Ready {
+        None
+    } else {
+        expected_install_size_bytes(&item.kind)
+    };
+    let bytes_done = if state == RwkvRuntimeInstallProgressItemState::Ready {
+        bytes_total.unwrap_or(0)
+    } else {
+        0
+    };
+
+    RwkvRuntimeInstallProgressItem {
+        id: item.id.clone(),
+        kind: item.kind.clone(),
+        state,
+        label: item.label.clone(),
+        bytes_total,
+        bytes_done,
+        message: item.message.clone(),
+    }
+}
+
+fn expected_install_size_bytes(kind: &RwkvRuntimeInstallItemKind) -> Option<u64> {
+    match kind {
+        // Placeholders until Stage 0 produces real packaged artifact sizes.
+        RwkvRuntimeInstallItemKind::Runtime => None,
+        RwkvRuntimeInstallItemKind::Model => None,
     }
 }
 
@@ -888,6 +1131,99 @@ mod tests {
                 .map(|item| &item.state),
             Some(&RwkvRuntimeInstallItemState::Invalid)
         );
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn install_progress_is_queued_when_items_are_missing() {
+        let root = unique_temp_root("progress-queued");
+        let progress = build_install_progress(build_install_plan(runtime_paths(root.clone())));
+
+        assert_eq!(progress.state, RwkvRuntimeInstallProgressState::Queued);
+        assert_eq!(progress.items.len(), 2);
+        assert!(progress.items.iter().all(|item| {
+            item.state == RwkvRuntimeInstallProgressItemState::Pending && item.bytes_done == 0
+        }));
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn install_progress_is_ready_when_plan_is_ready() {
+        let root = unique_temp_root("progress-ready");
+        let paths = runtime_paths(root.clone());
+        write_valid_runtime_manifest(&paths);
+        write_valid_model_manifest_with_artifact(&paths, "model.pth", b"rwkv model bytes");
+
+        let progress = build_install_progress(build_install_plan(paths));
+
+        assert_eq!(progress.state, RwkvRuntimeInstallProgressState::Ready);
+        assert!(progress
+            .items
+            .iter()
+            .all(|item| item.state == RwkvRuntimeInstallProgressItemState::Ready));
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn install_progress_is_blocked_when_plan_has_invalid_item() {
+        let root = unique_temp_root("progress-blocked");
+        let paths = runtime_paths(root.clone());
+        write_valid_runtime_manifest(&paths);
+        write_model_manifest(
+            &paths,
+            r#"{"id":"other-model","contextTokens":4096,"supportedDirections":["en-zh","zh-en"]}"#,
+        );
+
+        let progress = build_install_progress(build_install_plan(paths));
+
+        assert_eq!(progress.state, RwkvRuntimeInstallProgressState::Blocked);
+        assert!(progress
+            .items
+            .iter()
+            .any(|item| item.state == RwkvRuntimeInstallProgressItemState::Blocked));
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn artifact_catalog_is_not_ready_while_metadata_is_pending() {
+        let root = unique_temp_root("catalog-pending");
+        let catalog = build_artifact_catalog(runtime_paths(root.clone()));
+
+        assert!(!catalog.ready_for_download);
+        assert_eq!(catalog.items.len(), 2);
+        assert!(catalog.items.iter().all(|item| {
+            item.state == RwkvRuntimeArtifactCatalogItemState::MetadataPending
+                && item.download_url.is_none()
+                && item.sha256.is_none()
+        }));
+
+        cleanup(root);
+    }
+
+    #[test]
+    fn artifact_catalog_points_to_managed_target_directories() {
+        let root = unique_temp_root("catalog-paths");
+        let paths = runtime_paths(root.clone());
+        let runtime_dir = display_path(&paths.runtime_dir);
+        let model_dir = display_path(&paths.model_dir);
+        let catalog = build_artifact_catalog(paths);
+
+        assert!(catalog
+            .items
+            .iter()
+            .any(|item| item.kind == RwkvRuntimeInstallItemKind::Runtime
+                && item.target_dir == runtime_dir
+                && item.manifest_path.ends_with("runtime-manifest.json")));
+        assert!(catalog
+            .items
+            .iter()
+            .any(|item| item.kind == RwkvRuntimeInstallItemKind::Model
+                && item.target_dir == model_dir
+                && item.manifest_path.ends_with("model-manifest.json")));
 
         cleanup(root);
     }

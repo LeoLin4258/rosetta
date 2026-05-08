@@ -148,3 +148,55 @@ export type RwkvRuntimeInstallPlan = {
   items: RwkvRuntimeInstallPlanItem[];
   message: string;
 };
+
+export type RwkvRuntimeInstallProgressState =
+  | "not-started"
+  | "queued"
+  | "ready"
+  | "blocked";
+
+export type RwkvRuntimeInstallProgressItemState =
+  | "pending"
+  | "ready"
+  | "blocked";
+
+export type RwkvRuntimeInstallProgressItem = {
+  id: string;
+  kind: RwkvRuntimeInstallItemKind;
+  state: RwkvRuntimeInstallProgressItemState;
+  label: string;
+  bytesTotal?: number;
+  bytesDone: number;
+  message: string;
+};
+
+export type RwkvRuntimeInstallProgress = {
+  state: RwkvRuntimeInstallProgressState;
+  items: RwkvRuntimeInstallProgressItem[];
+  message: string;
+};
+
+export type RwkvRuntimeArtifactCatalogItemState =
+  | "metadata-pending"
+  | "ready";
+
+export type RwkvRuntimeArtifactCatalogItem = {
+  id: string;
+  kind: RwkvRuntimeInstallItemKind;
+  state: RwkvRuntimeArtifactCatalogItemState;
+  label: string;
+  targetDir: string;
+  manifestPath: string;
+  artifactFilename?: string;
+  downloadUrl?: string;
+  sourcePage?: string;
+  sizeBytes?: number;
+  sha256?: string;
+  message: string;
+};
+
+export type RwkvRuntimeArtifactCatalog = {
+  readyForDownload: boolean;
+  items: RwkvRuntimeArtifactCatalogItem[];
+  message: string;
+};
