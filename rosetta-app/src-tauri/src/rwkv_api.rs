@@ -26,6 +26,8 @@ pub struct RwkvTranslationApiTranslateRequest {
     internal_token: String,
     body_password: String,
     timeout_ms: u64,
+    source_lang: Option<String>,
+    target_lang: Option<String>,
     source_texts: Vec<String>,
 }
 
@@ -140,12 +142,14 @@ async fn translate_texts_with_api(
         };
     }
 
-    request_translations(
+    request_translations_for_language_pair(
         &request.base_url,
         &request.endpoint,
         &request.internal_token,
         &request.body_password,
         request.timeout_ms,
+        request.source_lang.as_deref().unwrap_or("en"),
+        request.target_lang.as_deref().unwrap_or("zh-CN"),
         &request.source_texts,
     )
     .await
@@ -161,7 +165,111 @@ async fn request_translations(
 ) -> RwkvTranslationApiTranslateResult {
     let started_at = Instant::now();
     let url = api_url(base_url, endpoint);
-    let body = build_chat_completions_request(source_texts, body_password);
+    let body = build_chat_completions_request(source_texts, body_password, "en", "zh-CN");
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_millis(timeout_ms))
+        .build()
+    {
+        Ok(client) => client,
+        Err(error) => {
+            return translation_error(
+                None,
+                "",
+                internal_token,
+                body_password,
+                format!("无法创建 RWKV API client: {error}"),
+                started_at,
+            );
+        }
+    };
+
+    let response = client
+        .post(url)
+        .header("X-Internal-Token", internal_token)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .header(reqwest::header::ACCEPT, "*/*")
+        .json(&body)
+        .send()
+        .await;
+
+    let response = match response {
+        Ok(response) => response,
+        Err(error) => {
+            return translation_error(
+                None,
+                "",
+                internal_token,
+                body_password,
+                format!("RWKV API 请求失败: {error}"),
+                started_at,
+            );
+        }
+    };
+
+    let status_code = response.status().as_u16();
+    let response_text = match response.text().await {
+        Ok(response_text) => response_text,
+        Err(error) => {
+            return translation_error(
+                Some(status_code),
+                "",
+                internal_token,
+                body_password,
+                format!("无法读取 RWKV API 响应: {error}"),
+                started_at,
+            );
+        }
+    };
+
+    if !(200..300).contains(&status_code) {
+        return translation_error(
+            Some(status_code),
+            &response_text,
+            internal_token,
+            body_password,
+            format!("RWKV API 返回 HTTP {status_code}。"),
+            started_at,
+        );
+    }
+
+    match parse_translations(&response_text, source_texts.len()) {
+        Ok(translations) => RwkvTranslationApiTranslateResult {
+            ok: true,
+            status_code: Some(status_code),
+            translations,
+            raw_response_preview: preview_text_with_redactions(
+                &response_text,
+                internal_token,
+                body_password,
+            ),
+            message: format!("RWKV API 已翻译 {} 条文本。", source_texts.len()),
+            latency_ms: started_at.elapsed().as_millis(),
+        },
+        Err(error) => translation_error(
+            Some(status_code),
+            &response_text,
+            internal_token,
+            body_password,
+            format!("RWKV API 响应格式不可用: {error}"),
+            started_at,
+        ),
+    }
+}
+
+async fn request_translations_for_language_pair(
+    base_url: &str,
+    endpoint: &str,
+    internal_token: &str,
+    body_password: &str,
+    timeout_ms: u64,
+    source_lang: &str,
+    target_lang: &str,
+    source_texts: &[String],
+) -> RwkvTranslationApiTranslateResult {
+    let started_at = Instant::now();
+    let url = api_url(base_url, endpoint);
+    let body =
+        build_chat_completions_request(source_texts, body_password, source_lang, target_lang);
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_millis(timeout_ms))
         .build()
@@ -255,11 +363,13 @@ async fn request_translations(
 fn build_chat_completions_request(
     source_texts: &[String],
     password: &str,
+    source_lang: &str,
+    target_lang: &str,
 ) -> RwkvChatCompletionsRequest {
     RwkvChatCompletionsRequest {
         contents: source_texts
             .iter()
-            .map(|text| translation_prompt(text))
+            .map(|text| translation_prompt(text, source_lang, target_lang))
             .collect(),
         max_tokens: 1024,
         stop_tokens: vec![0, 261, 24281],
@@ -274,8 +384,28 @@ fn build_chat_completions_request(
     }
 }
 
-fn translation_prompt(source_text: &str) -> String {
-    format!("English: {source_text}\n\nChinese:")
+fn translation_prompt(source_text: &str, source_lang: &str, target_lang: &str) -> String {
+    let source_label = prompt_language_label(source_lang);
+    let target_label = prompt_language_label(target_lang);
+    format!("{source_label}: {source_text}\n\n{target_label}:")
+}
+
+fn prompt_language_label(language: &str) -> &str {
+    match language {
+        "en" => "English",
+        "zh-CN" | "zh-TW" | "zh" => "Chinese",
+        "ja" => "Japanese",
+        "ko" => "Korean",
+        "fr" => "French",
+        "de" => "German",
+        "es" => "Spanish",
+        "ru" => "Russian",
+        "pt" => "Portuguese",
+        "it" => "Italian",
+        "vi" => "Vietnamese",
+        "id" => "Indonesian",
+        _ => "English",
+    }
 }
 
 fn parse_translations(response_text: &str, expected_count: usize) -> Result<Vec<String>, String> {
@@ -363,7 +493,7 @@ mod tests {
     #[test]
     fn prompt_builder_wraps_english_text_for_chinese_translation() {
         let source_texts = vec!["Hello world.".to_string(), "Good morning.".to_string()];
-        let request = build_chat_completions_request(&source_texts, "secret");
+        let request = build_chat_completions_request(&source_texts, "secret", "en", "zh-CN");
 
         assert_eq!(
             request.contents,
@@ -377,7 +507,8 @@ mod tests {
     #[test]
     fn request_body_serializes_non_streaming_batch_shape() {
         let source_texts = vec!["Hello world.".to_string()];
-        let request = build_chat_completions_request(&source_texts, "model-password");
+        let request =
+            build_chat_completions_request(&source_texts, "model-password", "en", "zh-CN");
         let value = serde_json::to_value(request).expect("request should serialize");
 
         assert_eq!(
@@ -394,6 +525,13 @@ mod tests {
         assert_eq!(value["alpha_decay"], json!(0.99));
         assert_eq!(value["stream"], json!(false));
         assert_eq!(value["password"], json!("model-password"));
+    }
+
+    #[test]
+    fn prompt_builder_uses_selected_language_labels() {
+        let prompt = translation_prompt("Bonjour.", "fr", "ja");
+
+        assert_eq!(prompt, "French: Bonjour.\n\nJapanese:");
     }
 
     #[test]

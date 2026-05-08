@@ -46,11 +46,21 @@ export type RosettaDocument = {
   format: Extract<RosettaDocumentFormat, "txt" | "markdown">;
   sourceLang?: string | null;
   targetLang: string;
+  files: RosettaSourceFile[];
   blocks: RosettaBlock[];
+};
+
+export type RosettaSourceFile = {
+  id: string;
+  filename: string;
+  relativePath: string;
+  format: Extract<RosettaDocumentFormat, "txt" | "markdown">;
+  blockIds: string[];
 };
 
 export type RosettaBlock = {
   id: string;
+  fileId?: string | null;
   type: RosettaBlockType;
   sourceText: string;
   translatedText?: string | null;
@@ -64,6 +74,7 @@ export type RosettaBlock = {
 export type Segment = {
   id: string;
   blockId: string;
+  fileId?: string | null;
   order: number;
   sourceText: string;
   translatedText?: string | null;
@@ -84,6 +95,9 @@ export type RosettaJob = {
   format: Extract<RosettaDocumentFormat, "txt" | "markdown">;
   sourcePath?: string | null;
   sourceFilename: string;
+  sourceKind: "file" | "directory";
+  fileCount: number;
+  sourceFiles: RosettaSourceFile[];
   status: JobStatus;
   createdAt: string;
   updatedAt: string;
@@ -111,6 +125,7 @@ export type RosettaExportResult = {
   targetPath: string;
   kind: RosettaExportKind;
   bytesWritten: number;
+  filesWritten: number;
   message: string;
 };
 
@@ -146,6 +161,8 @@ export type RwkvTranslationApiTranslateRequest = {
   internalToken: string;
   bodyPassword: string;
   timeoutMs: number;
+  sourceLang?: string | null;
+  targetLang?: string | null;
   sourceTexts: string[];
 };
 

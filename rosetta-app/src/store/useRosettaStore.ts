@@ -15,6 +15,7 @@ type RosettaState = {
   rwkv: RwkvConnectionConfig;
   jobs: RosettaJobSummary[];
   activeJobId: string | null;
+  activeFileId: string | null;
   activeDocument: RosettaDocument | null;
   previewSegments: Segment[];
   setThemeMode: (mode: AppThemeMode) => void;
@@ -22,6 +23,7 @@ type RosettaState = {
   setTranslationMode: (mode: TranslationMode) => void;
   setJobList: (jobs: RosettaJobSummary[]) => void;
   setActiveJobId: (jobId: string | null) => void;
+  setActiveFileId: (fileId: string | null) => void;
   setActiveBundle: (bundle: RosettaJobBundle) => void;
   clearActiveJob: () => void;
   updateActiveSegments: (segments: Segment[]) => void;
@@ -106,6 +108,7 @@ export const useRosettaStore = create<RosettaState>()(
       },
       jobs: [],
       activeJobId: null,
+      activeFileId: null,
       activeDocument: null,
       previewSegments: [],
       setThemeMode: (mode) => set({ themeMode: mode }),
@@ -131,21 +134,36 @@ export const useRosettaStore = create<RosettaState>()(
           return {
             jobs,
             activeJobId: activeJobStillExists ? state.activeJobId : jobs[0]?.id ?? null,
+            activeFileId: activeJobStillExists
+              ? state.activeFileId
+              : jobs[0]?.sourceFiles?.[0]?.id ?? null,
             activeDocument: activeJobStillExists ? state.activeDocument : null,
             previewSegments: activeJobStillExists ? state.previewSegments : [],
           };
         }),
       setActiveJobId: (jobId) => set({ activeJobId: jobId }),
+      setActiveFileId: (fileId) => set({ activeFileId: fileId }),
       setActiveBundle: (bundle) =>
-        set((state) => ({
-          jobs: replaceJob(state.jobs, bundle.job),
-          activeJobId: bundle.job.id,
-          activeDocument: bundle.document,
-          previewSegments: bundle.segments,
-        })),
+        set((state) => {
+          const fileIds = bundle.document.files.map((file) => file.id);
+          const keepActiveFile =
+            state.activeFileId != null &&
+            fileIds.includes(state.activeFileId);
+
+          return {
+            jobs: replaceJob(state.jobs, bundle.job),
+            activeJobId: bundle.job.id,
+            activeFileId: keepActiveFile
+              ? state.activeFileId
+              : bundle.document.files[0]?.id ?? null,
+            activeDocument: bundle.document,
+            previewSegments: bundle.segments,
+          };
+        }),
       clearActiveJob: () =>
         set({
           activeJobId: null,
+          activeFileId: null,
           activeDocument: null,
           previewSegments: [],
         }),
@@ -206,6 +224,7 @@ export const useRosettaStore = create<RosettaState>()(
           ...current,
           themeMode: persistedState?.themeMode ?? current.themeMode,
           activeJobId: persistedState?.activeJobId ?? current.activeJobId,
+          activeFileId: persistedState?.activeFileId ?? current.activeFileId,
           rwkv: {
             ...current.rwkv,
             ...persistedState?.rwkv,
@@ -216,6 +235,7 @@ export const useRosettaStore = create<RosettaState>()(
         themeMode: state.themeMode,
         rwkv: state.rwkv,
         activeJobId: state.activeJobId,
+        activeFileId: state.activeFileId,
       }),
     }
   )

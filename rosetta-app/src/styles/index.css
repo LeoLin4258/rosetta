@@ -199,6 +199,108 @@ textarea {
   font: inherit;
 }
 
+.rosetta-markdown-preview {
+  font-size: 0.875rem;
+  line-height: 1.75;
+}
+
+.rosetta-markdown-preview > *:first-child {
+  margin-top: 0;
+}
+
+.rosetta-markdown-preview > *:last-child {
+  margin-bottom: 0;
+}
+
+.rosetta-markdown-preview h1,
+.rosetta-markdown-preview h2,
+.rosetta-markdown-preview h3,
+.rosetta-markdown-preview h4,
+.rosetta-markdown-preview h5,
+.rosetta-markdown-preview h6 {
+  margin: 1rem 0 0.5rem;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.rosetta-markdown-preview h1 {
+  font-size: 1.35rem;
+}
+
+.rosetta-markdown-preview h2 {
+  font-size: 1.2rem;
+}
+
+.rosetta-markdown-preview h3 {
+  font-size: 1.05rem;
+}
+
+.rosetta-markdown-preview p,
+.rosetta-markdown-preview ul,
+.rosetta-markdown-preview ol,
+.rosetta-markdown-preview blockquote,
+.rosetta-markdown-preview pre,
+.rosetta-markdown-preview table {
+  margin: 0.65rem 0;
+}
+
+.rosetta-markdown-preview ul,
+.rosetta-markdown-preview ol {
+  padding-left: 1.4rem;
+}
+
+.rosetta-markdown-preview ul {
+  list-style: disc;
+}
+
+.rosetta-markdown-preview ol {
+  list-style: decimal;
+}
+
+.rosetta-markdown-preview blockquote {
+  border-left: 2px solid var(--border);
+  color: var(--muted-foreground);
+  padding-left: 0.9rem;
+}
+
+.rosetta-markdown-preview code {
+  border-radius: 0.25rem;
+  background: var(--muted);
+  padding: 0.1rem 0.25rem;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+}
+
+.rosetta-markdown-preview pre {
+  overflow: auto;
+  border-radius: 0.25rem;
+  background: var(--muted);
+  padding: 0.8rem;
+}
+
+.rosetta-markdown-preview pre code {
+  background: transparent;
+  padding: 0;
+}
+
+.rosetta-markdown-preview table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.rosetta-markdown-preview th,
+.rosetta-markdown-preview td {
+  border: 1px solid var(--border);
+  padding: 0.35rem 0.5rem;
+  vertical-align: top;
+}
+
+.rosetta-markdown-preview a {
+  color: var(--primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 
 
 .xxx{

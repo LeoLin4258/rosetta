@@ -3,30 +3,34 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   Download,
   FilePlus,
+  FileText,
   Languages,
   Play,
   RefreshCw,
   Trash2,
 } from "lucide-react";
-import { SegmentPreviewList } from "../preview/SegmentPreviewList";
+import { DocumentPreview } from "../preview/DocumentPreview";
 import { useRosettaStore } from "../../store/useRosettaStore";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { translateRwkvTextsWithApi } from "../../lib/rwkvApi";
 import {
   deleteRosettaJob,
   exportRosettaJob,
+  exportRosettaJobToDirectory,
   loadRosettaJob,
+  pickRosettaExportDirectory,
   pickRosettaExportPath,
   saveRosettaSegments,
+  updateRosettaJobLanguages,
 } from "../../lib/rosettaJobs";
 import type {
   RosettaExportKind,
@@ -36,12 +40,28 @@ import type {
 } from "../../types/rosetta";
 
 const BATCH_SIZE = 16;
+const LANGUAGE_OPTIONS = [
+  { value: "en", label: "English" },
+  { value: "zh-CN", label: "简体中文" },
+  { value: "zh-TW", label: "繁體中文" },
+  { value: "ja", label: "日本語" },
+  { value: "ko", label: "한국어" },
+  { value: "fr", label: "Français" },
+  { value: "de", label: "Deutsch" },
+  { value: "es", label: "Español" },
+  { value: "ru", label: "Русский" },
+  { value: "pt", label: "Português" },
+  { value: "it", label: "Italiano" },
+  { value: "vi", label: "Tiếng Việt" },
+  { value: "id", label: "Bahasa Indonesia" },
+];
 
 export function JobsPage() {
   const { jobId } = useParams();
   const navigate = useNavigate();
   const jobs = useRosettaStore((state) => state.jobs);
   const activeJobId = useRosettaStore((state) => state.activeJobId);
+  const activeFileId = useRosettaStore((state) => state.activeFileId);
   const activeDocument = useRosettaStore((state) => state.activeDocument);
   const rwkv = useRosettaStore((state) => state.rwkv);
   const previewSegments = useRosettaStore((state) => state.previewSegments);
@@ -59,6 +79,7 @@ export function JobsPage() {
   );
   const [isLoading, setIsLoading] = useState(false);
   const [isTranslating, setIsTranslating] = useState(false);
+  const [isSavingLanguages, setIsSavingLanguages] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [translationResult, setTranslationResult] =
     useState<RwkvTranslationApiTranslateResult | null>(null);
@@ -68,23 +89,38 @@ export function JobsPage() {
   const [pageError, setPageError] = useState<string | null>(null);
   const currentJobId = jobId ?? activeJobId ?? jobs[0]?.id ?? null;
   const activeJob = jobs.find((job) => job.id === currentJobId) ?? null;
+  const currentFile =
+    activeDocument?.files.find((file) => file.id === activeFileId) ??
+    activeDocument?.files[0] ??
+    activeJob?.sourceFiles?.find((file) => file.id === activeFileId) ??
+    activeJob?.sourceFiles?.[0] ??
+    null;
+  const currentFileSegments = useMemo(
+    () =>
+      previewSegments.filter((segment) =>
+        currentFile ? (segment.fileId ?? "file-1") === currentFile.id : false
+      ),
+    [currentFile, previewSegments]
+  );
+  const sourceLang = activeDocument?.sourceLang ?? "en";
+  const targetLang = activeDocument?.targetLang ?? activeJob?.targetLang ?? "zh-CN";
   const pendingSegments = useMemo(
     () =>
-      previewSegments.filter(
+      currentFileSegments.filter(
         (segment) =>
           ["pending", "failed"].includes(segment.status) &&
           segment.sourceText.trim().length > 0
       ),
-    [previewSegments]
+    [currentFileSegments]
   );
   const failedSegments = useMemo(
     () =>
-      previewSegments.filter(
+      currentFileSegments.filter(
         (segment) => segment.status === "failed" && segment.sourceText.trim()
       ),
-    [previewSegments]
+    [currentFileSegments]
   );
-  const incompleteSegments = previewSegments.filter((segment) =>
+  const incompleteSegments = currentFileSegments.filter((segment) =>
     ["pending", "failed", "translating"].includes(segment.status)
   ).length;
   const rwkvConfigReady =
@@ -150,6 +186,8 @@ export function JobsPage() {
           internalToken: rwkv.internalToken,
           bodyPassword: rwkv.bodyPassword,
           timeoutMs: rwkv.timeoutMs,
+          sourceLang,
+          targetLang,
           sourceTexts: batch.map((segment) => segment.sourceText),
         });
 
@@ -194,20 +232,52 @@ export function JobsPage() {
     setExportResult(null);
 
     try {
-      const targetPath = await pickRosettaExportPath(
-        defaultExportFilename(activeJob.filename, activeJob.format, kind),
-        activeJob.format
-      );
+      const isDirectoryProject =
+        activeJob.sourceKind === "directory" || activeJob.fileCount > 1;
+      const targetPath = isDirectoryProject
+        ? await pickRosettaExportDirectory()
+        : await pickRosettaExportPath(
+            defaultExportFilename(activeJob.filename, activeJob.format, kind),
+            activeJob.format
+          );
 
       if (!targetPath) {
         return;
       }
 
-      const result = await exportRosettaJob(currentJobId, kind, targetPath);
+      const result = isDirectoryProject
+        ? await exportRosettaJobToDirectory(currentJobId, kind, targetPath)
+        : await exportRosettaJob(currentJobId, kind, targetPath);
       setExportResult(result);
       setActiveBundle(await loadRosettaJob(currentJobId));
     } catch (error) {
       setPageError(error instanceof Error ? error.message : "导出失败。");
+    }
+  }
+
+  async function updateLanguages(nextSourceLang: string, nextTargetLang: string) {
+    if (!currentJobId || isTranslating || isSavingLanguages) {
+      return;
+    }
+
+    setIsSavingLanguages(true);
+    setPageError(null);
+    setTranslationResult(null);
+    setExportResult(null);
+
+    try {
+      const bundle = await updateRosettaJobLanguages(
+        currentJobId,
+        nextSourceLang,
+        nextTargetLang
+      );
+      setActiveBundle(bundle);
+    } catch (error) {
+      setPageError(
+        error instanceof Error ? error.message : "无法保存语言设置。"
+      );
+    } finally {
+      setIsSavingLanguages(false);
     }
   }
 
@@ -242,7 +312,7 @@ export function JobsPage() {
         <div className="rounded-lg border bg-card p-8 text-center">
           <h2 className="text-lg font-semibold">还没有项目</h2>
           <p className="mt-2 text-sm text-muted-foreground">
-            导入一个 TXT 或 Markdown 文件开始翻译。
+            导入 TXT 或 Markdown 文件开始翻译。
           </p>
           <Button asChild className="mt-5" type="button">
             <Link to="/new">
@@ -256,7 +326,7 @@ export function JobsPage() {
   }
 
   return (
-    <section className="grid min-h-full grid-rows-[auto_1fr] gap-6 px-6 py-6">
+    <section className="grid h-full min-h-0 grid-rows-[auto_1fr] gap-6 px-6 py-6">
       <div className="overflow-hidden rounded-lg border bg-card">
         <div className="flex items-start justify-between gap-4 border-b px-4 py-3">
           <div className="flex flex-col gap-1">
@@ -265,6 +335,9 @@ export function JobsPage() {
                 {activeJob?.filename ?? "加载项目中"}
               </span>
               {activeJob ? <Badge variant="outline">{activeJob.format}</Badge> : null}
+              {activeJob?.sourceKind === "directory" ? (
+                <Badge variant="outline">{activeJob.fileCount} 个文件</Badge>
+              ) : null}
               {activeJob ? <Badge variant="secondary">{activeJob.status}</Badge> : null}
               {incompleteSegments > 0 ? (
                 <Badge variant="outline">包含未完成段落</Badge>
@@ -275,6 +348,48 @@ export function JobsPage() {
                 ? `${activeJob.completedSegments} / ${activeJob.segmentCount} 已完成，${activeJob.failedSegments} 失败`
                 : "正在读取本机项目缓存。"}
             </p>
+            {currentFile ? (
+              <div className="flex flex-wrap items-center gap-2 pt-1 text-sm text-muted-foreground">
+                <FileText className="text-muted-foreground" />
+                <span className="font-medium text-foreground">
+                  {currentFile.relativePath}
+                </span>
+                <span>·</span>
+                <span>
+                  {
+                    currentFileSegments.filter((segment) => segment.status === "done")
+                      .length
+                  }{" "}
+                  / {currentFileSegments.length} 已完成
+                </span>
+                {incompleteSegments > 0 ? (
+                  <>
+                    <span>·</span>
+                    <span>包含未完成段落</span>
+                  </>
+                ) : null}
+              </div>
+            ) : null}
+            {activeJob ? (
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                <LanguageSelect
+                  disabled={isLoading || isTranslating || isSavingLanguages}
+                  label="原文语言"
+                  onValueChange={(value) => void updateLanguages(value, targetLang)}
+                  value={sourceLang}
+                />
+                <span className="text-sm text-muted-foreground">→</span>
+                <LanguageSelect
+                  disabled={isLoading || isTranslating || isSavingLanguages}
+                  label="译文语言"
+                  onValueChange={(value) => void updateLanguages(sourceLang, value)}
+                  value={targetLang}
+                />
+                {isSavingLanguages ? (
+                  <span className="text-xs text-muted-foreground">保存中</span>
+                ) : null}
+              </div>
+            ) : null}
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">
             <Button
@@ -335,39 +450,6 @@ export function JobsPage() {
           </div>
         </div>
 
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead className="px-4">文件</TableHead>
-              <TableHead>状态</TableHead>
-              <TableHead>进度</TableHead>
-              <TableHead>失败</TableHead>
-              <TableHead>更新时间</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {jobs.map((job) => (
-              <TableRow
-                className="cursor-pointer"
-                key={job.id}
-                onClick={() => navigate(`/jobs/${job.id}`)}
-              >
-                <TableCell className="px-4 font-medium">{job.filename}</TableCell>
-                <TableCell>
-                  <Badge variant="secondary">{job.status}</Badge>
-                </TableCell>
-                <TableCell>
-                  {job.completedSegments} / {job.segmentCount}
-                </TableCell>
-                <TableCell>{job.failedSegments}</TableCell>
-                <TableCell className="text-muted-foreground">
-                  {formatTimestamp(job.updatedAt)}
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-
         {translationResult || exportResult || pageError ? (
           <div className="flex flex-col gap-2 border-t px-4 py-3 text-sm">
             {translationResult ? (
@@ -384,6 +466,7 @@ export function JobsPage() {
               <div className="flex flex-wrap items-center gap-2 text-muted-foreground">
                 <Badge variant="secondary">导出完成</Badge>
                 <span>{exportResult.targetPath}</span>
+                <span>{exportResult.filesWritten} files</span>
                 <span>{exportResult.bytesWritten} bytes</span>
               </div>
             ) : null}
@@ -392,8 +475,40 @@ export function JobsPage() {
         ) : null}
       </div>
 
-      <SegmentPreviewList />
+      <DocumentPreview />
     </section>
+  );
+}
+
+function LanguageSelect({
+  disabled,
+  label,
+  onValueChange,
+  value,
+}: {
+  disabled: boolean;
+  label: string;
+  onValueChange: (value: string) => void;
+  value: string;
+}) {
+  return (
+    <label className="flex items-center gap-2 text-sm">
+      <span className="text-muted-foreground">{label}</span>
+      <Select disabled={disabled} onValueChange={onValueChange} value={value}>
+        <SelectTrigger size="sm">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectGroup>
+            {LANGUAGE_OPTIONS.map((language) => (
+              <SelectItem key={language.value} value={language.value}>
+                {language.label}
+              </SelectItem>
+            ))}
+          </SelectGroup>
+        </SelectContent>
+      </Select>
+    </label>
   );
 }
 
@@ -414,13 +529,4 @@ function defaultExportFilename(
   const baseName = filename.replace(/\.(txt|md|markdown)$/i, "");
   const suffix = kind === "bilingual" ? "bilingual" : "zh";
   return `${baseName}.${suffix}.${extension}`;
-}
-
-function formatTimestamp(value: string) {
-  const numeric = Number(value);
-  const date = Number.isFinite(numeric) ? new Date(numeric) : new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-  return date.toLocaleString();
 }
