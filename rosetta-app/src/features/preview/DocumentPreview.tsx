@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { useRosettaStore } from "../../store/useRosettaStore";
 import type {
@@ -177,18 +178,15 @@ function PreviewPane({
   );
 
   return (
-    <div
-      className={cn(
-        "min-h-0 overflow-auto bg-background",
-        side === "source" && "border-r"
-      )}
+    <ScrollArea
+      className={cn("h-full min-h-0 bg-background", side === "source" && "border-r")}
       onScroll={onScroll}
-      ref={paneRef}
+      viewportRef={paneRef}
     >
-      <div className="mx-auto flex max-w-3xl flex-col gap-7 px-6 py-6">
+      <div className="mx-auto flex max-w-3xl flex-col gap-6 px-6 py-6">
         <section className="flex flex-col gap-3">
           {hasMultipleFiles ? (
-            <div className="flex items-center justify-between gap-3 border-b pb-2">
+            <div className="flex items-center justify-between gap-3 border-b border-border pb-2">
               <span className="truncate text-sm font-medium">
                 {file.relativePath}
               </span>
@@ -196,7 +194,7 @@ function PreviewPane({
             </div>
           ) : null}
 
-          <div className="flex flex-col gap-1">
+          <div className="flex flex-col gap-2">
             {blocks.map((block) => (
               <PreviewBlock
                 block={block}
@@ -212,7 +210,7 @@ function PreviewPane({
           </div>
         </section>
       </div>
-    </div>
+    </ScrollArea>
   );
 }
 
@@ -250,7 +248,7 @@ function PreviewBlock({
   return (
     <div
       className={cn(
-        "rounded-md px-2 py-1.5",
+        "rounded-xl px-3 py-2",
         hovered && "bg-muted",
         block.status === "failed" && side === "translation" && "text-destructive"
       )}
@@ -259,7 +257,7 @@ function PreviewBlock({
       onMouseLeave={() => onHoverBlock(null)}
     >
       {hasEmptyTranslation ? (
-        <div className="min-h-[1.75rem]" />
+        <div className="min-h-7" />
       ) : file.format === "markdown" ? (
         <div className="rosetta-markdown-preview">
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{renderedText}</ReactMarkdown>

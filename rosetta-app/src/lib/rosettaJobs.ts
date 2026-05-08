@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   RosettaExportKind,
   RosettaExportResult,
+  RosettaJobFileDeleteResult,
   RosettaJobBundle,
   RosettaJobSummary,
   Segment,
@@ -75,6 +76,13 @@ export function renameRosettaJob(jobId: string, name: string) {
 
 export function deleteRosettaJob(jobId: string) {
   return invoke<RosettaJobSummary[]>("delete_rosetta_job", { jobId });
+}
+
+export function deleteRosettaJobFile(jobId: string, fileId: string) {
+  return invoke<RosettaJobFileDeleteResult>("delete_rosetta_job_file", {
+    jobId,
+    fileId,
+  });
 }
 
 export function exportRosettaJob(

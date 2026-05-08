@@ -129,6 +129,13 @@ export type RosettaExportResult = {
   message: string;
 };
 
+export type RosettaJobFileDeleteResult = {
+  deletedJob: boolean;
+  jobs: RosettaJobSummary[];
+  bundle?: RosettaJobBundle | null;
+  message: string;
+};
+
 export type RwkvConnectionConfig = {
   baseUrl: string;
   endpoint: string;

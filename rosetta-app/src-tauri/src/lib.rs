@@ -9,6 +9,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             rosetta_jobs::delete_rosetta_job,
+            rosetta_jobs::delete_rosetta_job_file,
             rosetta_jobs::export_rosetta_job,
             rosetta_jobs::export_rosetta_job_to_directory,
             rosetta_jobs::import_rosetta_document_from_path,

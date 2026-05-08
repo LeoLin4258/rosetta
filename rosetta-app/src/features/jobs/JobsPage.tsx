@@ -11,8 +11,22 @@ import {
 } from "lucide-react";
 import { DocumentPreview } from "../preview/DocumentPreview";
 import { useRosettaStore } from "../../store/useRosettaStore";
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from "@/components/ui/breadcrumb";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import {
   Select,
   SelectContent,
@@ -21,9 +35,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
 import { translateRwkvTextsWithApi } from "../../lib/rwkvApi";
 import {
-  deleteRosettaJob,
+  deleteRosettaJobFile,
   exportRosettaJob,
   exportRosettaJobToDirectory,
   loadRosettaJob,
@@ -307,12 +322,18 @@ export function JobsPage() {
     }
   }
 
-  async function deleteCurrentJob() {
+  async function deleteCurrentFile() {
     if (!currentJobId || !activeJob) {
       return;
     }
 
-    const confirmed = window.confirm(`删除项目“${activeJob.filename}”？`);
+    const confirmed = window.confirm(
+      currentFile
+        ? activeJob.fileCount <= 1
+          ? `删除当前文件“${currentFile.relativePath}”？这会移除整个项目。`
+          : `删除当前文件“${currentFile.relativePath}”？`
+        : `删除当前文件所在项目“${activeJob.filename}”？`
+    );
     if (!confirmed) {
       return;
     }
@@ -321,12 +342,24 @@ export function JobsPage() {
     setPageError(null);
 
     try {
-      const nextJobs = await deleteRosettaJob(currentJobId);
-      setJobList(nextJobs);
-      clearActiveJob();
-      navigate(nextJobs[0] ? `/jobs/${nextJobs[0].id}` : "/new");
+      if (!currentFile) {
+        return;
+      }
+
+      const result = await deleteRosettaJobFile(currentJobId, currentFile.id);
+      setJobList(result.jobs);
+
+      if (result.deletedJob) {
+        clearActiveJob();
+        navigate(result.jobs[0] ? `/jobs/${result.jobs[0].id}` : "/new");
+        return;
+      }
+
+      if (result.bundle) {
+        setActiveBundle(result.bundle);
+      }
     } catch (error) {
-      setPageError(error instanceof Error ? error.message : "删除项目失败。");
+      setPageError(error instanceof Error ? error.message : "删除文件失败。");
     } finally {
       setIsDeleting(false);
     }
@@ -335,69 +368,155 @@ export function JobsPage() {
   if (jobs.length === 0) {
     return (
       <section className="mx-auto flex max-w-3xl flex-col gap-4 px-6 py-10">
-        <div className="rounded-lg border bg-card p-8 text-center">
-          <h2 className="text-lg font-semibold">还没有项目</h2>
-          <p className="mt-2 text-sm text-muted-foreground">
-            导入 TXT 或 Markdown 文件开始翻译。
-          </p>
-          <Button asChild className="mt-5" type="button">
-            <Link to="/new">
-              <FilePlus data-icon="inline-start" />
-              新项目
-            </Link>
-          </Button>
-        </div>
+        <Card>
+          <CardContent className="flex flex-col items-center gap-4 py-8 text-center">
+            <div>
+              <h2 className="text-lg font-semibold">还没有项目</h2>
+              <p className="mt-2 text-sm text-muted-foreground">
+                导入 TXT 或 Markdown 文件开始翻译。
+              </p>
+            </div>
+            <Button asChild type="button">
+              <Link to="/new">
+                <FilePlus data-icon="inline-start" />
+                新项目
+              </Link>
+            </Button>
+          </CardContent>
+        </Card>
       </section>
     );
   }
 
   return (
     <section className="grid h-full min-h-0 grid-rows-[auto_1fr] gap-6 px-6 py-6">
-      <div className="overflow-hidden rounded-lg border bg-card">
-        <div className="flex items-start justify-between gap-4 border-b px-4 py-3">
-          <div className="flex flex-col gap-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="font-medium">
+      <Card className="min-h-0 py-0">
+        <CardHeader className="border-b py-4">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+            <div className="min-w-0 flex-1">
+              <Breadcrumb>
+                <BreadcrumbList className="text-xs">
+                  <BreadcrumbItem>
+                    <BreadcrumbPage>{activeJob?.filename ?? "任务"}</BreadcrumbPage>
+                  </BreadcrumbItem>
+                  {currentFile ? (
+                    <>
+                      <BreadcrumbSeparator />
+                      <BreadcrumbItem>
+                        <BreadcrumbPage>{currentFile.relativePath}</BreadcrumbPage>
+                      </BreadcrumbItem>
+                    </>
+                  ) : null}
+                </BreadcrumbList>
+              </Breadcrumb>
+
+              <CardTitle className="truncate text-xl">
                 {activeJob?.filename ?? "加载项目中"}
-              </span>
-              {activeJob ? <Badge variant="outline">{activeJob.format}</Badge> : null}
-              {activeJob?.sourceKind === "directory" ? (
-                <Badge variant="outline">{activeJob.fileCount} 个文件</Badge>
-              ) : null}
-              {activeJob ? <Badge variant="secondary">{activeJob.status}</Badge> : null}
-              {incompleteSegments > 0 ? (
-                <Badge variant="outline">包含未完成段落</Badge>
-              ) : null}
-            </div>
-            <p className="text-sm text-muted-foreground">
-              {activeJob
-                ? `${activeJob.completedSegments} / ${activeJob.segmentCount} 已完成，${activeJob.failedSegments} 失败`
-                : "正在读取本机项目缓存。"}
-            </p>
-            {currentFile ? (
-              <div className="flex flex-wrap items-center gap-2 pt-1 text-sm text-muted-foreground">
-                <FileText className="text-muted-foreground" />
-                <span className="font-medium text-foreground">
-                  {currentFile.relativePath}
-                </span>
-                <span>·</span>
-                <span>
-                  {
-                    currentFileSegments.filter((segment) => segment.status === "done")
-                      .length
-                  }{" "}
-                  / {currentFileSegments.length} 已完成
-                </span>
-                {incompleteSegments > 0 ? (
-                  <>
-                    <span>·</span>
-                    <span>包含未完成段落</span>
-                  </>
+              </CardTitle>
+
+              <CardDescription className="flex flex-wrap items-center gap-2 pt-2">
+                {activeJob ? <Badge variant="outline">{activeJob.format}</Badge> : null}
+                {activeJob?.sourceKind === "directory" ? (
+                  <Badge variant="outline">{activeJob.fileCount} 个文件</Badge>
                 ) : null}
-              </div>
-            ) : null}
+                {activeJob ? <Badge variant="secondary">{activeJob.status}</Badge> : null}
+                {incompleteSegments > 0 ? (
+                  <Badge variant="outline">包含未完成段落</Badge>
+                ) : null}
+                <span className="text-muted-foreground">
+                  {activeJob
+                    ? `${activeJob.completedSegments} / ${activeJob.segmentCount} 已完成，${activeJob.failedSegments} 失败`
+                    : "正在读取本机项目缓存。"}
+                </span>
+              </CardDescription>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <Button
+                disabled={
+                  !rwkvConfigReady ||
+                  pendingSegments.length === 0 ||
+                  isTranslating ||
+                  isLoading
+                }
+                onClick={() => void translateSegments(pendingSegments)}
+                size="sm"
+                title={
+                  rwkvConfigReady
+                    ? "翻译当前文件的待处理或失败段落"
+                    : "请先在设置页填写 RWKV API token 和 body password"
+                }
+                type="button"
+              >
+                <Play data-icon="inline-start" />
+                {isTranslating ? "翻译中" : `翻译当前文件 ${pendingSegments.length}`}
+              </Button>
+              <Button
+                disabled={failedSegments.length === 0 || isTranslating || isLoading}
+                onClick={() => void translateSegments(failedSegments)}
+                size="sm"
+                title="重试失败段落"
+                type="button"
+                variant="outline"
+              >
+                <RefreshCw data-icon="inline-start" />
+                重试失败
+              </Button>
+              <Button
+                disabled={!activeJob || isLoading}
+                onClick={() => void exportCurrentJob("translation")}
+                size="sm"
+                type="button"
+                variant="outline"
+              >
+                <Download data-icon="inline-start" />
+                {isDirectoryProject ? "导出项目译文" : "导出译文"}
+              </Button>
+              <Button
+                disabled={!activeJob || isLoading}
+                onClick={() => void exportCurrentJob("bilingual")}
+                size="sm"
+                type="button"
+                variant="outline"
+              >
+                <Languages data-icon="inline-start" />
+                {isDirectoryProject ? "导出项目双语" : "导出双语"}
+              </Button>
+              <Button
+                disabled={!activeJob || isDeleting || isTranslating || !currentFile}
+                onClick={() => void deleteCurrentFile()}
+                size="sm"
+                type="button"
+                variant="destructive"
+              >
+                <Trash2 data-icon="inline-start" />
+                删除当前文件
+              </Button>
+            </div>
+          </div>
+        </CardHeader>
+
+        <CardContent className="grid gap-4 py-4">
+          <div className="grid gap-3 rounded-xl border bg-muted/30 p-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="secondary">当前文件</Badge>
+              <span className="truncate font-medium text-foreground">
+                {currentFile?.relativePath ?? "未选择文件"}
+              </span>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+              <FileText className="size-4 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 truncate">
+                {currentFile
+                  ? `${currentFileSegments.filter((segment) => segment.status === "done").length} / ${currentFileSegments.length} 已完成`
+                  : "没有可显示的文件。"}
+              </span>
+              {incompleteSegments > 0 ? <Badge variant="outline">含未完成段落</Badge> : null}
+            </div>
+
             {activeJob ? (
-              <div className="flex flex-wrap items-center gap-2 pt-1">
+              <div className="flex flex-wrap items-center gap-2">
                 <LanguageSelect
                   disabled={isLoading || isTranslating || isSavingLanguages}
                   label="原文语言"
@@ -417,89 +536,34 @@ export function JobsPage() {
               </div>
             ) : null}
           </div>
-          <div className="flex flex-wrap items-center justify-end gap-2">
-            <Button
-              disabled={
-                !rwkvConfigReady ||
-                pendingSegments.length === 0 ||
-                isTranslating ||
-                isLoading
-              }
-              onClick={() => void translateSegments(pendingSegments)}
-              title={
-                rwkvConfigReady
-                  ? "翻译当前文件的待处理或失败段落"
-                  : "请先在设置页填写 RWKV API token 和 body password"
-              }
-              type="button"
-            >
-              <Play data-icon="inline-start" />
-              {isTranslating ? "翻译中" : `翻译当前文件 ${pendingSegments.length}`}
-            </Button>
-            <Button
-              disabled={failedSegments.length === 0 || isTranslating || isLoading}
-              onClick={() => void translateSegments(failedSegments)}
-              title="重试失败段落"
-              type="button"
-              variant="outline"
-            >
-              <RefreshCw data-icon="inline-start" />
-              重试失败
-            </Button>
-            <Button
-              disabled={!activeJob || isLoading}
-              onClick={() => void exportCurrentJob("translation")}
-              type="button"
-              variant="outline"
-            >
-              <Download data-icon="inline-start" />
-              {isDirectoryProject ? "导出项目译文" : "导出译文"}
-            </Button>
-            <Button
-              disabled={!activeJob || isLoading}
-              onClick={() => void exportCurrentJob("bilingual")}
-              type="button"
-              variant="outline"
-            >
-              <Languages data-icon="inline-start" />
-              {isDirectoryProject ? "导出项目双语" : "导出双语"}
-            </Button>
-            <Button
-              disabled={!activeJob || isDeleting || isTranslating}
-              onClick={() => void deleteCurrentJob()}
-              type="button"
-              variant="outline"
-            >
-              <Trash2 data-icon="inline-start" />
-              删除
-            </Button>
-          </div>
-        </div>
 
-        {translationResult || exportResult || pageError ? (
-          <div className="flex flex-col gap-2 border-t px-4 py-3 text-sm">
-            {translationResult ? (
-              <div className="flex flex-wrap items-center gap-2 text-muted-foreground">
-                <Badge variant={translationResult.ok ? "secondary" : "outline"}>
-                  {translationResult.ok ? "翻译批次成功" : "翻译批次失败"}
-                </Badge>
-                <span>{translationResult.message}</span>
-                <span>status: {translationResult.statusCode ?? "none"}</span>
-                <span>latency: {translationResult.latencyMs} ms</span>
-              </div>
-            ) : null}
-            {exportResult ? (
-              <div className="flex flex-wrap items-center gap-2 text-muted-foreground">
-                <Badge variant="secondary">导出完成</Badge>
-                <span>{exportResult.targetPath}</span>
-                <span>{exportResult.filesWritten} files</span>
-                <span>{exportResult.bytesWritten} bytes</span>
-              </div>
-            ) : null}
-            {pageError ? <p className="text-destructive">{pageError}</p> : null}
-          </div>
-        ) : null}
-      </div>
+          {translationResult || exportResult || pageError ? <Separator /> : null}
+
+          {translationResult || exportResult || pageError ? (
+            <div className="flex flex-col gap-2 text-sm">
+              {translationResult ? (
+                <div className="flex flex-wrap items-center gap-2 text-muted-foreground">
+                  <Badge variant={translationResult.ok ? "secondary" : "outline"}>
+                    {translationResult.ok ? "翻译批次成功" : "翻译批次失败"}
+                  </Badge>
+                  <span>{translationResult.message}</span>
+                  <span>status: {translationResult.statusCode ?? "none"}</span>
+                  <span>latency: {translationResult.latencyMs} ms</span>
+                </div>
+              ) : null}
+              {exportResult ? (
+                <div className="flex flex-wrap items-center gap-2 text-muted-foreground">
+                  <Badge variant="secondary">导出完成</Badge>
+                  <span>{exportResult.targetPath}</span>
+                  <span>{exportResult.filesWritten} files</span>
+                  <span>{exportResult.bytesWritten} bytes</span>
+                </div>
+              ) : null}
+              {pageError ? <p className="text-destructive">{pageError}</p> : null}
+            </div>
+          ) : null}
+        </CardContent>
+      </Card>
 
       <DocumentPreview currentFileId={selectedFileId} currentJobId={currentJobId} />
     </section>

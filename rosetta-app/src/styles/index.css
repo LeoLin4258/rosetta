@@ -264,7 +264,7 @@ textarea {
 }
 
 .rosetta-markdown-preview code {
-  border-radius: 0.25rem;
+  border-radius: var(--radius);
   background: var(--muted);
   padding: 0.1rem 0.25rem;
   font-family: var(--font-mono);
@@ -273,7 +273,7 @@ textarea {
 
 .rosetta-markdown-preview pre {
   overflow: auto;
-  border-radius: 0.25rem;
+  border-radius: var(--radius);
   background: var(--muted);
   padding: 0.8rem;
 }
@@ -299,10 +299,4 @@ textarea {
   color: var(--primary);
   text-decoration: underline;
   text-underline-offset: 2px;
-}
-
-
-
-.xxx{
-  border: solid 1px red;
 }

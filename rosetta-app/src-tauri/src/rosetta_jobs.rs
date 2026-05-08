@@ -130,6 +130,15 @@ pub struct RosettaExportResult {
     message: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RosettaJobFileDeleteResult {
+    deleted_job: bool,
+    jobs: Vec<RosettaJobSummary>,
+    bundle: Option<RosettaJobBundle>,
+    message: String,
+}
+
 #[derive(Debug)]
 struct SourceSnapshot {
     relative_path: String,
@@ -279,6 +288,15 @@ pub fn delete_rosetta_job(
     job_id: String,
 ) -> Result<Vec<RosettaJobSummary>, String> {
     delete_job(&app, &job_id)
+}
+
+#[tauri::command]
+pub fn delete_rosetta_job_file(
+    app: AppHandle,
+    job_id: String,
+    file_id: String,
+) -> Result<RosettaJobFileDeleteResult, String> {
+    delete_job_file(&app, &job_id, &file_id)
 }
 
 #[tauri::command]
@@ -1092,6 +1110,27 @@ fn path_from_relative(relative_path: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+fn cleanup_empty_dirs(current: &Path, stop_at: &Path) -> Result<(), String> {
+    if !current.exists() || current == stop_at {
+        return Ok(());
+    }
+
+    let is_empty = fs::read_dir(current)
+        .map_err(|error| format!("无法读取目录 {}: {error}", current.display()))?
+        .next()
+        .is_none();
+
+    if is_empty {
+        fs::remove_dir(current)
+            .map_err(|error| format!("无法删除空目录 {}: {error}", current.display()))?;
+        if let Some(parent) = current.parent() {
+            cleanup_empty_dirs(parent, stop_at)?;
+        }
+    }
+
+    Ok(())
+}
+
 fn write_job_bundle(
     app: &AppHandle,
     bundle: &RosettaJobBundle,
@@ -1315,6 +1354,87 @@ fn delete_job(app: &AppHandle, job_id: &str) -> Result<Vec<RosettaJobSummary>, S
     index.jobs.retain(|job| job.id != job_id);
     write_index(&root, &index)?;
     Ok(index.jobs)
+}
+
+fn delete_job_file(
+    app: &AppHandle,
+    job_id: &str,
+    file_id: &str,
+) -> Result<RosettaJobFileDeleteResult, String> {
+    let root = jobs_root(app)?;
+    let dir = checked_job_dir(&root, job_id)?;
+    let mut index = read_index(&root)?;
+    let mut job = index
+        .jobs
+        .iter()
+        .find(|job| job.id == job_id)
+        .cloned()
+        .ok_or_else(|| "项目不存在，无法删除文件。".to_string())?;
+    let mut document: RosettaDocument = read_json(&dir.join("document.json"))?;
+    let mut segments: Vec<Segment> = read_json(&dir.join("segments.json"))?;
+    let Some(file_index) = document.files.iter().position(|file| file.id == file_id) else {
+        return Err("当前文件不存在，无法删除。".to_string());
+    };
+
+    if document.files.len() <= 1 {
+        let jobs = delete_job(app, job_id)?;
+        return Ok(RosettaJobFileDeleteResult {
+            deleted_job: true,
+            jobs,
+            bundle: None,
+            message: "项目只包含一个文件，已删除整个项目。".to_string(),
+        });
+    }
+
+    let removed_file = document.files.remove(file_index);
+    document
+        .blocks
+        .retain(|block| block.file_id.as_deref().unwrap_or("file-1") != removed_file.id.as_str());
+    segments.retain(|segment| {
+        segment.file_id.as_deref().unwrap_or("file-1") != removed_file.id.as_str()
+    });
+    let mut next_block_order = 1;
+    let mut next_segment_order = 1;
+    renumber_blocks_and_segments(
+        &mut document.blocks,
+        &mut segments,
+        &mut next_block_order,
+        &mut next_segment_order,
+    );
+    apply_segment_translations_to_document(&mut document, &segments);
+    sync_job_counts(&mut job, &segments);
+    job.updated_at = timestamp_ms_string();
+    job.last_error = None;
+    job.file_count = document.files.len();
+    job.source_files = document.files.clone();
+
+    let source_path = dir
+        .join("sources")
+        .join(path_from_relative(&removed_file.relative_path)?);
+    if source_path.exists() {
+        fs::remove_file(&source_path)
+            .map_err(|error| format!("无法删除源文件缓存 {}: {error}", source_path.display()))?;
+    }
+    if let Some(parent) = source_path.parent() {
+        cleanup_empty_dirs(parent, &dir.join("sources"))?;
+    }
+
+    write_json(&dir.join("document.json"), &document)?;
+    write_json(&dir.join("segments.json"), &segments)?;
+    replace_index_job(&mut index, job.clone());
+    write_index(&root, &index)?;
+
+    Ok(RosettaJobFileDeleteResult {
+        deleted_job: false,
+        jobs: index.jobs,
+        bundle: Some(RosettaJobBundle {
+            schema_version: SCHEMA_VERSION,
+            job,
+            document,
+            segments,
+        }),
+        message: "文件已删除。".to_string(),
+    })
 }
 
 fn export_job(
