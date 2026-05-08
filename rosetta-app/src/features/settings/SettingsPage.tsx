@@ -1,43 +1,10 @@
-import { useEffect, useState, type ChangeEvent } from "react";
-import {
-  Activity,
-  Archive,
-  FolderPlus,
-  PackageCheck,
-  Play,
-  RefreshCw,
-  ScanLine,
-  Send,
-} from "lucide-react";
+import { useState, type ChangeEvent } from "react";
+import { Send } from "lucide-react";
 import { probeRwkvTranslationApi } from "../../lib/rwkvApi";
-import {
-  extractRwkvRuntimeArtifact,
-  getRwkvRuntimeArtifactCatalog,
-  getRwkvRuntimeInstallProgress,
-  getRwkvRuntimeInstallPlan,
-  getRwkvRuntimeProcessStatus,
-  getRwkvRuntimeStatus,
-  initializeRwkvRuntimeLayout,
-  probeRwkvRuntimeTranslation,
-  prepareRwkvRuntimeInstall,
-  scanRwkvRuntimeArtifacts,
-  startRwkvRuntime,
-} from "../../lib/rwkvRuntime";
 import { useRosettaStore } from "../../store/useRosettaStore";
 import type {
   AppThemeMode,
   RwkvConnectionConfig,
-  RwkvRuntimeArtifactCatalog,
-  RwkvRuntimeArtifactCatalogItem,
-  RwkvRuntimeArtifactScanResult,
-  RwkvRuntimeExtractionResult,
-  RwkvRuntimeInstallPlan,
-  RwkvRuntimeInstallPlanItem,
-  RwkvRuntimeInstallProgress,
-  RwkvRuntimeInstallProgressItem,
-  RwkvRuntimeProcessStatus,
-  RwkvRuntimeStatus,
-  RwkvRuntimeTranslationProbeResult,
   RwkvTranslationApiProbeResult,
   TranslationMode,
 } from "../../types/rosetta";
@@ -66,239 +33,16 @@ const themeOptions: Array<{ label: string; value: AppThemeMode }> = [
   { label: "跟随系统", value: "system" },
 ];
 
-const runtimeStateLabel: Record<RwkvRuntimeStatus["state"], string> = {
-  "not-installed": "未安装",
-  partial: "目录已准备",
-  installed: "已安装",
-  invalid: "需检查",
-};
-
-const installItemStateLabel: Record<RwkvRuntimeInstallPlanItem["state"], string> =
-  {
-    missing: "待准备",
-    ready: "就绪",
-    invalid: "需检查",
-  };
-
-const progressStateLabel: Record<RwkvRuntimeInstallProgress["state"], string> = {
-  "not-started": "未开始",
-  queued: "已排队",
-  ready: "已就绪",
-  blocked: "已阻塞",
-};
-
-const progressItemStateLabel: Record<
-  RwkvRuntimeInstallProgressItem["state"],
-  string
-> = {
-  pending: "待处理",
-  ready: "就绪",
-  blocked: "已阻塞",
-};
-
-const catalogItemStateLabel: Record<
-  RwkvRuntimeArtifactCatalogItem["state"],
-  string
-> = {
-  ready: "可下载",
-};
-
-const processStateLabel: Record<RwkvRuntimeProcessStatus["state"], string> = {
-  stopped: "未启动",
-  starting: "启动中",
-  ready: "端口就绪",
-};
-
 export function SettingsPage() {
   const themeMode = useRosettaStore((state) => state.themeMode);
   const setThemeMode = useRosettaStore((state) => state.setThemeMode);
   const rwkv = useRosettaStore((state) => state.rwkv);
   const updateRwkvConfig = useRosettaStore((state) => state.updateRwkvConfig);
   const setTranslationMode = useRosettaStore((state) => state.setTranslationMode);
-  const [runtimeStatus, setRuntimeStatus] =
-    useState<RwkvRuntimeStatus | null>(null);
-  const [installPlan, setInstallPlan] =
-    useState<RwkvRuntimeInstallPlan | null>(null);
-  const [installProgress, setInstallProgress] =
-    useState<RwkvRuntimeInstallProgress | null>(null);
-  const [artifactCatalog, setArtifactCatalog] =
-    useState<RwkvRuntimeArtifactCatalog | null>(null);
-  const [scanResult, setScanResult] =
-    useState<RwkvRuntimeArtifactScanResult | null>(null);
-  const [extractionResult, setExtractionResult] =
-    useState<RwkvRuntimeExtractionResult | null>(null);
-  const [processStatus, setProcessStatus] =
-    useState<RwkvRuntimeProcessStatus | null>(null);
-  const [translationProbeResult, setTranslationProbeResult] =
-    useState<RwkvRuntimeTranslationProbeResult | null>(null);
   const [apiProbeResult, setApiProbeResult] =
     useState<RwkvTranslationApiProbeResult | null>(null);
-  const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [apiError, setApiError] = useState<string | null>(null);
-  const [isCheckingRuntime, setIsCheckingRuntime] = useState(false);
-  const [isPreparingRuntime, setIsPreparingRuntime] = useState(false);
-  const [isPreparingInstall, setIsPreparingInstall] = useState(false);
-  const [isScanningArtifacts, setIsScanningArtifacts] = useState(false);
-  const [isExtractingRuntime, setIsExtractingRuntime] = useState(false);
-  const [isStartingRuntime, setIsStartingRuntime] = useState(false);
-  const [isProbingTranslation, setIsProbingTranslation] = useState(false);
   const [isProbingApi, setIsProbingApi] = useState(false);
-
-  async function refreshRuntimeStatus() {
-    setIsCheckingRuntime(true);
-    setRuntimeError(null);
-
-    try {
-      const [nextRuntimeStatus, nextInstallPlan] = await Promise.all([
-        getRwkvRuntimeStatus(),
-        getRwkvRuntimeInstallPlan(),
-      ]);
-      const [nextInstallProgress, nextArtifactCatalog] = await Promise.all([
-        getRwkvRuntimeInstallProgress(),
-        getRwkvRuntimeArtifactCatalog(),
-      ]);
-      const nextProcessStatus = await getRwkvRuntimeProcessStatus();
-      setRuntimeStatus(nextRuntimeStatus);
-      setInstallPlan(nextInstallPlan);
-      setInstallProgress(nextInstallProgress);
-      setArtifactCatalog(nextArtifactCatalog);
-      setProcessStatus(nextProcessStatus);
-    } catch (error) {
-      setRuntimeStatus(null);
-      setInstallPlan(null);
-      setInstallProgress(null);
-      setArtifactCatalog(null);
-      setScanResult(null);
-      setExtractionResult(null);
-      setProcessStatus(null);
-      setTranslationProbeResult(null);
-      setRuntimeError(
-        error instanceof Error ? error.message : "无法读取本地 RWKV 状态。"
-      );
-    } finally {
-      setIsCheckingRuntime(false);
-    }
-  }
-
-  useEffect(() => {
-    void refreshRuntimeStatus();
-  }, []);
-
-  async function prepareRuntimeLayout() {
-    setIsPreparingRuntime(true);
-    setRuntimeError(null);
-
-    try {
-      setRuntimeStatus(await initializeRwkvRuntimeLayout());
-      setInstallPlan(await getRwkvRuntimeInstallPlan());
-      setInstallProgress(await getRwkvRuntimeInstallProgress());
-      setArtifactCatalog(await getRwkvRuntimeArtifactCatalog());
-      setProcessStatus(await getRwkvRuntimeProcessStatus());
-    } catch (error) {
-      setRuntimeError(
-        error instanceof Error ? error.message : "无法准备本地 RWKV 目录。"
-      );
-    } finally {
-      setIsPreparingRuntime(false);
-    }
-  }
-
-  async function prepareInstall() {
-    setIsPreparingInstall(true);
-    setRuntimeError(null);
-
-    try {
-      setInstallProgress(await prepareRwkvRuntimeInstall());
-      setRuntimeStatus(await getRwkvRuntimeStatus());
-      setInstallPlan(await getRwkvRuntimeInstallPlan());
-      setArtifactCatalog(await getRwkvRuntimeArtifactCatalog());
-      setProcessStatus(await getRwkvRuntimeProcessStatus());
-    } catch (error) {
-      setRuntimeError(
-        error instanceof Error ? error.message : "无法准备本地 RWKV 安装任务。"
-      );
-    } finally {
-      setIsPreparingInstall(false);
-    }
-  }
-
-  async function scanArtifacts() {
-    setIsScanningArtifacts(true);
-    setRuntimeError(null);
-
-    try {
-      const nextScanResult = await scanRwkvRuntimeArtifacts();
-      setScanResult(nextScanResult);
-      setInstallPlan(nextScanResult.plan);
-      setRuntimeStatus(await getRwkvRuntimeStatus());
-      setInstallProgress(await getRwkvRuntimeInstallProgress());
-      setArtifactCatalog(await getRwkvRuntimeArtifactCatalog());
-      setProcessStatus(await getRwkvRuntimeProcessStatus());
-    } catch (error) {
-      setRuntimeError(
-        error instanceof Error ? error.message : "无法扫描本地 RWKV artifact。"
-      );
-    } finally {
-      setIsScanningArtifacts(false);
-    }
-  }
-
-  async function extractRuntime() {
-    setIsExtractingRuntime(true);
-    setRuntimeError(null);
-
-    try {
-      const nextExtractionResult = await extractRwkvRuntimeArtifact();
-      setExtractionResult(nextExtractionResult);
-      setInstallPlan(nextExtractionResult.plan);
-      setRuntimeStatus(await getRwkvRuntimeStatus());
-      setInstallProgress(await getRwkvRuntimeInstallProgress());
-      setArtifactCatalog(await getRwkvRuntimeArtifactCatalog());
-      setProcessStatus(await getRwkvRuntimeProcessStatus());
-    } catch (error) {
-      setRuntimeError(
-        error instanceof Error ? error.message : "无法解压本地 RWKV runtime。"
-      );
-    } finally {
-      setIsExtractingRuntime(false);
-    }
-  }
-
-  async function startRuntime() {
-    setIsStartingRuntime(true);
-    setRuntimeError(null);
-
-    try {
-      const startResult = await startRwkvRuntime();
-      setProcessStatus(startResult.process);
-      setRuntimeStatus(await getRwkvRuntimeStatus());
-      setInstallPlan(await getRwkvRuntimeInstallPlan());
-      setInstallProgress(await getRwkvRuntimeInstallProgress());
-    } catch (error) {
-      setRuntimeError(
-        error instanceof Error ? error.message : "无法启动本地 RWKV runtime。"
-      );
-    } finally {
-      setIsStartingRuntime(false);
-    }
-  }
-
-  async function probeTranslation() {
-    setIsProbingTranslation(true);
-    setRuntimeError(null);
-
-    try {
-      const probeResult = await probeRwkvRuntimeTranslation();
-      setTranslationProbeResult(probeResult);
-      setProcessStatus(probeResult.process);
-    } catch (error) {
-      setRuntimeError(
-        error instanceof Error ? error.message : "无法测试本地 RWKV 翻译接口。"
-      );
-    } finally {
-      setIsProbingTranslation(false);
-    }
-  }
 
   async function probeApi() {
     setIsProbingApi(true);
@@ -349,7 +93,6 @@ export function SettingsPage() {
     rwkv.bodyPassword.trim().length > 0 &&
     rwkv.timeoutMs > 0 &&
     !isProbingApi;
-  const isManagedRuntimePaused = true;
 
   return (
     <section className="mx-auto flex max-w-3xl flex-col gap-4 px-6 py-6">
@@ -549,7 +292,10 @@ export function SettingsPage() {
         </CardContent>
       </Card>
 
-      <Card>
+
+      {/* 以下代码和功能已暂停
+      请看：docs\engineering\decisions\0002-pause-managed-rwkv-runtime.md */}
+      {/* <Card>
         <CardHeader>
           <div className="flex items-start justify-between gap-3">
             <div>
@@ -967,71 +713,8 @@ export function SettingsPage() {
             ) : null}
           </div>
         </CardContent>
-      </Card>
+      </Card> */}
 
     </section>
-  );
-}
-
-function RuntimePath({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="grid gap-1">
-      <span className="font-medium text-foreground">{label}</span>
-      <span className="break-all font-mono text-muted-foreground">{value}</span>
-    </div>
-  );
-}
-
-function InstallPlanItem({ item }: { item: RwkvRuntimeInstallPlanItem }) {
-  return (
-    <div className="grid gap-1 rounded-md border border-border bg-background/60 p-2 text-xs">
-      <div className="flex items-center justify-between gap-3">
-        <span className="font-medium text-foreground">{item.label}</span>
-        <Badge variant="outline">{installItemStateLabel[item.state]}</Badge>
-      </div>
-      <p className="text-muted-foreground">{item.message}</p>
-      <RuntimePath label="Manifest" value={item.manifestPath} />
-      {item.artifactPath ? (
-        <RuntimePath label="Artifact" value={item.artifactPath} />
-      ) : null}
-    </div>
-  );
-}
-
-function InstallProgressItem({ item }: { item: RwkvRuntimeInstallProgressItem }) {
-  return (
-    <div className="grid gap-1 rounded-md border border-border bg-background/60 p-2 text-xs">
-      <div className="flex items-center justify-between gap-3">
-        <span className="font-medium text-foreground">{item.label}</span>
-        <Badge variant="outline">{progressItemStateLabel[item.state]}</Badge>
-      </div>
-      <p className="text-muted-foreground">{item.message}</p>
-      {item.bytesTotal ? (
-        <p className="font-mono text-muted-foreground">
-          {item.bytesDone} / {item.bytesTotal} bytes
-        </p>
-      ) : null}
-    </div>
-  );
-}
-
-function ArtifactCatalogItem({ item }: { item: RwkvRuntimeArtifactCatalogItem }) {
-  return (
-    <div className="grid gap-1 rounded-md border border-border bg-background/60 p-2 text-xs">
-      <div className="flex items-center justify-between gap-3">
-        <span className="font-medium text-foreground">{item.label}</span>
-        <Badge variant="outline">{catalogItemStateLabel[item.state]}</Badge>
-      </div>
-      <p className="text-muted-foreground">{item.message}</p>
-      <RuntimePath label="Target" value={item.targetDir} />
-      <RuntimePath label="Manifest" value={item.manifestPath} />
-      {item.artifactFilename ? (
-        <RuntimePath label="Artifact" value={item.artifactFilename} />
-      ) : null}
-      {item.sourcePage ? <RuntimePath label="Source" value={item.sourcePage} /> : null}
-      {item.downloadUrl ? (
-        <RuntimePath label="Download" value={item.downloadUrl} />
-      ) : null}
-    </div>
   );
 }

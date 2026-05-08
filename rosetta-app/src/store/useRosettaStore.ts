@@ -16,6 +16,12 @@ type RosettaState = {
   setThemeMode: (mode: AppThemeMode) => void;
   updateRwkvConfig: (config: Partial<RwkvConnectionConfig>) => void;
   setTranslationMode: (mode: TranslationMode) => void;
+  beginPreviewSegmentTranslation: (segmentIds: string[]) => void;
+  completePreviewSegmentTranslation: (
+    segmentIds: string[],
+    translations: string[]
+  ) => void;
+  failPreviewSegmentTranslation: (segmentIds: string[]) => void;
   createDemoJob: () => void;
 };
 
@@ -68,6 +74,42 @@ const demoJob: RosettaJob = {
   failedSegments: 0,
 };
 
+function syncDemoJobWithSegments(jobs: RosettaJob[], segments: Segment[]) {
+  const completedSegments = segments.filter((segment) =>
+    ["done", "edited", "skipped"].includes(segment.status)
+  ).length;
+  const failedSegments = segments.filter(
+    (segment) => segment.status === "failed"
+  ).length;
+  const translatingSegments = segments.filter(
+    (segment) => segment.status === "translating"
+  ).length;
+  const pendingSegments = segments.filter(
+    (segment) => segment.status === "pending"
+  ).length;
+  const status: RosettaJob["status"] =
+    translatingSegments > 0
+      ? "translating"
+      : failedSegments > 0
+        ? "failed"
+        : pendingSegments > 0
+          ? "ready"
+          : "completed";
+
+  return jobs.map((job) =>
+    job.id === demoJob.id
+      ? {
+          ...job,
+          status,
+          updatedAt: new Date().toISOString(),
+          segmentCount: segments.length,
+          completedSegments,
+          failedSegments,
+        }
+      : job
+  );
+}
+
 export const useRosettaStore = create<RosettaState>()(
   persist(
     (set) => ({
@@ -97,6 +139,66 @@ export const useRosettaStore = create<RosettaState>()(
             mode,
           },
         })),
+      beginPreviewSegmentTranslation: (segmentIds) =>
+        set((state) => {
+          const segmentIdSet = new Set(segmentIds);
+          const previewSegments: Segment[] = state.previewSegments.map((segment) =>
+            segmentIdSet.has(segment.id)
+              ? {
+                  ...segment,
+                  status: "translating" as const,
+                  translatedText: undefined,
+                }
+              : segment
+          );
+
+          return {
+            previewSegments,
+            jobs: syncDemoJobWithSegments(state.jobs, previewSegments),
+          };
+        }),
+      completePreviewSegmentTranslation: (segmentIds, translations) =>
+        set((state) => {
+          const translationById = new Map(
+            segmentIds.map((segmentId, index) => [
+              segmentId,
+              translations[index],
+            ])
+          );
+          const previewSegments: Segment[] = state.previewSegments.map((segment) => {
+            if (!translationById.has(segment.id)) {
+              return segment;
+            }
+
+            return {
+              ...segment,
+              translatedText: translationById.get(segment.id),
+              status: "done" as const,
+            };
+          });
+
+          return {
+            previewSegments,
+            jobs: syncDemoJobWithSegments(state.jobs, previewSegments),
+          };
+        }),
+      failPreviewSegmentTranslation: (segmentIds) =>
+        set((state) => {
+          const segmentIdSet = new Set(segmentIds);
+          const previewSegments: Segment[] = state.previewSegments.map((segment) =>
+            segmentIdSet.has(segment.id)
+              ? {
+                  ...segment,
+                  status: "failed" as const,
+                }
+              : segment
+          );
+
+          return {
+            previewSegments,
+            jobs: syncDemoJobWithSegments(state.jobs, previewSegments),
+          };
+        }),
       createDemoJob: () =>
         set((state) => ({
           jobs: [demoJob, ...state.jobs.filter((job) => job.id !== demoJob.id)],

@@ -111,6 +111,24 @@ export type RwkvTranslationApiProbeResult = {
   latencyMs: number;
 };
 
+export type RwkvTranslationApiTranslateRequest = {
+  baseUrl: string;
+  endpoint: string;
+  internalToken: string;
+  bodyPassword: string;
+  timeoutMs: number;
+  sourceTexts: string[];
+};
+
+export type RwkvTranslationApiTranslateResult = {
+  ok: boolean;
+  statusCode: number | null;
+  translations: string[];
+  rawResponsePreview: string;
+  message: string;
+  latencyMs: number;
+};
+
 export type RwkvRuntimeState =
   | "not-installed"
   | "partial"

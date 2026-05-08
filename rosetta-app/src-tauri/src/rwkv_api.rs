@@ -18,9 +18,31 @@ pub struct RwkvTranslationApiProbeRequest {
     timeout_ms: u64,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RwkvTranslationApiTranslateRequest {
+    base_url: String,
+    endpoint: String,
+    internal_token: String,
+    body_password: String,
+    timeout_ms: u64,
+    source_texts: Vec<String>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RwkvTranslationApiProbeResult {
+    ok: bool,
+    status_code: Option<u16>,
+    translations: Vec<String>,
+    raw_response_preview: String,
+    message: String,
+    latency_ms: u128,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RwkvTranslationApiTranslateResult {
     ok: bool,
     status_code: Option<u16>,
     translations: Vec<String>,
@@ -67,28 +89,90 @@ pub async fn probe_rwkv_translation_api(
     Ok(probe_translation_api(request).await)
 }
 
+#[tauri::command]
+pub async fn translate_rwkv_texts_with_api(
+    request: RwkvTranslationApiTranslateRequest,
+) -> Result<RwkvTranslationApiTranslateResult, String> {
+    Ok(translate_texts_with_api(request).await)
+}
+
 async fn probe_translation_api(
     request: RwkvTranslationApiProbeRequest,
 ) -> RwkvTranslationApiProbeResult {
-    let started_at = Instant::now();
-    let url = api_url(&request.base_url, &request.endpoint);
-    let body = build_chat_completions_request(
+    let result = request_translations(
+        &request.base_url,
+        &request.endpoint,
+        &request.internal_token,
+        &request.body_password,
+        request.timeout_ms,
         &PROBE_TEXTS
             .iter()
             .map(|text| text.to_string())
             .collect::<Vec<_>>(),
+    )
+    .await;
+
+    RwkvTranslationApiProbeResult {
+        ok: result.ok,
+        status_code: result.status_code,
+        translations: result.translations,
+        raw_response_preview: result.raw_response_preview,
+        message: if result.ok {
+            "RWKV API 非流式批量翻译探测成功。".to_string()
+        } else {
+            result.message
+        },
+        latency_ms: result.latency_ms,
+    }
+}
+
+async fn translate_texts_with_api(
+    request: RwkvTranslationApiTranslateRequest,
+) -> RwkvTranslationApiTranslateResult {
+    if request.source_texts.is_empty() {
+        return RwkvTranslationApiTranslateResult {
+            ok: true,
+            status_code: None,
+            translations: Vec::new(),
+            raw_response_preview: String::new(),
+            message: "没有需要翻译的文本。".to_string(),
+            latency_ms: 0,
+        };
+    }
+
+    request_translations(
+        &request.base_url,
+        &request.endpoint,
+        &request.internal_token,
         &request.body_password,
-    );
+        request.timeout_ms,
+        &request.source_texts,
+    )
+    .await
+}
+
+async fn request_translations(
+    base_url: &str,
+    endpoint: &str,
+    internal_token: &str,
+    body_password: &str,
+    timeout_ms: u64,
+    source_texts: &[String],
+) -> RwkvTranslationApiTranslateResult {
+    let started_at = Instant::now();
+    let url = api_url(base_url, endpoint);
+    let body = build_chat_completions_request(source_texts, body_password);
     let client = match reqwest::Client::builder()
-        .timeout(Duration::from_millis(request.timeout_ms))
+        .timeout(Duration::from_millis(timeout_ms))
         .build()
     {
         Ok(client) => client,
         Err(error) => {
-            return probe_error(
+            return translation_error(
                 None,
                 "",
-                &request,
+                internal_token,
+                body_password,
                 format!("无法创建 RWKV API client: {error}"),
                 started_at,
             );
@@ -97,7 +181,7 @@ async fn probe_translation_api(
 
     let response = client
         .post(url)
-        .header("X-Internal-Token", request.internal_token.as_str())
+        .header("X-Internal-Token", internal_token)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .header(reqwest::header::ACCEPT, "*/*")
         .json(&body)
@@ -107,10 +191,11 @@ async fn probe_translation_api(
     let response = match response {
         Ok(response) => response,
         Err(error) => {
-            return probe_error(
+            return translation_error(
                 None,
                 "",
-                &request,
+                internal_token,
+                body_password,
                 format!("RWKV API 请求失败: {error}"),
                 started_at,
             );
@@ -121,10 +206,11 @@ async fn probe_translation_api(
     let response_text = match response.text().await {
         Ok(response_text) => response_text,
         Err(error) => {
-            return probe_error(
+            return translation_error(
                 Some(status_code),
                 "",
-                &request,
+                internal_token,
+                body_password,
                 format!("无法读取 RWKV API 响应: {error}"),
                 started_at,
             );
@@ -132,28 +218,34 @@ async fn probe_translation_api(
     };
 
     if !(200..300).contains(&status_code) {
-        return probe_error(
+        return translation_error(
             Some(status_code),
             &response_text,
-            &request,
+            internal_token,
+            body_password,
             format!("RWKV API 返回 HTTP {status_code}。"),
             started_at,
         );
     }
 
-    match parse_translations(&response_text, PROBE_TEXTS.len()) {
-        Ok(translations) => RwkvTranslationApiProbeResult {
+    match parse_translations(&response_text, source_texts.len()) {
+        Ok(translations) => RwkvTranslationApiTranslateResult {
             ok: true,
             status_code: Some(status_code),
             translations,
-            raw_response_preview: preview_text_with_redactions(&response_text, &request),
-            message: "RWKV API 非流式批量翻译探测成功。".to_string(),
+            raw_response_preview: preview_text_with_redactions(
+                &response_text,
+                internal_token,
+                body_password,
+            ),
+            message: format!("RWKV API 已翻译 {} 条文本。", source_texts.len()),
             latency_ms: started_at.elapsed().as_millis(),
         },
-        Err(error) => probe_error(
+        Err(error) => translation_error(
             Some(status_code),
             &response_text,
-            &request,
+            internal_token,
+            body_password,
             format!("RWKV API 响应格式不可用: {error}"),
             started_at,
         ),
@@ -221,25 +313,30 @@ fn api_url(base_url: &str, endpoint: &str) -> String {
     )
 }
 
-fn probe_error(
+fn translation_error(
     status_code: Option<u16>,
     response_text: &str,
-    request: &RwkvTranslationApiProbeRequest,
+    internal_token: &str,
+    body_password: &str,
     message: String,
     started_at: Instant,
-) -> RwkvTranslationApiProbeResult {
-    RwkvTranslationApiProbeResult {
+) -> RwkvTranslationApiTranslateResult {
+    RwkvTranslationApiTranslateResult {
         ok: false,
         status_code,
         translations: Vec::new(),
-        raw_response_preview: preview_text_with_redactions(response_text, request),
+        raw_response_preview: preview_text_with_redactions(
+            response_text,
+            internal_token,
+            body_password,
+        ),
         message,
         latency_ms: started_at.elapsed().as_millis(),
     }
 }
 
-fn preview_text_with_redactions(text: &str, request: &RwkvTranslationApiProbeRequest) -> String {
-    redact_sensitive_values(text, &[&request.internal_token, &request.body_password])
+fn preview_text_with_redactions(text: &str, internal_token: &str, body_password: &str) -> String {
+    redact_sensitive_values(text, &[internal_token, body_password])
         .chars()
         .take(RAW_RESPONSE_PREVIEW_CHARS)
         .collect()
@@ -362,17 +459,11 @@ mod tests {
 
     #[test]
     fn error_preview_does_not_include_request_token() {
-        let request = RwkvTranslationApiProbeRequest {
-            base_url: "https://example.com".to_string(),
-            endpoint: "/v1/chat/completions".to_string(),
-            internal_token: "sensitive-token".to_string(),
-            body_password: "sensitive-password".to_string(),
-            timeout_ms: 120_000,
-        };
-        let result = probe_error(
+        let result = translation_error(
             Some(500),
             r#"{"error":"sensitive-token sensitive-password"}"#,
-            &request,
+            "sensitive-token",
+            "sensitive-password",
             "RWKV API 返回 HTTP 500。".to_string(),
             Instant::now(),
         );

@@ -396,22 +396,33 @@ rwkv_lightning_libtorch2.10.0+cu132_sm75-120_Windows_amd64.zip
 - stdout/stderr 是否可能泄露源文本或译文
 - Windows 上 `python app.py --model-path ...` 的启动耗时和失败格式
 
-### Must Confirm Before Translation Connector
+### Translation Connector Contract
 
-- `/translate/v1/batch-translate` 的真实响应 JSON shape
-- 单条失败与整批失败如何返回
-- 超时行为
-- batch size 上限
-- source/target lang 取值是否只支持 `en`、`zh-CN`
+RWKV 工程师已确认当前最终请求形态是 `/v1/chat/completions` 非流式 batch `contents[]` API，而不是旧调研里的 `/translate/v1/batch-translate` 默认路径。
+
+当前 Rosetta connector 约定：
+
+- 每条 source text 生成 `English: {sourceText}\n\nChinese:` prompt。
+- 请求 body 固定使用 `stream: false`。
+- 响应从 `choices[]` 读取，并用 `choice.index` 还原原始输入顺序。
+- `choice.message.content.trim()` 是写入 segment 的译文。
+- 缺失 index、空 content、HTTP 非 2xx、JSON parse 失败都应视为整批失败，本批不写入 segment。
+
+仍需继续实测：
+
+- 稳定 batch size 上限
+- 单条 source text 建议长度
+- 超时和重试策略
+- 后续是否需要支持英文以外语言方向
 
 ## Recommended Next Step
 
 Runtime 工作暂停后的下一步不是继续找 runtime 包，而是先接 RWKV 工程师部署好的翻译 API：
 
-1. 确认工程师部署 API 的 base URL、endpoint、请求/响应/错误格式和认证方式。
-2. 建立 Rosetta translation connector，不依赖 `start_rwkv_runtime` 或 managed runtime status。
-3. 用最小 text list 验证批量翻译顺序、错误格式和超时行为。
-4. 基于该 API 推进 document pipeline、segment scheduler 和预览。
+1. 基于已确认 API contract 建立 Rosetta translation connector，不依赖 `start_rwkv_runtime` 或 managed runtime status。
+2. 用当前 demo segments 跑通 `Segment[] -> contents[] -> translations[] -> Segment[]` 最小闭环。
+3. 继续实测稳定 batch size、错误格式和超时行为。
+4. 基于该 API 推进 TXT/Markdown document pipeline、segment scheduler 和预览。
 5. 等 RWKV 工程侧 runtime 方案确认后，再恢复本地一键运行工作并新增 runtime choice ADR。
 
 ## Stage Status
@@ -432,7 +443,7 @@ Runtime process launch command          Parked, blocked on CUDA/NVIDIA compatibi
 Runtime ADR                            Paused, pending RWKV engineer input
 Local model/runtime files              Done on current workstation
 RWKV Lightning launch                  Paused, do not continue before runtime scheme is confirmed
-Translation connector                  In progress, target external RWKV chat-completions batch API
+Translation connector                  In progress, external RWKV chat-completions batch API confirmed
 One-click install                      Paused
 One-click start                        Paused
 ```
