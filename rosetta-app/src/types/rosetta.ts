@@ -87,9 +87,28 @@ export type RosettaJob = {
 
 export type RwkvConnectionConfig = {
   baseUrl: string;
-  batchEndpoint: "/translate/v1/batch-translate" | "/big_batch/completions";
+  endpoint: string;
+  internalToken: string;
+  bodyPassword: string;
   timeoutMs: number;
   mode: TranslationMode;
+};
+
+export type RwkvTranslationApiProbeRequest = {
+  baseUrl: string;
+  endpoint: string;
+  internalToken: string;
+  bodyPassword: string;
+  timeoutMs: number;
+};
+
+export type RwkvTranslationApiProbeResult = {
+  ok: boolean;
+  statusCode: number | null;
+  translations: string[];
+  rawResponsePreview: string;
+  message: string;
+  latencyMs: number;
 };
 
 export type RwkvRuntimeState =

@@ -73,8 +73,10 @@ export const useRosettaStore = create<RosettaState>()(
     (set) => ({
       themeMode: "dark",
       rwkv: {
-        baseUrl: "http://127.0.0.1:8000",
-        batchEndpoint: "/translate/v1/batch-translate",
+        baseUrl: "https://rwkvconcszserver3.rwkvos.com",
+        endpoint: "/v1/chat/completions",
+        internalToken: "",
+        bodyPassword: "",
         timeoutMs: 120_000,
         mode: "balanced",
       },
@@ -103,6 +105,18 @@ export const useRosettaStore = create<RosettaState>()(
     }),
     {
       name: "rosetta-app-settings",
+      merge: (persisted, current) => {
+        const persistedState = persisted as Partial<RosettaState> | undefined;
+
+        return {
+          ...current,
+          ...persistedState,
+          rwkv: {
+            ...current.rwkv,
+            ...persistedState?.rwkv,
+          },
+        };
+      },
       partialize: (state) => ({
         themeMode: state.themeMode,
         rwkv: state.rwkv,

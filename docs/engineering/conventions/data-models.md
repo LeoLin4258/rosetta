@@ -64,6 +64,18 @@ Document
 - MVP 阶段任务缓存优先使用 JSON 文件。
 - 后续如果引入 SQLite，需要新增 ADR 说明原因和迁移策略。
 
+## RWKV API Config
+
+`RwkvConnectionConfig` 表示当前翻译后端连接设置。托管本地 runtime 暂停期间，它应面向一个已存在的 RWKV 翻译 API，而不是 Rosetta 管理的 runtime 状态。
+
+约定：
+
+- `baseUrl` 和 `endpoint` 共同组成请求地址。
+- API token、body password 等凭据只能保存在用户本机设置中，不能写入仓库、文档、测试或 fixture。
+- 远程或云端 API 必须是用户显式配置的 opt-in 后端。
+- 翻译 pipeline 不能依赖 `start_rwkv_runtime` 或 managed runtime readiness。
+- 如果未来恢复 Rosetta 托管本地 runtime，应新增 runtime choice ADR，再决定是否扩展该配置模型。
+
 ## Compatibility
 
 核心类型一旦被任务缓存使用，就视为持久化格式的一部分。修改字段时需要考虑：

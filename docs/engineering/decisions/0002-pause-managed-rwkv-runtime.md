@@ -36,6 +36,7 @@ Rosetta 的长期目标仍然是让普通用户可以在应用内傻瓜式运行
 当前开发阶段先跳过“一键本地运行 RWKV LLM”，改为连接 RWKV 工程师部署好的翻译模型 API，优先推进 Rosetta 的长文档翻译产品闭环：
 
 - API 连接配置
+- 外部 RWKV API 探测
 - 翻译接口契约确认
 - TXT/Markdown pipeline
 - segment 调度
@@ -58,11 +59,13 @@ Rosetta 的长期目标仍然是让普通用户可以在应用内傻瓜式运行
 
 - 不继续扩展 `start_rwkv_runtime`、下载器、runtime installer、模型 artifact 管理或 one-click launch UI。
 - 不让翻译 pipeline 依赖 Rosetta 托管 runtime 的 readiness。
+- 当前实际开发入口是外部 RWKV translation API connector，优先验证非流式 batch API。
 - 翻译 connector 应面向“已存在的 RWKV 翻译 API base URL”，无论该 API 是本机、局域网、用户自部署远程服务，还是工程师临时部署环境。
 - 远程 / 云端 API 必须是用户显式配置和选择的可选后端，不能成为默认路径。
 - 如果未来支持云端 API，UI 必须清楚提示源文档和译文会离开本机，并保留本地 / 自部署 API 作为隐私优先路径。
 - 不引入云上传、登录、同步、遥测或通用 AI 助手能力。
 - 不把工程师部署 API 记录成 Rosetta 官方长期云服务方向；它只是开发阶段的外部模型 endpoint。
+- 不把 API token、body password 或其它认证凭据写入仓库、文档、测试或 fixture。
 - 不把源文档、译文、segment 文本或文档结构写入 runtime 诊断日志。
 
 ## Future Resume Conditions

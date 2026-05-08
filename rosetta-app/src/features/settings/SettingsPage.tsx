@@ -7,7 +7,9 @@ import {
   Play,
   RefreshCw,
   ScanLine,
+  Send,
 } from "lucide-react";
+import { probeRwkvTranslationApi } from "../../lib/rwkvApi";
 import {
   extractRwkvRuntimeArtifact,
   getRwkvRuntimeArtifactCatalog,
@@ -36,6 +38,7 @@ import type {
   RwkvRuntimeProcessStatus,
   RwkvRuntimeStatus,
   RwkvRuntimeTranslationProbeResult,
+  RwkvTranslationApiProbeResult,
   TranslationMode,
 } from "../../types/rosetta";
 import { Badge } from "@/components/ui/badge";
@@ -49,14 +52,6 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 
 const modeOptions: Array<{ label: string; value: TranslationMode }> = [
@@ -136,7 +131,10 @@ export function SettingsPage() {
     useState<RwkvRuntimeProcessStatus | null>(null);
   const [translationProbeResult, setTranslationProbeResult] =
     useState<RwkvRuntimeTranslationProbeResult | null>(null);
+  const [apiProbeResult, setApiProbeResult] =
+    useState<RwkvTranslationApiProbeResult | null>(null);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
+  const [apiError, setApiError] = useState<string | null>(null);
   const [isCheckingRuntime, setIsCheckingRuntime] = useState(false);
   const [isPreparingRuntime, setIsPreparingRuntime] = useState(false);
   const [isPreparingInstall, setIsPreparingInstall] = useState(false);
@@ -144,6 +142,7 @@ export function SettingsPage() {
   const [isExtractingRuntime, setIsExtractingRuntime] = useState(false);
   const [isStartingRuntime, setIsStartingRuntime] = useState(false);
   const [isProbingTranslation, setIsProbingTranslation] = useState(false);
+  const [isProbingApi, setIsProbingApi] = useState(false);
 
   async function refreshRuntimeStatus() {
     setIsCheckingRuntime(true);
@@ -301,11 +300,56 @@ export function SettingsPage() {
     }
   }
 
-  function updateTextField(field: keyof Pick<RwkvConnectionConfig, "baseUrl">) {
+  async function probeApi() {
+    setIsProbingApi(true);
+    setApiError(null);
+    setApiProbeResult(null);
+
+    try {
+      const probeResult = await probeRwkvTranslationApi({
+        baseUrl: rwkv.baseUrl,
+        endpoint: rwkv.endpoint,
+        internalToken: rwkv.internalToken,
+        bodyPassword: rwkv.bodyPassword,
+        timeoutMs: rwkv.timeoutMs,
+      });
+      setApiProbeResult(probeResult);
+    } catch (error) {
+      setApiError(
+        error instanceof Error ? error.message : "无法测试 RWKV API。"
+      );
+    } finally {
+      setIsProbingApi(false);
+    }
+  }
+
+  function updateTextField(
+    field: keyof Pick<
+      RwkvConnectionConfig,
+      "baseUrl" | "endpoint" | "internalToken" | "bodyPassword"
+    >
+  ) {
     return (event: ChangeEvent<HTMLInputElement>) => {
       updateRwkvConfig({ [field]: event.currentTarget.value });
     };
   }
+
+  function updateTimeout(event: ChangeEvent<HTMLInputElement>) {
+    const timeoutMs = Number.parseInt(event.currentTarget.value, 10);
+
+    if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+      updateRwkvConfig({ timeoutMs });
+    }
+  }
+
+  const canProbeApi =
+    rwkv.baseUrl.trim().length > 0 &&
+    rwkv.endpoint.trim().length > 0 &&
+    rwkv.internalToken.trim().length > 0 &&
+    rwkv.bodyPassword.trim().length > 0 &&
+    rwkv.timeoutMs > 0 &&
+    !isProbingApi;
+  const isManagedRuntimePaused = true;
 
   return (
     <section className="mx-auto flex max-w-3xl flex-col gap-4 px-6 py-6">
@@ -347,14 +391,178 @@ export function SettingsPage() {
         <CardHeader>
           <div className="flex items-start justify-between gap-3">
             <div>
+              <CardTitle>RWKV API</CardTitle>
+              <CardDescription>
+                当前主路径：连接已部署的 RWKV 批量翻译接口
+              </CardDescription>
+            </div>
+            <Badge variant="outline">当前使用</Badge>
+          </div>
+        </CardHeader>
+
+        <CardContent>
+          <div className="flex flex-col gap-4">
+            <div className="grid gap-3 rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
+              <p>
+                远程或云端 API 是显式配置的后端选项。测试时，样本文本会发送到该
+                API。
+              </p>
+              <p>
+                真实 token 只保存在本机设置中，不应写入代码、文档或测试 fixture。
+              </p>
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="rwkv-base-url">API 地址</Label>
+              <Input
+                id="rwkv-base-url"
+                onChange={updateTextField("baseUrl")}
+                value={rwkv.baseUrl}
+              />
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="rwkv-endpoint">端点</Label>
+              <Input
+                id="rwkv-endpoint"
+                onChange={updateTextField("endpoint")}
+                value={rwkv.endpoint}
+              />
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="rwkv-internal-token">X-Internal-Token</Label>
+              <Input
+                id="rwkv-internal-token"
+                onChange={updateTextField("internalToken")}
+                type="password"
+                value={rwkv.internalToken}
+              />
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="rwkv-body-password">Body password</Label>
+              <Input
+                id="rwkv-body-password"
+                onChange={updateTextField("bodyPassword")}
+                type="password"
+                value={rwkv.bodyPassword}
+              />
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="rwkv-timeout">Timeout ms</Label>
+              <Input
+                id="rwkv-timeout"
+                min={1}
+                onChange={updateTimeout}
+                type="number"
+                value={rwkv.timeoutMs}
+              />
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <Label>翻译模式</Label>
+              <ToggleGroup
+                className="w-full"
+                onValueChange={(value) => {
+                  if (value) {
+                    setTranslationMode(value as TranslationMode);
+                  }
+                }}
+                type="single"
+                value={rwkv.mode}
+                variant="outline"
+              >
+                {modeOptions.map((option) => (
+                  <ToggleGroupItem
+                    className="flex-1"
+                    key={option.value}
+                    value={option.value}
+                  >
+                    {option.label}
+                  </ToggleGroupItem>
+                ))}
+              </ToggleGroup>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Button
+                disabled={!canProbeApi}
+                onClick={() => void probeApi()}
+                title="测试 RWKV API"
+                type="button"
+                variant="outline"
+              >
+                <Send />
+                {isProbingApi ? "测试中" : "测试 API"}
+              </Button>
+              {apiProbeResult ? (
+                <Badge variant="outline">
+                  {apiProbeResult.ok ? "成功" : "失败"}
+                </Badge>
+              ) : null}
+            </div>
+
+            {apiError ? (
+              <p className="text-sm text-destructive">{apiError}</p>
+            ) : null}
+
+            {apiProbeResult ? (
+              <div className="grid gap-3 rounded-md border border-border bg-muted/30 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="font-medium text-foreground">API 探测</span>
+                  <Badge variant="outline">
+                    {apiProbeResult.ok ? "成功" : "失败"}
+                  </Badge>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {apiProbeResult.message}
+                </p>
+                <p className="font-mono text-xs text-muted-foreground">
+                  status: {apiProbeResult.statusCode ?? "none"} / latency:{" "}
+                  {apiProbeResult.latencyMs}ms
+                </p>
+                {apiProbeResult.translations.length > 0 ? (
+                  <div className="grid gap-2">
+                    {apiProbeResult.translations.map((translation, index) => (
+                      <div
+                        className="grid gap-1 rounded-md border border-border bg-background/60 p-2 text-xs"
+                        key={`api-probe-${index}`}
+                      >
+                        <span className="font-medium text-foreground">
+                          Translation {index + 1}
+                        </span>
+                        <p className="text-muted-foreground">{translation}</p>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+                {apiProbeResult.rawResponsePreview ? (
+                  <pre className="max-h-40 overflow-auto rounded-sm bg-background/80 p-2 font-mono text-[11px] leading-relaxed text-muted-foreground">
+                    {apiProbeResult.rawResponsePreview}
+                  </pre>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <div className="flex items-start justify-between gap-3">
+            <div>
               <CardTitle>本地 RWKV</CardTitle>
               <CardDescription>
-                Rosetta 托管的本地翻译模型运行时
+                已暂停：Rosetta 托管的本地翻译模型运行时
               </CardDescription>
             </div>
             <div className="flex items-center gap-2">
+              <Badge variant="outline">已暂停</Badge>
               <Button
                 disabled={
+                  isManagedRuntimePaused ||
                   runtimeStatus?.runtimeExecutableExists ||
                   isCheckingRuntime ||
                   isPreparingRuntime ||
@@ -374,6 +582,7 @@ export function SettingsPage() {
               </Button>
               <Button
                 disabled={
+                  isManagedRuntimePaused ||
                   isCheckingRuntime ||
                   isPreparingRuntime ||
                   isPreparingInstall ||
@@ -392,6 +601,7 @@ export function SettingsPage() {
               </Button>
               <Button
                 disabled={
+                  isManagedRuntimePaused ||
                   isCheckingRuntime ||
                   isPreparingRuntime ||
                   isPreparingInstall ||
@@ -410,6 +620,7 @@ export function SettingsPage() {
               </Button>
               <Button
                 disabled={
+                  isManagedRuntimePaused ||
                   isCheckingRuntime ||
                   isPreparingRuntime ||
                   isPreparingInstall ||
@@ -428,6 +639,7 @@ export function SettingsPage() {
               </Button>
               <Button
                 disabled={
+                  isManagedRuntimePaused ||
                   runtimeStatus?.compatibility.compatible === false ||
                   !installPlan?.ready ||
                   processStatus?.state === "ready" ||
@@ -449,6 +661,7 @@ export function SettingsPage() {
               </Button>
               <Button
                 disabled={
+                  isManagedRuntimePaused ||
                   processStatus?.state !== "ready" ||
                   isCheckingRuntime ||
                   isPreparingRuntime ||
@@ -492,6 +705,16 @@ export function SettingsPage() {
 
         <CardContent>
           <div className="flex flex-col gap-4 text-sm">
+            <div className="grid gap-2 rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
+              <p>
+                本地一键运行 RWKV LLM 已暂停，当前翻译开发使用上方的外部 RWKV
+                API。
+              </p>
+              <p>
+                这里保留已有诊断信息，避免丢失后续恢复本地 runtime 工作所需的上下文。
+              </p>
+            </div>
+
             <div className="flex items-center gap-2">
               <span className="text-muted-foreground">状态</span>
               <Badge variant="outline">
@@ -746,76 +969,6 @@ export function SettingsPage() {
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>RWKV API</CardTitle>
-          <CardDescription>配置翻译连接和默认调度模式</CardDescription>
-        </CardHeader>
-
-        <CardContent>
-          <div className="flex flex-col gap-4">
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="rwkv-base-url">API 地址</Label>
-              <Input
-                id="rwkv-base-url"
-                onChange={updateTextField("baseUrl")}
-                value={rwkv.baseUrl}
-              />
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <Label>Batch 端点</Label>
-              <Select
-                onValueChange={(value) =>
-                  updateRwkvConfig({
-                    batchEndpoint: value as RwkvConnectionConfig["batchEndpoint"],
-                  })
-                }
-                value={rwkv.batchEndpoint}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectGroup>
-                    <SelectItem value="/translate/v1/batch-translate">
-                      /translate/v1/batch-translate
-                    </SelectItem>
-                    <SelectItem value="/big_batch/completions">
-                      /big_batch/completions
-                    </SelectItem>
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <Label>翻译模式</Label>
-              <ToggleGroup
-                className="w-full"
-                onValueChange={(value) => {
-                  if (value) {
-                    setTranslationMode(value as TranslationMode);
-                  }
-                }}
-                type="single"
-                value={rwkv.mode}
-                variant="outline"
-              >
-                {modeOptions.map((option) => (
-                  <ToggleGroupItem
-                    className="flex-1"
-                    key={option.value}
-                    value={option.value}
-                  >
-                    {option.label}
-                  </ToggleGroupItem>
-                ))}
-              </ToggleGroup>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
     </section>
   );
 }

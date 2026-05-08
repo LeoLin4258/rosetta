@@ -31,6 +31,8 @@ RWKV runtime 模块已经完成本地托管运行时的管理骨架，但 2026-0
 - 推进 TXT/Markdown pipeline、segment 调度、进度和预览
 - 不让翻译 pipeline 依赖 Rosetta 托管 runtime readiness
 
+当前外部 API connector 的首个目标是 Tauri command 层的非流式 `/v1/chat/completions` batch probe。请求由 Rust 发出，设置页只负责保存用户显式配置的 base URL、endpoint、internal token、body password 和 timeout。
+
 这里的 API base URL 不只限于工程师临时部署环境。未来 Rosetta 可以支持用户显式选择的多种 RWKV 后端：
 
 - 用户本机或局域网自部署 RWKV API
@@ -430,7 +432,7 @@ Runtime process launch command          Parked, blocked on CUDA/NVIDIA compatibi
 Runtime ADR                            Paused, pending RWKV engineer input
 Local model/runtime files              Done on current workstation
 RWKV Lightning launch                  Paused, do not continue before runtime scheme is confirmed
-Translation connector                  Next, target engineer-deployed RWKV translation API
+Translation connector                  In progress, target external RWKV chat-completions batch API
 One-click install                      Paused
 One-click start                        Paused
 ```
