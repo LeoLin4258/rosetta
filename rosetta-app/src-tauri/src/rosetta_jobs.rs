@@ -1362,7 +1362,7 @@ fn export_job(
 }
 
 fn render_export(document: &RosettaDocument, segments: &[Segment], kind: &str) -> String {
-    render_export_blocks(document, &document.blocks, segments, kind)
+    render_export_blocks(document, &document.blocks, segments, kind, &document.format)
 }
 
 fn render_export_blocks(
@@ -1370,15 +1370,16 @@ fn render_export_blocks(
     blocks: &[RosettaBlock],
     segments: &[Segment],
     kind: &str,
+    source_format: &str,
 ) -> String {
     let by_block = segments_by_block(segments);
-    if document.format == "markdown" {
-        return render_markdown_export_blocks(document, blocks, &by_block, kind);
+    if source_format == "markdown" {
+        return render_markdown_export_blocks(document, blocks, &by_block, kind, source_format);
     }
 
     let output_blocks = blocks
         .iter()
-        .map(|block| render_export_block(document, block, &by_block, kind))
+        .map(|block| render_export_block(document, block, &by_block, kind, source_format))
         .collect::<Vec<_>>();
     trim_excess_blank_blocks(output_blocks).join("\n\n")
 }
@@ -1388,12 +1389,13 @@ fn render_markdown_export_blocks(
     blocks: &[RosettaBlock],
     by_block: &HashMap<String, Vec<Segment>>,
     kind: &str,
+    source_format: &str,
 ) -> String {
     let mut output = String::new();
     let mut previous_type: Option<&str> = None;
 
     for block in blocks {
-        let rendered = render_export_block(document, block, by_block, kind);
+        let rendered = render_export_block(document, block, by_block, kind, source_format);
         let rendered = rendered.trim_matches('\n');
 
         if rendered.trim().is_empty() {
@@ -1426,16 +1428,17 @@ fn render_export_block(
     block: &RosettaBlock,
     by_block: &HashMap<String, Vec<Segment>>,
     kind: &str,
+    source_format: &str,
 ) -> String {
     if !block.should_translate {
         return block.source_text.clone();
     }
 
-    let translation = block_translation(block, by_block);
+    let translation = block_translation(block, by_block, &document.target_lang);
     if kind == "bilingual" {
-        render_bilingual_block(document, block, &translation)
+        render_bilingual_block(block, &translation, source_format)
     } else {
-        render_translation_block(document, block, &translation)
+        render_translation_block(block, &translation, source_format)
     }
 }
 
@@ -1479,7 +1482,13 @@ fn export_job_to_directory(
             })
             .cloned()
             .collect::<Vec<_>>();
-        let output = render_export_blocks(&document, &file_blocks, &file_segments, kind);
+        let output = render_export_blocks(
+            &document,
+            &file_blocks,
+            &file_segments,
+            kind,
+            &source_file.format,
+        );
         let relative_output_path = export_relative_path(&source_file, kind)?;
         let target_path = target_dir.join(relative_output_path);
 
@@ -1559,7 +1568,11 @@ fn segments_by_block(segments: &[Segment]) -> HashMap<String, Vec<Segment>> {
     grouped
 }
 
-fn block_translation(block: &RosettaBlock, by_block: &HashMap<String, Vec<Segment>>) -> String {
+fn block_translation(
+    block: &RosettaBlock,
+    by_block: &HashMap<String, Vec<Segment>>,
+    target_lang: &str,
+) -> String {
     let Some(segments) = by_block.get(&block.id) else {
         return block.source_text.clone();
     };
@@ -1575,7 +1588,7 @@ fn block_translation(block: &RosettaBlock, by_block: &HashMap<String, Vec<Segmen
                 .to_string()
         })
         .collect::<Vec<_>>()
-        .join(" ");
+        .join(segment_joiner(target_lang));
 
     if translated.trim().is_empty() {
         block.source_text.clone()
@@ -1585,11 +1598,11 @@ fn block_translation(block: &RosettaBlock, by_block: &HashMap<String, Vec<Segmen
 }
 
 fn render_translation_block(
-    document: &RosettaDocument,
     block: &RosettaBlock,
     translation: &str,
+    source_format: &str,
 ) -> String {
-    if document.format != "markdown" {
+    if source_format != "markdown" {
         return translation.to_string();
     }
 
@@ -1601,16 +1614,12 @@ fn render_translation_block(
     }
 }
 
-fn render_bilingual_block(
-    document: &RosettaDocument,
-    block: &RosettaBlock,
-    translation: &str,
-) -> String {
-    if document.format == "markdown" {
+fn render_bilingual_block(block: &RosettaBlock, translation: &str, source_format: &str) -> String {
+    if source_format == "markdown" {
         return format!(
             "> Original: {}\n\n{}",
             block.source_text,
-            render_translation_block(document, block, translation)
+            render_translation_block(block, translation, source_format)
         );
     }
 
@@ -1628,6 +1637,19 @@ fn style_marker(block: &RosettaBlock) -> String {
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string()
+}
+
+fn segment_joiner(target_lang: &str) -> &'static str {
+    if is_compact_language(target_lang) {
+        ""
+    } else {
+        " "
+    }
+}
+
+fn is_compact_language(target_lang: &str) -> bool {
+    let normalized = target_lang.to_ascii_lowercase();
+    normalized.starts_with("zh") || normalized.starts_with("ja") || normalized.starts_with("ko")
 }
 
 fn trim_excess_blank_blocks(blocks: Vec<String>) -> Vec<String> {
@@ -1659,7 +1681,7 @@ fn apply_segment_translations_to_document(document: &mut RosettaDocument, segmen
         if !block.should_translate {
             continue;
         }
-        block.translated_text = Some(block_translation(block, &by_block));
+        block.translated_text = Some(block_translation(block, &by_block, &document.target_lang));
         block.status = block_status(block, &by_block);
     }
 }

@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { RefObject } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -15,10 +15,16 @@ import type {
 
 type PreviewSide = "source" | "translation";
 
-export function DocumentPreview() {
-  const document = useRosettaStore((state) => state.activeDocument);
-  const activeFileId = useRosettaStore((state) => state.activeFileId);
-  const segments = useRosettaStore((state) => state.previewSegments);
+export function DocumentPreview({
+  currentFileId,
+  currentJobId,
+}: {
+  currentFileId: string | null;
+  currentJobId: string | null;
+}) {
+  const activeJobId = useRosettaStore((state) => state.activeJobId);
+  const activeDocument = useRosettaStore((state) => state.activeDocument);
+  const previewSegments = useRosettaStore((state) => state.previewSegments);
   const [hoveredBlockId, setHoveredBlockId] = useState<string | null>(null);
   const sourceRef = useRef<HTMLDivElement>(null);
   const translationRef = useRef<HTMLDivElement>(null);
@@ -26,10 +32,25 @@ export function DocumentPreview() {
   const isHoverPausedRef = useRef(false);
   const hoverRestoreTimerRef = useRef<number | null>(null);
   const syncFrameRef = useRef<number | null>(null);
+  const document =
+    activeJobId === currentJobId && activeDocument ? activeDocument : null;
+  const segments = activeJobId === currentJobId ? previewSegments : [];
   const files = useMemo(() => documentFiles(document), [document]);
   const selectedFile = useMemo(
-    () => files.find((file) => file.id === activeFileId) ?? files[0] ?? null,
-    [activeFileId, files]
+    () => files.find((file) => file.id === currentFileId) ?? files[0] ?? null,
+    [currentFileId, files]
+  );
+
+  useEffect(
+    () => () => {
+      if (hoverRestoreTimerRef.current != null) {
+        window.clearTimeout(hoverRestoreTimerRef.current);
+      }
+      if (syncFrameRef.current != null) {
+        window.cancelAnimationFrame(syncFrameRef.current);
+      }
+    },
+    []
   );
 
   if (!document || !selectedFile) {
@@ -63,7 +84,7 @@ export function DocumentPreview() {
     syncFrameRef.current = window.requestAnimationFrame(() => {
       isSyncingRef.current = true;
       to.scrollTop = ratio * Math.max(maxTo, 0);
-      window.requestAnimationFrame(() => {
+      syncFrameRef.current = window.requestAnimationFrame(() => {
         isSyncingRef.current = false;
         syncFrameRef.current = null;
       });
@@ -215,8 +236,12 @@ function PreviewBlock({
   const text =
     side === "source"
       ? block.sourceText
-      : blockTranslation(block, segmentsByBlock);
-  const renderedText = renderBlockMarkdown(file.format ?? document.format, block, text);
+      : blockTranslation(block, segmentsByBlock, document.targetLang);
+  const hasEmptyTranslation =
+    side === "translation" && block.shouldTranslate && !text.trim();
+  const renderedText = hasEmptyTranslation
+    ? ""
+    : renderBlockMarkdown(file.format ?? document.format, block, text);
 
   if (block.type === "metadata" && !renderedText.trim()) {
     return <div className="h-3" />;
@@ -233,7 +258,9 @@ function PreviewBlock({
       onMouseEnter={() => onHoverBlock(block.id)}
       onMouseLeave={() => onHoverBlock(null)}
     >
-      {file.format === "markdown" ? (
+      {hasEmptyTranslation ? (
+        <div className="min-h-[1.75rem]" />
+      ) : file.format === "markdown" ? (
         <div className="rosetta-markdown-preview">
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{renderedText}</ReactMarkdown>
         </div>
@@ -265,7 +292,12 @@ function documentFiles(document: RosettaDocument | null): RosettaSourceFile[] {
 function groupSegmentsByBlock(segments: Segment[]) {
   const grouped = new Map<string, Segment[]>();
   for (const segment of segments) {
-    grouped.set(segment.blockId, [...(grouped.get(segment.blockId) ?? []), segment]);
+    const blockSegments = grouped.get(segment.blockId);
+    if (blockSegments) {
+      blockSegments.push(segment);
+    } else {
+      grouped.set(segment.blockId, [segment]);
+    }
   }
   for (const blockSegments of grouped.values()) {
     blockSegments.sort(
@@ -278,7 +310,8 @@ function groupSegmentsByBlock(segments: Segment[]) {
 
 function blockTranslation(
   block: RosettaBlock,
-  segmentsByBlock: Map<string, Segment[]>
+  segmentsByBlock: Map<string, Segment[]>,
+  targetLang: string
 ) {
   if (!block.shouldTranslate) {
     return block.sourceText;
@@ -291,10 +324,18 @@ function blockTranslation(
 
   const translated = segments
     .map((segment) => segment.translatedText?.trim() || "")
-    .join(" ")
+    .join(segmentJoiner(targetLang))
     .trim();
 
   return translated;
+}
+
+function segmentJoiner(targetLang: string) {
+  return isCompactTargetLanguage(targetLang) ? "" : " ";
+}
+
+function isCompactTargetLanguage(targetLang: string) {
+  return /^(zh|ja|ko)/i.test(targetLang);
 }
 
 function renderBlockMarkdown(

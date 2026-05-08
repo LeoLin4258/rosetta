@@ -62,6 +62,9 @@ export function JobsPage() {
   const jobs = useRosettaStore((state) => state.jobs);
   const activeJobId = useRosettaStore((state) => state.activeJobId);
   const activeFileId = useRosettaStore((state) => state.activeFileId);
+  const activeFileIdByJobId = useRosettaStore(
+    (state) => state.activeFileIdByJobId
+  );
   const activeDocument = useRosettaStore((state) => state.activeDocument);
   const rwkv = useRosettaStore((state) => state.rwkv);
   const previewSegments = useRosettaStore((state) => state.previewSegments);
@@ -89,21 +92,28 @@ export function JobsPage() {
   const [pageError, setPageError] = useState<string | null>(null);
   const currentJobId = jobId ?? activeJobId ?? jobs[0]?.id ?? null;
   const activeJob = jobs.find((job) => job.id === currentJobId) ?? null;
+  const isCurrentBundleLoaded = activeJobId === currentJobId && activeDocument != null;
+  const currentDocument = isCurrentBundleLoaded ? activeDocument : null;
+  const currentSegments = isCurrentBundleLoaded ? previewSegments : [];
+  const selectedFileId = currentJobId
+    ? activeFileIdByJobId[currentJobId] ??
+      (activeJobId === currentJobId ? activeFileId : null)
+    : null;
   const currentFile =
-    activeDocument?.files.find((file) => file.id === activeFileId) ??
-    activeDocument?.files[0] ??
-    activeJob?.sourceFiles?.find((file) => file.id === activeFileId) ??
+    currentDocument?.files.find((file) => file.id === selectedFileId) ??
+    currentDocument?.files[0] ??
+    activeJob?.sourceFiles?.find((file) => file.id === selectedFileId) ??
     activeJob?.sourceFiles?.[0] ??
     null;
   const currentFileSegments = useMemo(
     () =>
-      previewSegments.filter((segment) =>
+      currentSegments.filter((segment) =>
         currentFile ? (segment.fileId ?? "file-1") === currentFile.id : false
       ),
-    [currentFile, previewSegments]
+    [currentFile, currentSegments]
   );
-  const sourceLang = activeDocument?.sourceLang ?? "en";
-  const targetLang = activeDocument?.targetLang ?? activeJob?.targetLang ?? "zh-CN";
+  const sourceLang = currentDocument?.sourceLang ?? "en";
+  const targetLang = currentDocument?.targetLang ?? activeJob?.targetLang ?? "zh-CN";
   const pendingSegments = useMemo(
     () =>
       currentFileSegments.filter(
@@ -129,6 +139,9 @@ export function JobsPage() {
     rwkv.internalToken.trim().length > 0 &&
     rwkv.bodyPassword.trim().length > 0 &&
     rwkv.timeoutMs > 0;
+  const isDirectoryProject =
+    activeJob != null &&
+    (activeJob.sourceKind === "directory" || activeJob.fileCount > 1);
 
   useEffect(() => {
     if (!jobId && jobs.length > 0) {
@@ -171,14 +184,15 @@ export function JobsPage() {
     setExportResult(null);
     setTranslationResult(null);
 
+    let currentBatchSegmentIds: string[] = [];
     try {
       const orderedSegments = [...targetSegments].sort(
         (left, right) => left.order - right.order
       );
 
       for (const batch of chunkSegments(orderedSegments, BATCH_SIZE)) {
-        const segmentIds = batch.map((segment) => segment.id);
-        beginPreviewSegmentTranslation(segmentIds);
+        currentBatchSegmentIds = batch.map((segment) => segment.id);
+        beginPreviewSegmentTranslation(currentBatchSegmentIds);
 
         const result = await translateRwkvTextsWithApi({
           baseUrl: rwkv.baseUrl,
@@ -194,7 +208,10 @@ export function JobsPage() {
         setTranslationResult(result);
 
         if (!result.ok) {
-          const failed = failPreviewSegmentTranslation(segmentIds, result.message);
+          const failed = failPreviewSegmentTranslation(
+            currentBatchSegmentIds,
+            result.message
+          );
           await saveRosettaSegments(currentJobId, failed).then(setActiveBundle);
           setPageError(result.message);
           return;
@@ -202,22 +219,33 @@ export function JobsPage() {
 
         if (result.translations.length !== batch.length) {
           const message = `RWKV API 返回 ${result.translations.length} 条译文，但本批有 ${batch.length} 条文本。`;
-          const failed = failPreviewSegmentTranslation(segmentIds, message);
+          const failed = failPreviewSegmentTranslation(
+            currentBatchSegmentIds,
+            message
+          );
           await saveRosettaSegments(currentJobId, failed).then(setActiveBundle);
           setPageError(message);
           return;
         }
 
         const completed = completePreviewSegmentTranslation(
-          segmentIds,
+          currentBatchSegmentIds,
           result.translations
         );
         await saveRosettaSegments(currentJobId, completed).then(setActiveBundle);
       }
     } catch (error) {
-      setPageError(
-        error instanceof Error ? error.message : "RWKV API 翻译调用失败。"
-      );
+      const message =
+        error instanceof Error ? error.message : "RWKV API 翻译调用失败。";
+      setPageError(message);
+      if (currentBatchSegmentIds.length > 0) {
+        const failed = failPreviewSegmentTranslation(currentBatchSegmentIds, message);
+        try {
+          await saveRosettaSegments(currentJobId, failed).then(setActiveBundle);
+        } catch {
+          // Ignore secondary save errors so the original failure can surface.
+        }
+      }
     } finally {
       setIsTranslating(false);
     }
@@ -232,8 +260,6 @@ export function JobsPage() {
     setExportResult(null);
 
     try {
-      const isDirectoryProject =
-        activeJob.sourceKind === "directory" || activeJob.fileCount > 1;
       const targetPath = isDirectoryProject
         ? await pickRosettaExportDirectory()
         : await pickRosettaExportPath(
@@ -402,13 +428,13 @@ export function JobsPage() {
               onClick={() => void translateSegments(pendingSegments)}
               title={
                 rwkvConfigReady
-                  ? "翻译全部待处理或失败段落"
+                  ? "翻译当前文件的待处理或失败段落"
                   : "请先在设置页填写 RWKV API token 和 body password"
               }
               type="button"
             >
               <Play data-icon="inline-start" />
-              {isTranslating ? "翻译中" : `翻译全部 ${pendingSegments.length}`}
+              {isTranslating ? "翻译中" : `翻译当前文件 ${pendingSegments.length}`}
             </Button>
             <Button
               disabled={failedSegments.length === 0 || isTranslating || isLoading}
@@ -427,7 +453,7 @@ export function JobsPage() {
               variant="outline"
             >
               <Download data-icon="inline-start" />
-              导出译文
+              {isDirectoryProject ? "导出项目译文" : "导出译文"}
             </Button>
             <Button
               disabled={!activeJob || isLoading}
@@ -436,7 +462,7 @@ export function JobsPage() {
               variant="outline"
             >
               <Languages data-icon="inline-start" />
-              导出双语
+              {isDirectoryProject ? "导出项目双语" : "导出双语"}
             </Button>
             <Button
               disabled={!activeJob || isDeleting || isTranslating}
@@ -475,7 +501,7 @@ export function JobsPage() {
         ) : null}
       </div>
 
-      <DocumentPreview />
+      <DocumentPreview currentFileId={selectedFileId} currentJobId={currentJobId} />
     </section>
   );
 }

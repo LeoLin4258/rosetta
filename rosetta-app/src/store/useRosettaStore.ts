@@ -16,6 +16,7 @@ type RosettaState = {
   jobs: RosettaJobSummary[];
   activeJobId: string | null;
   activeFileId: string | null;
+  activeFileIdByJobId: Record<string, string>;
   activeDocument: RosettaDocument | null;
   previewSegments: Segment[];
   setThemeMode: (mode: AppThemeMode) => void;
@@ -109,6 +110,7 @@ export const useRosettaStore = create<RosettaState>()(
       jobs: [],
       activeJobId: null,
       activeFileId: null,
+      activeFileIdByJobId: {},
       activeDocument: null,
       previewSegments: [],
       setThemeMode: (mode) => set({ themeMode: mode }),
@@ -131,31 +133,86 @@ export const useRosettaStore = create<RosettaState>()(
           const activeJobStillExists =
             state.activeJobId != null &&
             jobs.some((job) => job.id === state.activeJobId);
+          const nextActiveJobId = activeJobStillExists
+            ? state.activeJobId
+            : jobs[0]?.id ?? null;
+          const validJobIds = new Set(jobs.map((job) => job.id));
+          const nextActiveFileIdByJobId = Object.fromEntries(
+            Object.entries(state.activeFileIdByJobId).filter(([jobId]) =>
+              validJobIds.has(jobId)
+            )
+          ) as Record<string, string>;
+
+          for (const job of jobs) {
+            const selectedFileId = nextActiveFileIdByJobId[job.id];
+            const fileStillExists =
+              selectedFileId != null &&
+              job.sourceFiles.some((file) => file.id === selectedFileId);
+
+            if (!fileStillExists && job.sourceFiles[0]) {
+              nextActiveFileIdByJobId[job.id] = job.sourceFiles[0].id;
+            }
+          }
+
+          const nextActiveFileId = nextActiveJobId
+            ? nextActiveFileIdByJobId[nextActiveJobId] ?? null
+            : null;
+
           return {
             jobs,
-            activeJobId: activeJobStillExists ? state.activeJobId : jobs[0]?.id ?? null,
-            activeFileId: activeJobStillExists
-              ? state.activeFileId
-              : jobs[0]?.sourceFiles?.[0]?.id ?? null,
+            activeJobId: nextActiveJobId,
+            activeFileId: nextActiveFileId,
+            activeFileIdByJobId: nextActiveFileIdByJobId,
             activeDocument: activeJobStillExists ? state.activeDocument : null,
             previewSegments: activeJobStillExists ? state.previewSegments : [],
           };
         }),
-      setActiveJobId: (jobId) => set({ activeJobId: jobId }),
-      setActiveFileId: (fileId) => set({ activeFileId: fileId }),
+      setActiveJobId: (jobId) =>
+        set((state) => {
+          const job = state.jobs.find((candidate) => candidate.id === jobId);
+          const selectedFileId = jobId
+            ? state.activeFileIdByJobId[jobId] ?? job?.sourceFiles[0]?.id ?? null
+            : null;
+
+          return {
+            activeJobId: jobId,
+            activeFileId: selectedFileId,
+          };
+        }),
+      setActiveFileId: (fileId) =>
+        set((state) => {
+          const activeFileIdByJobId = { ...state.activeFileIdByJobId };
+          if (state.activeJobId) {
+            if (fileId) {
+              activeFileIdByJobId[state.activeJobId] = fileId;
+            } else {
+              delete activeFileIdByJobId[state.activeJobId];
+            }
+          }
+
+          return {
+            activeFileId: fileId,
+            activeFileIdByJobId,
+          };
+        }),
       setActiveBundle: (bundle) =>
         set((state) => {
           const fileIds = bundle.document.files.map((file) => file.id);
-          const keepActiveFile =
-            state.activeFileId != null &&
-            fileIds.includes(state.activeFileId);
+          const mappedFileId = state.activeFileIdByJobId[bundle.job.id];
+          const selectedFileId =
+            mappedFileId != null && fileIds.includes(mappedFileId)
+              ? mappedFileId
+              : bundle.document.files[0]?.id ?? null;
+          const activeFileIdByJobId = { ...state.activeFileIdByJobId };
+          if (selectedFileId) {
+            activeFileIdByJobId[bundle.job.id] = selectedFileId;
+          }
 
           return {
             jobs: replaceJob(state.jobs, bundle.job),
             activeJobId: bundle.job.id,
-            activeFileId: keepActiveFile
-              ? state.activeFileId
-              : bundle.document.files[0]?.id ?? null,
+            activeFileId: selectedFileId,
+            activeFileIdByJobId,
             activeDocument: bundle.document,
             previewSegments: bundle.segments,
           };
@@ -225,6 +282,11 @@ export const useRosettaStore = create<RosettaState>()(
           themeMode: persistedState?.themeMode ?? current.themeMode,
           activeJobId: persistedState?.activeJobId ?? current.activeJobId,
           activeFileId: persistedState?.activeFileId ?? current.activeFileId,
+          activeFileIdByJobId:
+            persistedState?.activeFileIdByJobId ??
+            (persistedState?.activeJobId && persistedState?.activeFileId
+              ? { [persistedState.activeJobId]: persistedState.activeFileId }
+              : current.activeFileIdByJobId),
           rwkv: {
             ...current.rwkv,
             ...persistedState?.rwkv,
@@ -236,6 +298,7 @@ export const useRosettaStore = create<RosettaState>()(
         rwkv: state.rwkv,
         activeJobId: state.activeJobId,
         activeFileId: state.activeFileId,
+        activeFileIdByJobId: state.activeFileIdByJobId,
       }),
     }
   )

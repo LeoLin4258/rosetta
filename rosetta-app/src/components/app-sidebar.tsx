@@ -43,6 +43,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const activeDocument = useRosettaStore((state) => state.activeDocument);
   const setJobList = useRosettaStore((state) => state.setJobList);
   const setActiveBundle = useRosettaStore((state) => state.setActiveBundle);
+  const setActiveJobId = useRosettaStore((state) => state.setActiveJobId);
   const setActiveFileId = useRosettaStore((state) => state.setActiveFileId);
   const [openJobIds, setOpenJobIds] = useState<Set<string>>(() => new Set());
 
@@ -108,6 +109,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                       <SidebarMenuButton
                         isActive={isActive}
                         onClick={() => {
+                          setActiveJobId(job.id);
                           toggleJob(job.id);
                           setActiveFileId(files[0]?.id ?? null);
                           navigate(`/jobs/${job.id}`);
@@ -148,7 +150,10 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                                   isActive={isActive && activeFileId === file.id}
                                 >
                                   <NavLink
-                                    onClick={() => setActiveFileId(file.id)}
+                                    onClick={() => {
+                                      setActiveJobId(job.id);
+                                      setActiveFileId(file.id);
+                                    }}
                                     to={`/jobs/${job.id}`}
                                     title={file.relativePath}
                                   >
