@@ -1,12 +1,14 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type {
+  ActiveTranslationRun,
   AppThemeMode,
   RosettaDocument,
   RosettaJobBundle,
   RosettaJobSummary,
   RwkvConnectionConfig,
   Segment,
+  TranslationRevision,
   TranslationMode,
 } from "../types/rosetta";
 
@@ -19,6 +21,8 @@ type RosettaState = {
   activeFileIdByJobId: Record<string, string>;
   activeDocument: RosettaDocument | null;
   previewSegments: Segment[];
+  translationRevisions: TranslationRevision[];
+  activeTranslationRun: ActiveTranslationRun | null;
   setThemeMode: (mode: AppThemeMode) => void;
   updateRwkvConfig: (config: Partial<RwkvConnectionConfig>) => void;
   setTranslationMode: (mode: TranslationMode) => void;
@@ -28,6 +32,15 @@ type RosettaState = {
   setActiveBundle: (bundle: RosettaJobBundle) => void;
   clearActiveJob: () => void;
   updateActiveSegments: (segments: Segment[]) => void;
+  preparePreviewSegmentRetranslation: (segmentIds: string[]) => Segment[];
+  startTranslationRun: (
+    run: Omit<ActiveTranslationRun, "completedSegmentIds" | "failedSegmentIds" | "startedAt"> & {
+      startedAt?: string;
+    }
+  ) => void;
+  markTranslationRunCompleted: (segmentIds: string[]) => void;
+  markTranslationRunFailed: (segmentIds: string[]) => void;
+  finishTranslationRun: () => void;
   beginPreviewSegmentTranslation: (segmentIds: string[]) => Segment[];
   completePreviewSegmentTranslation: (
     segmentIds: string[],
@@ -113,6 +126,8 @@ export const useRosettaStore = create<RosettaState>()(
       activeFileIdByJobId: {},
       activeDocument: null,
       previewSegments: [],
+      translationRevisions: [],
+      activeTranslationRun: null,
       setThemeMode: (mode) => set({ themeMode: mode }),
       updateRwkvConfig: (config) =>
         set((state) => ({
@@ -165,6 +180,12 @@ export const useRosettaStore = create<RosettaState>()(
             activeFileIdByJobId: nextActiveFileIdByJobId,
             activeDocument: activeJobStillExists ? state.activeDocument : null,
             previewSegments: activeJobStillExists ? state.previewSegments : [],
+            translationRevisions: activeJobStillExists
+              ? state.translationRevisions
+              : [],
+            activeTranslationRun: activeJobStillExists
+              ? state.activeTranslationRun
+              : null,
           };
         }),
       setActiveJobId: (jobId) =>
@@ -215,6 +236,7 @@ export const useRosettaStore = create<RosettaState>()(
             activeFileIdByJobId,
             activeDocument: bundle.document,
             previewSegments: bundle.segments,
+            translationRevisions: bundle.translationRevisions ?? [],
           };
         }),
       clearActiveJob: () =>
@@ -223,8 +245,70 @@ export const useRosettaStore = create<RosettaState>()(
           activeFileId: null,
           activeDocument: null,
           previewSegments: [],
+          translationRevisions: [],
+          activeTranslationRun: null,
         }),
       updateActiveSegments: (segments) => set((state) => applySegments(state, segments)),
+      preparePreviewSegmentRetranslation: (segmentIds) => {
+        const segmentIdSet = new Set(segmentIds);
+        const nextSegments = get().previewSegments.map((segment) =>
+          segmentIdSet.has(segment.id)
+            ? {
+                ...segment,
+                status: "pending" as const,
+                translatedText: undefined,
+                error: undefined,
+              }
+            : segment
+        );
+        set((state) => applySegments(state, nextSegments));
+        return nextSegments;
+      },
+      startTranslationRun: (run) =>
+        set({
+          activeTranslationRun: {
+            ...run,
+            completedSegmentIds: [],
+            failedSegmentIds: [],
+            startedAt: run.startedAt ?? Date.now().toString(),
+          },
+        }),
+      markTranslationRunCompleted: (segmentIds) =>
+        set((state) => {
+          if (!state.activeTranslationRun) {
+            return state;
+          }
+          const completed = new Set(state.activeTranslationRun.completedSegmentIds);
+          const failed = new Set(state.activeTranslationRun.failedSegmentIds);
+          for (const segmentId of segmentIds) {
+            completed.add(segmentId);
+            failed.delete(segmentId);
+          }
+          return {
+            activeTranslationRun: {
+              ...state.activeTranslationRun,
+              completedSegmentIds: [...completed],
+              failedSegmentIds: [...failed],
+            },
+          };
+        }),
+      markTranslationRunFailed: (segmentIds) =>
+        set((state) => {
+          if (!state.activeTranslationRun) {
+            return state;
+          }
+          const failed = new Set(state.activeTranslationRun.failedSegmentIds);
+          for (const segmentId of segmentIds) {
+            failed.add(segmentId);
+          }
+          return {
+            activeTranslationRun: {
+              ...state.activeTranslationRun,
+              failedSegmentIds: [...failed],
+            },
+          };
+        }),
+      finishTranslationRun: () => set({ activeTranslationRun: null }),
       beginPreviewSegmentTranslation: (segmentIds) => {
         const segmentIdSet = new Set(segmentIds);
         const nextSegments = get().previewSegments.map((segment) =>

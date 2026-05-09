@@ -7,6 +7,9 @@
   - the current file
   - file-level progress
   - available actions
+- Reworked the header hierarchy again so the current file is the primary focus,
+  the translate action is the primary call to action, and export/delete actions
+  are visually secondary.
 - Changed the delete action on the Jobs page from deleting the whole project to deleting the currently selected file.
   - When the current file is the last file in the project, the project is removed.
 - Replaced the hand-rolled preview overflow container with shadcn `ScrollArea`.

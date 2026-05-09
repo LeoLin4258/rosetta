@@ -86,6 +86,17 @@ export type Segment = {
   blockOrder?: number | null;
   segmentIndexInBlock?: number | null;
   error?: string | null;
+  translationHistory?: TranslationHistoryEntry[] | null;
+};
+
+export type TranslationHistoryEntry = {
+  id: string;
+  runId?: string | null;
+  translatedText: string;
+  createdAt: string;
+  sourceLang?: string | null;
+  targetLang: string;
+  reason: "retranslation" | "language-change";
 };
 
 export type RosettaJob = {
@@ -116,9 +127,38 @@ export type RosettaJobBundle = {
   job: RosettaJobSummary;
   document: RosettaDocument;
   segments: Segment[];
+  translationRevisions: TranslationRevision[];
 };
 
 export type RosettaExportKind = "translation" | "bilingual";
+
+export type TranslationRevisionReason =
+  | "file-retranslation"
+  | "selection-retranslation"
+  | "language-change";
+
+export type TranslationRevision = {
+  id: string;
+  jobId: string;
+  fileId: string;
+  createdAt: string;
+  sourceLang?: string | null;
+  targetLang: string;
+  reason: TranslationRevisionReason;
+  scopeBlockIds?: string[] | null;
+  segmentTranslations: Record<string, string>;
+};
+
+export type ActiveTranslationRun = {
+  id: string;
+  jobId: string;
+  fileId: string;
+  scope: "file" | "selection" | "retry-failed";
+  targetSegmentIds: string[];
+  completedSegmentIds: string[];
+  failedSegmentIds: string[];
+  startedAt: string;
+};
 
 export type RosettaExportResult = {
   job: RosettaJobSummary;

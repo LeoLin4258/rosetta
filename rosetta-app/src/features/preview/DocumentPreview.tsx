@@ -5,6 +5,14 @@ import remarkGfm from "remark-gfm";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { useRosettaStore } from "../../store/useRosettaStore";
 import type {
@@ -12,16 +20,35 @@ import type {
   RosettaDocument,
   RosettaSourceFile,
   Segment,
+  TranslationRevision,
 } from "../../types/rosetta";
 
 type PreviewSide = "source" | "translation";
 
+type RevisionOption = {
+  id: string;
+  label: string;
+  revision: TranslationRevision;
+};
+
 export function DocumentPreview({
   currentFileId,
   currentJobId,
+  onRevisionChange,
+  onToggleBlockSelection,
+  selectedBlockIds,
+  selectedRevisionId,
+  selectionEnabled,
+  translationRevisions,
 }: {
   currentFileId: string | null;
   currentJobId: string | null;
+  onRevisionChange: (revisionId: string) => void;
+  onToggleBlockSelection: (blockId: string) => void;
+  selectedBlockIds: string[];
+  selectedRevisionId: string;
+  selectionEnabled: boolean;
+  translationRevisions: TranslationRevision[];
 }) {
   const activeJobId = useRosettaStore((state) => state.activeJobId);
   const activeDocument = useRosettaStore((state) => state.activeDocument);
@@ -41,6 +68,27 @@ export function DocumentPreview({
     () => files.find((file) => file.id === currentFileId) ?? files[0] ?? null,
     [currentFileId, files]
   );
+  const revisionOptions = useMemo(
+    () =>
+      selectedFile
+        ? buildRevisionOptions(translationRevisions, selectedFile.id)
+        : [],
+    [selectedFile, translationRevisions]
+  );
+  const selectedRevision =
+    selectedRevisionId === "current"
+      ? null
+      : revisionOptions.find((option) => option.id === selectedRevisionId)
+          ?.revision ?? null;
+
+  useEffect(() => {
+    if (
+      selectedRevisionId !== "current" &&
+      !revisionOptions.some((option) => option.id === selectedRevisionId)
+    ) {
+      onRevisionChange("current");
+    }
+  }, [onRevisionChange, revisionOptions, selectedRevisionId]);
 
   useEffect(
     () => () => {
@@ -116,10 +164,30 @@ export function DocumentPreview({
   }
 
   return (
-    <Card className="flex h-full min-h-0 flex-col overflow-hidden py-0">
+    <Card className="flex h-full min-h-0 flex-col gap-0 overflow-hidden py-0">
       <div className="grid grid-cols-2 border-b bg-muted/40 text-sm text-muted-foreground">
         <div className="border-r px-4 py-3">原文</div>
-        <div className="px-4 py-3">译文</div>
+        <div className="flex items-center justify-between gap-3 px-4 py-2">
+          <div className="flex min-w-0 items-center gap-2">
+            <span>译文</span>
+            {selectedRevision ? <Badge variant="outline">历史版本</Badge> : null}
+          </div>
+          <Select value={selectedRevisionId} onValueChange={onRevisionChange}>
+            <SelectTrigger size="sm" className="max-w-56">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectGroup>
+                <SelectItem value="current">当前译文</SelectItem>
+                {revisionOptions.map((option) => (
+                  <SelectItem key={option.id} value={option.id}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            </SelectContent>
+          </Select>
+        </div>
       </div>
       <div className="grid min-h-0 flex-1 grid-cols-2">
         <PreviewPane
@@ -129,8 +197,12 @@ export function DocumentPreview({
           hoveredBlockId={hoveredBlockId}
           onHoverBlock={updateHoveredBlock}
           onScroll={() => syncScroll("source")}
+          onToggleBlockSelection={onToggleBlockSelection}
           paneRef={sourceRef}
+          selectedBlockIds={selectedBlockIds}
+          selectedRevision={null}
           segments={segments}
+          selectionEnabled={false}
           side="source"
         />
         <PreviewPane
@@ -140,8 +212,12 @@ export function DocumentPreview({
           hoveredBlockId={hoveredBlockId}
           onHoverBlock={updateHoveredBlock}
           onScroll={() => syncScroll("translation")}
+          onToggleBlockSelection={onToggleBlockSelection}
           paneRef={translationRef}
+          selectedBlockIds={selectedBlockIds}
+          selectedRevision={selectedRevision}
           segments={segments}
+          selectionEnabled={selectionEnabled && selectedRevision == null}
           side="translation"
         />
       </div>
@@ -156,8 +232,12 @@ function PreviewPane({
   hoveredBlockId,
   onHoverBlock,
   onScroll,
+  onToggleBlockSelection,
   paneRef,
+  selectedBlockIds,
+  selectedRevision,
   segments,
+  selectionEnabled,
   side,
 }: {
   document: RosettaDocument;
@@ -166,11 +246,19 @@ function PreviewPane({
   hoveredBlockId: string | null;
   onHoverBlock: (blockId: string | null) => void;
   onScroll: () => void;
+  onToggleBlockSelection: (blockId: string) => void;
   paneRef: RefObject<HTMLDivElement>;
+  selectedBlockIds: string[];
+  selectedRevision: TranslationRevision | null;
   segments: Segment[];
+  selectionEnabled: boolean;
   side: PreviewSide;
 }) {
   const segmentsByBlock = useMemo(() => groupSegmentsByBlock(segments), [segments]);
+  const selectedBlockIdSet = useMemo(
+    () => new Set(selectedBlockIds),
+    [selectedBlockIds]
+  );
   const blocks = useMemo(
     () =>
       document.blocks.filter((block) => (block.fileId ?? "file-1") === file.id),
@@ -203,7 +291,11 @@ function PreviewPane({
                 hovered={hoveredBlockId === block.id}
                 key={`${side}-${block.id}`}
                 onHoverBlock={onHoverBlock}
+                onToggleBlockSelection={onToggleBlockSelection}
+                selected={selectedBlockIdSet.has(block.id)}
+                selectedRevision={selectedRevision}
                 segmentsByBlock={segmentsByBlock}
+                selectionEnabled={selectionEnabled}
                 side={side}
               />
             ))}
@@ -220,7 +312,11 @@ function PreviewBlock({
   file,
   hovered,
   onHoverBlock,
+  onToggleBlockSelection,
+  selected,
+  selectedRevision,
   segmentsByBlock,
+  selectionEnabled,
   side,
 }: {
   block: RosettaBlock;
@@ -228,18 +324,32 @@ function PreviewBlock({
   file: RosettaSourceFile;
   hovered: boolean;
   onHoverBlock: (blockId: string | null) => void;
+  onToggleBlockSelection: (blockId: string) => void;
+  selected: boolean;
+  selectedRevision: TranslationRevision | null;
   segmentsByBlock: Map<string, Segment[]>;
+  selectionEnabled: boolean;
   side: PreviewSide;
 }) {
   const text =
     side === "source"
       ? block.sourceText
-      : blockTranslation(block, segmentsByBlock, document.targetLang);
+      : blockTranslation(
+          block,
+          segmentsByBlock,
+          document.targetLang,
+          selectedRevision
+        );
   const hasEmptyTranslation =
     side === "translation" && block.shouldTranslate && !text.trim();
   const renderedText = hasEmptyTranslation
     ? ""
     : renderBlockMarkdown(file.format ?? document.format, block, text);
+  const selectable =
+    selectionEnabled &&
+    side === "translation" &&
+    block.shouldTranslate &&
+    hasTranslatableSegments(block.id, segmentsByBlock);
 
   if (block.type === "metadata" && !renderedText.trim()) {
     return <div className="h-3" />;
@@ -247,14 +357,31 @@ function PreviewBlock({
 
   return (
     <div
+      aria-pressed={selectable ? selected : undefined}
       className={cn(
-        "rounded-xl px-3 py-2",
+        "rounded-lg px-3 py-2 transition-colors",
         hovered && "bg-muted",
+        selected && "bg-muted ring-1 ring-ring",
+        selectable && "cursor-pointer",
         block.status === "failed" && side === "translation" && "text-destructive"
       )}
       data-block-id={block.id}
+      onClick={() => {
+        if (selectable) {
+          onToggleBlockSelection(block.id);
+        }
+      }}
+      onKeyDown={(event) => {
+        if (!selectable || (event.key !== "Enter" && event.key !== " ")) {
+          return;
+        }
+        event.preventDefault();
+        onToggleBlockSelection(block.id);
+      }}
       onMouseEnter={() => onHoverBlock(block.id)}
       onMouseLeave={() => onHoverBlock(null)}
+      role={selectable ? "button" : undefined}
+      tabIndex={selectable ? 0 : undefined}
     >
       {hasEmptyTranslation ? (
         <div className="min-h-7" />
@@ -309,7 +436,8 @@ function groupSegmentsByBlock(segments: Segment[]) {
 function blockTranslation(
   block: RosettaBlock,
   segmentsByBlock: Map<string, Segment[]>,
-  targetLang: string
+  targetLang: string,
+  revision: TranslationRevision | null
 ) {
   if (!block.shouldTranslate) {
     return block.sourceText;
@@ -317,15 +445,58 @@ function blockTranslation(
 
   const segments = segmentsByBlock.get(block.id);
   if (!segments || segments.length === 0) {
-    return block.translatedText?.trim() || "";
+    return revision ? "" : block.translatedText?.trim() || "";
   }
 
   const translated = segments
-    .map((segment) => segment.translatedText?.trim() || "")
+    .map((segment) =>
+      revision
+        ? revision.segmentTranslations[segment.id]?.trim() || ""
+        : segment.translatedText?.trim() || ""
+    )
     .join(segmentJoiner(targetLang))
     .trim();
 
   return translated;
+}
+
+function hasTranslatableSegments(
+  blockId: string,
+  segmentsByBlock: Map<string, Segment[]>
+) {
+  return (
+    segmentsByBlock
+      .get(blockId)
+      ?.some(
+        (segment) =>
+          segment.status !== "skipped" && segment.sourceText.trim().length > 0
+      ) ?? false
+  );
+}
+
+function buildRevisionOptions(
+  revisions: TranslationRevision[],
+  fileId: string
+): RevisionOption[] {
+  const chronological = revisions
+    .filter((revision) => revision.fileId === fileId)
+    .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  const labels = new Map(
+    chronological.map((revision, index) => [
+      revision.id,
+      `第 ${index + 1} 次翻译`,
+    ])
+  );
+
+  return chronological
+    .map((revision) => ({
+      id: revision.id,
+      label: `${labels.get(revision.id) ?? "历史译文"} · ${formatRevisionTime(
+        revision.createdAt
+      )}`,
+      revision,
+    }))
+    .reverse();
 }
 
 function segmentJoiner(targetLang: string) {
@@ -334,6 +505,20 @@ function segmentJoiner(targetLang: string) {
 
 function isCompactTargetLanguage(targetLang: string) {
   return /^(zh|ja|ko)/i.test(targetLang);
+}
+
+function formatRevisionTime(value: string) {
+  const timestamp = Number(value);
+  if (!Number.isFinite(timestamp)) {
+    return value;
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(timestamp));
 }
 
 function renderBlockMarkdown(

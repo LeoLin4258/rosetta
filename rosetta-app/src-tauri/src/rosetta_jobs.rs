@@ -15,6 +15,7 @@ const MAX_IMPORT_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_PROJECT_FILES: usize = 200;
 const MAX_SEGMENT_CHARS: usize = 1_800;
 const JOB_INDEX_FILENAME: &str = "index.json";
+const TRANSLATION_REVISIONS_FILENAME: &str = "translation_revisions.json";
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -75,6 +76,21 @@ pub struct Segment {
     block_order: Option<usize>,
     segment_index_in_block: Option<usize>,
     error: Option<String>,
+    #[serde(default)]
+    translation_history: Vec<TranslationHistoryEntry>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TranslationHistoryEntry {
+    id: String,
+    #[serde(default)]
+    run_id: Option<String>,
+    translated_text: String,
+    created_at: String,
+    source_lang: Option<String>,
+    target_lang: String,
+    reason: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -110,6 +126,22 @@ pub struct RosettaJobBundle {
     job: RosettaJobSummary,
     document: RosettaDocument,
     segments: Vec<Segment>,
+    translation_revisions: Vec<TranslationRevision>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TranslationRevision {
+    id: String,
+    job_id: String,
+    file_id: String,
+    created_at: String,
+    source_lang: Option<String>,
+    target_lang: String,
+    reason: String,
+    #[serde(default)]
+    scope_block_ids: Option<Vec<String>>,
+    segment_translations: HashMap<String, String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -181,19 +213,6 @@ pub async fn pick_rosetta_import_directory(app: AppHandle) -> Result<Option<Stri
 }
 
 #[tauri::command]
-pub async fn pick_rosetta_export_directory(app: AppHandle) -> Result<Option<String>, String> {
-    let (tx, mut rx) = tauri::async_runtime::channel(1);
-    app.dialog()
-        .file()
-        .set_title("选择导出文件夹")
-        .pick_folder(move |path| {
-            let _ = tx.blocking_send(path.map(|path| path.to_string()));
-        });
-
-    Ok(rx.recv().await.flatten())
-}
-
-#[tauri::command]
 pub async fn pick_rosetta_export_path(
     app: AppHandle,
     default_filename: String,
@@ -224,16 +243,6 @@ pub fn import_rosetta_project_from_directory(
     path: String,
 ) -> Result<RosettaJobBundle, String> {
     import_project_from_directory(&app, Path::new(&path))
-}
-
-#[tauri::command]
-pub fn export_rosetta_job_to_directory(
-    app: AppHandle,
-    job_id: String,
-    kind: String,
-    target_dir: String,
-) -> Result<RosettaExportResult, String> {
-    export_job_to_directory(&app, &job_id, &kind, Path::new(&target_dir))
 }
 
 #[tauri::command]
@@ -274,6 +283,17 @@ pub fn update_rosetta_job_languages(
 }
 
 #[tauri::command]
+pub fn create_rosetta_translation_revision(
+    app: AppHandle,
+    job_id: String,
+    file_id: String,
+    reason: String,
+    scope_block_ids: Option<Vec<String>>,
+) -> Result<RosettaJobBundle, String> {
+    create_translation_revision(&app, &job_id, &file_id, &reason, scope_block_ids)
+}
+
+#[tauri::command]
 pub fn rename_rosetta_job(
     app: AppHandle,
     job_id: String,
@@ -300,13 +320,14 @@ pub fn delete_rosetta_job_file(
 }
 
 #[tauri::command]
-pub fn export_rosetta_job(
+pub fn export_rosetta_job_file(
     app: AppHandle,
     job_id: String,
+    file_id: String,
     kind: String,
     target_path: String,
 ) -> Result<RosettaExportResult, String> {
-    export_job(&app, &job_id, &kind, Path::new(&target_path))
+    export_job_file(&app, &job_id, &file_id, &kind, Path::new(&target_path))
 }
 
 fn import_document_from_path(
@@ -393,6 +414,7 @@ fn import_document_from_path(
         job,
         document,
         segments,
+        translation_revisions: Vec::new(),
     };
     write_job_bundle(app, &bundle, &source_contents)?;
     Ok(bundle)
@@ -532,6 +554,7 @@ fn import_project_from_directory(
         job,
         document,
         segments,
+        translation_revisions: Vec::new(),
     };
     write_job_bundle_sources(app, &bundle, &source_snapshots)?;
     Ok(bundle)
@@ -894,6 +917,7 @@ fn push_segments_for_block(
             block_order: Some(block_order),
             segment_index_in_block: Some(index),
             error: None,
+            translation_history: Vec::new(),
         });
         *segment_order += 1;
     }
@@ -1177,6 +1201,10 @@ fn write_job_bundle_sources(
     }
     write_json(&dir.join("document.json"), &bundle.document)?;
     write_json(&dir.join("segments.json"), &bundle.segments)?;
+    write_json(
+        &dir.join(TRANSLATION_REVISIONS_FILENAME),
+        &bundle.translation_revisions,
+    )?;
     upsert_index_job(&root, bundle.job.clone())
 }
 
@@ -1189,6 +1217,7 @@ fn save_segments(
     let dir = checked_job_dir(&root, job_id)?;
     let mut index = read_index(&root)?;
     let mut document: RosettaDocument = read_json(&dir.join("document.json"))?;
+    let translation_revisions = read_translation_revisions(&dir)?;
     let mut job = index
         .jobs
         .iter()
@@ -1211,6 +1240,7 @@ fn save_segments(
         job,
         document,
         segments,
+        translation_revisions,
     })
 }
 
@@ -1227,6 +1257,7 @@ fn update_job_languages(
     let mut index = read_index(&root)?;
     let mut document: RosettaDocument = read_json(&dir.join("document.json"))?;
     let mut segments: Vec<Segment> = read_json(&dir.join("segments.json"))?;
+    let mut translation_revisions = read_translation_revisions(&dir)?;
     let mut job = index
         .jobs
         .iter()
@@ -1236,11 +1267,29 @@ fn update_job_languages(
 
     let changed = document.source_lang != normalized_source_lang
         || document.target_lang != normalized_target_lang;
+    if changed {
+        for source_file in document_files(&document) {
+            if let Some(revision) = create_revision_snapshot(
+                job_id,
+                &source_file.id,
+                "language-change",
+                None,
+                &document,
+                &segments,
+            )? {
+                translation_revisions.push(revision);
+            }
+        }
+    }
     document.source_lang = normalized_source_lang.clone();
     document.target_lang = normalized_target_lang.clone();
     job.target_lang = normalized_target_lang.clone();
+    let history_run_id = format!("run-{}", timestamp_ms_string());
 
     for segment in &mut segments {
+        if changed {
+            archive_segment_translation(segment, "language-change", &history_run_id);
+        }
         segment.source_lang = normalized_source_lang.clone();
         segment.target_lang = normalized_target_lang.clone();
         if changed {
@@ -1267,6 +1316,7 @@ fn update_job_languages(
 
     write_json(&dir.join("document.json"), &document)?;
     write_json(&dir.join("segments.json"), &segments)?;
+    write_translation_revisions(&dir, &translation_revisions)?;
     replace_index_job(&mut index, job.clone());
     write_index(&root, &index)?;
 
@@ -1275,6 +1325,57 @@ fn update_job_languages(
         job,
         document,
         segments,
+        translation_revisions,
+    })
+}
+
+fn create_translation_revision(
+    app: &AppHandle,
+    job_id: &str,
+    file_id: &str,
+    reason: &str,
+    scope_block_ids: Option<Vec<String>>,
+) -> Result<RosettaJobBundle, String> {
+    if !matches!(
+        reason,
+        "file-retranslation" | "selection-retranslation" | "language-change"
+    ) {
+        return Err("历史版本原因不支持。".to_string());
+    }
+
+    let root = jobs_root(app)?;
+    let dir = checked_job_dir(&root, job_id)?;
+    let mut index = read_index(&root)?;
+    let job = index
+        .jobs
+        .iter()
+        .find(|job| job.id == job_id)
+        .cloned()
+        .ok_or_else(|| "项目索引不存在，无法保存历史版本。".to_string())?;
+    let document: RosettaDocument = read_json(&dir.join("document.json"))?;
+    let segments: Vec<Segment> = read_json(&dir.join("segments.json"))?;
+    let mut translation_revisions = read_translation_revisions(&dir)?;
+
+    if let Some(revision) = create_revision_snapshot(
+        job_id,
+        file_id,
+        reason,
+        scope_block_ids,
+        &document,
+        &segments,
+    )? {
+        translation_revisions.push(revision);
+        write_translation_revisions(&dir, &translation_revisions)?;
+        replace_index_job(&mut index, job.clone());
+        write_index(&root, &index)?;
+    }
+
+    Ok(RosettaJobBundle {
+        schema_version: SCHEMA_VERSION,
+        job,
+        document,
+        segments,
+        translation_revisions,
     })
 }
 
@@ -1322,6 +1423,77 @@ fn normalize_required_lang(language: String) -> Result<String, String> {
     Ok(normalized)
 }
 
+fn archive_segment_translation(segment: &mut Segment, reason: &str, run_id: &str) {
+    let Some(translated_text) = segment
+        .translated_text
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    else {
+        return;
+    };
+    let created_at = timestamp_ms_string();
+    segment.translation_history.push(TranslationHistoryEntry {
+        id: format!("{}-history-{created_at}", segment.id),
+        run_id: Some(run_id.to_string()),
+        translated_text: translated_text.to_string(),
+        created_at,
+        source_lang: segment.source_lang.clone(),
+        target_lang: segment.target_lang.clone(),
+        reason: reason.to_string(),
+    });
+}
+
+fn create_revision_snapshot(
+    job_id: &str,
+    file_id: &str,
+    reason: &str,
+    scope_block_ids: Option<Vec<String>>,
+    document: &RosettaDocument,
+    segments: &[Segment],
+) -> Result<Option<TranslationRevision>, String> {
+    if !document_files(document)
+        .iter()
+        .any(|source_file| source_file.id == file_id)
+    {
+        return Err("当前文件不存在，无法保存历史版本。".to_string());
+    }
+
+    let segment_translations = segments
+        .iter()
+        .filter(|segment| {
+            segment.file_id.as_deref().unwrap_or("file-1") == file_id
+                && segment.status != "skipped"
+                && !segment.source_text.trim().is_empty()
+        })
+        .filter_map(|segment| {
+            segment
+                .translated_text
+                .as_deref()
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .map(|text| (segment.id.clone(), text.to_string()))
+        })
+        .collect::<HashMap<_, _>>();
+
+    if segment_translations.is_empty() {
+        return Ok(None);
+    }
+
+    let created_at = timestamp_ms_string();
+    Ok(Some(TranslationRevision {
+        id: format!("{file_id}-{reason}-{created_at}"),
+        job_id: job_id.to_string(),
+        file_id: file_id.to_string(),
+        created_at,
+        source_lang: document.source_lang.clone(),
+        target_lang: document.target_lang.clone(),
+        reason: reason.to_string(),
+        scope_block_ids,
+        segment_translations,
+    }))
+}
+
 fn load_job_bundle(app: &AppHandle, job_id: &str) -> Result<RosettaJobBundle, String> {
     let root = jobs_root(app)?;
     let dir = checked_job_dir(&root, job_id)?;
@@ -1333,12 +1505,14 @@ fn load_job_bundle(app: &AppHandle, job_id: &str) -> Result<RosettaJobBundle, St
         .ok_or_else(|| "项目不存在。".to_string())?;
     let document = read_json(&dir.join("document.json"))?;
     let segments = read_json(&dir.join("segments.json"))?;
+    let translation_revisions = read_translation_revisions(&dir)?;
 
     Ok(RosettaJobBundle {
         schema_version: SCHEMA_VERSION,
         job,
         document,
         segments,
+        translation_revisions,
     })
 }
 
@@ -1372,6 +1546,7 @@ fn delete_job_file(
         .ok_or_else(|| "项目不存在，无法删除文件。".to_string())?;
     let mut document: RosettaDocument = read_json(&dir.join("document.json"))?;
     let mut segments: Vec<Segment> = read_json(&dir.join("segments.json"))?;
+    let mut translation_revisions = read_translation_revisions(&dir)?;
     let Some(file_index) = document.files.iter().position(|file| file.id == file_id) else {
         return Err("当前文件不存在，无法删除。".to_string());
     };
@@ -1393,6 +1568,7 @@ fn delete_job_file(
     segments.retain(|segment| {
         segment.file_id.as_deref().unwrap_or("file-1") != removed_file.id.as_str()
     });
+    translation_revisions.retain(|revision| revision.file_id != removed_file.id);
     let mut next_block_order = 1;
     let mut next_segment_order = 1;
     renumber_blocks_and_segments(
@@ -1421,6 +1597,7 @@ fn delete_job_file(
 
     write_json(&dir.join("document.json"), &document)?;
     write_json(&dir.join("segments.json"), &segments)?;
+    write_translation_revisions(&dir, &translation_revisions)?;
     replace_index_job(&mut index, job.clone());
     write_index(&root, &index)?;
 
@@ -1432,14 +1609,16 @@ fn delete_job_file(
             job,
             document,
             segments,
+            translation_revisions,
         }),
         message: "文件已删除。".to_string(),
     })
 }
 
-fn export_job(
+fn export_job_file(
     app: &AppHandle,
     job_id: &str,
+    file_id: &str,
     kind: &str,
     target_path: &Path,
 ) -> Result<RosettaExportResult, String> {
@@ -1458,7 +1637,31 @@ fn export_job(
         .ok_or_else(|| "项目不存在，无法导出。".to_string())?;
     let document: RosettaDocument = read_json(&dir.join("document.json"))?;
     let segments: Vec<Segment> = read_json(&dir.join("segments.json"))?;
-    let output = render_export(&document, &segments, kind);
+    let source_file = document_files(&document)
+        .into_iter()
+        .find(|file| file.id == file_id)
+        .ok_or_else(|| "当前文件不存在，无法导出。".to_string())?;
+    let file_blocks = document
+        .blocks
+        .iter()
+        .filter(|block| block.file_id.as_deref().unwrap_or("file-1") == source_file.id.as_str())
+        .cloned()
+        .collect::<Vec<_>>();
+    let file_segments = segments
+        .iter()
+        .filter(|segment| segment.file_id.as_deref().unwrap_or("file-1") == source_file.id.as_str())
+        .cloned()
+        .collect::<Vec<_>>();
+
+    ensure_file_ready_for_export(&file_segments)?;
+
+    let output = render_export_blocks(
+        &document,
+        &file_blocks,
+        &file_segments,
+        kind,
+        &source_file.format,
+    );
 
     if let Some(parent) = target_path.parent() {
         fs::create_dir_all(parent).map_err(|error| format!("无法创建导出目录: {error}"))?;
@@ -1481,6 +1684,36 @@ fn export_job(
     })
 }
 
+fn ensure_file_ready_for_export(segments: &[Segment]) -> Result<(), String> {
+    let translatable_segments = segments
+        .iter()
+        .filter(|segment| !segment.source_text.trim().is_empty() && segment.status != "skipped")
+        .collect::<Vec<_>>();
+
+    if translatable_segments.is_empty() {
+        return Err("当前文件没有可导出的译文。".to_string());
+    }
+
+    if translatable_segments
+        .iter()
+        .any(|segment| !matches!(segment.status.as_str(), "done" | "edited"))
+    {
+        return Err("当前文件还没有完成翻译，不能导出。".to_string());
+    }
+
+    if translatable_segments.iter().any(|segment| {
+        segment
+            .translated_text
+            .as_deref()
+            .is_none_or(|text| text.trim().is_empty())
+    }) {
+        return Err("当前文件存在空译文，不能导出。".to_string());
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
 fn render_export(document: &RosettaDocument, segments: &[Segment], kind: &str) -> String {
     render_export_blocks(document, &document.blocks, segments, kind, &document.format)
 }
@@ -1562,80 +1795,6 @@ fn render_export_block(
     }
 }
 
-fn export_job_to_directory(
-    app: &AppHandle,
-    job_id: &str,
-    kind: &str,
-    target_dir: &Path,
-) -> Result<RosettaExportResult, String> {
-    if kind != "translation" && kind != "bilingual" {
-        return Err("导出类型必须是 translation 或 bilingual。".to_string());
-    }
-
-    let root = jobs_root(app)?;
-    let dir = checked_job_dir(&root, job_id)?;
-    let mut index = read_index(&root)?;
-    let mut job = index
-        .jobs
-        .iter()
-        .find(|job| job.id == job_id)
-        .cloned()
-        .ok_or_else(|| "项目不存在，无法导出。".to_string())?;
-    let document: RosettaDocument = read_json(&dir.join("document.json"))?;
-    let segments: Vec<Segment> = read_json(&dir.join("segments.json"))?;
-    let mut bytes_written = 0_u64;
-    let mut files_written = 0_usize;
-
-    fs::create_dir_all(target_dir).map_err(|error| format!("无法创建导出目录: {error}"))?;
-
-    for source_file in document_files(&document) {
-        let file_blocks = document
-            .blocks
-            .iter()
-            .filter(|block| block.file_id.as_deref().unwrap_or("file-1") == source_file.id.as_str())
-            .cloned()
-            .collect::<Vec<_>>();
-        let file_segments = segments
-            .iter()
-            .filter(|segment| {
-                segment.file_id.as_deref().unwrap_or("file-1") == source_file.id.as_str()
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        let output = render_export_blocks(
-            &document,
-            &file_blocks,
-            &file_segments,
-            kind,
-            &source_file.format,
-        );
-        let relative_output_path = export_relative_path(&source_file, kind)?;
-        let target_path = target_dir.join(relative_output_path);
-
-        if let Some(parent) = target_path.parent() {
-            fs::create_dir_all(parent).map_err(|error| format!("无法创建导出目录: {error}"))?;
-        }
-        fs::write(&target_path, output.as_bytes())
-            .map_err(|error| format!("无法写入导出文件 {}: {error}", target_path.display()))?;
-        bytes_written += output.len() as u64;
-        files_written += 1;
-    }
-
-    job.exported_at = Some(timestamp_ms_string());
-    job.updated_at = timestamp_ms_string();
-    replace_index_job(&mut index, job.clone());
-    write_index(&root, &index)?;
-
-    Ok(RosettaExportResult {
-        job,
-        target_path: target_dir.to_string_lossy().to_string(),
-        kind: kind.to_string(),
-        bytes_written,
-        files_written,
-        message: format!("导出完成，写入 {files_written} 个文件。"),
-    })
-}
-
 fn document_files(document: &RosettaDocument) -> Vec<RosettaSourceFile> {
     if !document.files.is_empty() {
         return document.files.clone();
@@ -1652,26 +1811,6 @@ fn document_files(document: &RosettaDocument) -> Vec<RosettaSourceFile> {
             .map(|block| block.id.clone())
             .collect(),
     }]
-}
-
-fn export_relative_path(file: &RosettaSourceFile, kind: &str) -> Result<PathBuf, String> {
-    let input_path = path_from_relative(&file.relative_path)?;
-    let extension = if file.format == "markdown" {
-        "md"
-    } else {
-        "txt"
-    };
-    let suffix = if kind == "bilingual" {
-        "bilingual"
-    } else {
-        "zh"
-    };
-    let stem = input_path
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or("document");
-    let filename = format!("{stem}.{suffix}.{extension}");
-    Ok(input_path.with_file_name(filename))
 }
 
 fn segments_by_block(segments: &[Segment]) -> HashMap<String, Vec<Segment>> {
@@ -1891,6 +2030,21 @@ fn write_index(root: &Path, index: &RosettaJobIndex) -> Result<(), String> {
     write_json(&root.join(JOB_INDEX_FILENAME), index)
 }
 
+fn read_translation_revisions(dir: &Path) -> Result<Vec<TranslationRevision>, String> {
+    let path = dir.join(TRANSLATION_REVISIONS_FILENAME);
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    read_json(&path)
+}
+
+fn write_translation_revisions(
+    dir: &Path,
+    revisions: &[TranslationRevision],
+) -> Result<(), String> {
+    write_json(&dir.join(TRANSLATION_REVISIONS_FILENAME), &revisions)
+}
+
 fn upsert_index_job(root: &Path, job: RosettaJobSummary) -> Result<(), String> {
     let mut index = read_index(root)?;
     replace_index_job(&mut index, job);
@@ -2035,9 +2189,264 @@ mod tests {
     }
 
     #[test]
+    fn file_export_rejects_pending_segments() {
+        let segment = test_segment("pending", None);
+
+        let result = ensure_file_ready_for_export(&[segment]);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn file_export_rejects_empty_translation() {
+        let segment = test_segment("done", Some(""));
+
+        let result = ensure_file_ready_for_export(&[segment]);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn file_export_allows_done_and_skipped_segments() {
+        let translated = test_segment("done", Some("你好。"));
+        let skipped = Segment {
+            status: "skipped".to_string(),
+            source_text: "```rust\nfn main() {}\n```".to_string(),
+            translated_text: None,
+            ..test_segment("skipped", None)
+        };
+
+        assert!(ensure_file_ready_for_export(&[translated, skipped]).is_ok());
+    }
+
+    #[test]
+    fn archive_segment_translation_preserves_current_translation() {
+        let mut segment = test_segment("done", Some("你好。"));
+
+        archive_segment_translation(&mut segment, "retranslation", "run-test");
+
+        assert_eq!(segment.translation_history.len(), 1);
+        assert_eq!(segment.translation_history[0].translated_text, "你好。");
+        assert_eq!(segment.translation_history[0].reason, "retranslation");
+        assert_eq!(
+            segment.translation_history[0].run_id.as_deref(),
+            Some("run-test")
+        );
+    }
+
+    #[test]
+    fn missing_translation_revisions_file_returns_empty() {
+        let dir = unique_temp_dir("missing-revisions");
+        fs::create_dir_all(&dir).expect("create temp dir");
+
+        let revisions = read_translation_revisions(&dir).expect("read revisions");
+
+        assert!(revisions.is_empty());
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn translation_revision_roundtrip_restores_snapshot() {
+        let dir = unique_temp_dir("revision-roundtrip");
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let mut translations = HashMap::new();
+        translations.insert("segment-1".to_string(), "你好。".to_string());
+        let revision = TranslationRevision {
+            id: "revision-1".to_string(),
+            job_id: "job-1".to_string(),
+            file_id: "file-1".to_string(),
+            created_at: "1".to_string(),
+            source_lang: Some("en".to_string()),
+            target_lang: "zh-CN".to_string(),
+            reason: "file-retranslation".to_string(),
+            scope_block_ids: None,
+            segment_translations: translations,
+        };
+
+        write_translation_revisions(&dir, &[revision]).expect("write revisions");
+        let restored = read_translation_revisions(&dir).expect("read revisions");
+
+        assert_eq!(restored.len(), 1);
+        assert_eq!(
+            restored[0].segment_translations.get("segment-1"),
+            Some(&"你好。".to_string())
+        );
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn revision_snapshot_contains_current_file_translations() {
+        let document = test_document();
+        let segments = vec![
+            test_segment_with("segment-1", "block-1", "file-1", "done", Some("你好。")),
+            test_segment_with("segment-2", "block-2", "file-1", "done", Some("世界。")),
+            test_segment_with("segment-3", "block-3", "file-2", "done", Some("忽略。")),
+        ];
+
+        let revision = create_revision_snapshot(
+            "job-1",
+            "file-1",
+            "file-retranslation",
+            None,
+            &document,
+            &segments,
+        )
+        .expect("create snapshot")
+        .expect("snapshot exists");
+
+        assert_eq!(revision.file_id, "file-1");
+        assert_eq!(revision.segment_translations.len(), 2);
+        assert_eq!(
+            revision.segment_translations.get("segment-1"),
+            Some(&"你好。".to_string())
+        );
+        assert!(!revision.segment_translations.contains_key("segment-3"));
+    }
+
+    #[test]
+    fn empty_translation_snapshot_is_not_created() {
+        let document = test_document();
+        let segments = vec![test_segment_with(
+            "segment-1",
+            "block-1",
+            "file-1",
+            "pending",
+            None,
+        )];
+
+        let revision = create_revision_snapshot(
+            "job-1",
+            "file-1",
+            "file-retranslation",
+            None,
+            &document,
+            &segments,
+        )
+        .expect("create snapshot");
+
+        assert!(revision.is_none());
+    }
+
+    #[test]
+    fn export_translation_uses_current_segments_not_revision_history() {
+        let (blocks, mut segments) = parse_txt("doc", "Hello.");
+        segments[0].translated_text = Some("当前译文。".to_string());
+        segments[0].status = "done".to_string();
+        segments[0]
+            .translation_history
+            .push(TranslationHistoryEntry {
+                id: "history-1".to_string(),
+                run_id: Some("run-1".to_string()),
+                translated_text: "旧译文。".to_string(),
+                created_at: "1".to_string(),
+                source_lang: Some("en".to_string()),
+                target_lang: "zh-CN".to_string(),
+                reason: "retranslation".to_string(),
+            });
+        let output = render_export(
+            &RosettaDocument {
+                schema_version: SCHEMA_VERSION,
+                id: "doc".to_string(),
+                filename: "demo.txt".to_string(),
+                format: "txt".to_string(),
+                source_lang: Some("en".to_string()),
+                target_lang: "zh-CN".to_string(),
+                files: Vec::new(),
+                blocks,
+            },
+            &segments,
+            "translation",
+        );
+
+        assert_eq!(output, "当前译文。");
+    }
+
+    #[test]
     fn path_safety_rejects_traversal_job_id() {
         assert!(is_safe_job_id("job-123_demo"));
         assert!(!is_safe_job_id("../job"));
         assert!(!is_safe_job_id("job/123"));
+    }
+
+    fn test_segment(status: &str, translated_text: Option<&str>) -> Segment {
+        Segment {
+            id: "segment-1".to_string(),
+            block_id: "block-1".to_string(),
+            file_id: Some("file-1".to_string()),
+            order: 1,
+            source_text: "Hello.".to_string(),
+            translated_text: translated_text.map(str::to_string),
+            source_lang: Some("en".to_string()),
+            target_lang: "zh-CN".to_string(),
+            kind: "paragraph".to_string(),
+            preserve_whitespace: false,
+            status: status.to_string(),
+            block_order: Some(1),
+            segment_index_in_block: Some(0),
+            error: None,
+            translation_history: Vec::new(),
+        }
+    }
+
+    fn test_segment_with(
+        id: &str,
+        block_id: &str,
+        file_id: &str,
+        status: &str,
+        translated_text: Option<&str>,
+    ) -> Segment {
+        Segment {
+            id: id.to_string(),
+            block_id: block_id.to_string(),
+            file_id: Some(file_id.to_string()),
+            order: 1,
+            source_text: "Hello.".to_string(),
+            translated_text: translated_text.map(str::to_string),
+            source_lang: Some("en".to_string()),
+            target_lang: "zh-CN".to_string(),
+            kind: "paragraph".to_string(),
+            preserve_whitespace: false,
+            status: status.to_string(),
+            block_order: Some(1),
+            segment_index_in_block: Some(0),
+            error: None,
+            translation_history: Vec::new(),
+        }
+    }
+
+    fn test_document() -> RosettaDocument {
+        RosettaDocument {
+            schema_version: SCHEMA_VERSION,
+            id: "document-1".to_string(),
+            filename: "demo".to_string(),
+            format: "txt".to_string(),
+            source_lang: Some("en".to_string()),
+            target_lang: "zh-CN".to_string(),
+            files: vec![
+                RosettaSourceFile {
+                    id: "file-1".to_string(),
+                    filename: "one.txt".to_string(),
+                    relative_path: "one.txt".to_string(),
+                    format: "txt".to_string(),
+                    block_ids: vec!["block-1".to_string(), "block-2".to_string()],
+                },
+                RosettaSourceFile {
+                    id: "file-2".to_string(),
+                    filename: "two.txt".to_string(),
+                    relative_path: "two.txt".to_string(),
+                    format: "txt".to_string(),
+                    block_ids: vec!["block-3".to_string()],
+                },
+            ],
+            blocks: vec![
+                translatable_block("block-1", "paragraph", "Hello.", 1, None),
+                translatable_block("block-2", "paragraph", "World.", 2, None),
+                translatable_block("block-3", "paragraph", "Ignored.", 3, None),
+            ],
+        }
+    }
+
+    fn unique_temp_dir(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("rosetta-{name}-{}", timestamp_ms_string()))
     }
 }

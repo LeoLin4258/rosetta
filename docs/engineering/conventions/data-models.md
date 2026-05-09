@@ -59,6 +59,24 @@ Document
 - 用户编辑后的译文状态应标记为 `edited`，后续重翻不能静默覆盖。
 - `sourceLang` 和 `targetLang` 必须跟随所属 job/document 的语言方向。任务页修改语言方向时，需要更新所有 segments 的语言字段。
 - 如果任务语言方向发生变化，已有自动译文不再可信，应清空 translatable segments 的 `translatedText` 和 `error`，并把状态重置为 `pending`。这样可以避免 UI 显示新语言配置下的旧译文。
+- `translationHistory` 是旧缓存兼容字段。新的默认历史译文 UI 不再从 segment-level history 重组，而是读取文件级 `TranslationRevision`。
+- 重新翻译当前文件表示启动一次新的完整文件翻译运行，不是只补翻缺失 segment。开始重翻前，当前文件内所有可翻译 segment 的当前译文应保存为文件级历史版本，然后清空当前译文并从 0 重新计算本次运行进度。
+- 选中段落重翻时，用户选择的是 block；如果一个 block 被拆成多个 segments，重翻范围包含该 block 下所有可翻译 segments。开始局部重翻前同样保存一份当前文件完整译文版本。
+- 用户查看历史记录时，应看到过去某一次翻译运行的完整文件译文版本，而不是零散 segment 记录。Segment 仍是调度和缓存单位，但历史查看使用 `TranslationRevision.segmentTranslations` 重建文件视图。
+
+## TranslationRevision
+
+`TranslationRevision` 表示某个文件在一次重翻前保存下来的完整译文快照。
+
+约定：
+
+- 历史版本是文件级，不是项目级，也不是单个 segment 级。
+- `translation_revisions.json` 保存在 job 目录下，缺失时读取方必须按空数组处理，保证旧任务缓存可继续打开。
+- `segmentTranslations` 使用 `Record<segmentId, translatedText>` 保存当时该文件所有可翻译 segment 的非空译文。
+- 如果当前文件没有任何有效译文，不创建 revision。
+- `reason` 记录触发原因：`file-retranslation`、`selection-retranslation` 或 `language-change`。
+- `scopeBlockIds` 只记录局部重翻触发时用户选中的 blocks，历史版本本身仍然是完整文件译文快照。
+- 导出始终使用当前 `segments`，不使用历史版本。历史版本当前只用于查看，后续如需“恢复为当前译文”或“导出历史版本”需要单独设计入口。
 
 ## Job
 
@@ -72,7 +90,7 @@ Document
 - `RosettaJobSummary.sourceFiles` 保存侧边栏等轻量 UI 所需的文件列表。完整文件结构仍以 `RosettaDocument.files` 为准。
 - MVP 阶段任务缓存使用 JSON 文件，根目录固定在 app data 的 `jobs/` 下。
 - Job store 的持久化文件必须带 `schemaVersion: 1`，后续格式变化需要迁移路径。
-- `RosettaJobBundle` 是前端加载项目的最小完整单位，包含 `job`、`document`、`segments`。
+- `RosettaJobBundle` 是前端加载项目的最小完整单位，包含 `job`、`document`、`segments`、`translationRevisions`。
 - `index.json` 只保存 `RosettaJobSummary[]`，完整文档和 segments 分别保存在项目目录下。
 - 删除项目只删除 Rosetta 自己的 job cache，不删除用户原始文件，也不删除已经导出的文件。
 - 后续如果引入 SQLite，需要新增 ADR 说明原因和迁移策略。
@@ -87,6 +105,7 @@ AppData/Rosetta/jobs/
     sources/<relative-path>  # 文件夹项目
     document.json
     segments.json
+    translation_revisions.json
     exports/
 ```
 
@@ -107,8 +126,10 @@ AppData/Rosetta/jobs/
 - `bilingual` 导出双语对照。
 - 未完成或失败 segment 导出时使用原文占位，避免输出断裂。
 - Markdown 导出只承诺保留基础 marker，不承诺完整 CommonMark AST 级别还原。
-- 单文件项目可以导出到用户选择的具体文件路径。
-- 多文件项目导出到用户选择的目录，并按源文件相对路径写出 `*.zh.txt|md` 或 `*.bilingual.txt|md`。删除项目只删除 Rosetta job cache，不删除用户原始文件或已导出目录。
+- 任务工作台的导出最小单位是当前选中的文件，而不是整个项目。项目是文件集合与共享设置容器，不能让用户在当前文件视图里误触发整项目导出。
+- 当前文件必须完成翻译后才能导出；`done`、`edited` 和 `skipped` 视为已处理，`pending`、`translating`、`failed` 或空译文不能导出。
+- 当前文件导出到用户选择的具体文件路径，输出文件名默认来自当前文件名，例如 `chapter.zh.md` 或 `chapter.bilingual.md`。
+- 多文件项目的批量导出如果后续恢复，应作为单独的项目级入口，并明确提示会导出项目内所有文件。删除项目只删除 Rosetta job cache，不删除用户原始文件或已导出目录。
 
 ## Preview
 

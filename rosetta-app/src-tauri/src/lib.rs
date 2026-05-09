@@ -8,15 +8,14 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
+            rosetta_jobs::create_rosetta_translation_revision,
             rosetta_jobs::delete_rosetta_job,
             rosetta_jobs::delete_rosetta_job_file,
-            rosetta_jobs::export_rosetta_job,
-            rosetta_jobs::export_rosetta_job_to_directory,
+            rosetta_jobs::export_rosetta_job_file,
             rosetta_jobs::import_rosetta_document_from_path,
             rosetta_jobs::import_rosetta_project_from_directory,
             rosetta_jobs::list_rosetta_jobs,
             rosetta_jobs::load_rosetta_job,
-            rosetta_jobs::pick_rosetta_export_directory,
             rosetta_jobs::pick_rosetta_export_path,
             rosetta_jobs::pick_rosetta_import_directory,
             rosetta_jobs::pick_rosetta_import_path,

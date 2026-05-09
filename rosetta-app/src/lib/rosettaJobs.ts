@@ -6,6 +6,7 @@ import type {
   RosettaJobBundle,
   RosettaJobSummary,
   Segment,
+  TranslationRevisionReason,
 } from "../types/rosetta";
 
 export function importRosettaDocumentFromPath(path: string) {
@@ -36,10 +37,6 @@ export function pickRosettaExportPath(
   });
 }
 
-export function pickRosettaExportDirectory() {
-  return invoke<string | null>("pick_rosetta_export_directory");
-}
-
 export function listRosettaJobs() {
   return invoke<RosettaJobSummary[]>("list_rosetta_jobs");
 }
@@ -67,6 +64,20 @@ export function updateRosettaJobLanguages(
   });
 }
 
+export function createRosettaTranslationRevision(
+  jobId: string,
+  fileId: string,
+  reason: TranslationRevisionReason,
+  scopeBlockIds?: string[] | null
+) {
+  return invoke<RosettaJobBundle>("create_rosetta_translation_revision", {
+    jobId,
+    fileId,
+    reason,
+    scopeBlockIds,
+  });
+}
+
 export function renameRosettaJob(jobId: string, name: string) {
   return invoke<RosettaJobSummary[]>("rename_rosetta_job", {
     jobId,
@@ -85,26 +96,16 @@ export function deleteRosettaJobFile(jobId: string, fileId: string) {
   });
 }
 
-export function exportRosettaJob(
+export function exportRosettaJobFile(
   jobId: string,
+  fileId: string,
   kind: RosettaExportKind,
   targetPath: string
 ) {
-  return invoke<RosettaExportResult>("export_rosetta_job", {
+  return invoke<RosettaExportResult>("export_rosetta_job_file", {
     jobId,
+    fileId,
     kind,
     targetPath,
-  });
-}
-
-export function exportRosettaJobToDirectory(
-  jobId: string,
-  kind: RosettaExportKind,
-  targetDir: string
-) {
-  return invoke<RosettaExportResult>("export_rosetta_job_to_directory", {
-    jobId,
-    kind,
-    targetDir,
   });
 }
