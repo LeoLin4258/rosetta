@@ -31,6 +31,7 @@ type RosettaState = {
   setActiveFileId: (fileId: string | null) => void;
   setActiveJobSelection: (jobId: string, fileId: string | null) => void;
   setActiveBundle: (bundle: RosettaJobBundle) => void;
+  refreshJobBundle: (bundle: RosettaJobBundle) => void;
   clearActiveJob: () => void;
   updateActiveSegments: (segments: Segment[]) => void;
   preparePreviewSegmentRetranslation: (segmentIds: string[]) => Segment[];
@@ -39,9 +40,9 @@ type RosettaState = {
       startedAt?: string;
     }
   ) => void;
-  markTranslationRunCompleted: (segmentIds: string[]) => void;
-  markTranslationRunFailed: (segmentIds: string[]) => void;
-  finishTranslationRun: () => void;
+  markTranslationRunCompleted: (runId: string, segmentIds: string[]) => void;
+  markTranslationRunFailed: (runId: string, segmentIds: string[]) => void;
+  finishTranslationRun: (runId: string) => void;
   beginPreviewSegmentTranslation: (segmentIds: string[]) => Segment[];
   completePreviewSegmentTranslation: (
     segmentIds: string[],
@@ -149,9 +150,6 @@ export const useRosettaStore = create<RosettaState>()(
           const activeJobStillExists =
             state.activeJobId != null &&
             jobs.some((job) => job.id === state.activeJobId);
-          const nextActiveJobId = activeJobStillExists
-            ? state.activeJobId
-            : jobs[0]?.id ?? null;
           const validJobIds = new Set(jobs.map((job) => job.id));
           const nextActiveFileIdByJobId = Object.fromEntries(
             Object.entries(state.activeFileIdByJobId).filter(([jobId]) =>
@@ -170,23 +168,25 @@ export const useRosettaStore = create<RosettaState>()(
             }
           }
 
-          const nextActiveFileId = nextActiveJobId
-            ? nextActiveFileIdByJobId[nextActiveJobId] ?? null
-            : null;
+          if (!activeJobStillExists) {
+            return {
+              jobs,
+              activeJobId: null,
+              activeFileId: null,
+              activeFileIdByJobId: nextActiveFileIdByJobId,
+              activeDocument: null,
+              previewSegments: [],
+              translationRevisions: [],
+              activeTranslationRun: null,
+            };
+          }
 
           return {
             jobs,
-            activeJobId: nextActiveJobId,
-            activeFileId: nextActiveFileId,
+            activeFileId: state.activeJobId
+              ? nextActiveFileIdByJobId[state.activeJobId] ?? state.activeFileId
+              : state.activeFileId,
             activeFileIdByJobId: nextActiveFileIdByJobId,
-            activeDocument: activeJobStillExists ? state.activeDocument : null,
-            previewSegments: activeJobStillExists ? state.previewSegments : [],
-            translationRevisions: activeJobStillExists
-              ? state.translationRevisions
-              : [],
-            activeTranslationRun: activeJobStillExists
-              ? state.activeTranslationRun
-              : null,
           };
         }),
       setActiveJobId: (jobId) =>
@@ -273,6 +273,36 @@ export const useRosettaStore = create<RosettaState>()(
             translationRevisions: bundle.translationRevisions ?? [],
           };
         }),
+      refreshJobBundle: (bundle) =>
+        set((state) => {
+          const jobs = replaceJob(state.jobs, bundle.job);
+
+          if (state.activeJobId !== bundle.job.id) {
+            return { jobs };
+          }
+
+          const fileIds = bundle.document.files.map((file) => file.id);
+          const mappedFileId = state.activeFileIdByJobId[bundle.job.id];
+          const selectedFileId =
+            mappedFileId != null && fileIds.includes(mappedFileId)
+              ? mappedFileId
+              : bundle.document.files[0]?.id ?? null;
+          const activeFileIdByJobId = { ...state.activeFileIdByJobId };
+          if (selectedFileId) {
+            activeFileIdByJobId[bundle.job.id] = selectedFileId;
+          } else {
+            delete activeFileIdByJobId[bundle.job.id];
+          }
+
+          return {
+            jobs,
+            activeFileId: selectedFileId,
+            activeFileIdByJobId,
+            activeDocument: bundle.document,
+            previewSegments: bundle.segments,
+            translationRevisions: bundle.translationRevisions ?? [],
+          };
+        }),
       clearActiveJob: () =>
         set({
           activeJobId: null,
@@ -307,9 +337,9 @@ export const useRosettaStore = create<RosettaState>()(
             startedAt: run.startedAt ?? Date.now().toString(),
           },
         }),
-      markTranslationRunCompleted: (segmentIds) =>
+      markTranslationRunCompleted: (runId, segmentIds) =>
         set((state) => {
-          if (!state.activeTranslationRun) {
+          if (!state.activeTranslationRun || state.activeTranslationRun.id !== runId) {
             return state;
           }
           const completed = new Set(state.activeTranslationRun.completedSegmentIds);
@@ -326,9 +356,9 @@ export const useRosettaStore = create<RosettaState>()(
             },
           };
         }),
-      markTranslationRunFailed: (segmentIds) =>
+      markTranslationRunFailed: (runId, segmentIds) =>
         set((state) => {
-          if (!state.activeTranslationRun) {
+          if (!state.activeTranslationRun || state.activeTranslationRun.id !== runId) {
             return state;
           }
           const failed = new Set(state.activeTranslationRun.failedSegmentIds);
@@ -342,7 +372,12 @@ export const useRosettaStore = create<RosettaState>()(
             },
           };
         }),
-      finishTranslationRun: () => set({ activeTranslationRun: null }),
+      finishTranslationRun: (runId) =>
+        set((state) =>
+          state.activeTranslationRun?.id === runId
+            ? { activeTranslationRun: null }
+            : state
+        ),
       beginPreviewSegmentTranslation: (segmentIds) => {
         const segmentIdSet = new Set(segmentIds);
         const nextSegments = get().previewSegments.map((segment) =>

@@ -1,17 +1,19 @@
 import { useEffect, useState } from "react";
-import { matchPath, NavLink, useLocation, useNavigate } from "react-router-dom";
+import { matchPath, NavLink, useLocation } from "react-router-dom";
 import {
-  ChevronRightIcon,
-  ChevronsUpDownIcon,
+  FileCheckIcon,
+  FileClockIcon,
   FileTextIcon,
+  FileXIcon,
   FolderIcon,
   PencilIcon,
   PlusIcon,
   SettingsIcon,
 } from "lucide-react";
 
+import { cn } from "@/lib/utils";
 import { loadRosettaJob, renameRosettaJob } from "@/lib/rosettaJobs";
-import { rosettaJobFilePath, rosettaJobPath } from "@/lib/rosettaRoutes";
+import { rosettaJobFilePath } from "@/lib/rosettaRoutes";
 import { useRosettaStore } from "@/store/useRosettaStore";
 import {
   Collapsible,
@@ -34,11 +36,15 @@ import {
   SidebarMenuSubItem,
   SidebarRail,
 } from "@/components/ui/sidebar";
-import type { RosettaJobSummary, RosettaSourceFile } from "@/types/rosetta";
+import type {
+  ActiveTranslationRun,
+  RosettaJobSummary,
+  RosettaSourceFile,
+  SourceFileTranslationStatus,
+} from "@/types/rosetta";
 
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const location = useLocation();
-  const navigate = useNavigate();
   const jobs = useRosettaStore((state) => state.jobs);
   const activeJobId = useRosettaStore((state) => state.activeJobId);
   const activeFileId = useRosettaStore((state) => state.activeFileId);
@@ -46,8 +52,11 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
     (state) => state.activeFileIdByJobId
   );
   const activeDocument = useRosettaStore((state) => state.activeDocument);
+  const activeTranslationRun = useRosettaStore(
+    (state) => state.activeTranslationRun
+  );
   const setJobList = useRosettaStore((state) => state.setJobList);
-  const setActiveBundle = useRosettaStore((state) => state.setActiveBundle);
+  const refreshJobBundle = useRosettaStore((state) => state.refreshJobBundle);
   const setActiveJobSelection = useRosettaStore(
     (state) => state.setActiveJobSelection
   );
@@ -98,7 +107,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
       setJobList(nextJobs);
       if (activeJobId === job.id) {
         const bundle = await loadRosettaJob(job.id);
-        setActiveBundle(bundle);
+        refreshJobBundle(bundle);
       }
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "重命名项目失败。");
@@ -130,7 +139,11 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                 const isActive = visibleJobId === job.id;
                 const isOpen = openJobIds.has(job.id);
                 const routeSelectedFileId =
-                  routeJobId === job.id ? routeFileId : null;
+                  routeJobId === job.id &&
+                  routeFileId &&
+                  files.some((file) => file.id === routeFileId)
+                    ? routeFileId
+                    : null;
                 const selectedFileId =
                   routeSelectedFileId ??
                   activeFileIdByJobId[job.id] ??
@@ -141,32 +154,20 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                 return (
                   <Collapsible
                     key={job.id}
-                    onOpenChange={() => toggleJob(job.id)}
                     open={isOpen}
                   >
                     <SidebarMenuItem>
                       <SidebarMenuButton
-                        className="pr-14"
+                        aria-expanded={isOpen}
+                        className="pr-8"
                         isActive={isActive}
                         onClick={() => {
-                          setOpenJobIds((current) => {
-                            if (current.has(job.id)) {
-                              return current;
-                            }
-                            const next = new Set(current);
-                            next.add(job.id);
-                            return next;
-                          });
-                          setActiveJobSelection(job.id, selectedFileId);
-                          navigate(
-                            selectedFileId
-                              ? rosettaJobFilePath(job.id, selectedFileId)
-                              : rosettaJobPath(job.id)
-                          );
+                          toggleJob(job.id);
                         }}
                         tooltip={job.filename}
+                        type="button"
                       >
-                        {files.length > 1 ? <FolderIcon /> : <FileTextIcon />}
+                        {files.length > 0 ? <FolderIcon /> : <FileTextIcon />}
                         <span>{job.filename}</span>
                       </SidebarMenuButton>
                       <SidebarMenuAction
@@ -182,50 +183,19 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                         <PencilIcon />
                       </SidebarMenuAction>
                       {files.length > 0 ? (
-                        <SidebarMenuAction
-                          className="right-7"
-                          onClick={(event) => {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            toggleJob(job.id);
-                          }}
-                          title={isOpen ? "折叠文件列表" : "展开文件列表"}
-                          type="button"
-                        >
-                          {files.length > 1 ? (
-                            <ChevronRightIcon
-                              className={
-                                isOpen
-                                  ? "rotate-90 transition-transform"
-                                  : "transition-transform"
-                              }
-                            />
-                          ) : (
-                            <ChevronsUpDownIcon />
-                          )}
-                        </SidebarMenuAction>
-                      ) : null}
-                      {files.length > 0 ? (
                         <CollapsibleContent>
                           <SidebarMenuSub>
                             {files.map((file) => (
-                              <SidebarMenuSubItem key={`${job.id}-${file.id}`}>
-                                <SidebarMenuSubButton
-                                  asChild
-                                  isActive={isActive && selectedFileId === file.id}
-                                >
-                                  <NavLink
-                                    onClick={() => {
-                                      setActiveJobSelection(job.id, file.id);
-                                    }}
-                                    to={rosettaJobFilePath(job.id, file.id)}
-                                    title={file.relativePath}
-                                  >
-                                    <FileTextIcon />
-                                    <span>{file.relativePath}</span>
-                                  </NavLink>
-                                </SidebarMenuSubButton>
-                              </SidebarMenuSubItem>
+                              <FileMenuItem
+                                activeTranslationRun={activeTranslationRun}
+                                file={file}
+                                isActive={isActive && selectedFileId === file.id}
+                                jobId={job.id}
+                                key={`${job.id}-${file.id}`}
+                                onSelect={() => {
+                                  setActiveJobSelection(job.id, file.id);
+                                }}
+                              />
                             ))}
                           </SidebarMenuSub>
                         </CollapsibleContent>
@@ -268,6 +238,107 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
       <SidebarRail />
     </Sidebar>
   );
+}
+
+function FileMenuItem({
+  activeTranslationRun,
+  file,
+  isActive,
+  jobId,
+  onSelect,
+}: {
+  activeTranslationRun: ActiveTranslationRun | null;
+  file: RosettaSourceFile;
+  isActive: boolean;
+  jobId: string;
+  onSelect: () => void;
+}) {
+  const status = fileTranslationStatus(jobId, file, activeTranslationRun);
+
+  return (
+    <SidebarMenuSubItem>
+      <SidebarMenuSubButton
+        asChild
+        className={fileStatusClassName(status)}
+        isActive={isActive}
+      >
+        <NavLink
+          onClick={onSelect}
+          to={rosettaJobFilePath(jobId, file.id)}
+          title={`${file.relativePath} · ${fileStatusLabel(status)}`}
+        >
+          <FileStatusIcon status={status} />
+          <span>{file.relativePath}</span>
+        </NavLink>
+      </SidebarMenuSubButton>
+    </SidebarMenuSubItem>
+  );
+}
+
+function fileTranslationStatus(
+  jobId: string,
+  file: RosettaSourceFile,
+  activeTranslationRun: ActiveTranslationRun | null
+): SourceFileTranslationStatus {
+  if (
+    activeTranslationRun?.jobId === jobId &&
+    activeTranslationRun.fileId === file.id
+  ) {
+    return "translating";
+  }
+  if (file.translationStatus) {
+    return file.translationStatus;
+  }
+  if ((file.translatingSegments ?? 0) > 0) {
+    return "translating";
+  }
+  if ((file.failedSegments ?? 0) > 0) {
+    return "failed";
+  }
+  const segmentCount = file.segmentCount ?? 0;
+  if (segmentCount > 0 && (file.completedSegments ?? 0) >= segmentCount) {
+    return "translated";
+  }
+  return "untranslated";
+}
+
+function FileStatusIcon({
+  status,
+}: {
+  status: SourceFileTranslationStatus;
+}) {
+  if (status === "translated") {
+    return <FileCheckIcon aria-label="已翻译" />;
+  }
+  if (status === "translating") {
+    return <FileClockIcon aria-label="翻译中" />;
+  }
+  if (status === "failed") {
+    return <FileXIcon aria-label="翻译失败" />;
+  }
+  return <FileTextIcon aria-label="未翻译" />;
+}
+
+function fileStatusClassName(status: SourceFileTranslationStatus) {
+  return cn(
+    status === "untranslated" && "[&>svg]:!text-muted-foreground",
+    status === "translated" && "[&>svg]:!text-primary",
+    status === "translating" && "[&>svg]:!animate-pulse [&>svg]:!text-primary",
+    status === "failed" && "[&>svg]:!text-destructive"
+  );
+}
+
+function fileStatusLabel(status: SourceFileTranslationStatus) {
+  if (status === "translated") {
+    return "已翻译";
+  }
+  if (status === "translating") {
+    return "翻译中";
+  }
+  if (status === "failed") {
+    return "翻译失败";
+  }
+  return "未翻译";
 }
 
 function jobFiles(

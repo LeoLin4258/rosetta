@@ -32,6 +32,8 @@ Document
 - preview 和 exporter 应尽量基于同一套 IR，避免预览和导出结果分叉。
 - 文件夹项目使用 `files: RosettaSourceFile[]` 记录项目内每个源文件。单文件项目也应写入一个 `file-1` 条目，旧缓存缺失时读取方需要能回退到虚拟单文件。
 - `RosettaSourceFile.relativePath` 使用 `/` 分隔的项目内相对路径，只能由 importer 从用户选择的根目录安全生成，不能接收前端拼接出的任意路径。
+- `RosettaSourceFile.sourceLang` 和 `RosettaSourceFile.targetLang` 是文件级语言方向。旧缓存缺失这些字段时读取方回退到 `RosettaDocument.sourceLang` / `RosettaDocument.targetLang`。
+- 任务工作台中的语言选择作用于当前文件，不应静默重置项目内其它文件的译文。项目级批量改语言如果后续恢复，必须是单独入口并明确提示影响范围。
 
 ## RosettaBlock
 
@@ -58,7 +60,8 @@ Document
 - `preserveWhitespace` 用于提示合并和导出阶段保留空白。
 - 用户编辑后的译文状态应标记为 `edited`，后续重翻不能静默覆盖。
 - `sourceLang` 和 `targetLang` 必须跟随所属 job/document 的语言方向。任务页修改语言方向时，需要更新所有 segments 的语言字段。
-- 如果任务语言方向发生变化，已有自动译文不再可信，应清空 translatable segments 的 `translatedText` 和 `error`，并把状态重置为 `pending`。这样可以避免 UI 显示新语言配置下的旧译文。
+- `sourceLang` 和 `targetLang` 必须跟随所属文件的语言方向。任务页修改当前文件语言方向时，只更新该文件下的 segments。
+- 如果当前文件语言方向发生变化，已有自动译文不再可信，应清空该文件 translatable segments 的 `translatedText` 和 `error`，并把状态重置为 `pending`。这样可以避免 UI 显示新语言配置下的旧译文。
 - `translationHistory` 是旧缓存兼容字段。新的默认历史译文 UI 不再从 segment-level history 重组，而是读取文件级 `TranslationRevision`。
 - 重新翻译当前文件表示启动一次新的完整文件翻译运行，不是只补翻缺失 segment。开始重翻前，当前文件内所有可翻译 segment 的当前译文应保存为文件级历史版本，然后清空当前译文并从 0 重新计算本次运行进度。
 - 选中段落重翻时，用户选择的是 block；如果一个 block 被拆成多个 segments，重翻范围包含该 block 下所有可翻译 segments。开始局部重翻前同样保存一份当前文件完整译文版本。
@@ -88,6 +91,8 @@ Document
 - Job 的语言方向由 `RosettaDocument.sourceLang`、`RosettaDocument.targetLang` 和 `RosettaJobSummary.targetLang` 共同持久化。`sourceLang` 当前只在完整 bundle 中读取，job summary 暂不重复存储。
 - `RosettaJobSummary.filename` 是用户看到的项目名。导入时默认使用源文件名或文件夹名，之后可以由用户重命名；`sourceFilename` 保留原始导入名。
 - `RosettaJobSummary.sourceFiles` 保存侧边栏等轻量 UI 所需的文件列表。完整文件结构仍以 `RosettaDocument.files` 为准。
+- `RosettaSourceFile.translationStatus` 和对应的 segment 统计字段用于文件树等轻量 UI 表达文件级翻译状态。它们由后端根据 `segments.json` 派生并同步，旧缓存缺失时按未翻译/0 处理；调度和导出仍以 `Segment.status` 为准。
+- `RosettaJobSummary.targetLang` 只作为项目列表兼容字段。多文件项目可能存在不同目标语言，当前文件语言必须读取 `RosettaSourceFile.targetLang` 或其 document fallback。
 - MVP 阶段任务缓存使用 JSON 文件，根目录固定在 app data 的 `jobs/` 下。
 - Job store 的持久化文件必须带 `schemaVersion: 1`，后续格式变化需要迁移路径。
 - `RosettaJobBundle` 是前端加载项目的最小完整单位，包含 `job`、`document`、`segments`、`translationRevisions`。
@@ -139,11 +144,14 @@ AppData/Rosetta/jobs/
 
 - 双语预览左侧渲染原文结构，右侧渲染译文结构。
 - 多文件项目的默认预览范围是“当前选中的一个文件”，不是把项目内所有文件连续渲染在同一个预览面板里。当前文件由前端 UI state `activeFileId` 控制。
+- 当前文件由 `/jobs/:jobId/files/:fileId` 路由表达。Zustand 的 `activeFileId` 是路由同步后的应用状态，不应成为与路由竞争的第二事实来源。
+- 后台保存、导出刷新、翻译批次完成等异步结果不能无条件改变 active job/file。只有用户显式打开或导入项目时才允许设置 active bundle；后台结果应只刷新 job list，且仅在当前 active job 仍匹配时刷新已加载 bundle。
 - Markdown 预览使用 Markdown renderer，并启用 GFM 等常见语法支持；不要执行原文中的 HTML/script。
 - 原文和译文滚动应同步，hover 某个 block 时两侧对应 block 同步高亮。
 - 滚动期间应暂停 hover 高亮更新，避免鼠标停在文本上时 hover state 与滚动同步互相触发重渲染。
 - 未翻译的 translatable block 在译文侧显示为空，不回退显示原文；`skipped` 内容如代码块仍可按原文保留。
 - Segment 仍是调度和缓存单位，但不应作为普通用户默认看到的主要阅读结构。后续如果恢复结构切分调试视图，应作为单独的高级/诊断视图。
+- 预览必须使用 block 级虚拟滚动，避免长文档一次性渲染全部 Markdown blocks。
 
 ## RWKV API Config
 

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { RefObject } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Badge } from "@/components/ui/badge";
@@ -69,7 +70,10 @@ export function DocumentPreview({
   const segments = activeJobId === currentJobId ? previewSegments : [];
   const files = useMemo(() => documentFiles(document), [document]);
   const selectedFile = useMemo(
-    () => files.find((file) => file.id === currentFileId) ?? files[0] ?? null,
+    () =>
+      currentFileId
+        ? files.find((file) => file.id === currentFileId) ?? null
+        : files[0] ?? null,
     [currentFileId, files]
   );
   const revisionOptions = useMemo(
@@ -217,7 +221,6 @@ export function DocumentPreview({
         <PreviewPane
           document={document}
           file={selectedFile}
-          hasMultipleFiles={files.length > 1}
           hoveredBlockId={hoveredBlockId}
           onHoverBlock={updateHoveredBlock}
           onScroll={() => syncScroll("source")}
@@ -232,7 +235,6 @@ export function DocumentPreview({
         <PreviewPane
           document={document}
           file={selectedFile}
-          hasMultipleFiles={files.length > 1}
           hoveredBlockId={hoveredBlockId}
           onHoverBlock={updateHoveredBlock}
           onScroll={() => syncScroll("translation")}
@@ -252,7 +254,6 @@ export function DocumentPreview({
 function PreviewPane({
   document,
   file,
-  hasMultipleFiles,
   hoveredBlockId,
   onHoverBlock,
   onScroll,
@@ -266,7 +267,6 @@ function PreviewPane({
 }: {
   document: RosettaDocument;
   file: RosettaSourceFile;
-  hasMultipleFiles: boolean;
   hoveredBlockId: string | null;
   onHoverBlock: (blockId: string | null) => void;
   onScroll: () => void;
@@ -288,6 +288,12 @@ function PreviewPane({
       document.blocks.filter((block) => (block.fileId ?? "file-1") === file.id),
     [document.blocks, file.id]
   );
+  const virtualizer = useVirtualizer({
+    count: blocks.length,
+    getScrollElement: () => paneRef.current,
+    estimateSize: () => 92,
+    overscan: 8,
+  });
 
   return (
     <ScrollArea
@@ -295,36 +301,47 @@ function PreviewPane({
       onScroll={onScroll}
       viewportRef={paneRef}
     >
-      <div className="mx-auto flex max-w-3xl flex-col gap-6 px-6 py-6">
-        <section className="flex flex-col gap-3">
-          {hasMultipleFiles ? (
-            <div className="flex items-center justify-between gap-3 border-b border-border pb-2">
-              <span className="truncate text-sm font-medium">
-                {file.relativePath}
-              </span>
-              <Badge variant="outline">{file.format}</Badge>
-            </div>
-          ) : null}
-
-          <div className="flex flex-col gap-2">
-            {blocks.map((block) => (
-              <PreviewBlock
-                block={block}
-                document={document}
-                file={file}
-                hovered={hoveredBlockId === block.id}
-                key={`${side}-${block.id}`}
-                onHoverBlock={onHoverBlock}
-                onToggleBlockSelection={onToggleBlockSelection}
-                selected={selectedBlockIdSet.has(block.id)}
-                selectedRevision={selectedRevision}
-                segmentsByBlock={segmentsByBlock}
-                selectionEnabled={selectionEnabled}
-                side={side}
-              />
-            ))}
+      <div className="mx-auto max-w-3xl px-6 py-6">
+        {blocks.length === 0 ? (
+          <div className="flex min-h-32 items-center justify-center text-sm text-muted-foreground">
+            当前文件没有可预览内容。
           </div>
-        </section>
+        ) : (
+          <div
+            className="relative w-full"
+            style={{ height: `${virtualizer.getTotalSize()}px` }}
+          >
+            {virtualizer.getVirtualItems().map((item) => {
+              const block = blocks[item.index];
+
+              return (
+                <div
+                  className="absolute left-0 top-0 w-full py-1"
+                  data-index={item.index}
+                  key={`${side}-${block.id}`}
+                  ref={virtualizer.measureElement}
+                  style={{
+                    transform: `translateY(${item.start}px)`,
+                  }}
+                >
+                  <PreviewBlock
+                    block={block}
+                    document={document}
+                    file={file}
+                    hovered={hoveredBlockId === block.id}
+                    onHoverBlock={onHoverBlock}
+                    onToggleBlockSelection={onToggleBlockSelection}
+                    selected={selectedBlockIdSet.has(block.id)}
+                    selectedRevision={selectedRevision}
+                    segmentsByBlock={segmentsByBlock}
+                    selectionEnabled={selectionEnabled}
+                    side={side}
+                  />
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </ScrollArea>
   );
@@ -361,7 +378,7 @@ function PreviewBlock({
       : blockTranslation(
           block,
           segmentsByBlock,
-          document.targetLang,
+          file.targetLang ?? document.targetLang,
           selectedRevision
         );
   const hasEmptyTranslation =
@@ -433,6 +450,8 @@ function documentFiles(document: RosettaDocument | null): RosettaSourceFile[] {
       filename: document.filename,
       relativePath: document.filename,
       format: document.format,
+      sourceLang: document.sourceLang,
+      targetLang: document.targetLang,
       blockIds: document.blocks.map((block) => block.id),
     },
   ];

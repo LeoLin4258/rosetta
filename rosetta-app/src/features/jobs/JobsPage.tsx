@@ -40,7 +40,7 @@ import {
   loadRosettaJob,
   pickRosettaExportPath,
   saveRosettaSegments,
-  updateRosettaJobLanguages,
+  updateRosettaJobFileLanguages,
 } from "../../lib/rosettaJobs";
 import {
   rosettaJobDefaultPath,
@@ -87,6 +87,7 @@ export function JobsPage() {
   );
   const setJobList = useRosettaStore((state) => state.setJobList);
   const setActiveBundle = useRosettaStore((state) => state.setActiveBundle);
+  const refreshJobBundle = useRosettaStore((state) => state.refreshJobBundle);
   const setActiveJobSelection = useRosettaStore(
     (state) => state.setActiveJobSelection
   );
@@ -131,12 +132,16 @@ export function JobsPage() {
       activeFileIdByJobId[currentJobId] ??
       (activeJobId === currentJobId ? activeFileId : null)
     : null;
+  const currentDocumentFile = selectedFileId
+    ? currentDocument?.files.find((file) => file.id === selectedFileId) ?? null
+    : null;
+  const currentSummaryFile = selectedFileId
+    ? activeJob?.sourceFiles?.find((file) => file.id === selectedFileId) ?? null
+    : null;
   const currentFile =
-    currentDocument?.files.find((file) => file.id === selectedFileId) ??
-    currentDocument?.files[0] ??
-    activeJob?.sourceFiles?.find((file) => file.id === selectedFileId) ??
-    activeJob?.sourceFiles?.[0] ??
-    null;
+    currentDocumentFile ??
+    currentSummaryFile ??
+    (fileId ? null : currentDocument?.files[0] ?? activeJob?.sourceFiles?.[0] ?? null);
   const currentFileSegments = useMemo(
     () =>
       currentSegments.filter((segment) =>
@@ -144,8 +149,12 @@ export function JobsPage() {
       ),
     [currentFile, currentSegments]
   );
-  const sourceLang = currentDocument?.sourceLang ?? "en";
-  const targetLang = currentDocument?.targetLang ?? activeJob?.targetLang ?? "zh-CN";
+  const sourceLang = currentFile?.sourceLang ?? currentDocument?.sourceLang ?? "en";
+  const targetLang =
+    currentFile?.targetLang ??
+    currentDocument?.targetLang ??
+    activeJob?.targetLang ??
+    "zh-CN";
   const pendingSegments = useMemo(
     () =>
       currentFileSegments.filter(
@@ -322,6 +331,9 @@ export function JobsPage() {
     if (!currentJobId || !selectedFileId) {
       return;
     }
+    if (fileId && currentFile == null) {
+      return;
+    }
 
     if (
       activeJobId === currentJobId &&
@@ -337,6 +349,8 @@ export function JobsPage() {
     activeFileIdByJobId,
     activeJobId,
     currentJobId,
+    currentFile?.id,
+    fileId,
     selectedFileId,
     setActiveJobSelection,
   ]);
@@ -408,7 +422,17 @@ export function JobsPage() {
     setSelectedBlockIds([]);
     setSelectedRevisionId("current");
     setIsWorkbenchCollapsed(false);
+    setIsTranslating(false);
   }, [currentFile?.id]);
+
+  function isTranslationRunStillCurrent(
+    runId: string,
+    jobId: string,
+    fileId: string
+  ) {
+    const run = useRosettaStore.getState().activeTranslationRun;
+    return run?.id === runId && run.jobId === jobId && run.fileId === fileId;
+  }
 
   async function translateSegments(
     targetSegments: Segment[],
@@ -424,9 +448,10 @@ export function JobsPage() {
       return;
     }
 
+    const runId = `run-${Date.now()}`;
     setIsTranslating(true);
     startTranslationRun({
-      id: `run-${Date.now()}`,
+      id: runId,
       jobId: currentJobId,
       fileId: currentFile.id,
       scope,
@@ -440,6 +465,10 @@ export function JobsPage() {
       );
 
       for (const batch of chunkSegments(orderedSegments, BATCH_SIZE)) {
+        if (!isTranslationRunStillCurrent(runId, currentJobId, currentFile.id)) {
+          return;
+        }
+
         currentBatchSegmentIds = batch.map((segment) => segment.id);
         beginPreviewSegmentTranslation(currentBatchSegmentIds);
 
@@ -454,13 +483,17 @@ export function JobsPage() {
           sourceTexts: batch.map((segment) => segment.sourceText),
         });
 
+        if (!isTranslationRunStillCurrent(runId, currentJobId, currentFile.id)) {
+          return;
+        }
+
         if (!result.ok) {
           const failed = failPreviewSegmentTranslation(
             currentBatchSegmentIds,
             result.message
           );
-          markTranslationRunFailed(currentBatchSegmentIds);
-          await saveRosettaSegments(currentJobId, failed).then(setActiveBundle);
+          markTranslationRunFailed(runId, currentBatchSegmentIds);
+          await saveRosettaSegments(currentJobId, failed).then(refreshJobBundle);
           return;
         }
 
@@ -470,8 +503,8 @@ export function JobsPage() {
             currentBatchSegmentIds,
             message
           );
-          markTranslationRunFailed(currentBatchSegmentIds);
-          await saveRosettaSegments(currentJobId, failed).then(setActiveBundle);
+          markTranslationRunFailed(runId, currentBatchSegmentIds);
+          await saveRosettaSegments(currentJobId, failed).then(refreshJobBundle);
           return;
         }
 
@@ -479,24 +512,26 @@ export function JobsPage() {
           currentBatchSegmentIds,
           result.translations
         );
-        markTranslationRunCompleted(currentBatchSegmentIds);
-        await saveRosettaSegments(currentJobId, completed).then(setActiveBundle);
+        markTranslationRunCompleted(runId, currentBatchSegmentIds);
+        await saveRosettaSegments(currentJobId, completed).then(refreshJobBundle);
       }
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "RWKV API 翻译调用失败。";
       if (currentBatchSegmentIds.length > 0) {
         const failed = failPreviewSegmentTranslation(currentBatchSegmentIds, message);
-        markTranslationRunFailed(currentBatchSegmentIds);
+        markTranslationRunFailed(runId, currentBatchSegmentIds);
         try {
-          await saveRosettaSegments(currentJobId, failed).then(setActiveBundle);
+          await saveRosettaSegments(currentJobId, failed).then(refreshJobBundle);
         } catch {
           // Ignore secondary save errors so the original failure can surface.
         }
       }
     } finally {
-      setIsTranslating(false);
-      finishTranslationRun();
+      if (isTranslationRunStillCurrent(runId, currentJobId, currentFile.id)) {
+        setIsTranslating(false);
+      }
+      finishTranslationRun(runId);
     }
   }
 
@@ -529,10 +564,10 @@ export function JobsPage() {
       currentJobId,
       currentFile.id,
       "file-retranslation"
-    ).then(setActiveBundle);
+    ).then(refreshJobBundle);
     const segmentIds = translatableFileSegments.map((segment) => segment.id);
     const preparedSegments = preparePreviewSegmentRetranslation(segmentIds);
-    await saveRosettaSegments(currentJobId, preparedSegments).then(setActiveBundle);
+    await saveRosettaSegments(currentJobId, preparedSegments).then(refreshJobBundle);
     await translateSegments(translatableFileSegments, "file");
   }
 
@@ -551,9 +586,9 @@ export function JobsPage() {
       currentFile.id,
       "selection-retranslation",
       selectedBlockIds
-    ).then(setActiveBundle);
+    ).then(refreshJobBundle);
     const preparedSegments = preparePreviewSegmentRetranslation(selectedSegmentIds);
-    await saveRosettaSegments(currentJobId, preparedSegments).then(setActiveBundle);
+    await saveRosettaSegments(currentJobId, preparedSegments).then(refreshJobBundle);
     setSelectedRevisionId("current");
     setSelectedBlockIds([]);
     await translateSegments(selectedSegments, "selection");
@@ -576,14 +611,14 @@ export function JobsPage() {
 
       await exportRosettaJobFile(currentJobId, currentFile.id, kind, targetPath);
       setSelectedBlockIds([]);
-      setActiveBundle(await loadRosettaJob(currentJobId));
+      refreshJobBundle(await loadRosettaJob(currentJobId));
     } catch (error) {
       console.error(error);
     }
   }
 
   async function updateLanguages(nextSourceLang: string, nextTargetLang: string) {
-    if (!currentJobId || isTranslating || isSavingLanguages) {
+    if (!currentJobId || !currentFile || isTranslating || isSavingLanguages) {
       return;
     }
 
@@ -592,12 +627,13 @@ export function JobsPage() {
     setSelectedRevisionId("current");
 
     try {
-      const bundle = await updateRosettaJobLanguages(
+      const bundle = await updateRosettaJobFileLanguages(
         currentJobId,
+        currentFile.id,
         nextSourceLang,
         nextTargetLang
       );
-      setActiveBundle(bundle);
+      refreshJobBundle(bundle);
     } catch (error) {
       console.error(error);
     } finally {
@@ -630,16 +666,25 @@ export function JobsPage() {
 
       const result = await deleteRosettaJobFile(currentJobId, currentFile.id);
       setJobList(result.jobs);
+      const deletingJobStillActive =
+        useRosettaStore.getState().activeJobId === currentJobId;
 
       if (result.deletedJob) {
-        clearActiveJob();
-        navigate(result.jobs[0] ? rosettaJobDefaultPath(result.jobs[0]) : "/new");
+        if (deletingJobStillActive) {
+          clearActiveJob();
+          navigate(result.jobs[0] ? rosettaJobDefaultPath(result.jobs[0]) : "/new");
+        }
         return;
       }
 
       setSelectedBlockIds([]);
       setSelectedRevisionId("current");
       if (result.bundle) {
+        if (!deletingJobStillActive) {
+          refreshJobBundle(result.bundle);
+          return;
+        }
+
         setActiveBundle(result.bundle);
         const nextFileId = result.bundle.document.files[0]?.id ?? null;
         navigate(
@@ -933,7 +978,7 @@ export function JobsPage() {
       </Card>
 
       <DocumentPreview
-        currentFileId={selectedFileId}
+        currentFileId={currentFile?.id ?? null}
         currentJobId={currentJobId}
         onRevisionChange={(revisionId) => {
           setSelectedRevisionId(revisionId);

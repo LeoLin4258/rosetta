@@ -52,13 +52,15 @@ export function saveRosettaSegments(jobId: string, segments: Segment[]) {
   });
 }
 
-export function updateRosettaJobLanguages(
+export function updateRosettaJobFileLanguages(
   jobId: string,
+  fileId: string,
   sourceLang: string | null,
   targetLang: string
 ) {
-  return invoke<RosettaJobBundle>("update_rosetta_job_languages", {
+  return invoke<RosettaJobBundle>("update_rosetta_job_file_languages", {
     jobId,
+    fileId,
     sourceLang,
     targetLang,
   });

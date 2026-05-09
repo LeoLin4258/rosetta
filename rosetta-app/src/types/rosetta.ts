@@ -25,6 +25,12 @@ export type SegmentStatus =
   | "skipped"
   | "edited";
 
+export type SourceFileTranslationStatus =
+  | "untranslated"
+  | "translating"
+  | "translated"
+  | "failed";
+
 export type JobStatus =
   | "created"
   | "parsing"
@@ -55,6 +61,13 @@ export type RosettaSourceFile = {
   filename: string;
   relativePath: string;
   format: Extract<RosettaDocumentFormat, "txt" | "markdown">;
+  sourceLang?: string | null;
+  targetLang?: string | null;
+  translationStatus?: SourceFileTranslationStatus;
+  segmentCount?: number;
+  completedSegments?: number;
+  failedSegments?: number;
+  translatingSegments?: number;
   blockIds: string[];
 };
 

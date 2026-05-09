@@ -21,7 +21,7 @@ pub fn run() {
             rosetta_jobs::pick_rosetta_import_path,
             rosetta_jobs::rename_rosetta_job,
             rosetta_jobs::save_rosetta_segments,
-            rosetta_jobs::update_rosetta_job_languages,
+            rosetta_jobs::update_rosetta_job_file_languages,
             rwkv_api::probe_rwkv_translation_api,
             rwkv_api::translate_rwkv_texts_with_api,
             rwkv_runtime::get_rwkv_runtime_artifact_catalog,

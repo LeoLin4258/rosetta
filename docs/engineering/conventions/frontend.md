@@ -48,10 +48,13 @@ Rosetta 是本地长文本翻译工作台，不是聊天产品或营销页。
 /          空白首页
 /new       新项目 / 导入
 /jobs      任务
+/jobs/:jobId/files/:fileId  当前文件工作台
 /settings  设置
 ```
 
 新增页面时，应先确认它是长期导航入口，还是某个 feature 内的局部状态。不要为短期弹窗或 tab 直接增加全局路由。
+
+当前项目和当前文件以路由为事实来源。侧边栏高亮、任务工作台加载、预览选择都应优先读取 `/jobs/:jobId/files/:fileId`，Zustand 中的 `activeJobId` / `activeFileId` 只作为同步后的应用状态和旧路径回退，不应让异步 store 写入覆盖当前路由。
 
 ## State
 
@@ -64,6 +67,7 @@ Rosetta 是本地长文本翻译工作台，不是聊天产品或营销页。
 - 不把大型文档全文长期塞进 React 组件状态。
 - 大文档内容后续应以任务缓存和增量读取为主。
 - 应用级设置使用 Zustand persist 持久化，当前包括主题模式和 RWKV 连接配置。
+- `setActiveBundle` 只用于用户显式打开、导入或切换到某个 job 的场景。翻译批次保存、导出刷新、重命名刷新等后台结果应使用不抢 active job/file 的 bundle refresh 行为。
 
 ## Icons
 

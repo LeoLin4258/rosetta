@@ -38,6 +38,20 @@ pub struct RosettaSourceFile {
     filename: String,
     relative_path: String,
     format: String,
+    #[serde(default)]
+    source_lang: Option<String>,
+    #[serde(default)]
+    target_lang: Option<String>,
+    #[serde(default = "default_file_translation_status")]
+    translation_status: String,
+    #[serde(default)]
+    segment_count: usize,
+    #[serde(default)]
+    completed_segments: usize,
+    #[serde(default)]
+    failed_segments: usize,
+    #[serde(default)]
+    translating_segments: usize,
     block_ids: Vec<String>,
 }
 
@@ -185,6 +199,10 @@ fn default_file_count() -> usize {
     1
 }
 
+fn default_file_translation_status() -> String {
+    "untranslated".to_string()
+}
+
 #[tauri::command]
 pub async fn pick_rosetta_import_path(app: AppHandle) -> Result<Option<String>, String> {
     let (tx, mut rx) = tauri::async_runtime::channel(1);
@@ -255,7 +273,26 @@ pub fn import_rosetta_document_from_path(
 
 #[tauri::command]
 pub fn list_rosetta_jobs(app: AppHandle) -> Result<Vec<RosettaJobSummary>, String> {
-    Ok(read_index(&jobs_root(&app)?)?.jobs)
+    let root = jobs_root(&app)?;
+    let mut index = read_index(&root)?;
+    for job in &mut index.jobs {
+        let dir = checked_job_dir(&root, &job.id)?;
+        if !dir.exists() {
+            continue;
+        }
+        let Ok(mut document) = read_json::<RosettaDocument>(&dir.join("document.json")) else {
+            continue;
+        };
+        let Ok(segments) = read_json::<Vec<Segment>>(&dir.join("segments.json")) else {
+            continue;
+        };
+        ensure_document_files(&mut document);
+        sync_document_file_statuses(&mut document, &segments);
+        sync_job_counts(job, &segments);
+        sync_job_source_files(job, &document);
+    }
+    write_index(&root, &index)?;
+    Ok(index.jobs)
 }
 
 #[tauri::command]
@@ -273,13 +310,14 @@ pub fn save_rosetta_segments(
 }
 
 #[tauri::command]
-pub fn update_rosetta_job_languages(
+pub fn update_rosetta_job_file_languages(
     app: AppHandle,
     job_id: String,
+    file_id: String,
     source_lang: Option<String>,
     target_lang: String,
 ) -> Result<RosettaJobBundle, String> {
-    update_job_languages(&app, &job_id, source_lang, target_lang)
+    update_job_file_languages(&app, &job_id, &file_id, source_lang, target_lang)
 }
 
 #[tauri::command]
@@ -370,7 +408,7 @@ fn import_document_from_path(
     }
     let block_ids = blocks.iter().map(|block| block.id.clone()).collect();
 
-    let document = RosettaDocument {
+    let mut document = RosettaDocument {
         schema_version: SCHEMA_VERSION,
         id: document_id,
         filename: filename.clone(),
@@ -382,6 +420,13 @@ fn import_document_from_path(
             filename: filename.clone(),
             relative_path: filename.clone(),
             format: format.clone(),
+            source_lang: Some("en".to_string()),
+            target_lang: Some("zh-CN".to_string()),
+            translation_status: default_file_translation_status(),
+            segment_count: 0,
+            completed_segments: 0,
+            failed_segments: 0,
+            translating_segments: 0,
             block_ids,
         }],
         blocks,
@@ -407,7 +452,9 @@ fn import_document_from_path(
         completed_segments: 0,
         failed_segments: 0,
     };
+    sync_document_file_statuses(&mut document, &segments);
     sync_job_counts(&mut job, &segments);
+    sync_job_source_files(&mut job, &document);
 
     let bundle = RosettaJobBundle {
         schema_version: SCHEMA_VERSION,
@@ -501,6 +548,13 @@ fn import_project_from_directory(
             filename,
             relative_path: relative_path.clone(),
             format,
+            source_lang: Some("en".to_string()),
+            target_lang: Some("zh-CN".to_string()),
+            translation_status: default_file_translation_status(),
+            segment_count: 0,
+            completed_segments: 0,
+            failed_segments: 0,
+            translating_segments: 0,
             block_ids,
         });
         blocks.extend(file_blocks);
@@ -516,7 +570,7 @@ fn import_project_from_directory(
     }
 
     let document_format = if has_markdown { "markdown" } else { "txt" }.to_string();
-    let document = RosettaDocument {
+    let mut document = RosettaDocument {
         schema_version: SCHEMA_VERSION,
         id: document_id,
         filename: folder_name.clone(),
@@ -547,7 +601,9 @@ fn import_project_from_directory(
         completed_segments: 0,
         failed_segments: 0,
     };
+    sync_document_file_statuses(&mut document, &segments);
     sync_job_counts(&mut job, &segments);
+    sync_job_source_files(&mut job, &document);
 
     let bundle = RosettaJobBundle {
         schema_version: SCHEMA_VERSION,
@@ -1217,6 +1273,7 @@ fn save_segments(
     let dir = checked_job_dir(&root, job_id)?;
     let mut index = read_index(&root)?;
     let mut document: RosettaDocument = read_json(&dir.join("document.json"))?;
+    ensure_document_files(&mut document);
     let translation_revisions = read_translation_revisions(&dir)?;
     let mut job = index
         .jobs
@@ -1226,7 +1283,9 @@ fn save_segments(
         .ok_or_else(|| "项目索引不存在，无法保存翻译结果。".to_string())?;
 
     apply_segment_translations_to_document(&mut document, &segments);
+    sync_document_file_statuses(&mut document, &segments);
     sync_job_counts(&mut job, &segments);
+    sync_job_source_files(&mut job, &document);
     job.updated_at = timestamp_ms_string();
     job.last_error = None;
 
@@ -1244,9 +1303,10 @@ fn save_segments(
     })
 }
 
-fn update_job_languages(
+fn update_job_file_languages(
     app: &AppHandle,
     job_id: &str,
+    file_id: &str,
     source_lang: Option<String>,
     target_lang: String,
 ) -> Result<RosettaJobBundle, String> {
@@ -1256,6 +1316,7 @@ fn update_job_languages(
     let dir = checked_job_dir(&root, job_id)?;
     let mut index = read_index(&root)?;
     let mut document: RosettaDocument = read_json(&dir.join("document.json"))?;
+    ensure_document_files(&mut document);
     let mut segments: Vec<Segment> = read_json(&dir.join("segments.json"))?;
     let mut translation_revisions = read_translation_revisions(&dir)?;
     let mut job = index
@@ -1265,28 +1326,51 @@ fn update_job_languages(
         .cloned()
         .ok_or_else(|| "项目索引不存在，无法保存语言设置。".to_string())?;
 
-    let changed = document.source_lang != normalized_source_lang
-        || document.target_lang != normalized_target_lang;
+    let Some(file_index) = document.files.iter().position(|file| file.id == file_id) else {
+        return Err("当前文件不存在，无法保存语言设置。".to_string());
+    };
+
+    let current_source_lang = document.files[file_index]
+        .source_lang
+        .clone()
+        .or_else(|| document.source_lang.clone());
+    let current_target_lang = document.files[file_index]
+        .target_lang
+        .clone()
+        .unwrap_or_else(|| document.target_lang.clone());
+    let changed = current_source_lang != normalized_source_lang
+        || current_target_lang != normalized_target_lang;
+
     if changed {
-        for source_file in document_files(&document) {
-            if let Some(revision) = create_revision_snapshot(
-                job_id,
-                &source_file.id,
-                "language-change",
-                None,
-                &document,
-                &segments,
-            )? {
-                translation_revisions.push(revision);
-            }
+        if let Some(revision) = create_revision_snapshot(
+            job_id,
+            file_id,
+            "language-change",
+            None,
+            &document,
+            &segments,
+        )? {
+            translation_revisions.push(revision);
         }
     }
-    document.source_lang = normalized_source_lang.clone();
-    document.target_lang = normalized_target_lang.clone();
-    job.target_lang = normalized_target_lang.clone();
+
+    document.files[file_index].source_lang = normalized_source_lang.clone();
+    document.files[file_index].target_lang = Some(normalized_target_lang.clone());
+
+    if document.files.len() == 1 {
+        document.source_lang = normalized_source_lang.clone();
+        document.target_lang = normalized_target_lang.clone();
+    }
+
+    sync_document_default_language_from_files(&mut document);
+    job.target_lang = document.target_lang.clone();
     let history_run_id = format!("run-{}", timestamp_ms_string());
 
     for segment in &mut segments {
+        if segment.file_id.as_deref().unwrap_or("file-1") != file_id {
+            continue;
+        }
+
         if changed {
             archive_segment_translation(segment, "language-change", &history_run_id);
         }
@@ -1303,6 +1387,9 @@ fn update_job_languages(
 
     if changed {
         for block in &mut document.blocks {
+            if block.file_id.as_deref().unwrap_or("file-1") != file_id {
+                continue;
+            }
             if block.should_translate {
                 block.translated_text = None;
                 block.status = "pending".to_string();
@@ -1310,7 +1397,9 @@ fn update_job_languages(
         }
     }
 
+    sync_document_file_statuses(&mut document, &segments);
     sync_job_counts(&mut job, &segments);
+    sync_job_source_files(&mut job, &document);
     job.updated_at = timestamp_ms_string();
     job.last_error = None;
 
@@ -1346,14 +1435,18 @@ fn create_translation_revision(
     let root = jobs_root(app)?;
     let dir = checked_job_dir(&root, job_id)?;
     let mut index = read_index(&root)?;
-    let job = index
+    let mut job = index
         .jobs
         .iter()
         .find(|job| job.id == job_id)
         .cloned()
         .ok_or_else(|| "项目索引不存在，无法保存历史版本。".to_string())?;
-    let document: RosettaDocument = read_json(&dir.join("document.json"))?;
+    let mut document: RosettaDocument = read_json(&dir.join("document.json"))?;
+    ensure_document_files(&mut document);
     let segments: Vec<Segment> = read_json(&dir.join("segments.json"))?;
+    sync_document_file_statuses(&mut document, &segments);
+    sync_job_counts(&mut job, &segments);
+    sync_job_source_files(&mut job, &document);
     let mut translation_revisions = read_translation_revisions(&dir)?;
 
     if let Some(revision) = create_revision_snapshot(
@@ -1452,12 +1545,10 @@ fn create_revision_snapshot(
     document: &RosettaDocument,
     segments: &[Segment],
 ) -> Result<Option<TranslationRevision>, String> {
-    if !document_files(document)
-        .iter()
-        .any(|source_file| source_file.id == file_id)
-    {
-        return Err("当前文件不存在，无法保存历史版本。".to_string());
-    }
+    let source_file = document_files(document)
+        .into_iter()
+        .find(|source_file| source_file.id == file_id)
+        .ok_or_else(|| "当前文件不存在，无法保存历史版本。".to_string())?;
 
     let segment_translations = segments
         .iter()
@@ -1486,8 +1577,8 @@ fn create_revision_snapshot(
         job_id: job_id.to_string(),
         file_id: file_id.to_string(),
         created_at,
-        source_lang: document.source_lang.clone(),
-        target_lang: document.target_lang.clone(),
+        source_lang: effective_file_source_lang(&source_file, document),
+        target_lang: effective_file_target_lang(&source_file, document),
         reason: reason.to_string(),
         scope_block_ids,
         segment_translations,
@@ -1498,13 +1589,17 @@ fn load_job_bundle(app: &AppHandle, job_id: &str) -> Result<RosettaJobBundle, St
     let root = jobs_root(app)?;
     let dir = checked_job_dir(&root, job_id)?;
     let index = read_index(&root)?;
-    let job = index
+    let mut job = index
         .jobs
         .into_iter()
         .find(|job| job.id == job_id)
         .ok_or_else(|| "项目不存在。".to_string())?;
-    let document = read_json(&dir.join("document.json"))?;
-    let segments = read_json(&dir.join("segments.json"))?;
+    let mut document = read_json(&dir.join("document.json"))?;
+    ensure_document_files(&mut document);
+    let segments: Vec<Segment> = read_json(&dir.join("segments.json"))?;
+    sync_document_file_statuses(&mut document, &segments);
+    sync_job_counts(&mut job, &segments);
+    sync_job_source_files(&mut job, &document);
     let translation_revisions = read_translation_revisions(&dir)?;
 
     Ok(RosettaJobBundle {
@@ -1545,6 +1640,7 @@ fn delete_job_file(
         .cloned()
         .ok_or_else(|| "项目不存在，无法删除文件。".to_string())?;
     let mut document: RosettaDocument = read_json(&dir.join("document.json"))?;
+    ensure_document_files(&mut document);
     let mut segments: Vec<Segment> = read_json(&dir.join("segments.json"))?;
     let mut translation_revisions = read_translation_revisions(&dir)?;
     let Some(file_index) = document.files.iter().position(|file| file.id == file_id) else {
@@ -1578,11 +1674,11 @@ fn delete_job_file(
         &mut next_segment_order,
     );
     apply_segment_translations_to_document(&mut document, &segments);
+    sync_document_file_statuses(&mut document, &segments);
     sync_job_counts(&mut job, &segments);
+    sync_job_source_files(&mut job, &document);
     job.updated_at = timestamp_ms_string();
     job.last_error = None;
-    job.file_count = document.files.len();
-    job.source_files = document.files.clone();
 
     let source_path = dir
         .join("sources")
@@ -1635,8 +1731,12 @@ fn export_job_file(
         .find(|job| job.id == job_id)
         .cloned()
         .ok_or_else(|| "项目不存在，无法导出。".to_string())?;
-    let document: RosettaDocument = read_json(&dir.join("document.json"))?;
+    let mut document: RosettaDocument = read_json(&dir.join("document.json"))?;
+    ensure_document_files(&mut document);
     let segments: Vec<Segment> = read_json(&dir.join("segments.json"))?;
+    sync_document_file_statuses(&mut document, &segments);
+    sync_job_counts(&mut job, &segments);
+    sync_job_source_files(&mut job, &document);
     let source_file = document_files(&document)
         .into_iter()
         .find(|file| file.id == file_id)
@@ -1805,12 +1905,115 @@ fn document_files(document: &RosettaDocument) -> Vec<RosettaSourceFile> {
         filename: document.filename.clone(),
         relative_path: document.filename.clone(),
         format: document.format.clone(),
+        source_lang: document.source_lang.clone(),
+        target_lang: Some(document.target_lang.clone()),
+        translation_status: default_file_translation_status(),
+        segment_count: 0,
+        completed_segments: 0,
+        failed_segments: 0,
+        translating_segments: 0,
         block_ids: document
             .blocks
             .iter()
             .map(|block| block.id.clone())
             .collect(),
     }]
+}
+
+fn ensure_document_files(document: &mut RosettaDocument) {
+    if document.files.is_empty() {
+        document.files = document_files(document);
+    }
+}
+
+fn effective_file_source_lang(
+    source_file: &RosettaSourceFile,
+    document: &RosettaDocument,
+) -> Option<String> {
+    source_file
+        .source_lang
+        .clone()
+        .or_else(|| document.source_lang.clone())
+}
+
+fn effective_file_target_lang(
+    source_file: &RosettaSourceFile,
+    document: &RosettaDocument,
+) -> String {
+    source_file
+        .target_lang
+        .clone()
+        .unwrap_or_else(|| document.target_lang.clone())
+}
+
+fn sync_document_default_language_from_files(document: &mut RosettaDocument) {
+    let files = document_files(document);
+    let Some(first_file) = files.first() else {
+        return;
+    };
+
+    let first_source_lang = effective_file_source_lang(first_file, document);
+    if files
+        .iter()
+        .all(|file| effective_file_source_lang(file, document) == first_source_lang)
+    {
+        document.source_lang = first_source_lang;
+    }
+
+    let first_target_lang = effective_file_target_lang(first_file, document);
+    if files
+        .iter()
+        .all(|file| effective_file_target_lang(file, document) == first_target_lang)
+    {
+        document.target_lang = first_target_lang;
+    }
+}
+
+fn sync_document_file_statuses(document: &mut RosettaDocument, segments: &[Segment]) {
+    let mut stats_by_file: HashMap<String, (usize, usize, usize, usize)> = HashMap::new();
+    for segment in segments {
+        if segment.status == "skipped" || segment.source_text.trim().is_empty() {
+            continue;
+        }
+        let file_id = segment.file_id.as_deref().unwrap_or("file-1").to_string();
+        let entry = stats_by_file.entry(file_id).or_insert((0, 0, 0, 0));
+        entry.0 += 1;
+        if matches!(segment.status.as_str(), "done" | "edited") {
+            entry.1 += 1;
+        }
+        if segment.status == "failed" {
+            entry.2 += 1;
+        }
+        if segment.status == "translating" {
+            entry.3 += 1;
+        }
+    }
+
+    for source_file in &mut document.files {
+        let (segment_count, completed_segments, failed_segments, translating_segments) =
+            stats_by_file
+                .get(&source_file.id)
+                .copied()
+                .unwrap_or((0, 0, 0, 0));
+        source_file.segment_count = segment_count;
+        source_file.completed_segments = completed_segments;
+        source_file.failed_segments = failed_segments;
+        source_file.translating_segments = translating_segments;
+        source_file.translation_status = if translating_segments > 0 {
+            "translating".to_string()
+        } else if failed_segments > 0 {
+            "failed".to_string()
+        } else if segment_count > 0 && completed_segments == segment_count {
+            "translated".to_string()
+        } else {
+            "untranslated".to_string()
+        };
+    }
+}
+
+fn sync_job_source_files(job: &mut RosettaJobSummary, document: &RosettaDocument) {
+    job.source_files = document.files.clone();
+    job.file_count = document.files.len();
 }
 
 fn segments_by_block(segments: &[Segment]) -> HashMap<String, Vec<Segment>> {
@@ -1847,7 +2050,12 @@ fn block_translation(
                 .to_string()
         })
         .collect::<Vec<_>>()
-        .join(segment_joiner(target_lang));
+        .join(segment_joiner(
+            segments
+                .first()
+                .map(|segment| segment.target_lang.as_str())
+                .unwrap_or(target_lang),
+        ));
 
     if translated.trim().is_empty() {
         block.source_text.clone()
@@ -2428,6 +2636,13 @@ mod tests {
                     filename: "one.txt".to_string(),
                     relative_path: "one.txt".to_string(),
                     format: "txt".to_string(),
+                    source_lang: Some("en".to_string()),
+                    target_lang: Some("zh-CN".to_string()),
+                    translation_status: default_file_translation_status(),
+                    segment_count: 0,
+                    completed_segments: 0,
+                    failed_segments: 0,
+                    translating_segments: 0,
                     block_ids: vec!["block-1".to_string(), "block-2".to_string()],
                 },
                 RosettaSourceFile {
@@ -2435,6 +2650,13 @@ mod tests {
                     filename: "two.txt".to_string(),
                     relative_path: "two.txt".to_string(),
                     format: "txt".to_string(),
+                    source_lang: Some("en".to_string()),
+                    target_lang: Some("zh-CN".to_string()),
+                    translation_status: default_file_translation_status(),
+                    segment_count: 0,
+                    completed_segments: 0,
+                    failed_segments: 0,
+                    translating_segments: 0,
                     block_ids: vec!["block-3".to_string()],
                 },
             ],
