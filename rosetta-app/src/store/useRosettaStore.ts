@@ -29,6 +29,7 @@ type RosettaState = {
   setJobList: (jobs: RosettaJobSummary[]) => void;
   setActiveJobId: (jobId: string | null) => void;
   setActiveFileId: (fileId: string | null) => void;
+  setActiveJobSelection: (jobId: string, fileId: string | null) => void;
   setActiveBundle: (bundle: RosettaJobBundle) => void;
   clearActiveJob: () => void;
   updateActiveSegments: (segments: Segment[]) => void;
@@ -194,10 +195,19 @@ export const useRosettaStore = create<RosettaState>()(
           const selectedFileId = jobId
             ? state.activeFileIdByJobId[jobId] ?? job?.sourceFiles[0]?.id ?? null
             : null;
+          const isSwitchingJob = state.activeJobId !== jobId;
 
           return {
             activeJobId: jobId,
             activeFileId: selectedFileId,
+            activeDocument: isSwitchingJob ? null : state.activeDocument,
+            previewSegments: isSwitchingJob ? [] : state.previewSegments,
+            translationRevisions: isSwitchingJob
+              ? []
+              : state.translationRevisions,
+            activeTranslationRun: isSwitchingJob
+              ? null
+              : state.activeTranslationRun,
           };
         }),
       setActiveFileId: (fileId) =>
@@ -214,6 +224,30 @@ export const useRosettaStore = create<RosettaState>()(
           return {
             activeFileId: fileId,
             activeFileIdByJobId,
+          };
+        }),
+      setActiveJobSelection: (jobId, fileId) =>
+        set((state) => {
+          const activeFileIdByJobId = { ...state.activeFileIdByJobId };
+          const isSwitchingJob = state.activeJobId !== jobId;
+          if (fileId) {
+            activeFileIdByJobId[jobId] = fileId;
+          } else {
+            delete activeFileIdByJobId[jobId];
+          }
+
+          return {
+            activeJobId: jobId,
+            activeFileId: fileId,
+            activeFileIdByJobId,
+            activeDocument: isSwitchingJob ? null : state.activeDocument,
+            previewSegments: isSwitchingJob ? [] : state.previewSegments,
+            translationRevisions: isSwitchingJob
+              ? []
+              : state.translationRevisions,
+            activeTranslationRun: isSwitchingJob
+              ? null
+              : state.activeTranslationRun,
           };
         }),
       setActiveBundle: (bundle) =>

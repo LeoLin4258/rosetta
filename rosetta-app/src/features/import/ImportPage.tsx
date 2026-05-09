@@ -16,6 +16,7 @@ import {
   pickRosettaImportDirectory,
   pickRosettaImportPath,
 } from "../../lib/rosettaJobs";
+import { rosettaJobDefaultPath } from "../../lib/rosettaRoutes";
 import { useRosettaStore } from "../../store/useRosettaStore";
 
 export function ImportPage() {
@@ -37,7 +38,7 @@ export function ImportPage() {
 
       const bundle = await importRosettaDocumentFromPath(selectedPath);
       setActiveBundle(bundle);
-      navigate(`/jobs/${bundle.job.id}`);
+      navigate(rosettaJobDefaultPath(bundle.job));
     } catch (error) {
       setImportError(
         error instanceof Error ? error.message : "无法导入这个文件。"
@@ -60,7 +61,7 @@ export function ImportPage() {
 
       const bundle = await importRosettaProjectFromDirectory(selectedPath);
       setActiveBundle(bundle);
-      navigate(`/jobs/${bundle.job.id}`);
+      navigate(rosettaJobDefaultPath(bundle.job));
     } catch (error) {
       setImportError(
         error instanceof Error ? error.message : "无法导入这个文件夹。"

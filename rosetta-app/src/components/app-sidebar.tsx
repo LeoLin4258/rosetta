@@ -1,7 +1,8 @@
-import { useState } from "react";
-import { NavLink, useLocation, useNavigate } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { matchPath, NavLink, useLocation, useNavigate } from "react-router-dom";
 import {
   ChevronRightIcon,
+  ChevronsUpDownIcon,
   FileTextIcon,
   FolderIcon,
   PencilIcon,
@@ -10,6 +11,7 @@ import {
 } from "lucide-react";
 
 import { loadRosettaJob, renameRosettaJob } from "@/lib/rosettaJobs";
+import { rosettaJobFilePath, rosettaJobPath } from "@/lib/rosettaRoutes";
 import { useRosettaStore } from "@/store/useRosettaStore";
 import {
   Collapsible,
@@ -40,12 +42,38 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const jobs = useRosettaStore((state) => state.jobs);
   const activeJobId = useRosettaStore((state) => state.activeJobId);
   const activeFileId = useRosettaStore((state) => state.activeFileId);
+  const activeFileIdByJobId = useRosettaStore(
+    (state) => state.activeFileIdByJobId
+  );
   const activeDocument = useRosettaStore((state) => state.activeDocument);
   const setJobList = useRosettaStore((state) => state.setJobList);
   const setActiveBundle = useRosettaStore((state) => state.setActiveBundle);
-  const setActiveJobId = useRosettaStore((state) => state.setActiveJobId);
-  const setActiveFileId = useRosettaStore((state) => state.setActiveFileId);
+  const setActiveJobSelection = useRosettaStore(
+    (state) => state.setActiveJobSelection
+  );
   const [openJobIds, setOpenJobIds] = useState<Set<string>>(() => new Set());
+  const routeJobId =
+    matchPath("/jobs/:jobId/files/:fileId", location.pathname)?.params.jobId ??
+    matchPath("/jobs/:jobId", location.pathname)?.params.jobId ??
+    null;
+  const routeFileId =
+    matchPath("/jobs/:jobId/files/:fileId", location.pathname)?.params.fileId ??
+    null;
+  const visibleJobId = routeJobId ?? activeJobId;
+
+  useEffect(() => {
+    if (!visibleJobId) {
+      return;
+    }
+    setOpenJobIds((current) => {
+      if (current.has(visibleJobId)) {
+        return current;
+      }
+      const next = new Set(current);
+      next.add(visibleJobId);
+      return next;
+    });
+  }, [visibleJobId]);
 
   function toggleJob(jobId: string) {
     setOpenJobIds((current) => {
@@ -78,7 +106,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   }
 
   return (
-    <Sidebar collapsible="icon" {...props}>
+    <Sidebar collapsible="offcanvas" {...props}>
       <SidebarHeader>
         <SidebarMenu>
           <SidebarMenuItem>
@@ -99,34 +127,47 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
             <SidebarMenu>
               {jobs.map((job) => {
                 const files = jobFiles(job, activeJobId, activeDocument);
-                const isActive =
-                  activeJobId === job.id || location.pathname === `/jobs/${job.id}`;
-                const isOpen = openJobIds.has(job.id) || isActive;
+                const isActive = visibleJobId === job.id;
+                const isOpen = openJobIds.has(job.id);
+                const routeSelectedFileId =
+                  routeJobId === job.id ? routeFileId : null;
+                const selectedFileId =
+                  routeSelectedFileId ??
+                  activeFileIdByJobId[job.id] ??
+                  (activeJobId === job.id && activeFileId
+                    ? activeFileId
+                    : files[0]?.id ?? null);
 
                 return (
-                  <Collapsible key={job.id} open={isOpen}>
+                  <Collapsible
+                    key={job.id}
+                    onOpenChange={() => toggleJob(job.id)}
+                    open={isOpen}
+                  >
                     <SidebarMenuItem>
                       <SidebarMenuButton
+                        className="pr-14"
                         isActive={isActive}
                         onClick={() => {
-                          setActiveJobId(job.id);
-                          toggleJob(job.id);
-                          setActiveFileId(files[0]?.id ?? null);
-                          navigate(`/jobs/${job.id}`);
+                          setOpenJobIds((current) => {
+                            if (current.has(job.id)) {
+                              return current;
+                            }
+                            const next = new Set(current);
+                            next.add(job.id);
+                            return next;
+                          });
+                          setActiveJobSelection(job.id, selectedFileId);
+                          navigate(
+                            selectedFileId
+                              ? rosettaJobFilePath(job.id, selectedFileId)
+                              : rosettaJobPath(job.id)
+                          );
                         }}
                         tooltip={job.filename}
                       >
                         {files.length > 1 ? <FolderIcon /> : <FileTextIcon />}
                         <span>{job.filename}</span>
-                        {files.length > 0 ? (
-                          <ChevronRightIcon
-                            className={
-                              isOpen
-                                ? "ml-auto rotate-90 transition-transform"
-                                : "ml-auto transition-transform"
-                            }
-                          />
-                        ) : null}
                       </SidebarMenuButton>
                       <SidebarMenuAction
                         onClick={(event) => {
@@ -141,20 +182,43 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                         <PencilIcon />
                       </SidebarMenuAction>
                       {files.length > 0 ? (
+                        <SidebarMenuAction
+                          className="right-7"
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            toggleJob(job.id);
+                          }}
+                          title={isOpen ? "折叠文件列表" : "展开文件列表"}
+                          type="button"
+                        >
+                          {files.length > 1 ? (
+                            <ChevronRightIcon
+                              className={
+                                isOpen
+                                  ? "rotate-90 transition-transform"
+                                  : "transition-transform"
+                              }
+                            />
+                          ) : (
+                            <ChevronsUpDownIcon />
+                          )}
+                        </SidebarMenuAction>
+                      ) : null}
+                      {files.length > 0 ? (
                         <CollapsibleContent>
                           <SidebarMenuSub>
                             {files.map((file) => (
                               <SidebarMenuSubItem key={`${job.id}-${file.id}`}>
                                 <SidebarMenuSubButton
                                   asChild
-                                  isActive={isActive && activeFileId === file.id}
+                                  isActive={isActive && selectedFileId === file.id}
                                 >
                                   <NavLink
                                     onClick={() => {
-                                      setActiveJobId(job.id);
-                                      setActiveFileId(file.id);
+                                      setActiveJobSelection(job.id, file.id);
                                     }}
-                                    to={`/jobs/${job.id}`}
+                                    to={rosettaJobFilePath(job.id, file.id)}
                                     title={file.relativePath}
                                   >
                                     <FileTextIcon />

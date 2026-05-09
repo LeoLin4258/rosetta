@@ -34,6 +34,7 @@ type RevisionOption = {
 export function DocumentPreview({
   currentFileId,
   currentJobId,
+  onReaderScroll,
   onRevisionChange,
   onToggleBlockSelection,
   selectedBlockIds,
@@ -43,6 +44,7 @@ export function DocumentPreview({
 }: {
   currentFileId: string | null;
   currentJobId: string | null;
+  onReaderScroll?: (direction: "down" | "up") => void;
   onRevisionChange: (revisionId: string) => void;
   onToggleBlockSelection: (blockId: string) => void;
   selectedBlockIds: string[];
@@ -60,6 +62,8 @@ export function DocumentPreview({
   const isHoverPausedRef = useRef(false);
   const hoverRestoreTimerRef = useRef<number | null>(null);
   const syncFrameRef = useRef<number | null>(null);
+  const lastSourceScrollTopRef = useRef(0);
+  const lastTranslationScrollTopRef = useRef(0);
   const document =
     activeJobId === currentJobId && activeDocument ? activeDocument : null;
   const segments = activeJobId === currentJobId ? previewSegments : [];
@@ -125,6 +129,7 @@ export function DocumentPreview({
     const maxFrom = from.scrollHeight - from.clientHeight;
     const maxTo = to.scrollHeight - to.clientHeight;
     const ratio = maxFrom > 0 ? from.scrollTop / maxFrom : 0;
+    reportReaderScroll(side, from.scrollTop);
 
     if (syncFrameRef.current != null) {
       window.cancelAnimationFrame(syncFrameRef.current);
@@ -132,12 +137,31 @@ export function DocumentPreview({
 
     syncFrameRef.current = window.requestAnimationFrame(() => {
       isSyncingRef.current = true;
-      to.scrollTop = ratio * Math.max(maxTo, 0);
+      const nextScrollTop = ratio * Math.max(maxTo, 0);
+      to.scrollTop = nextScrollTop;
+      if (side === "source") {
+        lastTranslationScrollTopRef.current = nextScrollTop;
+      } else {
+        lastSourceScrollTopRef.current = nextScrollTop;
+      }
       syncFrameRef.current = window.requestAnimationFrame(() => {
         isSyncingRef.current = false;
         syncFrameRef.current = null;
       });
     });
+  }
+
+  function reportReaderScroll(side: PreviewSide, scrollTop: number) {
+    const lastScrollTopRef =
+      side === "source" ? lastSourceScrollTopRef : lastTranslationScrollTopRef;
+    const delta = scrollTop - lastScrollTopRef.current;
+    lastScrollTopRef.current = scrollTop;
+
+    if (Math.abs(delta) < 10) {
+      return;
+    }
+
+    onReaderScroll?.(delta > 0 ? "down" : "up");
   }
 
   function pauseHoverDuringScroll() {
