@@ -11,7 +11,6 @@ import {
   SettingsIcon,
 } from "lucide-react";
 
-import { cn } from "@/lib/utils";
 import { loadRosettaJob, renameRosettaJob } from "@/lib/rosettaJobs";
 import { rosettaJobFilePath } from "@/lib/rosettaRoutes";
 import { useRosettaStore } from "@/store/useRosettaStore";
@@ -257,11 +256,7 @@ function FileMenuItem({
 
   return (
     <SidebarMenuSubItem>
-      <SidebarMenuSubButton
-        asChild
-        className={fileStatusClassName(status)}
-        isActive={isActive}
-      >
+      <SidebarMenuSubButton asChild isActive={isActive}>
         <NavLink
           onClick={onSelect}
           to={rosettaJobFilePath(jobId, file.id)}
@@ -307,24 +302,36 @@ function FileStatusIcon({
 }: {
   status: SourceFileTranslationStatus;
 }) {
+  const iconClassName =
+    status === "translating"
+      ? "rosetta-file-status-icon animate-pulse"
+      : "rosetta-file-status-icon";
+
   if (status === "translated") {
-    return <FileCheckIcon aria-label="已翻译" />;
+    return (
+      <span className={iconClassName} data-status={status}>
+        <FileCheckIcon aria-label="已翻译" />
+      </span>
+    );
   }
   if (status === "translating") {
-    return <FileClockIcon aria-label="翻译中" />;
+    return (
+      <span className={iconClassName} data-status={status}>
+        <FileClockIcon aria-label="翻译中" />
+      </span>
+    );
   }
   if (status === "failed") {
-    return <FileXIcon aria-label="翻译失败" />;
+    return (
+      <span className={iconClassName} data-status={status}>
+        <FileXIcon aria-label="翻译失败" />
+      </span>
+    );
   }
-  return <FileTextIcon aria-label="未翻译" />;
-}
-
-function fileStatusClassName(status: SourceFileTranslationStatus) {
-  return cn(
-    status === "untranslated" && "[&>svg]:!text-muted-foreground",
-    status === "translated" && "[&>svg]:!text-primary",
-    status === "translating" && "[&>svg]:!animate-pulse [&>svg]:!text-primary",
-    status === "failed" && "[&>svg]:!text-destructive"
+  return (
+    <span className={iconClassName} data-status={status}>
+      <FileTextIcon aria-label="未翻译" />
+    </span>
   );
 }
 

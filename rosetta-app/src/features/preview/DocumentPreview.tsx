@@ -301,7 +301,7 @@ function PreviewPane({
       onScroll={onScroll}
       viewportRef={paneRef}
     >
-      <div className="mx-auto max-w-3xl px-6 py-6">
+      <div className="mx-auto max-w-[var(--rosetta-reader-max-width)] px-6 py-6">
         {blocks.length === 0 ? (
           <div className="flex min-h-32 items-center justify-center text-sm text-muted-foreground">
             当前文件没有可预览内容。
@@ -400,7 +400,7 @@ function PreviewBlock({
     <div
       aria-pressed={selectable ? selected : undefined}
       className={cn(
-        "rounded-lg px-3 py-2 transition-colors",
+        "rounded-md px-3 py-2 transition-colors",
         hovered && "bg-muted",
         selected && "bg-muted ring-1 ring-ring",
         selectable && "cursor-pointer",

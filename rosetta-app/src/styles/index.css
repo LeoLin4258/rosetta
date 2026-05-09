@@ -42,6 +42,9 @@
   --font-serif: Lora, serif;
   --font-mono: IBM Plex Mono, monospace;
   --radius: 0.25rem;
+  --rosetta-motion-duration: 220ms;
+  --rosetta-motion-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --rosetta-reader-max-width: 48rem;
   --shadow-x: 2px;
   --shadow-y: 3px;
   --shadow-blur: 5px;
@@ -97,6 +100,9 @@
   --font-serif: Lora, serif;
   --font-mono: IBM Plex Mono, monospace;
   --radius: 0.25rem;
+  --rosetta-motion-duration: 220ms;
+  --rosetta-motion-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --rosetta-reader-max-width: 48rem;
   --shadow-x: 2px;
   --shadow-y: 3px;
   --shadow-blur: 5px;
@@ -299,4 +305,39 @@ textarea {
   color: var(--primary);
   text-decoration: underline;
   text-underline-offset: 2px;
+}
+
+.rosetta-workbench-collapse-trigger,
+.rosetta-workbench-panel,
+.rosetta-workbench-panel-inner,
+.rosetta-workbench-progress {
+  transition-duration: var(--rosetta-motion-duration);
+  transition-timing-function: var(--rosetta-motion-ease);
+}
+
+.rosetta-file-status-icon {
+  display: inline-flex;
+  width: 1rem;
+  height: 1rem;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted-foreground);
+}
+
+.rosetta-file-status-icon svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.rosetta-file-status-icon[data-status="translated"] {
+  color: var(--primary);
+}
+
+.rosetta-file-status-icon[data-status="translating"] {
+  color: var(--primary);
+}
+
+.rosetta-file-status-icon[data-status="failed"] {
+  color: var(--destructive);
 }

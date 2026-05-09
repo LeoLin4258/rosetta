@@ -731,7 +731,7 @@ export function JobsPage() {
           aria-expanded={!isWorkbenchCollapsed}
           aria-hidden={!isWorkbenchCollapsed}
           className={cn(
-            "flex w-full items-center justify-between gap-3 border-b bg-card px-4 text-left transition-all duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] hover:bg-muted/40",
+            "rosetta-workbench-collapse-trigger flex w-full items-center justify-between gap-3 border-b bg-card px-4 text-left transition-all hover:bg-muted/40",
             isWorkbenchCollapsed
               ? "h-9 translate-y-0 opacity-100"
               : "pointer-events-none h-0 -translate-y-1 overflow-hidden border-transparent opacity-0"
@@ -753,7 +753,7 @@ export function JobsPage() {
 
         <div
           className={cn(
-            "grid transition-[grid-template-rows,opacity] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
+            "rosetta-workbench-panel grid transition-[grid-template-rows,opacity]",
             isWorkbenchCollapsed
               ? "grid-rows-[0fr] opacity-0"
               : "grid-rows-[1fr] opacity-100"
@@ -762,14 +762,14 @@ export function JobsPage() {
           <div className="min-h-0 overflow-hidden">
             <div
               className={cn(
-                "transition-transform duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
+                "rosetta-workbench-panel-inner transition-transform",
                 isWorkbenchCollapsed ? "-translate-y-2" : "translate-y-0"
               )}
             >
               <CardHeader className="border-b py-4">
                 <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
                   <div className="flex min-w-0 gap-3">
-                    <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+                    <div className="flex size-10 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
                       <FileText />
                     </div>
                     <div className="min-w-0">
@@ -816,7 +816,7 @@ export function JobsPage() {
                     </div>
                   </div>
 
-                  <div className="flex flex-wrap items-center gap-2 rounded-lg xl:justify-end">
+                  <div className="flex flex-wrap items-center gap-2 xl:justify-end">
                     <div className="flex items-center gap-1 rounded-md border bg-background p-1">
                       <LanguageSelect
                         ariaLabel="选择原文语言"
@@ -902,7 +902,7 @@ export function JobsPage() {
                     <div className="h-2 min-w-24 flex-1 overflow-hidden rounded-sm bg-muted">
                       <div
                         className={cn(
-                          "h-full bg-primary transition-[width]",
+                          "rosetta-workbench-progress h-full bg-primary transition-[width]",
                           isCurrentFileExportable && !isCurrentFileTranslationRunActive
                             ? "opacity-100"
                             : "opacity-80"
