@@ -63,10 +63,26 @@ C:\Users\Leo\.rosetta-release\rosetta-beta.key
 
 私钥绝不能提交仓库。丢失私钥后，已安装版本将无法验证后续更新包，需要重新安装新的安装包。
 
-发布时使用环境变量：
+当前 beta 私钥生成时没有设置密码。如果 Tauri build 阶段出现：
+
+```txt
+Info Decrypting updater signing key, expect a prompt for password
+Password:
+```
+
+直接按 Enter。不要输入仓库密码、GitHub token 或 RWKV API token。
+
+发布时推荐使用私钥路径环境变量：
 
 ```powershell
 $env:TAURI_SIGNING_PRIVATE_KEY_PATH="C:\Users\Leo\.rosetta-release\rosetta-beta.key"
+corepack pnpm build:tauri
+```
+
+如果当前 Tauri CLI / bundler 提示必须设置 `TAURI_SIGNING_PRIVATE_KEY`，则把它作为私钥路径使用：
+
+```powershell
+$env:TAURI_SIGNING_PRIVATE_KEY="C:\Users\Leo\.rosetta-release\rosetta-beta.key"
 corepack pnpm build:tauri
 ```
 
@@ -94,6 +110,17 @@ Tauri 配置开启：
 - Windows updater artifact
 - updater artifact 对应的 `.sig`
 - `latest.json`
+
+内部 beta 当前只打 NSIS installer，不打 MSI。原因是 MSI target 不接受 `0.1.0-beta.1` 这种带 `beta` 字符的 prerelease 版本号，会报错：
+
+```txt
+optional pre-release identifier in app version must be numeric-only and cannot be greater than 65535 for msi target
+```
+
+如果后续需要 MSI，有两个选择：
+
+- 使用纯数字 prerelease，例如 `0.1.0-1`、`0.1.0-2`
+- 或正式版切回 `0.1.0`、`0.1.1` 这类无 prerelease 的版本号
 
 `latest.json` 必须和安装包放在同一个 GitHub Release 附件中，供已安装 App 的设置页手动检查更新。
 
@@ -140,6 +167,14 @@ cargo test rosetta_jobs
 ```powershell
 $env:TAURI_SIGNING_PRIVATE_KEY_PATH="C:\Users\Leo\.rosetta-release\rosetta-beta.key"
 ```
+
+如果 build 报错要求 `TAURI_SIGNING_PRIVATE_KEY`，改用：
+
+```powershell
+$env:TAURI_SIGNING_PRIVATE_KEY="C:\Users\Leo\.rosetta-release\rosetta-beta.key"
+```
+
+当前私钥没有密码；出现 `Password:` 提示时直接按 Enter。
 
 4. 打包：
 
