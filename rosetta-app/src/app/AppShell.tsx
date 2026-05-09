@@ -20,6 +20,7 @@ const pageTitles: Record<string, string> = {
   "/jobs": "任务",
   "/settings": "设置",
 };
+import { ScrollArea } from "@/components/ui/scroll-area"
 
 const appWindow = getCurrentWindow();
 
@@ -80,7 +81,7 @@ export function AppShell() {
           }
         >
           <AppSidebar />
-          <SidebarInset className="min-h-0  rounded-tl-lg overflow-hidden">
+          <SidebarInset className="min-h-0  rounded-tl overflow-hidden">
             <header className="flex h-14 shrink-0 items-center justify-between px-4">
               <div className="flex items-center justify-center gap-3">
                 <SidebarTrigger />
@@ -89,8 +90,10 @@ export function AppShell() {
               </div>
             </header>
 
-            <div className="min-h-0 flex-1 overflow-auto">
-              <Outlet />
+            <div className="min-h-0 flex-1 overflow-hidden">
+              <ScrollArea className="h-full w-full">
+                <Outlet />
+              </ScrollArea>
             </div>
           </SidebarInset>
         </SidebarProvider>

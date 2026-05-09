@@ -1,13 +1,15 @@
 import { useState, type ChangeEvent } from "react";
-import { Send } from "lucide-react";
-import { probeRwkvTranslationApi } from "../../lib/rwkvApi";
-import { useRosettaStore } from "../../store/useRosettaStore";
-import type {
-  AppThemeMode,
-  RwkvConnectionConfig,
-  RwkvTranslationApiProbeResult,
-  TranslationMode,
-} from "../../types/rosetta";
+import {
+  CheckCircle2,
+  Cloud,
+  Palette,
+  Send,
+  ServerOff,
+  ShieldCheck,
+  Timer,
+  XCircle,
+} from "lucide-react";
+
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -19,7 +21,17 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Separator } from "@/components/ui/separator";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { probeRwkvTranslationApi } from "../../lib/rwkvApi";
+import { cn } from "../../lib/utils";
+import { useRosettaStore } from "../../store/useRosettaStore";
+import type {
+  AppThemeMode,
+  RwkvConnectionConfig,
+  RwkvTranslationApiProbeResult,
+  TranslationMode,
+} from "../../types/rosetta";
 
 const modeOptions: Array<{ label: string; value: TranslationMode }> = [
   { label: "极速", value: "fast" },
@@ -86,635 +98,365 @@ export function SettingsPage() {
     }
   }
 
-  const canProbeApi =
-    rwkv.baseUrl.trim().length > 0 &&
-    rwkv.endpoint.trim().length > 0 &&
-    rwkv.internalToken.trim().length > 0 &&
-    rwkv.bodyPassword.trim().length > 0 &&
-    rwkv.timeoutMs > 0 &&
-    !isProbingApi;
+  const missingConnectionFields = [
+    !rwkv.baseUrl.trim() && "API 地址",
+    !rwkv.endpoint.trim() && "接口路径",
+    !rwkv.internalToken.trim() && "访问密钥",
+    !rwkv.bodyPassword.trim() && "模型口令",
+    rwkv.timeoutMs <= 0 && "超时时间",
+  ].filter(Boolean) as string[];
+  const canProbeApi = missingConnectionFields.length === 0 && !isProbingApi;
+  const apiStatus = apiProbeResult?.ok
+    ? "connected"
+    : apiProbeResult || apiError
+      ? "failed"
+      : "not-tested";
 
   return (
-    <section className="mx-auto flex max-w-3xl flex-col gap-4 px-6 py-6">
-      <Card>
-        <CardHeader>
-          <CardTitle>外观</CardTitle>
-          <CardDescription>设置 Rosetta 的界面主题</CardDescription>
-        </CardHeader>
+    <section className="mx-auto flex w-full max-w-4xl flex-col gap-6 px-6 py-6">
+      <header className="flex flex-col gap-2">
+        <h1 className="text-2xl font-semibold tracking-normal">设置</h1>
+        <p className="max-w-xl text-sm text-muted-foreground">
+          管理 Rosetta 的翻译服务、显示方式和本地模型选项。
+        </p>
+      </header>
 
-        <CardContent>
-          <div className="flex flex-col gap-2">
-            <Label>主题</Label>
-            <ToggleGroup
-              className="w-full"
-              onValueChange={(value) => {
-                if (value) {
-                  setThemeMode(value as AppThemeMode);
-                }
-              }}
-              type="single"
-              value={themeMode}
-              variant="outline"
-            >
-              {themeOptions.map((option) => (
-                <ToggleGroupItem
-                  className="flex-1"
-                  key={option.value}
-                  value={option.value}
-                >
-                  {option.label}
-                </ToggleGroupItem>
-              ))}
-            </ToggleGroup>
-          </div>
-        </CardContent>
-      </Card>
+      <main className="flex w-full flex-col gap-20">
+        <section className="flex flex-col gap-3" id="appearance">
+          <SettingsSectionHeader
+            description="调整 Rosetta 的显示方式。"
+            icon={<Palette />}
+            title="界面外观"
+          />
 
-      <Card>
-        <CardHeader>
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <CardTitle>RWKV API</CardTitle>
-              <CardDescription>
-                当前主路径：连接已部署的 RWKV 批量翻译接口
-              </CardDescription>
-            </div>
-            <Badge variant="outline">当前使用</Badge>
-          </div>
-        </CardHeader>
-
-        <CardContent>
-          <div className="flex flex-col gap-4">
-            <div className="grid gap-3 rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
-              <p>
-                远程或云端 API 是显式配置的后端选项。测试时，样本文本会发送到该
-                API。
-              </p>
-              <p>
-                真实 token 只保存在本机设置中，不应写入代码、文档或测试 fixture。
-              </p>
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="rwkv-base-url">API 地址</Label>
-              <Input
-                id="rwkv-base-url"
-                onChange={updateTextField("baseUrl")}
-                value={rwkv.baseUrl}
-              />
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="rwkv-endpoint">端点</Label>
-              <Input
-                id="rwkv-endpoint"
-                onChange={updateTextField("endpoint")}
-                value={rwkv.endpoint}
-              />
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="rwkv-internal-token">X-Internal-Token</Label>
-              <Input
-                id="rwkv-internal-token"
-                onChange={updateTextField("internalToken")}
-                type="password"
-                value={rwkv.internalToken}
-              />
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="rwkv-body-password">Body password</Label>
-              <Input
-                id="rwkv-body-password"
-                onChange={updateTextField("bodyPassword")}
-                type="password"
-                value={rwkv.bodyPassword}
-              />
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="rwkv-timeout">Timeout ms</Label>
-              <Input
-                id="rwkv-timeout"
-                min={1}
-                onChange={updateTimeout}
-                type="number"
-                value={rwkv.timeoutMs}
-              />
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <Label>翻译模式</Label>
+          <Card>
+            <CardHeader>
+              <CardTitle>主题</CardTitle>
+              <CardDescription>选择浅色、深色，或跟随系统。</CardDescription>
+            </CardHeader>
+            <CardContent>
               <ToggleGroup
-                className="w-full"
+                className="grid grid-cols-3"
                 onValueChange={(value) => {
                   if (value) {
-                    setTranslationMode(value as TranslationMode);
+                    setThemeMode(value as AppThemeMode);
                   }
                 }}
                 type="single"
-                value={rwkv.mode}
+                value={themeMode}
                 variant="outline"
               >
-                {modeOptions.map((option) => (
-                  <ToggleGroupItem
-                    className="flex-1"
-                    key={option.value}
-                    value={option.value}
-                  >
+                {themeOptions.map((option) => (
+                  <ToggleGroupItem key={option.value} value={option.value}>
                     {option.label}
                   </ToggleGroupItem>
                 ))}
               </ToggleGroup>
-            </div>
+            </CardContent>
+          </Card>
+        </section>
 
-            <div className="flex items-center gap-2">
-              <Button
-                disabled={!canProbeApi}
-                onClick={() => void probeApi()}
-                title="测试 RWKV API"
-                type="button"
-                variant="outline"
-              >
-                <Send />
-                {isProbingApi ? "测试中" : "测试 API"}
-              </Button>
-              {apiProbeResult ? (
-                <Badge variant="outline">
-                  {apiProbeResult.ok ? "成功" : "失败"}
-                </Badge>
-              ) : null}
-            </div>
+        <section className="flex flex-col gap-3" id="translation-service">
+          <SettingsSectionHeader
+            description="配置当前用于文档翻译的 RWKV API。"
+            icon={<Cloud />}
+            title="翻译服务"
+          >
+            <StatusBadge status={apiStatus} />
+          </SettingsSectionHeader>
 
-            {apiError ? (
-              <p className="text-sm text-destructive">{apiError}</p>
-            ) : null}
-
-            {apiProbeResult ? (
-              <div className="grid gap-3 rounded-md border border-border bg-muted/30 p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <span className="font-medium text-foreground">API 探测</span>
-                  <Badge variant="outline">
-                    {apiProbeResult.ok ? "成功" : "失败"}
-                  </Badge>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  {apiProbeResult.message}
-                </p>
-                <p className="font-mono text-xs text-muted-foreground">
-                  status: {apiProbeResult.statusCode ?? "none"} / latency:{" "}
-                  {apiProbeResult.latencyMs}ms
-                </p>
-                {apiProbeResult.translations.length > 0 ? (
-                  <div className="grid gap-2">
-                    {apiProbeResult.translations.map((translation, index) => (
-                      <div
-                        className="grid gap-1 rounded-md border border-border bg-background/60 p-2 text-xs"
-                        key={`api-probe-${index}`}
-                      >
-                        <span className="font-medium text-foreground">
-                          Translation {index + 1}
-                        </span>
-                        <p className="text-muted-foreground">{translation}</p>
-                      </div>
-                    ))}
-                  </div>
-                ) : null}
-                {apiProbeResult.rawResponsePreview ? (
-                  <pre className="max-h-40 overflow-auto rounded-sm bg-background/80 p-2 font-mono text-[11px] leading-relaxed text-muted-foreground">
-                    {apiProbeResult.rawResponsePreview}
-                  </pre>
-                ) : null}
-              </div>
-            ) : null}
-          </div>
-        </CardContent>
-      </Card>
-
-
-      {/* 以下代码和功能已暂停
-      请看：docs\engineering\decisions\0002-pause-managed-rwkv-runtime.md */}
-      {/* <Card>
-        <CardHeader>
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <CardTitle>本地 RWKV</CardTitle>
-              <CardDescription>
-                已暂停：Rosetta 托管的本地翻译模型运行时
-              </CardDescription>
-            </div>
-            <div className="flex items-center gap-2">
-              <Badge variant="outline">已暂停</Badge>
-              <Button
-                disabled={
-                  isManagedRuntimePaused ||
-                  runtimeStatus?.runtimeExecutableExists ||
-                  isCheckingRuntime ||
-                  isPreparingRuntime ||
-                  isPreparingInstall ||
-                  isScanningArtifacts ||
-                  isExtractingRuntime ||
-                  isStartingRuntime ||
-                  isProbingTranslation
-                }
-                onClick={() => void prepareRuntimeLayout()}
-                title="准备本地 RWKV 目录"
-                type="button"
-                variant="outline"
-              >
-                <FolderPlus />
-                准备目录
-              </Button>
-              <Button
-                disabled={
-                  isManagedRuntimePaused ||
-                  isCheckingRuntime ||
-                  isPreparingRuntime ||
-                  isPreparingInstall ||
-                  isScanningArtifacts ||
-                  isExtractingRuntime ||
-                  isStartingRuntime ||
-                  isProbingTranslation
-                }
-                onClick={() => void prepareInstall()}
-                title="准备本地 RWKV 安装任务"
-                type="button"
-                variant="outline"
-              >
-                <PackageCheck />
-                准备安装
-              </Button>
-              <Button
-                disabled={
-                  isManagedRuntimePaused ||
-                  isCheckingRuntime ||
-                  isPreparingRuntime ||
-                  isPreparingInstall ||
-                  isScanningArtifacts ||
-                  isExtractingRuntime ||
-                  isStartingRuntime ||
-                  isProbingTranslation
-                }
-                onClick={() => void scanArtifacts()}
-                title="扫描已放入管理目录的 RWKV 文件"
-                type="button"
-                variant="outline"
-              >
-                <ScanLine />
-                扫描文件
-              </Button>
-              <Button
-                disabled={
-                  isManagedRuntimePaused ||
-                  isCheckingRuntime ||
-                  isPreparingRuntime ||
-                  isPreparingInstall ||
-                  isScanningArtifacts ||
-                  isExtractingRuntime ||
-                  isStartingRuntime ||
-                  isProbingTranslation
-                }
-                onClick={() => void extractRuntime()}
-                title="解压已校验的 RWKV runtime"
-                type="button"
-                variant="outline"
-              >
-                <Archive />
-                {runtimeStatus?.runtimeExecutableExists ? "已解压" : "解压运行时"}
-              </Button>
-              <Button
-                disabled={
-                  isManagedRuntimePaused ||
-                  runtimeStatus?.compatibility.compatible === false ||
-                  !installPlan?.ready ||
-                  processStatus?.state === "ready" ||
-                  isCheckingRuntime ||
-                  isPreparingRuntime ||
-                  isPreparingInstall ||
-                  isScanningArtifacts ||
-                  isExtractingRuntime ||
-                  isStartingRuntime ||
-                  isProbingTranslation
-                }
-                onClick={() => void startRuntime()}
-                title="启动本地 RWKV runtime"
-                type="button"
-                variant="outline"
-              >
-                <Play />
-                {processStatus?.state === "ready" ? "已启动" : "启动"}
-              </Button>
-              <Button
-                disabled={
-                  isManagedRuntimePaused ||
-                  processStatus?.state !== "ready" ||
-                  isCheckingRuntime ||
-                  isPreparingRuntime ||
-                  isPreparingInstall ||
-                  isScanningArtifacts ||
-                  isExtractingRuntime ||
-                  isStartingRuntime ||
-                  isProbingTranslation
-                }
-                onClick={() => void probeTranslation()}
-                title="测试本地 RWKV 翻译接口"
-                type="button"
-                variant="outline"
-              >
-                <Activity />
-                {isProbingTranslation ? "测试中" : "测试翻译"}
-              </Button>
-              <Button
-                disabled={
-                  isCheckingRuntime ||
-                  isPreparingRuntime ||
-                  isPreparingInstall ||
-                  isScanningArtifacts ||
-                  isExtractingRuntime ||
-                  isStartingRuntime ||
-                  isProbingTranslation
-                }
-                onClick={() => void refreshRuntimeStatus()}
-                size="icon"
-                title="刷新本地 RWKV 状态"
-                type="button"
-                variant="outline"
-              >
-                <RefreshCw
-                  className={isCheckingRuntime ? "animate-spin" : undefined}
-                />
-              </Button>
-            </div>
-          </div>
-        </CardHeader>
-
-        <CardContent>
-          <div className="flex flex-col gap-4 text-sm">
-            <div className="grid gap-2 rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
-              <p>
-                本地一键运行 RWKV LLM 已暂停，当前翻译开发使用上方的外部 RWKV
-                API。
-              </p>
-              <p>
-                这里保留已有诊断信息，避免丢失后续恢复本地 runtime 工作所需的上下文。
-              </p>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <span className="text-muted-foreground">状态</span>
-              <Badge variant="outline">
-                {runtimeStatus
-                  ? runtimeStateLabel[runtimeStatus.state]
-                  : runtimeError
-                    ? "不可用"
-                    : "检查中"}
-              </Badge>
-            </div>
-
-            <p className="text-muted-foreground">
-              {runtimeStatus?.message ??
-                runtimeError ??
-                "正在读取本机运行时状态。"}
-            </p>
-
-            {runtimeStatus ? (
-              <div className="grid gap-3 rounded-md border border-border bg-muted/30 p-3 text-xs">
-                <RuntimePath label="API" value={runtimeStatus.apiUrl} />
-                <RuntimePath label="Runtime" value={runtimeStatus.runtimeDir} />
-                <RuntimePath
-                  label="Runtime bundle"
-                  value={runtimeStatus.runtimeBundleDir}
-                />
-                <RuntimePath
-                  label="Executable"
-                  value={runtimeStatus.runtimeExecutablePath}
-                />
-                <RuntimePath label="Model" value={runtimeStatus.modelDir} />
-                <RuntimePath label="Logs" value={runtimeStatus.logsDir} />
-                <RuntimePath label="Log" value={runtimeStatus.logFile} />
-              </div>
-            ) : null}
-
-            {runtimeStatus?.manifestError ? (
-              <p className="text-sm text-destructive">
-                {runtimeStatus.manifestError}
-              </p>
-            ) : null}
-
-            {runtimeStatus ? (
-              <div className="grid gap-3 rounded-md border border-border bg-muted/30 p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <span className="font-medium text-foreground">硬件兼容性</span>
-                  <Badge variant="outline">
-                    {runtimeStatus.compatibility.compatible ? "可尝试" : "不兼容"}
-                  </Badge>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  {runtimeStatus.compatibility.message}
-                </p>
-                <div className="grid gap-1 font-mono text-xs text-muted-foreground">
-                  <p>backend: {runtimeStatus.compatibility.runtimeBackend}</p>
-                  <p>
-                    requires: {runtimeStatus.compatibility.hardwareRequirement}
-                  </p>
-                  <p>
-                    display:{" "}
-                    {runtimeStatus.compatibility.detectedDisplayAdapters.length >
-                    0
-                      ? runtimeStatus.compatibility.detectedDisplayAdapters.join(
-                          " / "
-                        )
-                      : "unknown"}
-                  </p>
-                </div>
-              </div>
-            ) : null}
-
-            {installPlan ? (
-              <div className="grid gap-3 rounded-md border border-border bg-muted/30 p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <span className="font-medium text-foreground">安装计划</span>
-                  <Badge variant="outline">
-                    {installPlan.ready ? "已满足" : "未完成"}
-                  </Badge>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  {installPlan.message}
-                </p>
-                <div className="grid gap-2">
-                  {installPlan.items.map((item) => (
-                    <InstallPlanItem key={`${item.kind}-${item.id}`} item={item} />
-                  ))}
-                </div>
-              </div>
-            ) : null}
-
-            {installProgress ? (
-              <div className="grid gap-3 rounded-md border border-border bg-muted/30 p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <span className="font-medium text-foreground">安装进度</span>
-                  <Badge variant="outline">
-                    {progressStateLabel[installProgress.state]}
-                  </Badge>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  {installProgress.message}
-                </p>
-                <div className="grid gap-2">
-                  {installProgress.items.map((item) => (
-                    <InstallProgressItem
-                      item={item}
-                      key={`progress-${item.kind}-${item.id}`}
-                    />
-                  ))}
-                </div>
-              </div>
-            ) : null}
-
-            {processStatus ? (
-              <div className="grid gap-3 rounded-md border border-border bg-muted/30 p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <span className="font-medium text-foreground">运行进程</span>
-                  <Badge variant="outline">
-                    {processStateLabel[processStatus.state]}
-                  </Badge>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  {processStatus.message}
-                </p>
-                <div className="grid gap-2 text-xs">
-                  <RuntimePath label="API" value={processStatus.apiUrl} />
-                  <RuntimePath label="PID file" value={processStatus.pidFile} />
-                  <RuntimePath label="Log" value={processStatus.logFile} />
-                  <p className="font-mono text-muted-foreground">
-                    pid: {processStatus.pid ?? "none"} / port:{" "}
-                    {processStatus.port} / open:{" "}
-                    {processStatus.portOpen ? "yes" : "no"}
-                  </p>
-                  <p className="font-mono text-muted-foreground">
-                    process:{" "}
-                    {processStatus.processRunning == null
-                      ? "unknown"
-                      : processStatus.processRunning
-                        ? "running"
-                        : "stopped"}{" "}
-                    / http: {processStatus.httpReady ? "ready" : "not-ready"} /
-                    status: {processStatus.httpStatusCode ?? "none"}
-                  </p>
-                  {processStatus.logTail.length > 0 ? (
-                    <pre className="max-h-40 overflow-auto rounded-sm bg-background/80 p-2 font-mono text-[11px] leading-relaxed text-muted-foreground">
-                      {processStatus.logTail.join("\n")}
-                    </pre>
-                  ) : null}
-                </div>
-              </div>
-            ) : null}
-
-            {translationProbeResult ? (
-              <div className="grid gap-3 rounded-md border border-border bg-muted/30 p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <span className="font-medium text-foreground">翻译探测</span>
-                  <Badge variant="outline">
-                    {translationProbeResult.ok ? "成功" : "失败"}
-                  </Badge>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  {translationProbeResult.message}
-                </p>
-                <p className="font-mono text-xs text-muted-foreground">
-                  status: {translationProbeResult.statusCode ?? "none"}
-                </p>
-                {translationProbeResult.responseBodyPreview ? (
-                  <pre className="max-h-40 overflow-auto rounded-sm bg-background/80 p-2 font-mono text-[11px] leading-relaxed text-muted-foreground">
-                    {translationProbeResult.responseBodyPreview}
-                  </pre>
-                ) : null}
-              </div>
-            ) : null}
-
-            {artifactCatalog ? (
-              <div className="grid gap-3 rounded-md border border-border bg-muted/30 p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <span className="font-medium text-foreground">Artifact Catalog</span>
-                  <Badge variant="outline">
-                    {artifactCatalog.readyForDownload ? "可下载" : "待确认"}
-                  </Badge>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  {artifactCatalog.message}
-                </p>
-                <div className="grid gap-2">
-                  {artifactCatalog.items.map((item) => (
-                    <ArtifactCatalogItem
-                      item={item}
-                      key={`catalog-${item.kind}-${item.id}`}
-                    />
-                  ))}
-                </div>
-              </div>
-            ) : null}
-
-            {scanResult ? (
-              <div className="grid gap-3 rounded-md border border-border bg-muted/30 p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <span className="font-medium text-foreground">扫描结果</span>
-                  <Badge variant="outline">
-                    {scanResult.errors.length > 0 ? "需检查" : "已扫描"}
-                  </Badge>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  {scanResult.message}
-                </p>
-                {scanResult.installedManifests.length > 0 ? (
-                  <div className="grid gap-2">
-                    {scanResult.installedManifests.map((manifestPath) => (
-                      <RuntimePath
-                        key={manifestPath}
-                        label="Manifest"
-                        value={manifestPath}
-                      />
-                    ))}
-                  </div>
-                ) : null}
-                {scanResult.errors.length > 0 ? (
-                  <div className="grid gap-1 text-xs text-destructive">
-                    {scanResult.errors.map((error) => (
-                      <p key={error}>{error}</p>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-
-            {extractionResult ? (
-              <div className="grid gap-3 rounded-md border border-border bg-muted/30 p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <span className="font-medium text-foreground">解压结果</span>
-                  <Badge variant="outline">
-                    {extractionResult.extracted ? "已解压" : "未解压"}
-                  </Badge>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  {extractionResult.message}
-                </p>
-                <div className="grid gap-2">
-                  <RuntimePath label="Runtime bundle" value={extractionResult.targetDir} />
-                  <RuntimePath
-                    label="Executable"
-                    value={extractionResult.executablePath}
+          <Card className="overflow-hidden">
+            <CardContent className="flex flex-col gap-5 py-5">
+              <div className="grid gap-4 md:grid-cols-2">
+                <SettingField
+                  description="例如 https://example.com"
+                  htmlFor="rwkv-base-url"
+                  label="API 地址"
+                >
+                  <Input
+                    id="rwkv-base-url"
+                    onChange={updateTextField("baseUrl")}
+                    placeholder="https://..."
+                    value={rwkv.baseUrl}
                   />
-                  <p className="font-mono text-xs text-muted-foreground">
-                    {extractionResult.filesExtracted} files /{" "}
-                    {extractionResult.bytesExtracted} bytes
-                  </p>
+                </SettingField>
+
+                <SettingField
+                  description="当前接口使用 /v1/chat/completions"
+                  htmlFor="rwkv-endpoint"
+                  label="接口路径"
+                >
+                  <Input
+                    id="rwkv-endpoint"
+                    onChange={updateTextField("endpoint")}
+                    placeholder="/v1/chat/completions"
+                    value={rwkv.endpoint}
+                  />
+                </SettingField>
+
+                <SettingField
+                  description="X-Internal-Token"
+                  htmlFor="rwkv-internal-token"
+                  label="访问密钥"
+                >
+                  <Input
+                    autoComplete="off"
+                    id="rwkv-internal-token"
+                    onChange={updateTextField("internalToken")}
+                    type="password"
+                    value={rwkv.internalToken}
+                  />
+                </SettingField>
+
+                <SettingField
+                  description="body password"
+                  htmlFor="rwkv-body-password"
+                  label="模型口令"
+                >
+                  <Input
+                    autoComplete="off"
+                    id="rwkv-body-password"
+                    onChange={updateTextField("bodyPassword")}
+                    type="password"
+                    value={rwkv.bodyPassword}
+                  />
+                </SettingField>
+              </div>
+
+              <Separator />
+
+              <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_12rem]">
+                <SettingField
+                  description="长文档建议保留较长等待时间"
+                  htmlFor="rwkv-timeout"
+                  label="超时时间"
+                >
+                  <Input
+                    id="rwkv-timeout"
+                    min={1}
+                    onChange={updateTimeout}
+                    type="number"
+                    value={rwkv.timeoutMs}
+                  />
+                </SettingField>
+
+                <div className="flex flex-col gap-2">
+                  <Label>翻译偏好</Label>
+                  <ToggleGroup
+                    className="grid grid-cols-3"
+                    onValueChange={(value) => {
+                      if (value) {
+                        setTranslationMode(value as TranslationMode);
+                      }
+                    }}
+                    type="single"
+                    value={rwkv.mode}
+                    variant="outline"
+                  >
+                    {modeOptions.map((option) => (
+                      <ToggleGroupItem key={option.value} value={option.value}>
+                        {option.label}
+                      </ToggleGroupItem>
+                    ))}
+                  </ToggleGroup>
                 </div>
               </div>
-            ) : null}
-          </div>
-        </CardContent>
-      </Card> */}
 
+              <div className="flex flex-col gap-3 rounded-md border bg-muted/30 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-2 text-sm">
+                    <ShieldCheck className="text-muted-foreground" />
+                    <span className="font-medium">连接测试</span>
+                    <span className="text-muted-foreground">
+                      会发送两句英文样本文本到当前接口。
+                    </span>
+                  </div>
+                  <Button
+                    disabled={!canProbeApi}
+                    onClick={() => void probeApi()}
+                    title="测试 RWKV API"
+                    type="button"
+                    variant={apiStatus === "connected" ? "outline" : "default"}
+                  >
+                    <Send data-icon="inline-start" />
+                    {isProbingApi ? "测试中" : "测试连接"}
+                  </Button>
+                </div>
+
+                {missingConnectionFields.length > 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    还需要填写：{missingConnectionFields.join("、")}。
+                  </p>
+                ) : null}
+
+                {apiError ? (
+                  <p className="text-sm text-destructive">{apiError}</p>
+                ) : null}
+
+                {apiProbeResult ? (
+                  <ApiProbeResult result={apiProbeResult} />
+                ) : null}
+              </div>
+            </CardContent>
+          </Card>
+        </section>
+
+        <section className="flex flex-col gap-3" id="local-model">
+          <SettingsSectionHeader
+            description="本地一键运行 RWKV 会作为独立选项恢复。"
+            icon={<ServerOff />}
+            title="本地模型"
+          />
+
+          <Card>
+            <CardHeader>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <CardTitle>一键本地 RWKV</CardTitle>
+                  <CardDescription>
+                    当前版本优先使用已配置的翻译服务。
+                  </CardDescription>
+                </div>
+                <Badge variant="outline">即将支持</Badge>
+              </div>
+            </CardHeader>
+            <CardContent className="text-sm text-muted-foreground">
+              后续恢复本地模型时，这里会提供清晰的安装、检测和启动入口；它不会和当前 API 配置混在一起。
+            </CardContent>
+          </Card>
+        </section>
+      </main>
     </section>
+  );
+}
+
+function SettingsSectionHeader({
+  children,
+  description,
+  icon,
+  title,
+}: {
+  children?: React.ReactNode;
+  description: string;
+  icon: React.ReactNode;
+  title: string;
+}) {
+  return (
+    <div className="flex items-start justify-between gap-4">
+      <div className="flex min-w-0 gap-3">
+        <SettingsIconFrame>{icon}</SettingsIconFrame>
+        <div className="min-w-0">
+          <h2 className="text-lg font-semibold tracking-normal">{title}</h2>
+          <p className="mt-1 text-sm text-muted-foreground">{description}</p>
+        </div>
+      </div>
+      {children ? <div className="shrink-0">{children}</div> : null}
+    </div>
+  );
+}
+
+function SettingsIconFrame({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex size-9 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+      {children}
+    </div>
+  );
+}
+
+function SettingField({
+  children,
+  description,
+  htmlFor,
+  label,
+}: {
+  children: React.ReactNode;
+  description?: string;
+  htmlFor: string;
+  label: string;
+}) {
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-baseline justify-between gap-3">
+        <Label htmlFor={htmlFor}>{label}</Label>
+        {description ? (
+          <span className="truncate text-xs text-muted-foreground">
+            {description}
+          </span>
+        ) : null}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function StatusBadge({
+  status,
+}: {
+  status: "connected" | "failed" | "not-tested";
+}) {
+  if (status === "connected") {
+    return (
+      <Badge variant="secondary">
+        <CheckCircle2 data-icon="inline-start" />
+        可用
+      </Badge>
+    );
+  }
+  if (status === "failed") {
+    return (
+      <Badge variant="destructive">
+        <XCircle data-icon="inline-start" />
+        需检查
+      </Badge>
+    );
+  }
+  return <Badge variant="outline">未测试</Badge>;
+}
+
+function ApiProbeResult({
+  result,
+}: {
+  result: RwkvTranslationApiProbeResult;
+}) {
+  return (
+    <div
+      className={cn(
+        "flex flex-col gap-3 rounded-md border bg-background p-3",
+        !result.ok && "border-destructive/40"
+      )}
+    >
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        {result.ok ? (
+          <CheckCircle2 className="text-primary" />
+        ) : (
+          <XCircle className="text-destructive" />
+        )}
+        <span className="font-medium">
+          {result.ok ? "连接正常" : "连接失败"}
+        </span>
+        <span className="text-muted-foreground">{result.message}</span>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+        <span className="inline-flex items-center gap-1">
+          <Timer />
+          {result.latencyMs}ms
+        </span>
+        <span>HTTP {result.statusCode ?? "none"}</span>
+      </div>
+
+      {result.translations.length > 0 ? (
+        <div className="grid gap-2">
+          {result.translations.map((translation, index) => (
+            <div className="rounded-md bg-muted/40 p-2 text-sm" key={index}>
+              <p className="text-xs text-muted-foreground">
+                样例译文 {index + 1}
+              </p>
+              <p className="mt-1 leading-6">{translation}</p>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
