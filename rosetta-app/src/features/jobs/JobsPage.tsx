@@ -129,8 +129,8 @@ export function JobsPage() {
   const currentSegments = isCurrentBundleLoaded ? previewSegments : [];
   const selectedFileId = currentJobId
     ? fileId ??
-      activeFileIdByJobId[currentJobId] ??
-      (activeJobId === currentJobId ? activeFileId : null)
+    activeFileIdByJobId[currentJobId] ??
+    (activeJobId === currentJobId ? activeFileId : null)
     : null;
   const currentDocumentFile = selectedFileId
     ? currentDocument?.files.find((file) => file.id === selectedFileId) ?? null
@@ -209,8 +209,8 @@ export function JobsPage() {
   );
   const currentFileTranslationRun =
     activeTranslationRun &&
-    activeTranslationRun.jobId === currentJobId &&
-    activeTranslationRun.fileId === currentFile?.id
+      activeTranslationRun.jobId === currentJobId &&
+      activeTranslationRun.fileId === currentFile?.id
       ? activeTranslationRun
       : null;
   const isCurrentFileTranslationRunActive = currentFileTranslationRun != null;
@@ -229,30 +229,30 @@ export function JobsPage() {
   const fileProgress =
     currentFileTranslationRun
       ? Math.round(
-          (currentFileTranslationRun.completedSegmentIds.length /
-            Math.max(currentFileTranslationRun.targetSegmentIds.length, 1)) *
-            100
-        )
+        (currentFileTranslationRun.completedSegmentIds.length /
+          Math.max(currentFileTranslationRun.targetSegmentIds.length, 1)) *
+        100
+      )
       : translatableFileSegments.length > 0
-      ? Math.round((translatedFileSegments / translatableFileSegments.length) * 100)
-      : 0;
+        ? Math.round((translatedFileSegments / translatableFileSegments.length) * 100)
+        : 0;
   const currentFileState =
     isCurrentFileTranslating || isCurrentFileTranslationRunActive
-    ? "翻译中"
-    : failedSegments.length > 0
-      ? "需要重试"
-      : pendingSegments.length > 0
-        ? "待翻译"
-        : translatableFileSegments.length > 0
-          ? "已完成"
-          : "无内容";
+      ? "翻译中"
+      : failedSegments.length > 0
+        ? "需要重试"
+        : pendingSegments.length > 0
+          ? "待翻译"
+          : translatableFileSegments.length > 0
+            ? "已完成"
+            : "无内容";
   const primaryActionLabel = isCurrentFileTranslationRunActive
     ? "翻译中"
     : failedSegments.length > 0
       ? "重试失败"
       : pendingSegments.length > 0
         ? "开始翻译"
-      : retranslationSegments.length > 0
+        : retranslationSegments.length > 0
           ? "重新翻译全文"
           : "已完成";
   const primaryTranslationSegments =
@@ -282,13 +282,13 @@ export function JobsPage() {
   const mainActionLabel = hasSelectedBlocks ? "重翻选中" : primaryActionLabel;
   const mainActionDisabled = hasSelectedBlocks
     ? !rwkvConfigReady ||
-      selectedSegments.length === 0 ||
-      isTranslating ||
-      isLoading
+    selectedSegments.length === 0 ||
+    isTranslating ||
+    isLoading
     : !rwkvConfigReady ||
-      primaryTranslationSegments.length === 0 ||
-      isTranslating ||
-      isLoading;
+    primaryTranslationSegments.length === 0 ||
+    isTranslating ||
+    isLoading;
   const mainActionVariant =
     hasSelectedBlocks || pendingSegments.length > 0 || failedSegments.length > 0
       ? "default"
@@ -745,9 +745,7 @@ export function JobsPage() {
           </span>
           <span className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
             <span>{fileProgressText}</span>
-            <Badge variant={failedSegments.length > 0 ? "destructive" : "secondary"}>
-              {currentFileState}
-            </Badge>
+            <FileStateBadge state={currentFileState} />
           </span>
         </button>
 
@@ -769,24 +767,16 @@ export function JobsPage() {
               <CardHeader className="border-b py-4">
                 <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
                   <div className="flex min-w-0 gap-3">
-                    <div className="flex size-10 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+                    {/* <div className="flex size-10 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
                       <FileText />
-                    </div>
+                    </div> */}
                     <div className="min-w-0">
                       <div className="mb-1 flex flex-wrap items-center gap-2">
-                        <span className="text-sm text-muted-foreground">当前文件</span>
+                        {/* <span className="text-sm text-muted-foreground">当前文件</span> */}
                         {currentFile ? (
                           <Badge variant="outline">{currentFile.format}</Badge>
                         ) : null}
-                        <Badge
-                          variant={
-                            failedSegments.length > 0
-                              ? "destructive"
-                              : "secondary"
-                          }
-                        >
-                          {currentFileState}
-                        </Badge>
+                        <FileStateBadge state={currentFileState} />
                       </div>
                       <CardTitle className="truncate text-lg">
                         {currentFile?.relativePath ?? "加载文件中"}
@@ -817,7 +807,7 @@ export function JobsPage() {
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2 xl:justify-end">
-                    <div className="flex items-center gap-1 rounded-md border bg-background p-1">
+                    <div className="flex items-center gap-1">
                       <LanguageSelect
                         ariaLabel="选择原文语言"
                         disabled={isLoading || isTranslating || isSavingLanguages}
@@ -826,7 +816,7 @@ export function JobsPage() {
                         }
                         value={sourceLang}
                       />
-                      <ArrowRight className="text-muted-foreground" />
+                      <ArrowRight className="text-muted-foreground size-4" />
                       <LanguageSelect
                         ariaLabel="选择目标译文语言"
                         disabled={isLoading || isTranslating || isSavingLanguages}
@@ -902,7 +892,7 @@ export function JobsPage() {
                     <div className="h-2 min-w-24 flex-1 overflow-hidden rounded-sm bg-muted">
                       <div
                         className={cn(
-                          "rosetta-workbench-progress h-full bg-primary transition-[width]",
+                          "rosetta-workbench-progress h-full bg-primary transition-[width] rounded",
                           isCurrentFileExportable && !isCurrentFileTranslationRunActive
                             ? "opacity-100"
                             : "opacity-80"
@@ -911,8 +901,11 @@ export function JobsPage() {
                       />
                     </div>
                     {isCurrentFileExportable &&
-                    !isCurrentFileTranslationRunActive ? (
-                      <Badge variant="secondary">
+                      !isCurrentFileTranslationRunActive ? (
+                      <Badge
+                        className="border-green-600/20 bg-green-600/10 text-green-700 dark:text-green-400"
+                        variant="outline"
+                      >
                         <CheckCircle2 data-icon="inline-start" />
                         完成
                       </Badge>
@@ -929,46 +922,46 @@ export function JobsPage() {
                     </span>
                   </div>
                   <div className="flex flex-wrap items-center justify-end gap-2">
-                  <Button
-                    disabled={!isCurrentFileExportable || isLoading || isTranslating}
-                    onClick={() => void exportCurrentFile("translation")}
-                    size="sm"
-                    title={
-                      isCurrentFileExportable
-                        ? "导出当前文件译文"
-                        : "当前文件翻译完成后才能导出"
-                    }
-                    type="button"
-                    variant={isCurrentFileExportable ? "default" : "outline"}
-                  >
-                    <Download data-icon="inline-start" />
-                    导出译文
-                  </Button>
-                  <Button
-                    disabled={!isCurrentFileExportable || isLoading || isTranslating}
-                    onClick={() => void exportCurrentFile("bilingual")}
-                    size="sm"
-                    title={
-                      isCurrentFileExportable
-                        ? "导出当前文件双语对照"
-                        : "当前文件翻译完成后才能导出"
-                    }
-                    type="button"
-                    variant="outline"
-                  >
-                    <Languages data-icon="inline-start" />
-                    导出双语
-                  </Button>
-                  <Button
-                    disabled={!activeJob || isDeleting || isTranslating || !currentFile}
-                    onClick={() => void deleteCurrentFile()}
-                    size="sm"
-                    type="button"
-                    variant="destructive"
-                  >
-                    <Trash2 data-icon="inline-start" />
-                    删除当前文件
-                  </Button>
+                    <Button
+                      disabled={!isCurrentFileExportable || isLoading || isTranslating}
+                      onClick={() => void exportCurrentFile("translation")}
+                      size="sm"
+                      title={
+                        isCurrentFileExportable
+                          ? "导出当前文件译文"
+                          : "当前文件翻译完成后才能导出"
+                      }
+                      type="button"
+                      variant={isCurrentFileExportable ? "default" : "outline"}
+                    >
+                      <Download data-icon="inline-start" />
+                      导出译文
+                    </Button>
+                    <Button
+                      disabled={!isCurrentFileExportable || isLoading || isTranslating}
+                      onClick={() => void exportCurrentFile("bilingual")}
+                      size="sm"
+                      title={
+                        isCurrentFileExportable
+                          ? "导出当前文件双语对照"
+                          : "当前文件翻译完成后才能导出"
+                      }
+                      type="button"
+                      variant="outline"
+                    >
+                      <Languages data-icon="inline-start" />
+                      导出双语
+                    </Button>
+                    <Button
+                      disabled={!activeJob || isDeleting || isTranslating || !currentFile}
+                      onClick={() => void deleteCurrentFile()}
+                      size="sm"
+                      type="button"
+                      variant="destructive"
+                    >
+                      <Trash2 data-icon="inline-start" />
+                      删除当前文件
+                    </Button>
                   </div>
                 </div>
               </CardContent>
@@ -1031,6 +1024,26 @@ function LanguageSelect({
         </SelectGroup>
       </SelectContent>
     </Select>
+  );
+}
+
+function FileStateBadge({ state }: { state: string }) {
+  if (state === "已完成") {
+    return (
+      <Badge
+        className="border-green-600/20 bg-green-600/10 text-green-700 dark:text-green-400"
+        variant="outline"
+      >
+        <CheckCircle2 data-icon="inline-start" />
+        {state}
+      </Badge>
+    );
+  }
+
+  return (
+    <Badge variant={state === "需要重试" ? "destructive" : "secondary"}>
+      {state}
+    </Badge>
   );
 }
 

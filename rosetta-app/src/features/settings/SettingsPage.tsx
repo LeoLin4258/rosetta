@@ -38,6 +38,7 @@ import type {
   RwkvTranslationApiProbeResult,
   TranslationMode,
 } from "../../types/rosetta";
+import { ScrollArea } from "@/components/ui/scroll-area";
 
 const modeOptions: Array<{ label: string; value: TranslationMode }> = [
   { label: "极速", value: "fast" },
@@ -227,291 +228,293 @@ export function SettingsPage() {
       : "not-tested";
 
   return (
-    <section className="mx-auto flex w-full max-w-4xl flex-col gap-6 px-6 py-6">
-      <header className="flex flex-col gap-2">
-        <h1 className="text-2xl font-semibold tracking-normal">设置</h1>
-        <p className="max-w-xl text-sm text-muted-foreground">
-          管理 Rosetta 的翻译服务、显示方式和本地模型选项。
-        </p>
-      </header>
+    <ScrollArea className="h-full w-full">
+      <section className="mx-auto flex w-full max-w-4xl flex-col gap-6 px-6 py-6 mb-20">
+        <header className="flex flex-col gap-2">
+          <h1 className="text-2xl font-semibold tracking-normal">设置</h1>
+          <p className="max-w-xl text-sm text-muted-foreground">
+            管理 Rosetta 的翻译服务、显示方式和本地模型选项。
+          </p>
+        </header>
 
-      <main className="flex w-full flex-col gap-20">
-        <section className="flex flex-col gap-3" id="appearance">
-          <SettingsSectionHeader
-            description="调整 Rosetta 的显示方式。"
-            icon={<Palette />}
-            title="界面外观"
-          />
+        <main className="flex w-full flex-col gap-20">
+          <section className="flex flex-col gap-3" id="appearance">
+            <SettingsSectionHeader
+              description="调整 Rosetta 的显示方式。"
+              icon={<Palette />}
+              title="界面外观"
+            />
 
-          <Card>
-            <CardHeader>
-              <CardTitle>主题</CardTitle>
-              <CardDescription>选择浅色、深色，或跟随系统。</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <ToggleGroup
-                className="grid grid-cols-3"
-                onValueChange={(value) => {
-                  if (value) {
-                    setThemeMode(value as AppThemeMode);
-                  }
-                }}
-                type="single"
-                value={themeMode}
-                variant="outline"
-              >
-                {themeOptions.map((option) => (
-                  <ToggleGroupItem key={option.value} value={option.value}>
-                    {option.label}
-                  </ToggleGroupItem>
-                ))}
-              </ToggleGroup>
-            </CardContent>
-          </Card>
-        </section>
-
-        <section className="flex flex-col gap-3" id="app-update">
-          <SettingsSectionHeader
-            description="手动检查内部测试版更新。"
-            icon={<Rocket />}
-            title="应用更新"
-          >
-            <Badge variant="outline">Windows Beta</Badge>
-          </SettingsSectionHeader>
-
-          <Card>
-            <CardHeader>
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <CardTitle>Rosetta {appVersion}</CardTitle>
-                  <CardDescription>
-                    更新包会通过 GitHub Release 分发，并使用 Tauri updater
-                    签名校验。
-                  </CardDescription>
-                </div>
-                <UpdateStatusBadge status={updateStatus} />
-              </div>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-4">
-              <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  disabled={
-                    updateStatus === "checking" ||
-                    updateStatus === "downloading" ||
-                    updateStatus === "installing"
-                  }
-                  onClick={() => void checkForUpdate()}
-                  type="button"
+            <Card>
+              <CardHeader>
+                <CardTitle>主题</CardTitle>
+                <CardDescription>选择浅色、深色，或跟随系统。</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <ToggleGroup
+                  className="grid grid-cols-3"
+                  onValueChange={(value) => {
+                    if (value) {
+                      setThemeMode(value as AppThemeMode);
+                    }
+                  }}
+                  type="single"
+                  value={themeMode}
                   variant="outline"
                 >
-                  <RefreshCw
-                    className={
-                      updateStatus === "checking" ? "animate-spin" : undefined
-                    }
-                    data-icon="inline-start"
-                  />
-                  检查更新
-                </Button>
+                  {themeOptions.map((option) => (
+                    <ToggleGroupItem key={option.value} value={option.value}>
+                      {option.label}
+                    </ToggleGroupItem>
+                  ))}
+                </ToggleGroup>
+              </CardContent>
+            </Card>
+          </section>
 
-                {updateStatus === "available" && availableUpdate ? (
+          <section className="flex flex-col gap-3" id="app-update">
+            <SettingsSectionHeader
+              description="手动检查内部测试版更新。"
+              icon={<Rocket />}
+              title="应用更新"
+            >
+              <Badge variant="outline">Windows Beta</Badge>
+            </SettingsSectionHeader>
+
+            <Card>
+              <CardHeader>
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <CardTitle>Rosetta {appVersion}</CardTitle>
+                    <CardDescription>
+                      更新包会通过 GitHub Release 分发，并使用 Tauri updater
+                      签名校验。
+                    </CardDescription>
+                  </div>
+                  <UpdateStatusBadge status={updateStatus} />
+                </div>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-4">
+                <div className="flex flex-wrap items-center gap-2">
                   <Button
-                    onClick={() => void installAvailableUpdate()}
+                    disabled={
+                      updateStatus === "checking" ||
+                      updateStatus === "downloading" ||
+                      updateStatus === "installing"
+                    }
+                    onClick={() => void checkForUpdate()}
                     type="button"
-                  >
-                    <Download data-icon="inline-start" />
-                    下载并安装
-                  </Button>
-                ) : null}
-
-                {updateStatus === "ready-to-restart" ? (
-                  <Button onClick={() => void restartApp()} type="button">
-                    <RefreshCw data-icon="inline-start" />
-                    重启完成更新
-                  </Button>
-                ) : null}
-              </div>
-
-              <UpdateStatusMessage
-                error={updateError}
-                progress={downloadProgress}
-                status={updateStatus}
-                update={availableUpdate}
-              />
-            </CardContent>
-          </Card>
-        </section>
-
-        <section className="flex flex-col gap-3" id="translation-service">
-          <SettingsSectionHeader
-            description="配置当前用于文档翻译的 RWKV API。"
-            icon={<Cloud />}
-            title="翻译服务"
-          >
-            <StatusBadge status={apiStatus} />
-          </SettingsSectionHeader>
-
-          <Card className="overflow-hidden">
-            <CardContent className="flex flex-col gap-5 py-5">
-              <div className="grid gap-4 md:grid-cols-2">
-                <SettingField
-                  description="例如 https://example.com"
-                  htmlFor="rwkv-base-url"
-                  label="API 地址"
-                >
-                  <Input
-                    id="rwkv-base-url"
-                    onChange={updateTextField("baseUrl")}
-                    placeholder="https://..."
-                    value={rwkv.baseUrl}
-                  />
-                </SettingField>
-
-                <SettingField
-                  description="当前接口使用 /v1/chat/completions"
-                  htmlFor="rwkv-endpoint"
-                  label="接口路径"
-                >
-                  <Input
-                    id="rwkv-endpoint"
-                    onChange={updateTextField("endpoint")}
-                    placeholder="/v1/chat/completions"
-                    value={rwkv.endpoint}
-                  />
-                </SettingField>
-
-                <SettingField
-                  description="X-Internal-Token"
-                  htmlFor="rwkv-internal-token"
-                  label="访问密钥"
-                >
-                  <Input
-                    autoComplete="off"
-                    id="rwkv-internal-token"
-                    onChange={updateTextField("internalToken")}
-                    type="password"
-                    value={rwkv.internalToken}
-                  />
-                </SettingField>
-
-                <SettingField
-                  description="body password"
-                  htmlFor="rwkv-body-password"
-                  label="模型口令"
-                >
-                  <Input
-                    autoComplete="off"
-                    id="rwkv-body-password"
-                    onChange={updateTextField("bodyPassword")}
-                    type="password"
-                    value={rwkv.bodyPassword}
-                  />
-                </SettingField>
-              </div>
-
-              <Separator />
-
-              <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_12rem]">
-                <SettingField
-                  description="长文档建议保留较长等待时间"
-                  htmlFor="rwkv-timeout"
-                  label="超时时间"
-                >
-                  <Input
-                    id="rwkv-timeout"
-                    min={1}
-                    onChange={updateTimeout}
-                    type="number"
-                    value={rwkv.timeoutMs}
-                  />
-                </SettingField>
-
-                <div className="flex flex-col gap-2">
-                  <Label>翻译偏好</Label>
-                  <ToggleGroup
-                    className="grid grid-cols-3"
-                    onValueChange={(value) => {
-                      if (value) {
-                        setTranslationMode(value as TranslationMode);
-                      }
-                    }}
-                    type="single"
-                    value={rwkv.mode}
                     variant="outline"
                   >
-                    {modeOptions.map((option) => (
-                      <ToggleGroupItem key={option.value} value={option.value}>
-                        {option.label}
-                      </ToggleGroupItem>
-                    ))}
-                  </ToggleGroup>
-                </div>
-              </div>
-
-              <div className="flex flex-col gap-3 rounded-md border bg-muted/30 p-3">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div className="flex min-w-0 items-center gap-2 text-sm">
-                    <ShieldCheck className="text-muted-foreground" />
-                    <span className="font-medium">连接测试</span>
-                    <span className="text-muted-foreground">
-                      会发送两句英文样本文本到当前接口。
-                    </span>
-                  </div>
-                  <Button
-                    disabled={!canProbeApi}
-                    onClick={() => void probeApi()}
-                    title="测试 RWKV API"
-                    type="button"
-                    variant={apiStatus === "connected" ? "outline" : "default"}
-                  >
-                    <Send data-icon="inline-start" />
-                    {isProbingApi ? "测试中" : "测试连接"}
+                    <RefreshCw
+                      className={
+                        updateStatus === "checking" ? "animate-spin" : undefined
+                      }
+                      data-icon="inline-start"
+                    />
+                    检查更新
                   </Button>
+
+                  {updateStatus === "available" && availableUpdate ? (
+                    <Button
+                      onClick={() => void installAvailableUpdate()}
+                      type="button"
+                    >
+                      <Download data-icon="inline-start" />
+                      下载并安装
+                    </Button>
+                  ) : null}
+
+                  {updateStatus === "ready-to-restart" ? (
+                    <Button onClick={() => void restartApp()} type="button">
+                      <RefreshCw data-icon="inline-start" />
+                      重启完成更新
+                    </Button>
+                  ) : null}
                 </div>
 
-                {missingConnectionFields.length > 0 ? (
-                  <p className="text-xs text-muted-foreground">
-                    还需要填写：{missingConnectionFields.join("、")}。
-                  </p>
-                ) : null}
+                <UpdateStatusMessage
+                  error={updateError}
+                  progress={downloadProgress}
+                  status={updateStatus}
+                  update={availableUpdate}
+                />
+              </CardContent>
+            </Card>
+          </section>
 
-                {apiError ? (
-                  <p className="text-sm text-destructive">{apiError}</p>
-                ) : null}
+          <section className="flex flex-col gap-3" id="translation-service">
+            <SettingsSectionHeader
+              description="配置当前用于文档翻译的 RWKV API。"
+              icon={<Cloud />}
+              title="翻译服务"
+            >
+              <StatusBadge status={apiStatus} />
+            </SettingsSectionHeader>
 
-                {apiProbeResult ? (
-                  <ApiProbeResult result={apiProbeResult} />
-                ) : null}
-              </div>
-            </CardContent>
-          </Card>
-        </section>
+            <Card className="overflow-hidden">
+              <CardContent className="flex flex-col gap-5 py-5">
+                <div className="grid gap-4 md:grid-cols-2">
+                  <SettingField
+                    description="例如 https://example.com"
+                    htmlFor="rwkv-base-url"
+                    label="API 地址"
+                  >
+                    <Input
+                      id="rwkv-base-url"
+                      onChange={updateTextField("baseUrl")}
+                      placeholder="https://..."
+                      value={rwkv.baseUrl}
+                    />
+                  </SettingField>
 
-        <section className="flex flex-col gap-3" id="local-model">
-          <SettingsSectionHeader
-            description="本地一键运行 RWKV 会作为独立选项恢复。"
-            icon={<ServerOff />}
-            title="本地模型"
-          />
+                  <SettingField
+                    description="当前接口使用 /v1/chat/completions"
+                    htmlFor="rwkv-endpoint"
+                    label="接口路径"
+                  >
+                    <Input
+                      id="rwkv-endpoint"
+                      onChange={updateTextField("endpoint")}
+                      placeholder="/v1/chat/completions"
+                      value={rwkv.endpoint}
+                    />
+                  </SettingField>
 
-          <Card>
-            <CardHeader>
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <CardTitle>一键本地 RWKV</CardTitle>
-                  <CardDescription>
-                    当前版本优先使用已配置的翻译服务。
-                  </CardDescription>
+                  <SettingField
+                    description="X-Internal-Token"
+                    htmlFor="rwkv-internal-token"
+                    label="访问密钥"
+                  >
+                    <Input
+                      autoComplete="off"
+                      id="rwkv-internal-token"
+                      onChange={updateTextField("internalToken")}
+                      type="password"
+                      value={rwkv.internalToken}
+                    />
+                  </SettingField>
+
+                  <SettingField
+                    description="body password"
+                    htmlFor="rwkv-body-password"
+                    label="模型口令"
+                  >
+                    <Input
+                      autoComplete="off"
+                      id="rwkv-body-password"
+                      onChange={updateTextField("bodyPassword")}
+                      type="password"
+                      value={rwkv.bodyPassword}
+                    />
+                  </SettingField>
                 </div>
-                <Badge variant="outline">即将支持</Badge>
-              </div>
-            </CardHeader>
-            <CardContent className="text-sm text-muted-foreground">
-              后续恢复本地模型时，这里会提供清晰的安装、检测和启动入口；它不会和当前 API 配置混在一起。
-            </CardContent>
-          </Card>
-        </section>
-      </main>
-    </section>
+
+                <Separator />
+
+                <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_12rem]">
+                  <SettingField
+                    description="长文档建议保留较长等待时间"
+                    htmlFor="rwkv-timeout"
+                    label="超时时间"
+                  >
+                    <Input
+                      id="rwkv-timeout"
+                      min={1}
+                      onChange={updateTimeout}
+                      type="number"
+                      value={rwkv.timeoutMs}
+                    />
+                  </SettingField>
+
+                  <div className="flex flex-col gap-2">
+                    <Label>翻译偏好</Label>
+                    <ToggleGroup
+                      className="grid grid-cols-3"
+                      onValueChange={(value) => {
+                        if (value) {
+                          setTranslationMode(value as TranslationMode);
+                        }
+                      }}
+                      type="single"
+                      value={rwkv.mode}
+                      variant="outline"
+                    >
+                      {modeOptions.map((option) => (
+                        <ToggleGroupItem key={option.value} value={option.value}>
+                          {option.label}
+                        </ToggleGroupItem>
+                      ))}
+                    </ToggleGroup>
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-3 rounded-md border bg-muted/30 p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex min-w-0 items-center gap-2 text-sm">
+                      <ShieldCheck className="text-muted-foreground" />
+                      <span className="font-medium">连接测试</span>
+                      <span className="text-muted-foreground">
+                        会发送两句英文样本文本到当前接口。
+                      </span>
+                    </div>
+                    <Button
+                      disabled={!canProbeApi}
+                      onClick={() => void probeApi()}
+                      title="测试 RWKV API"
+                      type="button"
+                      variant={apiStatus === "connected" ? "outline" : "default"}
+                    >
+                      <Send data-icon="inline-start" />
+                      {isProbingApi ? "测试中" : "测试连接"}
+                    </Button>
+                  </div>
+
+                  {missingConnectionFields.length > 0 ? (
+                    <p className="text-xs text-muted-foreground">
+                      还需要填写：{missingConnectionFields.join("、")}。
+                    </p>
+                  ) : null}
+
+                  {apiError ? (
+                    <p className="text-sm text-destructive">{apiError}</p>
+                  ) : null}
+
+                  {apiProbeResult ? (
+                    <ApiProbeResult result={apiProbeResult} />
+                  ) : null}
+                </div>
+              </CardContent>
+            </Card>
+          </section>
+
+          <section className="flex flex-col gap-3" id="local-model">
+            <SettingsSectionHeader
+              description="本地一键运行 RWKV 会作为独立选项恢复。"
+              icon={<ServerOff />}
+              title="本地模型"
+            />
+
+            <Card>
+              <CardHeader>
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <CardTitle>一键本地 RWKV</CardTitle>
+                    <CardDescription>
+                      当前版本优先使用已配置的翻译服务。
+                    </CardDescription>
+                  </div>
+                  <Badge variant="outline">即将支持</Badge>
+                </div>
+              </CardHeader>
+              <CardContent className="text-sm text-muted-foreground">
+                后续恢复本地模型时，这里会提供清晰的安装、检测和启动入口；它不会和当前 API 配置混在一起。
+              </CardContent>
+            </Card>
+          </section>
+        </main>
+      </section>
+    </ScrollArea>
   );
 }
 
@@ -696,8 +699,8 @@ function UpdateStatusMessage({
         正在下载更新
         {progress.total
           ? `：${formatBytes(progress.downloaded)} / ${formatBytes(
-              progress.total
-            )}`
+            progress.total
+          )}`
           : progress.downloaded > 0
             ? `：${formatBytes(progress.downloaded)}`
             : "。"}
