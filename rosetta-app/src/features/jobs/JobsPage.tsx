@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
+  ArrowRight,
+  CheckCircle2,
   Download,
   FilePlus,
   FileText,
@@ -8,6 +10,7 @@ import {
   Play,
   RefreshCw,
   Trash2,
+  X,
 } from "lucide-react";
 import { DocumentPreview } from "../preview/DocumentPreview";
 import { useRosettaStore } from "../../store/useRosettaStore";
@@ -38,6 +41,7 @@ import {
   saveRosettaSegments,
   updateRosettaJobLanguages,
 } from "../../lib/rosettaJobs";
+import { cn } from "../../lib/utils";
 import type { RosettaExportKind, Segment } from "../../types/rosetta";
 
 const BATCH_SIZE = 16;
@@ -252,6 +256,22 @@ export function JobsPage() {
     isCurrentFileExportable &&
     !isTranslating &&
     !isCurrentFileTranslationRunActive;
+  const hasSelectedBlocks =
+    selectedBlockIds.length > 0 && selectedRevisionId === "current";
+  const mainActionLabel = hasSelectedBlocks ? "重翻选中" : primaryActionLabel;
+  const mainActionDisabled = hasSelectedBlocks
+    ? !rwkvConfigReady ||
+      selectedSegments.length === 0 ||
+      isTranslating ||
+      isLoading
+    : !rwkvConfigReady ||
+      primaryTranslationSegments.length === 0 ||
+      isTranslating ||
+      isLoading;
+  const mainActionVariant =
+    hasSelectedBlocks || pendingSegments.length > 0 || failedSegments.length > 0
+      ? "default"
+      : "outline";
   useEffect(() => {
     if (!jobId && jobs.length > 0) {
       navigate(`/jobs/${jobs[0].id}`, { replace: true });
@@ -546,7 +566,7 @@ export function JobsPage() {
     <section className="grid h-full min-h-0 grid-rows-[auto_1fr] gap-4 px-6 py-5">
       <Card className="min-h-0 gap-0 py-0">
         <CardHeader className="border-b py-4">
-          <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-start">
+          <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
             <div className="flex min-w-0 gap-3">
               <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
                 <FileText />
@@ -588,54 +608,67 @@ export function JobsPage() {
               </div>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2 xl:justify-end">
+            <div className="flex flex-wrap items-center gap-2 rounded-lg  xl:justify-end">
+              <div className="flex items-center gap-1 rounded-md border bg-background p-1">
+                <LanguageSelect
+                  ariaLabel="选择原文语言"
+                  disabled={isLoading || isTranslating || isSavingLanguages}
+                  onValueChange={(value) => void updateLanguages(value, targetLang)}
+                  value={sourceLang}
+                />
+                <ArrowRight className="text-muted-foreground" />
+                <LanguageSelect
+                  ariaLabel="选择目标译文语言"
+                  disabled={isLoading || isTranslating || isSavingLanguages}
+                  onValueChange={(value) => void updateLanguages(sourceLang, value)}
+                  value={targetLang}
+                />
+              </div>
+              {isSavingLanguages ? (
+                <span className="text-xs text-muted-foreground">保存中</span>
+              ) : null}
+              {hasSelectedBlocks ? (
+                <span className="px-1 text-sm text-muted-foreground">
+                  已选 {selectedBlockIds.length} 段
+                </span>
+              ) : null}
               <Button
-                disabled={
-                  !rwkvConfigReady ||
-                  primaryTranslationSegments.length === 0 ||
-                  isTranslating ||
-                  isLoading
+                disabled={mainActionDisabled}
+                onClick={() =>
+                  void (hasSelectedBlocks
+                    ? translateSelectedBlocks()
+                    : translateCurrentFile())
                 }
-                onClick={() => void translateCurrentFile()}
                 title={
                   rwkvConfigReady
-                    ? pendingSegments.length > 0
-                      ? "翻译当前文件的待处理或失败段落"
-                      : "重新翻译当前文件并保留旧译文历史"
+                    ? hasSelectedBlocks
+                      ? "重新翻译选中的段落"
+                      : pendingSegments.length > 0
+                        ? "翻译当前文件的待处理或失败段落"
+                        : "重新翻译当前文件并保留旧译文历史"
                     : "请先在设置页完成 RWKV API 配置"
                 }
                 type="button"
+                variant={mainActionVariant}
               >
-                <Play data-icon="inline-start" />
-                {primaryActionLabel}
+                {hasSelectedBlocks || failedSegments.length > 0 ? (
+                  <RefreshCw data-icon="inline-start" />
+                ) : (
+                  <Play data-icon="inline-start" />
+                )}
+                {mainActionLabel}
               </Button>
-              {selectedBlockIds.length > 0 && selectedRevisionId === "current" ? (
-                <>
-                  <Badge variant="outline">已选 {selectedBlockIds.length} 段</Badge>
-                  <Button
-                    disabled={
-                      !rwkvConfigReady ||
-                      selectedSegments.length === 0 ||
-                      isTranslating ||
-                      isLoading
-                    }
-                    onClick={() => void translateSelectedBlocks()}
-                    title="重新翻译选中的段落"
-                    type="button"
-                    variant="outline"
-                  >
-                    <RefreshCw data-icon="inline-start" />
-                    重翻选中
-                  </Button>
-                  <Button
-                    disabled={isTranslating || isLoading}
-                    onClick={() => setSelectedBlockIds([])}
-                    type="button"
-                    variant="ghost"
-                  >
-                    取消选择
-                  </Button>
-                </>
+              {hasSelectedBlocks ? (
+                <Button
+                  disabled={isTranslating || isLoading}
+                  onClick={() => setSelectedBlockIds([])}
+                  size="icon"
+                  title="取消段落选择"
+                  type="button"
+                  variant="ghost"
+                >
+                  <X />
+                </Button>
               ) : null}
             </div>
           </div>
@@ -645,36 +678,34 @@ export function JobsPage() {
           <div className="flex items-center gap-3">
             <div className="h-2 min-w-24 flex-1 overflow-hidden rounded-sm bg-muted">
               <div
-                className="h-full bg-primary"
+                className={cn(
+                  "h-full bg-primary transition-[width]",
+                  isCurrentFileExportable && !isCurrentFileTranslationRunActive
+                    ? "opacity-100"
+                    : "opacity-80"
+                )}
                 style={{ width: `${fileProgress}%` }}
               />
             </div>
-            <span className="shrink-0 text-xs text-muted-foreground">
+            {isCurrentFileExportable && !isCurrentFileTranslationRunActive ? (
+              <Badge variant="secondary">
+                <CheckCircle2 data-icon="inline-start" />
+                完成
+              </Badge>
+            ) : null}
+            <span
+              className={cn(
+                "shrink-0 text-xs",
+                isCurrentFileExportable && !isCurrentFileTranslationRunActive
+                  ? "font-medium text-foreground"
+                  : "text-muted-foreground"
+              )}
+            >
               {fileProgressText}
             </span>
           </div>
 
-          <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
-            <div className="flex flex-wrap items-center gap-2">
-              <LanguageSelect
-                disabled={isLoading || isTranslating || isSavingLanguages}
-                label="原文"
-                onValueChange={(value) => void updateLanguages(value, targetLang)}
-                value={sourceLang}
-              />
-              <span className="text-sm text-muted-foreground">→</span>
-              <LanguageSelect
-                disabled={isLoading || isTranslating || isSavingLanguages}
-                label="译文"
-                onValueChange={(value) => void updateLanguages(sourceLang, value)}
-                value={targetLang}
-              />
-              {isSavingLanguages ? (
-                <span className="text-xs text-muted-foreground">保存中</span>
-              ) : null}
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2 xl:justify-end">
+          <div className="flex flex-wrap items-center justify-end gap-2">
               <Button
                 disabled={!isCurrentFileExportable || isLoading || isTranslating}
                 onClick={() => void exportCurrentFile("translation")}
@@ -685,7 +716,7 @@ export function JobsPage() {
                     : "当前文件翻译完成后才能导出"
                 }
                 type="button"
-                variant="outline"
+                variant={isCurrentFileExportable ? "default" : "outline"}
               >
                 <Download data-icon="inline-start" />
                 导出译文
@@ -715,7 +746,6 @@ export function JobsPage() {
                 <Trash2 data-icon="inline-start" />
                 删除当前文件
               </Button>
-            </div>
           </div>
         </CardContent>
       </Card>
@@ -747,34 +777,31 @@ export function JobsPage() {
 }
 
 function LanguageSelect({
+  ariaLabel,
   disabled,
-  label,
   onValueChange,
   value,
 }: {
+  ariaLabel: string;
   disabled: boolean;
-  label: string;
   onValueChange: (value: string) => void;
   value: string;
 }) {
   return (
-    <label className="flex items-center gap-2 text-sm">
-      <span className="text-muted-foreground">{label}</span>
-      <Select disabled={disabled} onValueChange={onValueChange} value={value}>
-        <SelectTrigger size="sm">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectGroup>
-            {LANGUAGE_OPTIONS.map((language) => (
-              <SelectItem key={language.value} value={language.value}>
-                {language.label}
-              </SelectItem>
-            ))}
-          </SelectGroup>
-        </SelectContent>
-      </Select>
-    </label>
+    <Select disabled={disabled} onValueChange={onValueChange} value={value}>
+      <SelectTrigger aria-label={ariaLabel} size="sm">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectGroup>
+          {LANGUAGE_OPTIONS.map((language) => (
+            <SelectItem key={language.value} value={language.value}>
+              {language.label}
+            </SelectItem>
+          ))}
+        </SelectGroup>
+      </SelectContent>
+    </Select>
   );
 }
 
