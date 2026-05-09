@@ -81,7 +81,7 @@ export function AppShell() {
           }
         >
           <AppSidebar />
-          <SidebarInset className="min-h-0  rounded-tl overflow-hidden">
+          <SidebarInset className="min-h-0  rounded-tl overflow-hidden border-l border-t">
             <header className="flex h-14 shrink-0 items-center justify-between px-4">
               <div className="flex items-center justify-center gap-3">
                 <SidebarTrigger />
