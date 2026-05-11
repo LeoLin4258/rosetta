@@ -29,6 +29,14 @@ import {
 } from "@/components/ui/resizable";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Table,
   TableBody,
   TableCell,
@@ -79,6 +87,11 @@ const LANGUAGE_OPTIONS = [
   { value: "id", label: "Bahasa Indonesia" },
 ];
 
+const SOURCE_LANGUAGE_OPTIONS = [
+  { value: "en", label: "English" },
+  ...LANGUAGE_OPTIONS,
+];
+
 export function JobsPage() {
   const { fileId, jobId } = useParams();
   const navigate = useNavigate();
@@ -118,6 +131,7 @@ export function JobsPage() {
   );
 
   const [isTranslating, setIsTranslating] = useState(false);
+  const [batchSourceLang, setBatchSourceLang] = useState("en");
   const [batchTargetLangs, setBatchTargetLangs] = useState<string[]>(["zh-CN"]);
   const [selectedSourceFileIds, setSelectedSourceFileIds] = useState<string[]>(
     []
@@ -222,6 +236,16 @@ export function JobsPage() {
     selectedTranslationFile?.id,
     setActiveJobSelection,
   ]);
+
+  useEffect(() => {
+    const sourceLang = selectedSourceFile?.sourceLang ?? document?.sourceLang;
+    if (
+      sourceLang &&
+      SOURCE_LANGUAGE_OPTIONS.some((language) => language.value === sourceLang)
+    ) {
+      setBatchSourceLang(sourceLang);
+    }
+  }, [document?.sourceLang, selectedSourceFile?.sourceLang]);
 
   function selectSourceFile(sourceFile: RosettaSourceFile) {
     if (!currentJobId) {
@@ -329,7 +353,8 @@ export function JobsPage() {
         await translateTranslationFile(
           queued.translationFile,
           "batch",
-          queued.segments
+          queued.segments,
+          batchSourceLang
         );
         setQueuedTranslationFileIds((current) =>
           current.filter((id) => id !== queued.translationFile.id)
@@ -359,7 +384,8 @@ export function JobsPage() {
   async function translateTranslationFile(
     translationFile: RosettaTranslationFile,
     scope: "file" | "batch" = "file",
-    initialSegments?: TranslationSegment[]
+    initialSegments?: TranslationSegment[],
+    sourceLangOverride?: string
   ) {
     if (!currentJobId || !document || !rwkvConfigReady || isTranslating) {
       return;
@@ -424,7 +450,7 @@ export function JobsPage() {
           internalToken: rwkv.internalToken,
           bodyPassword: rwkv.bodyPassword,
           timeoutMs: rwkv.timeoutMs,
-          sourceLang: sourceFile.sourceLang ?? document.sourceLang,
+          sourceLang: sourceLangOverride ?? sourceFile.sourceLang ?? document.sourceLang,
           targetLang: translationFile.targetLang,
           sourceTexts: batch.map(
             (segment) => sourceById.get(segment.sourceSegmentId)?.sourceText ?? ""
@@ -554,7 +580,7 @@ export function JobsPage() {
             <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
               <span>{sourceFiles.length} 个源文件</span>
               <span>{translationFiles.length} 个译文文件</span>
-              {selectedTranslationFile ? (
+              {/* {selectedTranslationFile ? (
                 <FileStateBadge
                   state={runAwareTranslationState(
                     selectedTranslationFile,
@@ -564,7 +590,7 @@ export function JobsPage() {
                 />
               ) : selectedSourceFile ? (
                 <span className="truncate">{selectedSourceFile.relativePath}</span>
-              ) : null}
+              ) : null} */}
             </div>
           </div>
         </CardHeader>
@@ -575,6 +601,28 @@ export function JobsPage() {
             <span>{selectedBatchCount} 个原文已选择</span>
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-muted-foreground">原文</span>
+              <Select
+                disabled={isTranslating}
+                onValueChange={setBatchSourceLang}
+                value={batchSourceLang}
+              >
+                <SelectTrigger aria-label="选择原文语言" size="sm">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    {SOURCE_LANGUAGE_OPTIONS.map((language) => (
+                      <SelectItem key={language.value} value={language.value}>
+                        {language.label}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </div>
+            <span className="text-sm text-muted-foreground">译文</span>
             <ToggleGroup
               disabled={isTranslating}
               onValueChange={(values) => setBatchTargetLangs(values)}
