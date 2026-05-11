@@ -301,7 +301,7 @@ function PreviewPane({
       onScroll={onScroll}
       viewportRef={paneRef}
     >
-      <div className="mx-auto max-w-[var(--rosetta-reader-max-width)] px-6 py-6">
+      <div className="mx-auto max-w-(--rosetta-reader-max-width) px-6 py-6">
         {blocks.length === 0 ? (
           <div className="flex min-h-32 items-center justify-center text-sm text-muted-foreground">
             当前文件没有可预览内容。

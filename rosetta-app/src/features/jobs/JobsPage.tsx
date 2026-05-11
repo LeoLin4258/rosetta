@@ -6,7 +6,6 @@ import {
   ChevronUp,
   Download,
   FilePlus,
-  FileText,
   Languages,
   Play,
   RefreshCw,
