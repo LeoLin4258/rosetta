@@ -341,3 +341,10 @@ textarea {
 .rosetta-file-status-icon[data-status="failed"] {
   color: var(--destructive);
 }
+
+
+
+
+.xxx{
+  border: solid 1px red;
+}

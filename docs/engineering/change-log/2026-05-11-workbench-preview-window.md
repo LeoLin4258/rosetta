@@ -5,6 +5,7 @@
 - Changed the main job workbench from an embedded bilingual preview into a source/translation file list.
 - Source files are listed in the left pane; translation files for the selected source file are listed in the right pane.
 - The source and translation panes use shadcn `Resizable` so users can adjust the two list widths.
+- Restyled the workbench as a file-manager surface with a compact top batch toolbar, a source file list, and a translation task table with inline progress.
 - Workbench actions are separated by scope: row-level actions for existing translation files and source-file-only batch creation/translation from the left pane.
 - Batch translation now creates/reuses all requested translation files first and marks them as queued in the list before translating them sequentially.
 - Batch translation controls include an explicit source language selector before the target language tabs.

@@ -10,18 +10,14 @@ import {
   Folder,
   Languages,
   LoaderCircle,
+  MoreVertical,
   Play,
   RefreshCw,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import {
   ResizableHandle,
   ResizablePanel,
@@ -570,37 +566,26 @@ export function JobsPage() {
   }
 
   return (
-    <section className="grid h-full min-h-0 grid-rows-[auto_1fr] gap-3 px-5 pb-5">
-      <Card className="gap-0 py-0">
-        <CardHeader className="flex-row items-center justify-between gap-4 border-b py-3">
-          <div className="min-w-0">
-            <CardTitle className="truncate text-base">
-              {activeJob?.filename ?? "项目"}
-            </CardTitle>
-            <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-              <span>{sourceFiles.length} 个源文件</span>
-              <span>{translationFiles.length} 个译文文件</span>
-              {/* {selectedTranslationFile ? (
-                <FileStateBadge
-                  state={runAwareTranslationState(
-                    selectedTranslationFile,
-                    activeTranslationRun,
-                    currentJobId
-                  )}
-                />
-              ) : selectedSourceFile ? (
-                <span className="truncate">{selectedSourceFile.relativePath}</span>
-              ) : null} */}
-            </div>
+    <section className="grid h-full min-h-0 grid-rows-[auto_1fr] bg-background">
+      <header className="border-b bg-background">
+        <div className="flex min-h-12 items-center justify-between gap-4 px-5 py-2">
+          <div className="flex min-w-0 items-center gap-5 text-sm text-muted-foreground">
+            <span>
+              <strong className="mr-1 text-foreground">{sourceFiles.length}</strong>
+              原文文件
+            </span>
+            <span>
+              <strong className="mr-1 text-foreground">
+                {translationFiles.length}
+              </strong>
+              译文文件
+            </span>
           </div>
-        </CardHeader>
-
-        <CardContent className="flex flex-wrap items-center justify-between gap-3 py-3">
-          <div className="flex min-w-0 items-center gap-2 text-sm text-muted-foreground">
-            <span>批量翻译</span>
-            <span>{selectedBatchCount} 个原文已选择</span>
-          </div>
-          <div className="flex flex-wrap items-center justify-end gap-2">
+          <div className="flex min-w-0 items-center gap-3 rounded-lg border bg-card px-2 py-1 shadow-xs">
+            <span className="whitespace-nowrap text-sm text-muted-foreground">
+              批量：{selectedBatchCount} 个原文已选择
+            </span>
+            <div className="h-6 w-px bg-border" />
             <div className="flex items-center gap-2">
               <span className="text-sm text-muted-foreground">原文</span>
               <Select
@@ -622,19 +607,25 @@ export function JobsPage() {
                 </SelectContent>
               </Select>
             </div>
-            <span className="text-sm text-muted-foreground">译文</span>
-            <ToggleGroup
-              disabled={isTranslating}
-              onValueChange={(values) => setBatchTargetLangs(values)}
-              type="multiple"
-              value={batchTargetLangs}
-            >
-              {LANGUAGE_OPTIONS.slice(0, 6).map((language) => (
-                <ToggleGroupItem key={language.value} size="sm" value={language.value}>
-                  {language.value}
-                </ToggleGroupItem>
-              ))}
-            </ToggleGroup>
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-muted-foreground">译文</span>
+              <ToggleGroup
+                disabled={isTranslating}
+                onValueChange={(values) => setBatchTargetLangs(values)}
+                type="multiple"
+                value={batchTargetLangs}
+              >
+                {LANGUAGE_OPTIONS.slice(0, 6).map((language) => (
+                  <ToggleGroupItem
+                    key={language.value}
+                    size="sm"
+                    value={language.value}
+                  >
+                    {language.value}
+                  </ToggleGroupItem>
+                ))}
+              </ToggleGroup>
+            </div>
             <Button
               disabled={
                 !rwkvConfigReady ||
@@ -650,20 +641,12 @@ export function JobsPage() {
               创建并翻译
             </Button>
           </div>
-        </CardContent>
-      </Card>
-
-      <Card className="min-h-0 gap-0 overflow-hidden py-0">
-        <div className="flex items-center justify-between border-b px-4 py-3">
-          <div className="min-w-0">
-            <h2 className="text-sm font-medium">项目文件</h2>
-            <p className="mt-1 text-sm text-muted-foreground">
-              左侧选择原文，右侧管理该原文的多语言译文。双击原文或译文打开预览窗口。
-            </p>
-          </div>
         </div>
+      </header>
+
+      <div className="min-h-0 overflow-hidden">
         <ResizablePanelGroup
-          className="min-h-0 flex-1 overflow-hidden"
+          className="h-full min-h-0 overflow-hidden"
           orientation="horizontal"
         >
           <ResizablePanel defaultSize="32%" maxSize="45%" minSize="22%">
@@ -708,7 +691,7 @@ export function JobsPage() {
             />
           </ResizablePanel>
         </ResizablePanelGroup>
-      </Card>
+      </div>
     </section>
   );
 }
@@ -741,10 +724,17 @@ function SourceFileList({
   }
 
   return (
-    <aside className="grid h-full min-h-0 grid-rows-[auto_1fr] bg-muted/20">
-      <div className="border-b px-3 py-2 text-sm font-medium">原文</div>
+    <aside className="grid h-full min-h-0 grid-rows-[auto_1fr] border-r bg-muted/20">
+      <div className="flex h-12 items-center justify-between border-b px-3">
+        <span className="text-xs font-medium text-muted-foreground">
+          原文文件
+        </span>
+        <Button aria-label="源文件列表选项" size="icon-xs" type="button" variant="ghost">
+          <MoreVertical />
+        </Button>
+      </div>
       <ScrollArea className="min-h-0">
-        <div className="flex flex-col gap-1 p-2">
+        <div className="flex flex-col">
           {sourceFiles.map((sourceFile) => {
             const selected = selectedSourceFileId === sourceFile.id;
             const translationFileCount =
@@ -753,10 +743,8 @@ function SourceFileList({
             return (
               <div
                 className={cn(
-                  "flex min-w-0 items-center gap-2 rounded-md px-2 py-2 text-left text-sm",
-                  selected
-                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                    : "hover:bg-muted"
+                  "flex min-w-0 items-center gap-3 border-b px-3 py-3 text-left text-sm",
+                  selected ? "bg-muted" : "hover:bg-muted/50"
                 )}
                 key={sourceFile.id}
               >
@@ -783,7 +771,7 @@ function SourceFileList({
                     <span className="block truncate font-medium">
                       {sourceFile.relativePath}
                     </span>
-                    <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+                    <span className="mt-1 block truncate text-xs text-muted-foreground">
                       {sourceSegmentCountByFileId.get(sourceFile.id) ?? 0} 段 ·{" "}
                       {translationFileCount} 个译文
                     </span>
@@ -837,14 +825,22 @@ function TranslationFileTable({
   }
 
   return (
-    <section className="grid min-h-0 grid-rows-[auto_1fr]">
-      <div className="border-b px-4 py-3">
-        <h3 className="truncate text-sm font-medium">
-          {selectedSourceFile.relativePath}
-        </h3>
-        <p className="mt-1 text-sm text-muted-foreground">
-          {translationFiles.length} 个译文文件
-        </p>
+    <section className="grid h-full min-h-0 grid-rows-[auto_1fr] bg-background">
+      <div className="flex min-h-32 items-start justify-between gap-4 border-b px-6 py-6">
+        <div className="min-w-0">
+          <h2 className="truncate text-lg font-semibold">
+            {selectedSourceFile.relativePath}
+          </h2>
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
+            选择一个目标语言来查看细节或管理单个译文任务。双击原文或译文文件打开预览窗口。
+          </p>
+        </div>
+        <TranslationSyncBadge
+          activeTranslationRun={activeTranslationRun}
+          currentJobId={currentJobId}
+          queuedTranslationFileIds={queuedTranslationFileIds}
+          translationFiles={translationFiles}
+        />
       </div>
       {translationFiles.length === 0 ? (
         <div className="flex min-h-0 items-center justify-center text-sm text-muted-foreground">
@@ -853,17 +849,27 @@ function TranslationFileTable({
       ) : (
         <ScrollArea className="min-h-0">
           <Table>
-      <TableHeader>
-        <TableRow>
-          <TableHead>译文</TableHead>
-          <TableHead className="w-32">语言</TableHead>
-          <TableHead className="w-32">状态</TableHead>
-          <TableHead className="w-36 text-right">进度</TableHead>
-          <TableHead className="w-80 text-right">操作</TableHead>
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {translationFiles.map((translationFile) => {
+            <TableHeader>
+              <TableRow>
+                <TableHead className="h-11 px-6 text-xs font-medium text-muted-foreground">
+                  译文
+                </TableHead>
+                <TableHead className="h-11 w-36 text-xs font-medium text-muted-foreground">
+                  语言
+                </TableHead>
+                <TableHead className="h-11 w-44 text-xs font-medium text-muted-foreground">
+                  状态
+                </TableHead>
+                <TableHead className="h-11 w-56 text-xs font-medium text-muted-foreground">
+                  进度
+                </TableHead>
+                <TableHead className="h-11 w-80 text-right text-xs font-medium text-muted-foreground">
+                  操作
+                </TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {translationFiles.map((translationFile) => {
                 const selected = selectedTranslationFileId === translationFile.id;
                 const state = runAwareTranslationState(
                   translationFile,
@@ -885,19 +891,23 @@ function TranslationFileTable({
                   translationFile.completedSegments >=
                     translationFile.segmentCount &&
                   translationFile.failedSegments === 0;
+                const progressPercent = translationProgressPercent(translationFile);
 
                 return (
                   <TableRow
-                    className={cn("cursor-default", selected && "bg-muted/60")}
+                    className={cn(
+                      "h-15 cursor-default",
+                      selected && "bg-muted/40"
+                    )}
                     data-state={selected ? "selected" : undefined}
                     key={translationFile.id}
                     onClick={() => onSelectTranslation(translationFile)}
                     onDoubleClick={() => onOpenTranslation(translationFile)}
                   >
-                    <TableCell>
+                    <TableCell className="px-6">
                       <div className="flex min-w-0 items-center gap-2">
-                        <Languages className="size-4 shrink-0 text-muted-foreground" />
-                        <span className="truncate">
+                        <Languages className="shrink-0 text-muted-foreground" />
+                        <span className="truncate font-medium">
                           {translationLabel(translationFile)}
                         </span>
                       </div>
@@ -910,16 +920,22 @@ function TranslationFileTable({
                         state={state}
                       />
                     </TableCell>
-                    <TableCell className="text-right text-muted-foreground">
-                      {translationFile.completedSegments}/
-                      {translationFile.segmentCount}
+                    <TableCell>
+                      <div className="flex items-center gap-3">
+                        <ProgressBar percent={progressPercent} state={state} />
+                        <span className="w-14 text-xs text-muted-foreground">
+                          {translationFile.completedSegments}/
+                          {translationFile.segmentCount}
+                        </span>
+                      </div>
                     </TableCell>
                     <TableCell>
                       <div
-                        className="flex justify-end gap-2"
+                        className="flex justify-end"
                         onClick={(event) => event.stopPropagation()}
                       >
                         <Button
+                          className="rounded-r-none"
                           onClick={() => onOpenTranslation(translationFile)}
                           size="sm"
                           type="button"
@@ -928,6 +944,7 @@ function TranslationFileTable({
                           打开
                         </Button>
                         <Button
+                          className="rounded-none border-l-0"
                           disabled={!canTranslate}
                           onClick={() => onTranslateTranslation(translationFile)}
                           size="sm"
@@ -948,6 +965,7 @@ function TranslationFileTable({
                                 : "已完成"}
                         </Button>
                         <Button
+                          className="rounded-none border-l-0"
                           disabled={!canExport}
                           onClick={() =>
                             onExportTranslation(translationFile, "translation")
@@ -957,9 +975,10 @@ function TranslationFileTable({
                           variant="outline"
                         >
                           <Download data-icon="inline-start" />
-                          译文
+                          导出
                         </Button>
                         <Button
+                          className="rounded-l-none border-l-0"
                           disabled={!canExport}
                           onClick={() =>
                             onExportTranslation(translationFile, "bilingual")
@@ -974,12 +993,79 @@ function TranslationFileTable({
                     </TableCell>
                   </TableRow>
                 );
-        })}
-      </TableBody>
-    </Table>
+              })}
+            </TableBody>
+          </Table>
         </ScrollArea>
       )}
     </section>
+  );
+}
+
+function TranslationSyncBadge({
+  activeTranslationRun,
+  currentJobId,
+  queuedTranslationFileIds,
+  translationFiles,
+}: {
+  activeTranslationRun: ActiveTranslationRun | null;
+  currentJobId: string | null;
+  queuedTranslationFileIds: string[];
+  translationFiles: RosettaTranslationFile[];
+}) {
+  const syncingCount = translationFiles.filter((translationFile) => {
+    const state = runAwareTranslationState(
+      translationFile,
+      activeTranslationRun,
+      currentJobId,
+      queuedTranslationFileIds
+    );
+    return state === "queued" || state === "translating";
+  }).length;
+
+  if (syncingCount > 0) {
+    return (
+      <Badge
+        className="border-sky-600/25 bg-sky-600/10 text-sky-700 dark:text-sky-400"
+        variant="outline"
+      >
+        <LoaderCircle className="animate-spin" data-icon="inline-start" />
+        {syncingCount} 个译文同步中
+      </Badge>
+    );
+  }
+
+  return (
+    <Badge
+      className="border-emerald-600/25 bg-emerald-600/10 text-emerald-700 dark:text-emerald-400"
+      variant="outline"
+    >
+      {translationFiles.length} 个译文
+    </Badge>
+  );
+}
+
+function ProgressBar({
+  percent,
+  state,
+}: {
+  percent: number;
+  state: string;
+}) {
+  return (
+    <div className="h-1.5 w-32 overflow-hidden rounded-full bg-muted">
+      <div
+        className={cn(
+          "h-full rounded-full",
+          state === "failed"
+            ? "bg-destructive"
+            : state === "queued" || state === "translating"
+              ? "bg-primary"
+              : "bg-emerald-500"
+        )}
+        style={{ width: `${percent}%` }}
+      />
+    </div>
   );
 }
 
@@ -1093,6 +1179,18 @@ function countSourceSegmentsByFile(segments: { fileId?: string | null }[]) {
     grouped.set(fileId, (grouped.get(fileId) ?? 0) + 1);
   }
   return grouped;
+}
+
+function translationProgressPercent(translationFile: RosettaTranslationFile) {
+  if (translationFile.segmentCount <= 0) {
+    return 0;
+  }
+  return Math.min(
+    100,
+    Math.round(
+      (translationFile.completedSegments / translationFile.segmentCount) * 100
+    )
+  );
 }
 
 function chunkSegments<T>(segments: T[], size: number) {

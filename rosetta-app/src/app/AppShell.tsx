@@ -25,13 +25,19 @@ const appWindow = getCurrentWindow();
 
 export function AppShell() {
   const location = useLocation();
-  const title =
-    pageTitles[location.pathname] ??
-    (location.pathname.startsWith("/jobs/") ? "任务" : "Rosetta");
   const themeMode = useRosettaStore((state) => state.themeMode);
   const setJobList = useRosettaStore((state) => state.setJobList);
+  const jobs = useRosettaStore((state) => state.jobs);
+  const activeJobId = useRosettaStore((state) => state.activeJobId);
   const [systemPrefersDark, setSystemPrefersDark] = useState(true);
   const isDark = themeMode === "system" ? systemPrefersDark : themeMode === "dark";
+  const routeJobId = location.pathname.match(/^\/jobs\/([^/]+)/)?.[1] ?? null;
+  const currentJobId = routeJobId ?? activeJobId;
+  const currentJob = jobs.find((job) => job.id === currentJobId) ?? null;
+  const title =
+    location.pathname === "/jobs" || location.pathname.startsWith("/jobs/")
+      ? currentJob?.filename ?? "任务"
+      : pageTitles[location.pathname] ?? "Rosetta";
 
   useEffect(() => {
     const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
