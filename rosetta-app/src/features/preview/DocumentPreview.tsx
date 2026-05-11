@@ -22,6 +22,7 @@ type PreviewSide = "source" | "translation";
 export function DocumentPreview({
   document,
   hoveredBlockId,
+  layout = "bilingual",
   onBlockHover,
   onBlockLeave,
   onToggleBlockSelection,
@@ -34,6 +35,7 @@ export function DocumentPreview({
 }: {
   document: RosettaDocument | null;
   hoveredBlockId?: string | null;
+  layout?: "bilingual" | "source";
   onBlockHover?: (blockId: string) => void;
   onBlockLeave?: () => void;
   onToggleBlockSelection?: (blockId: string) => void;
@@ -53,6 +55,33 @@ export function DocumentPreview({
       <Card className="flex h-full min-h-0 py-0">
         <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
           选择一个源文件。
+        </div>
+      </Card>
+    );
+  }
+
+  if (layout === "source") {
+    return (
+      <Card className="flex h-full min-h-0 flex-col gap-0 overflow-hidden py-0">
+        <div className="border-b bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
+          原文
+        </div>
+        <div className="min-h-0 flex-1">
+          <PreviewPane
+            document={document}
+            file={sourceFile}
+            hoveredBlockId={hoveredBlockId ?? null}
+            onBlockHover={onBlockHover}
+            onBlockLeave={onBlockLeave}
+            onToggleBlockSelection={onToggleBlockSelection}
+            onScroll={() => {}}
+            paneRef={sourceRef}
+            selectedBlockIds={selectedBlockIds}
+            selectionEnabled={selectionEnabled}
+            side="source"
+            sourceSegments={sourceSegments}
+            translationSegments={translationSegments}
+          />
         </div>
       </Card>
     );

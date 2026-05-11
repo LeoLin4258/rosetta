@@ -159,9 +159,10 @@ AppData/Rosetta/jobs/
 约定：
 
 - 双语预览左侧渲染原文结构，右侧渲染当前选中译文文件的译文结构。
+- 原文预览窗口只渲染当前源文件结构，不显示空译文栏。
 - 主工作台不渲染双语预览，避免源文件切换时加载和测量大文档内容导致卡顿。双语预览放在独立窗口中按需加载。
 - 多文件项目的默认预览范围是“当前选中的一个文件”，不是把项目内所有文件连续渲染在同一个预览面板里。当前文件由前端 UI state `activeFileId` 控制。
-- 当前源文件由 `/jobs/:jobId/files/:fileId` 路由表达。当前译文文件在主工作台内由 `activeTranslationFileId` 表达；独立预览窗口使用 `/preview/:jobId/translations/:translationFileId` 深链接直接加载译文文件。
+- 当前源文件由 `/jobs/:jobId/files/:fileId` 路由表达。当前译文文件在主工作台内由 `activeTranslationFileId` 表达；独立原文预览窗口使用 `/preview/:jobId/sources/:sourceFileId` 直接加载源文件，独立译文预览窗口使用 `/preview/:jobId/translations/:translationFileId` 深链接直接加载译文文件。
 - 后台保存、导出刷新、翻译批次完成等异步结果不能无条件改变 active job/file。只有用户显式打开或导入项目时才允许设置 active bundle；后台结果应只刷新 job list，且仅在当前 active job 仍匹配时刷新已加载 bundle。
 - Markdown 预览使用 Markdown renderer，并启用 GFM 等常见语法支持；不要执行原文中的 HTML/script。
 - 原文和译文滚动应同步，hover 某个 block 时两侧对应 block 同步高亮。

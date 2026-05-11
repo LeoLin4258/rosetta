@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
+  AlertCircle,
   CheckCircle2,
+  Clock3,
   Download,
   FilePlus,
   FileText,
   Folder,
   Languages,
+  LoaderCircle,
   Play,
   RefreshCw,
 } from "lucide-react";
@@ -20,13 +23,11 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from "@/components/ui/resizable";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Table,
   TableBody,
@@ -45,7 +46,10 @@ import {
   saveRosettaTranslationSegments,
 } from "../../lib/rosettaJobs";
 import { rosettaJobDefaultPath, rosettaJobFilePath } from "../../lib/rosettaRoutes";
-import { openTranslationPreviewWindow } from "../../lib/translationPreviewWindow";
+import {
+  openSourcePreviewWindow,
+  openTranslationPreviewWindow,
+} from "../../lib/translationPreviewWindow";
 import { translateRwkvTextsWithApi } from "../../lib/rwkvApi";
 import { cn } from "../../lib/utils";
 import { useRosettaStore } from "../../store/useRosettaStore";
@@ -113,14 +117,12 @@ export function JobsPage() {
     (state) => state.finishTranslationRun
   );
 
-  const [isLoading, setIsLoading] = useState(false);
   const [isTranslating, setIsTranslating] = useState(false);
-  const [targetLang, setTargetLang] = useState("zh-CN");
   const [batchTargetLangs, setBatchTargetLangs] = useState<string[]>(["zh-CN"]);
   const [selectedSourceFileIds, setSelectedSourceFileIds] = useState<string[]>(
     []
   );
-  const [selectedTranslationFileIds, setSelectedTranslationFileIds] = useState<
+  const [queuedTranslationFileIds, setQueuedTranslationFileIds] = useState<
     string[]
   >([]);
   const loadRequestIdRef = useRef(0);
@@ -162,17 +164,7 @@ export function JobsPage() {
     rwkv.internalToken.trim().length > 0 &&
     rwkv.bodyPassword.trim().length > 0 &&
     rwkv.timeoutMs > 0;
-  const canTranslateSelectedTranslation =
-    selectedTranslationFile != null &&
-    (selectedTranslationFile.failedSegments > 0 ||
-      selectedTranslationFile.completedSegments < selectedTranslationFile.segmentCount);
-  const isSelectedTranslationComplete =
-    selectedTranslationFile != null &&
-    selectedTranslationFile.segmentCount > 0 &&
-    selectedTranslationFile.completedSegments >= selectedTranslationFile.segmentCount &&
-    selectedTranslationFile.failedSegments === 0;
-  const selectedBatchCount =
-    selectedSourceFileIds.length + selectedTranslationFileIds.length;
+  const selectedBatchCount = selectedSourceFileIds.length;
 
   useEffect(() => {
     if (!jobId && jobs.length > 0) {
@@ -182,7 +174,6 @@ export function JobsPage() {
 
   useEffect(() => {
     if (!currentJobId) {
-      setIsLoading(false);
       return;
     }
 
@@ -191,13 +182,11 @@ export function JobsPage() {
       currentState.activeJobId === currentJobId &&
       currentState.activeDocument
     ) {
-      setIsLoading(false);
       return;
     }
 
     const requestId = loadRequestIdRef.current + 1;
     loadRequestIdRef.current = requestId;
-    setIsLoading(true);
     void loadRosettaJob(currentJobId)
       .then((bundle) => {
         if (
@@ -208,12 +197,7 @@ export function JobsPage() {
         }
         setActiveBundle(bundle);
       })
-      .catch(console.error)
-      .finally(() => {
-        if (loadRequestIdRef.current === requestId) {
-          setIsLoading(false);
-        }
-      });
+      .catch(console.error);
   }, [currentJobId, setActiveBundle]);
 
   useEffect(() => {
@@ -238,25 +222,6 @@ export function JobsPage() {
     selectedTranslationFile?.id,
     setActiveJobSelection,
   ]);
-
-  async function createTranslationFileForCurrentSource() {
-    if (!currentJobId || !selectedSourceFile) {
-      return null;
-    }
-    const bundle = await ensureRosettaTranslationFile(
-      currentJobId,
-      selectedSourceFile.id,
-      targetLang
-    );
-    upsertTranslationFile(bundle.translationFile);
-    setActiveJobSelection(
-      currentJobId,
-      selectedSourceFile.id,
-      bundle.translationFile.id
-    );
-    refreshJobBundle(await loadRosettaJob(currentJobId));
-    return bundle.translationFile;
-  }
 
   function selectSourceFile(sourceFile: RosettaSourceFile) {
     if (!currentJobId) {
@@ -293,6 +258,18 @@ export function JobsPage() {
     });
   }
 
+  async function openSourceFile(sourceFile: RosettaSourceFile) {
+    if (!currentJobId) {
+      return;
+    }
+    selectSourceFile(sourceFile);
+    await openSourcePreviewWindow({
+      jobId: currentJobId,
+      sourceFileId: sourceFile.id,
+      sourceFilename: sourceFile.relativePath,
+    });
+  }
+
   function toggleSourceSelection(sourceFileId: string) {
     setSelectedSourceFileIds((current) =>
       current.includes(sourceFileId)
@@ -301,43 +278,32 @@ export function JobsPage() {
     );
   }
 
-  function toggleTranslationSelection(translationFileId: string) {
-    setSelectedTranslationFileIds((current) =>
-      current.includes(translationFileId)
-        ? current.filter((id) => id !== translationFileId)
-        : [...current, translationFileId]
-    );
-  }
-
-  async function translateCurrentTranslationFile() {
-    if (!currentJobId) {
-      return;
-    }
-    if (!selectedTranslationFile) {
-      const created = await createTranslationFileForCurrentSource();
-      if (!created) {
-        return;
-      }
-      await translateTranslationFile(created);
-      return;
-    }
-    await translateTranslationFile(selectedTranslationFile);
-  }
-
   async function translateSelectedBatch() {
-    if (!currentJobId || selectedBatchCount === 0) {
+    if (
+      !currentJobId ||
+      selectedSourceFileIds.length === 0 ||
+      batchTargetLangs.length === 0
+    ) {
       return;
     }
 
     try {
-      for (const translationFileId of selectedTranslationFileIds) {
-        const translationFile = translationFiles.find(
-          (file) => file.id === translationFileId
-        );
-        if (translationFile) {
-          await translateTranslationFile(translationFile, "batch");
-        }
+      const visibleSourceFileId = selectedSourceFileIds.includes(
+        selectedSourceFileId ?? ""
+      )
+        ? selectedSourceFileId
+        : selectedSourceFileIds[0];
+      const visibleSourceFile = sourceFiles.find(
+        (file) => file.id === visibleSourceFileId
+      );
+      if (visibleSourceFile) {
+        selectSourceFile(visibleSourceFile);
       }
+
+      const translationQueue: Array<{
+        translationFile: RosettaTranslationFile;
+        segments: TranslationSegment[];
+      }> = [];
 
       for (const sourceFileId of selectedSourceFileIds) {
         for (const language of batchTargetLangs) {
@@ -347,11 +313,44 @@ export function JobsPage() {
             language
           );
           upsertTranslationFile(ensured.translationFile);
-          await translateTranslationFile(ensured.translationFile, "batch", ensured.segments);
+          translationQueue.push({
+            translationFile: ensured.translationFile,
+            segments: ensured.segments,
+          });
+          setQueuedTranslationFileIds((current) =>
+            current.includes(ensured.translationFile.id)
+              ? current
+              : [...current, ensured.translationFile.id]
+          );
         }
       }
 
-      refreshJobBundle(await loadRosettaJob(currentJobId));
+      for (const queued of translationQueue) {
+        await translateTranslationFile(
+          queued.translationFile,
+          "batch",
+          queued.segments
+        );
+        setQueuedTranslationFileIds((current) =>
+          current.filter((id) => id !== queued.translationFile.id)
+        );
+      }
+
+      if (translationQueue.length > 0) {
+        setQueuedTranslationFileIds((current) =>
+          current.filter(
+            (id) =>
+              !translationQueue.some(
+                (queued) => queued.translationFile.id === id
+              )
+          )
+        );
+      }
+
+      if (currentJobId) {
+        refreshJobBundle(await loadRosettaJob(currentJobId));
+      }
+      setSelectedSourceFileIds([]);
     } catch (error) {
       console.error(error);
     }
@@ -487,11 +486,16 @@ export function JobsPage() {
     }
   }
 
-  async function exportCurrentTranslationFile(kind: RosettaExportKind) {
-    if (!currentJobId || !selectedTranslationFile) {
+  async function exportTranslationFile(
+    translationFile: RosettaTranslationFile,
+    kind: RosettaExportKind
+  ) {
+    if (!currentJobId) {
       return;
     }
-    const sourceFile = selectedSourceFile;
+    const sourceFile =
+      sourceFiles.find((file) => file.id === translationFile.sourceFileId) ??
+      null;
     if (!sourceFile) {
       return;
     }
@@ -499,7 +503,7 @@ export function JobsPage() {
       defaultExportFilename(
         sourceFile.relativePath,
         sourceFile.format,
-        selectedTranslationFile.targetLang,
+        translationFile.targetLang,
         kind
       ),
       sourceFile.format
@@ -509,7 +513,7 @@ export function JobsPage() {
     }
     await exportRosettaTranslationFile(
       currentJobId,
-      selectedTranslationFile.id,
+      translationFile.id,
       kind,
       targetPath
     );
@@ -563,69 +567,12 @@ export function JobsPage() {
               ) : null}
             </div>
           </div>
-
-          <div className="flex flex-wrap items-center justify-end gap-2">
-            <LanguageSelect
-              disabled={isLoading || isTranslating}
-              onValueChange={setTargetLang}
-              value={targetLang}
-            />
-            <Button
-              disabled={!selectedSourceFile || isLoading || isTranslating}
-              onClick={() => void createTranslationFileForCurrentSource()}
-              type="button"
-              variant="outline"
-            >
-              <FilePlus data-icon="inline-start" />
-              新建译文
-            </Button>
-            <Button
-              disabled={
-                !rwkvConfigReady ||
-                isLoading ||
-                isTranslating ||
-                (!selectedTranslationFile && !selectedSourceFile) ||
-                (selectedTranslationFile != null && !canTranslateSelectedTranslation)
-              }
-              onClick={() => void translateCurrentTranslationFile()}
-              type="button"
-            >
-              {selectedTranslationFile?.failedSegments ? (
-                <RefreshCw data-icon="inline-start" />
-              ) : (
-                <Play data-icon="inline-start" />
-              )}
-              {selectedTranslationFile
-                ? canTranslateSelectedTranslation
-                  ? "翻译译文"
-                  : "已完成"
-                : "生成并翻译"}
-            </Button>
-            <Button
-              disabled={!isSelectedTranslationComplete || isTranslating}
-              onClick={() => void exportCurrentTranslationFile("translation")}
-              type="button"
-              variant="outline"
-            >
-              <Download data-icon="inline-start" />
-              导出译文
-            </Button>
-            <Button
-              disabled={!isSelectedTranslationComplete || isTranslating}
-              onClick={() => void exportCurrentTranslationFile("bilingual")}
-              type="button"
-              variant="outline"
-            >
-              <Languages data-icon="inline-start" />
-              导出双语
-            </Button>
-          </div>
         </CardHeader>
 
         <CardContent className="flex flex-wrap items-center justify-between gap-3 py-3">
           <div className="flex min-w-0 items-center gap-2 text-sm text-muted-foreground">
             <span>批量翻译</span>
-            <span>{selectedBatchCount} 项已选择</span>
+            <span>{selectedBatchCount} 个原文已选择</span>
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">
             <ToggleGroup
@@ -644,7 +591,7 @@ export function JobsPage() {
               disabled={
                 !rwkvConfigReady ||
                 selectedBatchCount === 0 ||
-                (selectedSourceFileIds.length > 0 && batchTargetLangs.length === 0) ||
+                batchTargetLangs.length === 0 ||
                 isTranslating
               }
               onClick={() => void translateSelectedBatch()}
@@ -652,7 +599,7 @@ export function JobsPage() {
               type="button"
             >
               <Play data-icon="inline-start" />
-              批量开始
+              创建并翻译
             </Button>
           </div>
         </CardContent>
@@ -663,44 +610,63 @@ export function JobsPage() {
           <div className="min-w-0">
             <h2 className="text-sm font-medium">项目文件</h2>
             <p className="mt-1 text-sm text-muted-foreground">
-              左侧选择原文，右侧管理该原文的多语言译文。双击译文打开对照窗口。
+              左侧选择原文，右侧管理该原文的多语言译文。双击原文或译文打开预览窗口。
             </p>
           </div>
         </div>
-        <div className="grid min-h-0 flex-1 grid-cols-[minmax(16rem,24rem)_minmax(0,1fr)] overflow-hidden">
-          <SourceFileList
-            onSelectSource={selectSourceFile}
-            onToggleSourceSelection={toggleSourceSelection}
-            selectedSourceFileId={selectedSourceFile?.id ?? null}
-            selectedSourceFileIds={selectedSourceFileIds}
-            sourceFiles={sourceFiles}
-            sourceSegmentCountByFileId={sourceSegmentCountByFileId}
-            translationFilesBySourceId={translationFilesBySourceId}
-          />
-          <TranslationFileTable
-            activeTranslationRun={activeTranslationRun}
-            currentJobId={currentJobId}
-            onOpenTranslation={(translationFile) => {
-              void openTranslationFile(translationFile);
-            }}
-            onSelectTranslation={selectTranslationFile}
-            onToggleTranslationSelection={toggleTranslationSelection}
-            selectedSourceFile={selectedSourceFile}
-            selectedTranslationFileId={selectedTranslationFile?.id ?? null}
-            selectedTranslationFileIds={selectedTranslationFileIds}
-            translationFiles={
-              selectedSourceFile
-                ? translationFilesBySourceId.get(selectedSourceFile.id) ?? []
-                : []
-            }
-          />
-        </div>
+        <ResizablePanelGroup
+          className="min-h-0 flex-1 overflow-hidden"
+          orientation="horizontal"
+        >
+          <ResizablePanel defaultSize="32%" maxSize="45%" minSize="22%">
+            <SourceFileList
+              onOpenSource={(sourceFile) => {
+                void openSourceFile(sourceFile);
+              }}
+              onSelectSource={selectSourceFile}
+              onToggleSourceSelection={toggleSourceSelection}
+              selectedSourceFileId={selectedSourceFile?.id ?? null}
+              selectedSourceFileIds={selectedSourceFileIds}
+              sourceFiles={sourceFiles}
+              sourceSegmentCountByFileId={sourceSegmentCountByFileId}
+              translationFilesBySourceId={translationFilesBySourceId}
+            />
+          </ResizablePanel>
+          <ResizableHandle withHandle />
+          <ResizablePanel defaultSize="68%" minSize="45%">
+            <TranslationFileTable
+              activeTranslationRun={activeTranslationRun}
+              currentJobId={currentJobId}
+              isTranslating={isTranslating}
+              onOpenTranslation={(translationFile) => {
+                void openTranslationFile(translationFile);
+              }}
+              onExportTranslation={(translationFile, kind) => {
+                void exportTranslationFile(translationFile, kind);
+              }}
+              onSelectTranslation={selectTranslationFile}
+              onTranslateTranslation={(translationFile) => {
+                void translateTranslationFile(translationFile);
+              }}
+              queuedTranslationFileIds={queuedTranslationFileIds}
+              rwkvConfigReady={rwkvConfigReady}
+              selectedSourceFile={selectedSourceFile}
+              selectedTranslationFileId={selectedTranslationFile?.id ?? null}
+              translationFiles={
+                selectedSourceFile
+                  ? translationFilesBySourceId.get(selectedSourceFile.id) ?? []
+                  : []
+              }
+            />
+          </ResizablePanel>
+        </ResizablePanelGroup>
       </Card>
     </section>
   );
 }
 
 function SourceFileList({
+  onOpenSource,
   onSelectSource,
   onToggleSourceSelection,
   selectedSourceFileId,
@@ -709,6 +675,7 @@ function SourceFileList({
   sourceSegmentCountByFileId,
   translationFilesBySourceId,
 }: {
+  onOpenSource: (sourceFile: RosettaSourceFile) => void;
   onSelectSource: (sourceFile: RosettaSourceFile) => void;
   onToggleSourceSelection: (sourceFileId: string) => void;
   selectedSourceFileId: string | null;
@@ -726,56 +693,59 @@ function SourceFileList({
   }
 
   return (
-    <aside className="min-h-0 overflow-auto border-r bg-muted/20">
+    <aside className="grid h-full min-h-0 grid-rows-[auto_1fr] bg-muted/20">
       <div className="border-b px-3 py-2 text-sm font-medium">原文</div>
-      <div className="flex flex-col gap-1 p-2">
-        {sourceFiles.map((sourceFile) => {
-          const selected = selectedSourceFileId === sourceFile.id;
-          const translationFileCount =
-            translationFilesBySourceId.get(sourceFile.id)?.length ?? 0;
+      <ScrollArea className="min-h-0">
+        <div className="flex flex-col gap-1 p-2">
+          {sourceFiles.map((sourceFile) => {
+            const selected = selectedSourceFileId === sourceFile.id;
+            const translationFileCount =
+              translationFilesBySourceId.get(sourceFile.id)?.length ?? 0;
 
-          return (
-            <div
-              className={cn(
-                "flex min-w-0 items-center gap-2 rounded-md px-2 py-2 text-left text-sm",
-                selected
-                  ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                  : "hover:bg-muted"
-              )}
-              key={sourceFile.id}
-            >
-              <input
-                checked={selectedSourceFileIds.includes(sourceFile.id)}
-                className="shrink-0"
-                onChange={() => onToggleSourceSelection(sourceFile.id)}
-                title="加入批量翻译"
-                type="checkbox"
-              />
-              <button
-                className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                onClick={() => onSelectSource(sourceFile)}
-                type="button"
-              >
-                {sourceFile.relativePath.includes("/") ||
-                sourceFile.relativePath.includes("\\") ? (
-                  <Folder className="size-4 shrink-0 text-muted-foreground" />
-                ) : (
-                  <FileText className="size-4 shrink-0 text-muted-foreground" />
+            return (
+              <div
+                className={cn(
+                  "flex min-w-0 items-center gap-2 rounded-md px-2 py-2 text-left text-sm",
+                  selected
+                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                    : "hover:bg-muted"
                 )}
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate font-medium">
-                    {sourceFile.relativePath}
+                key={sourceFile.id}
+              >
+                <input
+                  checked={selectedSourceFileIds.includes(sourceFile.id)}
+                  className="shrink-0"
+                  onChange={() => onToggleSourceSelection(sourceFile.id)}
+                  title="加入批量翻译"
+                  type="checkbox"
+                />
+                <button
+                  className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                  onClick={() => onSelectSource(sourceFile)}
+                  onDoubleClick={() => onOpenSource(sourceFile)}
+                  type="button"
+                >
+                  {sourceFile.relativePath.includes("/") ||
+                  sourceFile.relativePath.includes("\\") ? (
+                    <Folder className="size-4 shrink-0 text-muted-foreground" />
+                  ) : (
+                    <FileText className="size-4 shrink-0 text-muted-foreground" />
+                  )}
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate font-medium">
+                      {sourceFile.relativePath}
+                    </span>
+                    <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+                      {sourceSegmentCountByFileId.get(sourceFile.id) ?? 0} 段 ·{" "}
+                      {translationFileCount} 个译文
+                    </span>
                   </span>
-                  <span className="mt-0.5 block truncate text-xs text-muted-foreground">
-                    {sourceSegmentCountByFileId.get(sourceFile.id) ?? 0} 段 ·{" "}
-                    {translationFileCount} 个译文
-                  </span>
-                </span>
-              </button>
-            </div>
-          );
-        })}
-      </div>
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      </ScrollArea>
     </aside>
   );
 }
@@ -783,22 +753,31 @@ function SourceFileList({
 function TranslationFileTable({
   activeTranslationRun,
   currentJobId,
+  isTranslating,
+  onExportTranslation,
   onOpenTranslation,
   onSelectTranslation,
-  onToggleTranslationSelection,
+  onTranslateTranslation,
+  queuedTranslationFileIds,
+  rwkvConfigReady,
   selectedSourceFile,
   selectedTranslationFileId,
-  selectedTranslationFileIds,
   translationFiles,
 }: {
   activeTranslationRun: ActiveTranslationRun | null;
   currentJobId: string | null;
+  isTranslating: boolean;
+  onExportTranslation: (
+    translationFile: RosettaTranslationFile,
+    kind: RosettaExportKind
+  ) => void;
   onOpenTranslation: (translationFile: RosettaTranslationFile) => void;
   onSelectTranslation: (translationFile: RosettaTranslationFile) => void;
-  onToggleTranslationSelection: (translationFileId: string) => void;
+  onTranslateTranslation: (translationFile: RosettaTranslationFile) => void;
+  queuedTranslationFileIds: string[];
+  rwkvConfigReady: boolean;
   selectedSourceFile: RosettaSourceFile | null;
   selectedTranslationFileId: string | null;
-  selectedTranslationFileIds: string[];
   translationFiles: RosettaTranslationFile[];
 }) {
   if (!selectedSourceFile) {
@@ -824,20 +803,40 @@ function TranslationFileTable({
           当前原文还没有译文。
         </div>
       ) : (
-        <div className="min-h-0 overflow-auto">
+        <ScrollArea className="min-h-0">
           <Table>
       <TableHeader>
         <TableRow>
-          <TableHead className="w-10" />
           <TableHead>译文</TableHead>
           <TableHead className="w-32">语言</TableHead>
           <TableHead className="w-32">状态</TableHead>
           <TableHead className="w-36 text-right">进度</TableHead>
+          <TableHead className="w-80 text-right">操作</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
         {translationFiles.map((translationFile) => {
                 const selected = selectedTranslationFileId === translationFile.id;
+                const state = runAwareTranslationState(
+                  translationFile,
+                  activeTranslationRun,
+                  currentJobId,
+                  queuedTranslationFileIds
+                );
+                const canTranslate =
+                  rwkvConfigReady &&
+                  !isTranslating &&
+                  state !== "queued" &&
+                  state !== "translating" &&
+                  (translationFile.failedSegments > 0 ||
+                    translationFile.completedSegments <
+                      translationFile.segmentCount);
+                const canExport =
+                  !isTranslating &&
+                  translationFile.segmentCount > 0 &&
+                  translationFile.completedSegments >=
+                    translationFile.segmentCount &&
+                  translationFile.failedSegments === 0;
 
                 return (
                   <TableRow
@@ -847,18 +846,6 @@ function TranslationFileTable({
                     onClick={() => onSelectTranslation(translationFile)}
                     onDoubleClick={() => onOpenTranslation(translationFile)}
                   >
-                    <TableCell onClick={(event) => event.stopPropagation()}>
-                      <input
-                        checked={selectedTranslationFileIds.includes(
-                          translationFile.id
-                        )}
-                        onChange={() =>
-                          onToggleTranslationSelection(translationFile.id)
-                        }
-                        title="加入批量翻译"
-                        type="checkbox"
-                      />
-                    </TableCell>
                     <TableCell>
                       <div className="flex min-w-0 items-center gap-2">
                         <Languages className="size-4 shrink-0 text-muted-foreground" />
@@ -872,81 +859,145 @@ function TranslationFileTable({
                     </TableCell>
                     <TableCell>
                       <FileStateBadge
-                        state={runAwareTranslationState(
-                          translationFile,
-                          activeTranslationRun,
-                          currentJobId
-                        )}
+                        state={state}
                       />
                     </TableCell>
                     <TableCell className="text-right text-muted-foreground">
                       {translationFile.completedSegments}/
                       {translationFile.segmentCount}
                     </TableCell>
+                    <TableCell>
+                      <div
+                        className="flex justify-end gap-2"
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        <Button
+                          onClick={() => onOpenTranslation(translationFile)}
+                          size="sm"
+                          type="button"
+                          variant="outline"
+                        >
+                          打开
+                        </Button>
+                        <Button
+                          disabled={!canTranslate}
+                          onClick={() => onTranslateTranslation(translationFile)}
+                          size="sm"
+                          type="button"
+                          variant="outline"
+                        >
+                          {translationFile.failedSegments ? (
+                            <RefreshCw data-icon="inline-start" />
+                          ) : (
+                            <Play data-icon="inline-start" />
+                          )}
+                          {state === "translating"
+                            ? "翻译中"
+                            : state === "queued"
+                              ? "排队中"
+                              : canTranslate
+                                ? "翻译"
+                                : "已完成"}
+                        </Button>
+                        <Button
+                          disabled={!canExport}
+                          onClick={() =>
+                            onExportTranslation(translationFile, "translation")
+                          }
+                          size="sm"
+                          type="button"
+                          variant="outline"
+                        >
+                          <Download data-icon="inline-start" />
+                          译文
+                        </Button>
+                        <Button
+                          disabled={!canExport}
+                          onClick={() =>
+                            onExportTranslation(translationFile, "bilingual")
+                          }
+                          size="sm"
+                          type="button"
+                          variant="outline"
+                        >
+                          双语
+                        </Button>
+                      </div>
+                    </TableCell>
                   </TableRow>
                 );
         })}
       </TableBody>
     </Table>
-        </div>
+        </ScrollArea>
       )}
     </section>
-  );
-}
-
-function LanguageSelect({
-  disabled,
-  onValueChange,
-  value,
-}: {
-  disabled: boolean;
-  onValueChange: (value: string) => void;
-  value: string;
-}) {
-  return (
-    <Select disabled={disabled} onValueChange={onValueChange} value={value}>
-      <SelectTrigger aria-label="选择目标语言" size="sm">
-        <SelectValue />
-      </SelectTrigger>
-      <SelectContent>
-        <SelectGroup>
-          {LANGUAGE_OPTIONS.map((language) => (
-            <SelectItem key={language.value} value={language.value}>
-              {language.label}
-            </SelectItem>
-          ))}
-        </SelectGroup>
-      </SelectContent>
-    </Select>
   );
 }
 
 function FileStateBadge({ state }: { state: string }) {
   if (state === "translated") {
     return (
-      <Badge variant="secondary">
+      <Badge
+        className="border-emerald-600/25 bg-emerald-600/10 text-emerald-700 dark:text-emerald-400"
+        variant="outline"
+      >
         <CheckCircle2 data-icon="inline-start" />
         已完成
       </Badge>
     );
   }
   if (state === "failed") {
-    return <Badge variant="destructive">失败</Badge>;
+    return (
+      <Badge variant="destructive">
+        <AlertCircle data-icon="inline-start" />
+        失败
+      </Badge>
+    );
   }
   if (state === "translating") {
-    return <Badge variant="secondary">翻译中</Badge>;
+    return (
+      <Badge
+        className="border-sky-600/25 bg-sky-600/10 text-sky-700 dark:text-sky-400"
+        variant="outline"
+      >
+        <LoaderCircle className="animate-spin" data-icon="inline-start" />
+        翻译中
+      </Badge>
+    );
   }
-  return <Badge variant="outline">待翻译</Badge>;
+  if (state === "queued") {
+    return (
+      <Badge
+        className="border-amber-600/25 bg-amber-600/10 text-amber-700 dark:text-amber-400"
+        variant="outline"
+      >
+        <Clock3 data-icon="inline-start" />
+        排队中
+      </Badge>
+    );
+  }
+  return (
+    <Badge className="text-muted-foreground" variant="outline">
+      待翻译
+    </Badge>
+  );
 }
 
 function runAwareTranslationState(
   translationFile: RosettaTranslationFile,
   activeTranslationRun: ActiveTranslationRun | null,
-  currentJobId: string | null
+  currentJobId: string | null,
+  queuedTranslationFileIds: string[] = []
 ) {
-  return activeTranslationRun?.jobId === currentJobId &&
+  if (
+    activeTranslationRun?.jobId === currentJobId &&
     activeTranslationRun.translationFileId === translationFile.id
-    ? "translating"
+  ) {
+    return "translating";
+  }
+  return queuedTranslationFileIds.includes(translationFile.id)
+    ? "queued"
     : translationFile.status;
 }
 

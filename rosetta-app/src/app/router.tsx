@@ -3,6 +3,7 @@ import { AppShell } from "./AppShell";
 import { HomePage } from "../features/home/HomePage";
 import { ImportPage } from "../features/import/ImportPage";
 import { JobsPage } from "../features/jobs/JobsPage";
+import { SourcePreviewPage } from "../features/preview/SourcePreviewPage";
 import { TranslationPreviewPage } from "../features/preview/TranslationPreviewPage";
 import { SettingsPage } from "../features/settings/SettingsPage";
 
@@ -10,6 +11,10 @@ export const router = createHashRouter([
   {
     path: "/preview/:jobId/translations/:translationFileId",
     element: <TranslationPreviewPage />,
+  },
+  {
+    path: "/preview/:jobId/sources/:sourceFileId",
+    element: <SourcePreviewPage />,
   },
   {
     path: "/",
