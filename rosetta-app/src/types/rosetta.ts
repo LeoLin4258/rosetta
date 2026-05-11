@@ -140,7 +140,34 @@ export type RosettaJobBundle = {
   job: RosettaJobSummary;
   document: RosettaDocument;
   segments: Segment[];
+  translationFiles: RosettaTranslationFile[];
   translationRevisions: TranslationRevision[];
+};
+
+export type RosettaTranslationFile = {
+  id: string;
+  sourceFileId: string;
+  targetLang: string;
+  status: SourceFileTranslationStatus;
+  segmentCount: number;
+  completedSegments: number;
+  failedSegments: number;
+  updatedAt: string;
+  exportedAt?: string | null;
+};
+
+export type TranslationSegment = {
+  sourceSegmentId: string;
+  translatedText?: string | null;
+  targetLang: string;
+  status: SegmentStatus;
+  error?: string | null;
+  translationHistory?: TranslationHistoryEntry[] | null;
+};
+
+export type RosettaTranslationFileBundle = {
+  translationFile: RosettaTranslationFile;
+  segments: TranslationSegment[];
 };
 
 export type RosettaExportKind = "translation" | "bilingual";
@@ -165,8 +192,9 @@ export type TranslationRevision = {
 export type ActiveTranslationRun = {
   id: string;
   jobId: string;
-  fileId: string;
-  scope: "file" | "selection" | "retry-failed";
+  sourceFileId: string;
+  translationFileId: string;
+  scope: "file" | "selection" | "retry-failed" | "batch";
   targetSegmentIds: string[];
   completedSegmentIds: string[];
   failedSegmentIds: string[];

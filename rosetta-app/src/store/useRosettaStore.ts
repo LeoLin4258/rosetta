@@ -6,8 +6,11 @@ import type {
   RosettaDocument,
   RosettaJobBundle,
   RosettaJobSummary,
+  RosettaTranslationFile,
+  RosettaTranslationFileBundle,
   RwkvConnectionConfig,
   Segment,
+  TranslationSegment,
   TranslationRevision,
   TranslationMode,
 } from "../types/rosetta";
@@ -21,6 +24,12 @@ type RosettaState = {
   activeFileIdByJobId: Record<string, string>;
   activeDocument: RosettaDocument | null;
   previewSegments: Segment[];
+  translationFiles: RosettaTranslationFile[];
+  activeSourceFileId: string | null;
+  activeTranslationFileId: string | null;
+  activeSourceFileIdByJobId: Record<string, string>;
+  activeTranslationFileIdBySourceKey: Record<string, string>;
+  translationSegments: TranslationSegment[];
   translationRevisions: TranslationRevision[];
   activeTranslationRun: ActiveTranslationRun | null;
   setThemeMode: (mode: AppThemeMode) => void;
@@ -29,11 +38,31 @@ type RosettaState = {
   setJobList: (jobs: RosettaJobSummary[]) => void;
   setActiveJobId: (jobId: string | null) => void;
   setActiveFileId: (fileId: string | null) => void;
-  setActiveJobSelection: (jobId: string, fileId: string | null) => void;
+  setActiveJobSelection: (
+    jobId: string,
+    sourceFileId: string | null,
+    translationFileId?: string | null
+  ) => void;
   setActiveBundle: (bundle: RosettaJobBundle) => void;
   refreshJobBundle: (bundle: RosettaJobBundle) => void;
+  setActiveTranslationFileBundle: (
+    bundle: RosettaTranslationFileBundle
+  ) => void;
+  upsertTranslationFile: (translationFile: RosettaTranslationFile) => void;
   clearActiveJob: () => void;
   updateActiveSegments: (segments: Segment[]) => void;
+  updateActiveTranslationSegments: (segments: TranslationSegment[]) => void;
+  beginTranslationFileSegmentTranslation: (
+    segmentIds: string[]
+  ) => TranslationSegment[];
+  completeTranslationFileSegmentTranslation: (
+    segmentIds: string[],
+    translations: string[]
+  ) => TranslationSegment[];
+  failTranslationFileSegmentTranslation: (
+    segmentIds: string[],
+    error?: string
+  ) => TranslationSegment[];
   preparePreviewSegmentRetranslation: (segmentIds: string[]) => Segment[];
   startTranslationRun: (
     run: Omit<ActiveTranslationRun, "completedSegmentIds" | "failedSegmentIds" | "startedAt"> & {
@@ -110,6 +139,10 @@ function applySegments(
   };
 }
 
+function sourceSelectionKey(jobId: string, sourceFileId: string) {
+  return `${jobId}:${sourceFileId}`;
+}
+
 export const useRosettaStore = create<RosettaState>()(
   persist(
     (set, get) => ({
@@ -128,6 +161,12 @@ export const useRosettaStore = create<RosettaState>()(
       activeFileIdByJobId: {},
       activeDocument: null,
       previewSegments: [],
+      translationFiles: [],
+      activeSourceFileId: null,
+      activeTranslationFileId: null,
+      activeSourceFileIdByJobId: {},
+      activeTranslationFileIdBySourceKey: {},
+      translationSegments: [],
       translationRevisions: [],
       activeTranslationRun: null,
       setThemeMode: (mode) => set({ themeMode: mode }),
@@ -174,8 +213,12 @@ export const useRosettaStore = create<RosettaState>()(
               activeJobId: null,
               activeFileId: null,
               activeFileIdByJobId: nextActiveFileIdByJobId,
+              activeSourceFileId: null,
+              activeTranslationFileId: null,
               activeDocument: null,
               previewSegments: [],
+              translationFiles: [],
+              translationSegments: [],
               translationRevisions: [],
               activeTranslationRun: null,
             };
@@ -200,8 +243,16 @@ export const useRosettaStore = create<RosettaState>()(
           return {
             activeJobId: jobId,
             activeFileId: selectedFileId,
+            activeSourceFileId: selectedFileId,
+            activeTranslationFileId: jobId && selectedFileId
+              ? state.activeTranslationFileIdBySourceKey[
+                  sourceSelectionKey(jobId, selectedFileId)
+                ] ?? null
+              : null,
             activeDocument: isSwitchingJob ? null : state.activeDocument,
             previewSegments: isSwitchingJob ? [] : state.previewSegments,
+            translationFiles: isSwitchingJob ? [] : state.translationFiles,
+            translationSegments: isSwitchingJob ? [] : state.translationSegments,
             translationRevisions: isSwitchingJob
               ? []
               : state.translationRevisions,
@@ -223,25 +274,52 @@ export const useRosettaStore = create<RosettaState>()(
 
           return {
             activeFileId: fileId,
+            activeSourceFileId: fileId,
+            activeTranslationFileId:
+              state.activeJobId && fileId
+                ? state.activeTranslationFileIdBySourceKey[
+                    sourceSelectionKey(state.activeJobId, fileId)
+                  ] ?? null
+                : null,
             activeFileIdByJobId,
           };
         }),
-      setActiveJobSelection: (jobId, fileId) =>
+      setActiveJobSelection: (jobId, fileId, translationFileId = null) =>
         set((state) => {
           const activeFileIdByJobId = { ...state.activeFileIdByJobId };
+          const activeSourceFileIdByJobId = {
+            ...state.activeSourceFileIdByJobId,
+          };
+          const activeTranslationFileIdBySourceKey = {
+            ...state.activeTranslationFileIdBySourceKey,
+          };
           const isSwitchingJob = state.activeJobId !== jobId;
           if (fileId) {
             activeFileIdByJobId[jobId] = fileId;
+            activeSourceFileIdByJobId[jobId] = fileId;
+            const key = sourceSelectionKey(jobId, fileId);
+            if (translationFileId) {
+              activeTranslationFileIdBySourceKey[key] = translationFileId;
+            } else {
+              delete activeTranslationFileIdBySourceKey[key];
+            }
           } else {
             delete activeFileIdByJobId[jobId];
+            delete activeSourceFileIdByJobId[jobId];
           }
 
           return {
             activeJobId: jobId,
             activeFileId: fileId,
             activeFileIdByJobId,
+            activeSourceFileId: fileId,
+            activeTranslationFileId: translationFileId,
+            activeSourceFileIdByJobId,
+            activeTranslationFileIdBySourceKey,
             activeDocument: isSwitchingJob ? null : state.activeDocument,
             previewSegments: isSwitchingJob ? [] : state.previewSegments,
+            translationFiles: isSwitchingJob ? [] : state.translationFiles,
+            translationSegments: isSwitchingJob ? [] : state.translationSegments,
             translationRevisions: isSwitchingJob
               ? []
               : state.translationRevisions,
@@ -267,9 +345,22 @@ export const useRosettaStore = create<RosettaState>()(
             jobs: replaceJob(state.jobs, bundle.job),
             activeJobId: bundle.job.id,
             activeFileId: selectedFileId,
+            activeSourceFileId: selectedFileId,
+            activeTranslationFileId:
+              selectedFileId != null
+                ? state.activeTranslationFileIdBySourceKey[
+                    sourceSelectionKey(bundle.job.id, selectedFileId)
+                  ] ??
+                  bundle.translationFiles.find(
+                    (file) => file.sourceFileId === selectedFileId
+                  )?.id ??
+                  null
+                : null,
             activeFileIdByJobId,
             activeDocument: bundle.document,
             previewSegments: bundle.segments,
+            translationFiles: bundle.translationFiles ?? [],
+            translationSegments: [],
             translationRevisions: bundle.translationRevisions ?? [],
           };
         }),
@@ -297,22 +388,122 @@ export const useRosettaStore = create<RosettaState>()(
           return {
             jobs,
             activeFileId: selectedFileId,
+            activeSourceFileId: selectedFileId,
+            activeTranslationFileId:
+              selectedFileId != null
+                ? state.activeTranslationFileIdBySourceKey[
+                    sourceSelectionKey(bundle.job.id, selectedFileId)
+                  ] ??
+                  bundle.translationFiles.find(
+                    (file) => file.sourceFileId === selectedFileId
+                  )?.id ??
+                  null
+                : null,
             activeFileIdByJobId,
             activeDocument: bundle.document,
             previewSegments: bundle.segments,
+            translationFiles: bundle.translationFiles ?? [],
             translationRevisions: bundle.translationRevisions ?? [],
           };
         }),
+      setActiveTranslationFileBundle: (bundle) =>
+        set((state) => {
+          const translationFiles = [
+            bundle.translationFile,
+            ...state.translationFiles.filter(
+              (file) => file.id !== bundle.translationFile.id
+            ),
+          ].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+          const activeTranslationFileIdBySourceKey = {
+            ...state.activeTranslationFileIdBySourceKey,
+          };
+          if (state.activeJobId) {
+            activeTranslationFileIdBySourceKey[
+              sourceSelectionKey(
+                state.activeJobId,
+                bundle.translationFile.sourceFileId
+              )
+            ] = bundle.translationFile.id;
+          }
+
+          return {
+            translationFiles,
+            activeSourceFileId: bundle.translationFile.sourceFileId,
+            activeFileId: bundle.translationFile.sourceFileId,
+            activeTranslationFileId: bundle.translationFile.id,
+            activeTranslationFileIdBySourceKey,
+            translationSegments: bundle.segments,
+          };
+        }),
+      upsertTranslationFile: (translationFile) =>
+        set((state) => ({
+          translationFiles: [
+            translationFile,
+            ...state.translationFiles.filter((file) => file.id !== translationFile.id),
+          ].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)),
+        })),
       clearActiveJob: () =>
         set({
           activeJobId: null,
           activeFileId: null,
+          activeSourceFileId: null,
+          activeTranslationFileId: null,
           activeDocument: null,
           previewSegments: [],
+          translationFiles: [],
+          translationSegments: [],
           translationRevisions: [],
           activeTranslationRun: null,
         }),
       updateActiveSegments: (segments) => set((state) => applySegments(state, segments)),
+      updateActiveTranslationSegments: (segments) =>
+        set({ translationSegments: segments }),
+      beginTranslationFileSegmentTranslation: (segmentIds) => {
+        const segmentIdSet = new Set(segmentIds);
+        const nextSegments = get().translationSegments.map((segment) =>
+          segmentIdSet.has(segment.sourceSegmentId)
+            ? {
+                ...segment,
+                status: "translating" as const,
+                translatedText: undefined,
+                error: undefined,
+              }
+            : segment
+        );
+        set({ translationSegments: nextSegments });
+        return nextSegments;
+      },
+      completeTranslationFileSegmentTranslation: (segmentIds, translations) => {
+        const translationById = new Map(
+          segmentIds.map((segmentId, index) => [segmentId, translations[index]])
+        );
+        const nextSegments = get().translationSegments.map((segment) =>
+          translationById.has(segment.sourceSegmentId)
+            ? {
+                ...segment,
+                translatedText: translationById.get(segment.sourceSegmentId),
+                status: "done" as const,
+                error: undefined,
+              }
+            : segment
+        );
+        set({ translationSegments: nextSegments });
+        return nextSegments;
+      },
+      failTranslationFileSegmentTranslation: (segmentIds, error) => {
+        const segmentIdSet = new Set(segmentIds);
+        const nextSegments = get().translationSegments.map((segment) =>
+          segmentIdSet.has(segment.sourceSegmentId)
+            ? {
+                ...segment,
+                status: "failed" as const,
+                error,
+              }
+            : segment
+        );
+        set({ translationSegments: nextSegments });
+        return nextSegments;
+      },
       preparePreviewSegmentRetranslation: (segmentIds) => {
         const segmentIdSet = new Set(segmentIds);
         const nextSegments = get().previewSegments.map((segment) =>
@@ -440,6 +631,20 @@ export const useRosettaStore = create<RosettaState>()(
             (persistedState?.activeJobId && persistedState?.activeFileId
               ? { [persistedState.activeJobId]: persistedState.activeFileId }
               : current.activeFileIdByJobId),
+          activeSourceFileId:
+            persistedState?.activeSourceFileId ??
+            persistedState?.activeFileId ??
+            current.activeSourceFileId,
+          activeTranslationFileId:
+            persistedState?.activeTranslationFileId ??
+            current.activeTranslationFileId,
+          activeSourceFileIdByJobId:
+            persistedState?.activeSourceFileIdByJobId ??
+            persistedState?.activeFileIdByJobId ??
+            current.activeSourceFileIdByJobId,
+          activeTranslationFileIdBySourceKey:
+            persistedState?.activeTranslationFileIdBySourceKey ??
+            current.activeTranslationFileIdBySourceKey,
           rwkv: {
             ...current.rwkv,
             ...persistedState?.rwkv,
@@ -452,6 +657,11 @@ export const useRosettaStore = create<RosettaState>()(
         activeJobId: state.activeJobId,
         activeFileId: state.activeFileId,
         activeFileIdByJobId: state.activeFileIdByJobId,
+        activeSourceFileId: state.activeSourceFileId,
+        activeTranslationFileId: state.activeTranslationFileId,
+        activeSourceFileIdByJobId: state.activeSourceFileIdByJobId,
+        activeTranslationFileIdBySourceKey:
+          state.activeTranslationFileIdBySourceKey,
       }),
     }
   )

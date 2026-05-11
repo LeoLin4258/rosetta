@@ -1,25 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
-  ArrowRight,
   CheckCircle2,
-  ChevronUp,
   Download,
   FilePlus,
+  FileText,
+  Folder,
   Languages,
   Play,
   RefreshCw,
-  Trash2,
-  X,
 } from "lucide-react";
-import { DocumentPreview } from "../preview/DocumentPreview";
-import { useRosettaStore } from "../../store/useRosettaStore";
+
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
@@ -31,27 +27,40 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { translateRwkvTextsWithApi } from "../../lib/rwkvApi";
 import {
-  createRosettaTranslationRevision,
-  deleteRosettaJobFile,
-  exportRosettaJobFile,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import {
+  ensureRosettaTranslationFile,
+  exportRosettaTranslationFile,
   loadRosettaJob,
+  loadRosettaTranslationFile,
   pickRosettaExportPath,
-  saveRosettaSegments,
-  updateRosettaJobFileLanguages,
+  saveRosettaTranslationSegments,
 } from "../../lib/rosettaJobs";
-import {
-  rosettaJobDefaultPath,
-  rosettaJobFilePath,
-  rosettaJobPath,
-} from "../../lib/rosettaRoutes";
+import { rosettaJobDefaultPath, rosettaJobFilePath } from "../../lib/rosettaRoutes";
+import { openTranslationPreviewWindow } from "../../lib/translationPreviewWindow";
+import { translateRwkvTextsWithApi } from "../../lib/rwkvApi";
 import { cn } from "../../lib/utils";
-import type { RosettaExportKind, Segment } from "../../types/rosetta";
+import { useRosettaStore } from "../../store/useRosettaStore";
+import type {
+  ActiveTranslationRun,
+  RosettaExportKind,
+  RosettaSourceFile,
+  RosettaTranslationFile,
+  Segment,
+  TranslationSegment,
+} from "../../types/rosetta";
 
 const BATCH_SIZE = 16;
+
 const LANGUAGE_OPTIONS = [
-  { value: "en", label: "English" },
   { value: "zh-CN", label: "简体中文" },
   { value: "zh-TW", label: "繁體中文" },
   { value: "ja", label: "日本語" },
@@ -71,37 +80,27 @@ export function JobsPage() {
   const navigate = useNavigate();
   const jobs = useRosettaStore((state) => state.jobs);
   const activeJobId = useRosettaStore((state) => state.activeJobId);
-  const activeFileId = useRosettaStore((state) => state.activeFileId);
-  const activeFileIdByJobId = useRosettaStore(
-    (state) => state.activeFileIdByJobId
+  const activeSourceFileId = useRosettaStore((state) => state.activeSourceFileId);
+  const activeTranslationFileId = useRosettaStore(
+    (state) => state.activeTranslationFileId
+  );
+  const activeSourceFileIdByJobId = useRosettaStore(
+    (state) => state.activeSourceFileIdByJobId
   );
   const activeDocument = useRosettaStore((state) => state.activeDocument);
-  const rwkv = useRosettaStore((state) => state.rwkv);
   const previewSegments = useRosettaStore((state) => state.previewSegments);
-  const translationRevisions = useRosettaStore(
-    (state) => state.translationRevisions
-  );
+  const translationFiles = useRosettaStore((state) => state.translationFiles);
+  const rwkv = useRosettaStore((state) => state.rwkv);
   const activeTranslationRun = useRosettaStore(
     (state) => state.activeTranslationRun
   );
-  const setJobList = useRosettaStore((state) => state.setJobList);
   const setActiveBundle = useRosettaStore((state) => state.setActiveBundle);
   const refreshJobBundle = useRosettaStore((state) => state.refreshJobBundle);
   const setActiveJobSelection = useRosettaStore(
     (state) => state.setActiveJobSelection
   );
-  const clearActiveJob = useRosettaStore((state) => state.clearActiveJob);
-  const beginPreviewSegmentTranslation = useRosettaStore(
-    (state) => state.beginPreviewSegmentTranslation
-  );
-  const completePreviewSegmentTranslation = useRosettaStore(
-    (state) => state.completePreviewSegmentTranslation
-  );
-  const failPreviewSegmentTranslation = useRosettaStore(
-    (state) => state.failPreviewSegmentTranslation
-  );
-  const preparePreviewSegmentRetranslation = useRosettaStore(
-    (state) => state.preparePreviewSegmentRetranslation
+  const upsertTranslationFile = useRosettaStore(
+    (state) => state.upsertTranslationFile
   );
   const startTranslationRun = useRosettaStore((state) => state.startTranslationRun);
   const markTranslationRunCompleted = useRosettaStore(
@@ -113,263 +112,73 @@ export function JobsPage() {
   const finishTranslationRun = useRosettaStore(
     (state) => state.finishTranslationRun
   );
+
   const [isLoading, setIsLoading] = useState(false);
   const [isTranslating, setIsTranslating] = useState(false);
-  const [isSavingLanguages, setIsSavingLanguages] = useState(false);
-  const [isDeleting, setIsDeleting] = useState(false);
-  const [selectedRevisionId, setSelectedRevisionId] = useState("current");
-  const [selectedBlockIds, setSelectedBlockIds] = useState<string[]>([]);
-  const [isWorkbenchCollapsed, setIsWorkbenchCollapsed] = useState(false);
+  const [targetLang, setTargetLang] = useState("zh-CN");
+  const [batchTargetLangs, setBatchTargetLangs] = useState<string[]>(["zh-CN"]);
+  const [selectedSourceFileIds, setSelectedSourceFileIds] = useState<string[]>(
+    []
+  );
+  const [selectedTranslationFileIds, setSelectedTranslationFileIds] = useState<
+    string[]
+  >([]);
   const loadRequestIdRef = useRef(0);
+
   const currentJobId = jobId ?? activeJobId ?? jobs[0]?.id ?? null;
   const activeJob = jobs.find((job) => job.id === currentJobId) ?? null;
   const isCurrentBundleLoaded = activeJobId === currentJobId && activeDocument != null;
-  const currentDocument = isCurrentBundleLoaded ? activeDocument : null;
-  const currentSegments = isCurrentBundleLoaded ? previewSegments : [];
-  const selectedFileId = currentJobId
-    ? fileId ??
-    activeFileIdByJobId[currentJobId] ??
-    (activeJobId === currentJobId ? activeFileId : null)
-    : null;
-  const currentDocumentFile = selectedFileId
-    ? currentDocument?.files.find((file) => file.id === selectedFileId) ?? null
-    : null;
-  const currentSummaryFile = selectedFileId
-    ? activeJob?.sourceFiles?.find((file) => file.id === selectedFileId) ?? null
-    : null;
-  const currentFile =
-    currentDocumentFile ??
-    currentSummaryFile ??
-    (fileId ? null : currentDocument?.files[0] ?? activeJob?.sourceFiles?.[0] ?? null);
-  const currentFileSegments = useMemo(
-    () =>
-      currentSegments.filter((segment) =>
-        currentFile ? (segment.fileId ?? "file-1") === currentFile.id : false
-      ),
-    [currentFile, currentSegments]
+  const document = isCurrentBundleLoaded ? activeDocument : null;
+  const sourceFiles = document?.files ?? activeJob?.sourceFiles ?? [];
+  const selectedSourceFileId =
+    fileId ??
+    (currentJobId ? activeSourceFileIdByJobId[currentJobId] : null) ??
+    (activeJobId === currentJobId ? activeSourceFileId : null) ??
+    sourceFiles[0]?.id ??
+    null;
+  const selectedSourceFile =
+    sourceFiles.find((file) => file.id === selectedSourceFileId) ?? null;
+  const selectedTranslationFile =
+    translationFiles.find(
+      (file) =>
+        file.id === activeTranslationFileId &&
+        file.sourceFileId === selectedSourceFileId
+    ) ?? null;
+  const translationFilesBySourceId = useMemo(
+    () => groupTranslationFilesBySource(translationFiles),
+    [translationFiles]
   );
-  const sourceLang = currentFile?.sourceLang ?? currentDocument?.sourceLang ?? "en";
-  const targetLang =
-    currentFile?.targetLang ??
-    currentDocument?.targetLang ??
-    activeJob?.targetLang ??
-    "zh-CN";
-  const pendingSegments = useMemo(
-    () =>
-      currentFileSegments.filter(
-        (segment) =>
-          ["pending", "failed"].includes(segment.status) &&
-          segment.sourceText.trim().length > 0
-      ),
-    [currentFileSegments]
+  const sourceSegmentsByFileId = useMemo(
+    () => groupSourceSegmentsByFile(previewSegments),
+    [previewSegments]
   );
-  const retranslationSegments = useMemo(
-    () =>
-      currentFileSegments.filter(
-        (segment) =>
-          ["done", "edited"].includes(segment.status) &&
-          segment.sourceText.trim().length > 0
-      ),
-    [currentFileSegments]
+  const sourceSegmentCountByFileId = useMemo(
+    () => countSourceSegmentsByFile(previewSegments),
+    [previewSegments]
   );
-  const translatableFileSegments = useMemo(
-    () =>
-      currentFileSegments.filter(
-        (segment) => segment.status !== "skipped" && segment.sourceText.trim()
-      ),
-    [currentFileSegments]
-  );
-  const selectedSegmentIds = useMemo(() => {
-    const selectedBlockIdSet = new Set(selectedBlockIds);
-    return currentFileSegments
-      .filter(
-        (segment) =>
-          selectedBlockIdSet.has(segment.blockId) &&
-          segment.status !== "skipped" &&
-          segment.sourceText.trim()
-      )
-      .map((segment) => segment.id);
-  }, [currentFileSegments, selectedBlockIds]);
-  const selectedSegments = useMemo(() => {
-    const selectedSegmentIdSet = new Set(selectedSegmentIds);
-    return currentFileSegments.filter((segment) =>
-      selectedSegmentIdSet.has(segment.id)
-    );
-  }, [currentFileSegments, selectedSegmentIds]);
-  const failedSegments = useMemo(
-    () =>
-      currentFileSegments.filter(
-        (segment) => segment.status === "failed" && segment.sourceText.trim()
-      ),
-    [currentFileSegments]
-  );
-  const isCurrentFileTranslating = currentFileSegments.some(
-    (segment) => segment.status === "translating"
-  );
-  const currentFileTranslationRun =
-    activeTranslationRun &&
-      activeTranslationRun.jobId === currentJobId &&
-      activeTranslationRun.fileId === currentFile?.id
-      ? activeTranslationRun
-      : null;
-  const isCurrentFileTranslationRunActive = currentFileTranslationRun != null;
   const rwkvConfigReady =
     rwkv.baseUrl.trim().length > 0 &&
     rwkv.endpoint.trim().length > 0 &&
     rwkv.internalToken.trim().length > 0 &&
     rwkv.bodyPassword.trim().length > 0 &&
     rwkv.timeoutMs > 0;
-  const translatedFileSegments = translatableFileSegments.filter((segment) =>
-    ["done", "edited"].includes(segment.status)
-  ).length;
-  const skippedFileSegments = currentFileSegments.filter(
-    (segment) => segment.status === "skipped"
-  ).length;
-  const fileProgress =
-    currentFileTranslationRun
-      ? Math.round(
-        (currentFileTranslationRun.completedSegmentIds.length /
-          Math.max(currentFileTranslationRun.targetSegmentIds.length, 1)) *
-        100
-      )
-      : translatableFileSegments.length > 0
-        ? Math.round((translatedFileSegments / translatableFileSegments.length) * 100)
-        : 0;
-  const currentFileState =
-    isCurrentFileTranslating || isCurrentFileTranslationRunActive
-      ? "翻译中"
-      : failedSegments.length > 0
-        ? "需要重试"
-        : pendingSegments.length > 0
-          ? "待翻译"
-          : translatableFileSegments.length > 0
-            ? "已完成"
-            : "无内容";
-  const primaryActionLabel = isCurrentFileTranslationRunActive
-    ? "翻译中"
-    : failedSegments.length > 0
-      ? "重试失败"
-      : pendingSegments.length > 0
-        ? "开始翻译"
-        : retranslationSegments.length > 0
-          ? "重新翻译全文"
-          : "已完成";
-  const primaryTranslationSegments =
-    failedSegments.length > 0
-      ? failedSegments
-      : pendingSegments.length > 0
-        ? pendingSegments
-        : retranslationSegments;
-  const isCurrentFileExportable =
-    currentFile != null &&
-    translatedFileSegments > 0 &&
-    translatableFileSegments.every((segment) =>
-      ["done", "edited"].includes(segment.status)
-    );
-  const fileProgressText = currentFileTranslationRun
-    ? `${currentFileTranslationRun.completedSegmentIds.length}/${currentFileTranslationRun.targetSegmentIds.length}`
-    : translatableFileSegments.length > 0
-      ? `${translatedFileSegments}/${translatableFileSegments.length}`
-      : "0/0";
-  const selectionEnabled =
-    selectedRevisionId === "current" &&
-    isCurrentFileExportable &&
-    !isTranslating &&
-    !isCurrentFileTranslationRunActive;
-  const hasSelectedBlocks =
-    selectedBlockIds.length > 0 && selectedRevisionId === "current";
-  const mainActionLabel = hasSelectedBlocks ? "重翻选中" : primaryActionLabel;
-  const mainActionDisabled = hasSelectedBlocks
-    ? !rwkvConfigReady ||
-    selectedSegments.length === 0 ||
-    isTranslating ||
-    isLoading
-    : !rwkvConfigReady ||
-    primaryTranslationSegments.length === 0 ||
-    isTranslating ||
-    isLoading;
-  const mainActionVariant =
-    hasSelectedBlocks || pendingSegments.length > 0 || failedSegments.length > 0
-      ? "default"
-      : "outline";
+  const canTranslateSelectedTranslation =
+    selectedTranslationFile != null &&
+    (selectedTranslationFile.failedSegments > 0 ||
+      selectedTranslationFile.completedSegments < selectedTranslationFile.segmentCount);
+  const isSelectedTranslationComplete =
+    selectedTranslationFile != null &&
+    selectedTranslationFile.segmentCount > 0 &&
+    selectedTranslationFile.completedSegments >= selectedTranslationFile.segmentCount &&
+    selectedTranslationFile.failedSegments === 0;
+  const selectedBatchCount =
+    selectedSourceFileIds.length + selectedTranslationFileIds.length;
+
   useEffect(() => {
     if (!jobId && jobs.length > 0) {
       navigate(rosettaJobDefaultPath(jobs[0]), { replace: true });
     }
   }, [jobId, jobs, navigate]);
-
-  useEffect(() => {
-    if (!currentJobId || fileId) {
-      return;
-    }
-
-    const fallbackFileId =
-      activeFileIdByJobId[currentJobId] ??
-      (activeJobId === currentJobId ? activeFileId : null) ??
-      activeJob?.sourceFiles[0]?.id ??
-      currentDocument?.files[0]?.id ??
-      null;
-
-    if (fallbackFileId) {
-      navigate(rosettaJobFilePath(currentJobId, fallbackFileId), {
-        replace: true,
-      });
-    }
-  }, [
-    activeFileId,
-    activeFileIdByJobId,
-    activeJob,
-    activeJobId,
-    currentDocument,
-    currentJobId,
-    fileId,
-    navigate,
-  ]);
-
-  useEffect(() => {
-    if (!currentJobId || !selectedFileId) {
-      return;
-    }
-    if (fileId && currentFile == null) {
-      return;
-    }
-
-    if (
-      activeJobId === currentJobId &&
-      activeFileId === selectedFileId &&
-      activeFileIdByJobId[currentJobId] === selectedFileId
-    ) {
-      return;
-    }
-
-    setActiveJobSelection(currentJobId, selectedFileId);
-  }, [
-    activeFileId,
-    activeFileIdByJobId,
-    activeJobId,
-    currentJobId,
-    currentFile?.id,
-    fileId,
-    selectedFileId,
-    setActiveJobSelection,
-  ]);
-
-  useEffect(() => {
-    if (!currentJobId || !currentDocument || !selectedFileId) {
-      return;
-    }
-
-    const fileExists = currentDocument.files.some(
-      (file) => file.id === selectedFileId
-    );
-    const fallbackFileId = currentDocument.files[0]?.id;
-
-    if (!fileExists && fallbackFileId) {
-      navigate(rosettaJobFilePath(currentJobId, fallbackFileId), {
-        replace: true,
-      });
-    }
-  }, [currentDocument, currentJobId, navigate, selectedFileId]);
 
   useEffect(() => {
     if (!currentJobId) {
@@ -399,51 +208,187 @@ export function JobsPage() {
         }
         setActiveBundle(bundle);
       })
-      .catch((error) => {
-        if (loadRequestIdRef.current === requestId) {
-          console.error(error);
-        }
-      })
+      .catch(console.error)
       .finally(() => {
         if (loadRequestIdRef.current === requestId) {
           setIsLoading(false);
         }
       });
-
-    return () => {
-      if (loadRequestIdRef.current === requestId) {
-        loadRequestIdRef.current += 1;
-      }
-    };
   }, [currentJobId, setActiveBundle]);
 
   useEffect(() => {
-    setSelectedBlockIds([]);
-    setSelectedRevisionId("current");
-    setIsWorkbenchCollapsed(false);
-    setIsTranslating(false);
-  }, [currentFile?.id]);
+    if (!currentJobId || !selectedSourceFileId) {
+      return;
+    }
+    if (!fileId) {
+      navigate(rosettaJobFilePath(currentJobId, selectedSourceFileId), {
+        replace: true,
+      });
+    }
+    setActiveJobSelection(
+      currentJobId,
+      selectedSourceFileId,
+      selectedTranslationFile?.id ?? null
+    );
+  }, [
+    currentJobId,
+    fileId,
+    navigate,
+    selectedSourceFileId,
+    selectedTranslationFile?.id,
+    setActiveJobSelection,
+  ]);
 
-  function isTranslationRunStillCurrent(
-    runId: string,
-    jobId: string,
-    fileId: string
-  ) {
-    const run = useRosettaStore.getState().activeTranslationRun;
-    return run?.id === runId && run.jobId === jobId && run.fileId === fileId;
+  async function createTranslationFileForCurrentSource() {
+    if (!currentJobId || !selectedSourceFile) {
+      return null;
+    }
+    const bundle = await ensureRosettaTranslationFile(
+      currentJobId,
+      selectedSourceFile.id,
+      targetLang
+    );
+    upsertTranslationFile(bundle.translationFile);
+    setActiveJobSelection(
+      currentJobId,
+      selectedSourceFile.id,
+      bundle.translationFile.id
+    );
+    refreshJobBundle(await loadRosettaJob(currentJobId));
+    return bundle.translationFile;
   }
 
-  async function translateSegments(
-    targetSegments: Segment[],
-    scope: "file" | "selection" | "retry-failed"
+  function selectSourceFile(sourceFile: RosettaSourceFile) {
+    if (!currentJobId) {
+      return;
+    }
+    setActiveJobSelection(currentJobId, sourceFile.id, null);
+    navigate(rosettaJobFilePath(currentJobId, sourceFile.id));
+  }
+
+  function selectTranslationFile(translationFile: RosettaTranslationFile) {
+    if (!currentJobId) {
+      return;
+    }
+    setActiveJobSelection(
+      currentJobId,
+      translationFile.sourceFileId,
+      translationFile.id
+    );
+    navigate(rosettaJobFilePath(currentJobId, translationFile.sourceFileId));
+  }
+
+  async function openTranslationFile(translationFile: RosettaTranslationFile) {
+    if (!currentJobId) {
+      return;
+    }
+    const sourceFile =
+      sourceFiles.find((file) => file.id === translationFile.sourceFileId) ??
+      null;
+    selectTranslationFile(translationFile);
+    await openTranslationPreviewWindow({
+      jobId: currentJobId,
+      sourceFilename: sourceFile?.relativePath ?? sourceFile?.filename ?? "源文件",
+      translationFile,
+    });
+  }
+
+  function toggleSourceSelection(sourceFileId: string) {
+    setSelectedSourceFileIds((current) =>
+      current.includes(sourceFileId)
+        ? current.filter((id) => id !== sourceFileId)
+        : [...current, sourceFileId]
+    );
+  }
+
+  function toggleTranslationSelection(translationFileId: string) {
+    setSelectedTranslationFileIds((current) =>
+      current.includes(translationFileId)
+        ? current.filter((id) => id !== translationFileId)
+        : [...current, translationFileId]
+    );
+  }
+
+  async function translateCurrentTranslationFile() {
+    if (!currentJobId) {
+      return;
+    }
+    if (!selectedTranslationFile) {
+      const created = await createTranslationFileForCurrentSource();
+      if (!created) {
+        return;
+      }
+      await translateTranslationFile(created);
+      return;
+    }
+    await translateTranslationFile(selectedTranslationFile);
+  }
+
+  async function translateSelectedBatch() {
+    if (!currentJobId || selectedBatchCount === 0) {
+      return;
+    }
+
+    try {
+      for (const translationFileId of selectedTranslationFileIds) {
+        const translationFile = translationFiles.find(
+          (file) => file.id === translationFileId
+        );
+        if (translationFile) {
+          await translateTranslationFile(translationFile, "batch");
+        }
+      }
+
+      for (const sourceFileId of selectedSourceFileIds) {
+        for (const language of batchTargetLangs) {
+          const ensured = await ensureRosettaTranslationFile(
+            currentJobId,
+            sourceFileId,
+            language
+          );
+          upsertTranslationFile(ensured.translationFile);
+          await translateTranslationFile(ensured.translationFile, "batch", ensured.segments);
+        }
+      }
+
+      refreshJobBundle(await loadRosettaJob(currentJobId));
+    } catch (error) {
+      console.error(error);
+    }
+  }
+
+  async function translateTranslationFile(
+    translationFile: RosettaTranslationFile,
+    scope: "file" | "batch" = "file",
+    initialSegments?: TranslationSegment[]
   ) {
-    if (
-      !currentJobId ||
-      !currentFile ||
-      !rwkvConfigReady ||
-      targetSegments.length === 0 ||
-      isTranslating
-    ) {
+    if (!currentJobId || !document || !rwkvConfigReady || isTranslating) {
+      return;
+    }
+    const sourceFile =
+      document.files.find((file) => file.id === translationFile.sourceFileId) ??
+      null;
+    if (!sourceFile) {
+      return;
+    }
+
+    const loadedSegments =
+      initialSegments ??
+      (await loadRosettaTranslationFile(currentJobId, translationFile.id)).segments;
+    const sourceSegmentsForFile = sourceSegmentsByFileId.get(sourceFile.id) ?? [];
+    const sourceById = new Map(
+      sourceSegmentsForFile.map((segment) => [segment.id, segment])
+    );
+    const targets = loadedSegments.filter((segment) => {
+      const source = sourceById.get(segment.sourceSegmentId);
+      return (
+        source != null &&
+        source.sourceText.trim().length > 0 &&
+        ["pending", "failed"].includes(segment.status)
+      );
+    });
+
+    if (targets.length === 0) {
       return;
     }
 
@@ -452,24 +397,27 @@ export function JobsPage() {
     startTranslationRun({
       id: runId,
       jobId: currentJobId,
-      fileId: currentFile.id,
+      sourceFileId: sourceFile.id,
+      translationFileId: translationFile.id,
       scope,
-      targetSegmentIds: targetSegments.map((segment) => segment.id),
+      targetSegmentIds: targets.map((segment) => segment.sourceSegmentId),
     });
 
+    let workingSegments = loadedSegments;
     let currentBatchSegmentIds: string[] = [];
     try {
-      const orderedSegments = [...targetSegments].sort(
-        (left, right) => left.order - right.order
-      );
+      const orderedTargets = targets.sort((left, right) => {
+        const leftSource = sourceById.get(left.sourceSegmentId);
+        const rightSource = sourceById.get(right.sourceSegmentId);
+        return (leftSource?.order ?? 0) - (rightSource?.order ?? 0);
+      });
 
-      for (const batch of chunkSegments(orderedSegments, BATCH_SIZE)) {
-        if (!isTranslationRunStillCurrent(runId, currentJobId, currentFile.id)) {
-          return;
-        }
-
-        currentBatchSegmentIds = batch.map((segment) => segment.id);
-        beginPreviewSegmentTranslation(currentBatchSegmentIds);
+      for (const batch of chunkSegments(orderedTargets, BATCH_SIZE)) {
+        currentBatchSegmentIds = batch.map((segment) => segment.sourceSegmentId);
+        workingSegments = markSegmentsTranslating(
+          workingSegments,
+          currentBatchSegmentIds
+        );
 
         const result = await translateRwkvTextsWithApi({
           baseUrl: rwkv.baseUrl,
@@ -477,227 +425,95 @@ export function JobsPage() {
           internalToken: rwkv.internalToken,
           bodyPassword: rwkv.bodyPassword,
           timeoutMs: rwkv.timeoutMs,
-          sourceLang,
-          targetLang,
-          sourceTexts: batch.map((segment) => segment.sourceText),
+          sourceLang: sourceFile.sourceLang ?? document.sourceLang,
+          targetLang: translationFile.targetLang,
+          sourceTexts: batch.map(
+            (segment) => sourceById.get(segment.sourceSegmentId)?.sourceText ?? ""
+          ),
         });
 
-        if (!isTranslationRunStillCurrent(runId, currentJobId, currentFile.id)) {
-          return;
-        }
-
-        if (!result.ok) {
-          const failed = failPreviewSegmentTranslation(
-            currentBatchSegmentIds,
-            result.message
-          );
-          markTranslationRunFailed(runId, currentBatchSegmentIds);
-          await saveRosettaSegments(currentJobId, failed).then(refreshJobBundle);
-          return;
-        }
-
-        if (result.translations.length !== batch.length) {
-          const message = `RWKV API 返回 ${result.translations.length} 条译文，但本批有 ${batch.length} 条文本。`;
-          const failed = failPreviewSegmentTranslation(
+        if (!result.ok || result.translations.length !== batch.length) {
+          const message = !result.ok
+            ? result.message
+            : `RWKV API 返回 ${result.translations.length} 条译文，但本批有 ${batch.length} 条文本。`;
+          workingSegments = markSegmentsFailed(
+            workingSegments,
             currentBatchSegmentIds,
             message
           );
           markTranslationRunFailed(runId, currentBatchSegmentIds);
-          await saveRosettaSegments(currentJobId, failed).then(refreshJobBundle);
+          const saved = await saveRosettaTranslationSegments(
+            currentJobId,
+            translationFile.id,
+            workingSegments
+          );
+          upsertTranslationFile(saved.translationFile);
           return;
         }
 
-        const completed = completePreviewSegmentTranslation(
+        workingSegments = markSegmentsDone(
+          workingSegments,
           currentBatchSegmentIds,
           result.translations
         );
         markTranslationRunCompleted(runId, currentBatchSegmentIds);
-        await saveRosettaSegments(currentJobId, completed).then(refreshJobBundle);
+        const saved = await saveRosettaTranslationSegments(
+          currentJobId,
+          translationFile.id,
+          workingSegments
+        );
+        upsertTranslationFile(saved.translationFile);
       }
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "RWKV API 翻译调用失败。";
       if (currentBatchSegmentIds.length > 0) {
-        const failed = failPreviewSegmentTranslation(currentBatchSegmentIds, message);
-        markTranslationRunFailed(runId, currentBatchSegmentIds);
-        try {
-          await saveRosettaSegments(currentJobId, failed).then(refreshJobBundle);
-        } catch {
-          // Ignore secondary save errors so the original failure can surface.
-        }
-      }
-    } finally {
-      if (isTranslationRunStillCurrent(runId, currentJobId, currentFile.id)) {
-        setIsTranslating(false);
-      }
-      finishTranslationRun(runId);
-    }
-  }
-
-  async function translateCurrentFile() {
-    if (!currentJobId || !currentFile || isTranslating) {
-      return;
-    }
-
-    if (failedSegments.length > 0) {
-      setSelectedBlockIds([]);
-      setSelectedRevisionId("current");
-      await translateSegments(failedSegments, "retry-failed");
-      return;
-    }
-
-    if (pendingSegments.length > 0) {
-      setSelectedBlockIds([]);
-      setSelectedRevisionId("current");
-      await translateSegments(pendingSegments, "file");
-      return;
-    }
-
-    if (translatableFileSegments.length === 0) {
-      return;
-    }
-
-    setSelectedBlockIds([]);
-    setSelectedRevisionId("current");
-    await createRosettaTranslationRevision(
-      currentJobId,
-      currentFile.id,
-      "file-retranslation"
-    ).then(refreshJobBundle);
-    const segmentIds = translatableFileSegments.map((segment) => segment.id);
-    const preparedSegments = preparePreviewSegmentRetranslation(segmentIds);
-    await saveRosettaSegments(currentJobId, preparedSegments).then(refreshJobBundle);
-    await translateSegments(translatableFileSegments, "file");
-  }
-
-  async function translateSelectedBlocks() {
-    if (
-      !currentJobId ||
-      !currentFile ||
-      selectedSegments.length === 0 ||
-      isTranslating
-    ) {
-      return;
-    }
-
-    await createRosettaTranslationRevision(
-      currentJobId,
-      currentFile.id,
-      "selection-retranslation",
-      selectedBlockIds
-    ).then(refreshJobBundle);
-    const preparedSegments = preparePreviewSegmentRetranslation(selectedSegmentIds);
-    await saveRosettaSegments(currentJobId, preparedSegments).then(refreshJobBundle);
-    setSelectedRevisionId("current");
-    setSelectedBlockIds([]);
-    await translateSegments(selectedSegments, "selection");
-  }
-
-  async function exportCurrentFile(kind: RosettaExportKind) {
-    if (!currentJobId || !currentFile || !isCurrentFileExportable) {
-      return;
-    }
-
-    try {
-      const targetPath = await pickRosettaExportPath(
-        defaultExportFilename(currentFile.relativePath, currentFile.format, kind),
-        currentFile.format
-      );
-
-      if (!targetPath) {
-        return;
-      }
-
-      await exportRosettaJobFile(currentJobId, currentFile.id, kind, targetPath);
-      setSelectedBlockIds([]);
-      refreshJobBundle(await loadRosettaJob(currentJobId));
-    } catch (error) {
-      console.error(error);
-    }
-  }
-
-  async function updateLanguages(nextSourceLang: string, nextTargetLang: string) {
-    if (!currentJobId || !currentFile || isTranslating || isSavingLanguages) {
-      return;
-    }
-
-    setIsSavingLanguages(true);
-    setSelectedBlockIds([]);
-    setSelectedRevisionId("current");
-
-    try {
-      const bundle = await updateRosettaJobFileLanguages(
-        currentJobId,
-        currentFile.id,
-        nextSourceLang,
-        nextTargetLang
-      );
-      refreshJobBundle(bundle);
-    } catch (error) {
-      console.error(error);
-    } finally {
-      setIsSavingLanguages(false);
-    }
-  }
-
-  async function deleteCurrentFile() {
-    if (!currentJobId || !activeJob) {
-      return;
-    }
-
-    const confirmed = window.confirm(
-      currentFile
-        ? activeJob.fileCount <= 1
-          ? `删除当前文件“${currentFile.relativePath}”？这会移除整个项目。`
-          : `删除当前文件“${currentFile.relativePath}”？`
-        : `删除当前文件所在项目“${activeJob.filename}”？`
-    );
-    if (!confirmed) {
-      return;
-    }
-
-    setIsDeleting(true);
-
-    try {
-      if (!currentFile) {
-        return;
-      }
-
-      const result = await deleteRosettaJobFile(currentJobId, currentFile.id);
-      setJobList(result.jobs);
-      const deletingJobStillActive =
-        useRosettaStore.getState().activeJobId === currentJobId;
-
-      if (result.deletedJob) {
-        if (deletingJobStillActive) {
-          clearActiveJob();
-          navigate(result.jobs[0] ? rosettaJobDefaultPath(result.jobs[0]) : "/new");
-        }
-        return;
-      }
-
-      setSelectedBlockIds([]);
-      setSelectedRevisionId("current");
-      if (result.bundle) {
-        if (!deletingJobStillActive) {
-          refreshJobBundle(result.bundle);
-          return;
-        }
-
-        setActiveBundle(result.bundle);
-        const nextFileId = result.bundle.document.files[0]?.id ?? null;
-        navigate(
-          nextFileId
-            ? rosettaJobFilePath(result.bundle.job.id, nextFileId)
-            : rosettaJobPath(result.bundle.job.id),
-          { replace: true }
+        workingSegments = markSegmentsFailed(
+          workingSegments,
+          currentBatchSegmentIds,
+          message
         );
+        markTranslationRunFailed(runId, currentBatchSegmentIds);
+        const saved = await saveRosettaTranslationSegments(
+          currentJobId,
+          translationFile.id,
+          workingSegments
+        );
+        upsertTranslationFile(saved.translationFile);
       }
-    } catch (error) {
-      console.error(error);
     } finally {
-      setIsDeleting(false);
+      finishTranslationRun(runId);
+      setIsTranslating(false);
     }
+  }
+
+  async function exportCurrentTranslationFile(kind: RosettaExportKind) {
+    if (!currentJobId || !selectedTranslationFile) {
+      return;
+    }
+    const sourceFile = selectedSourceFile;
+    if (!sourceFile) {
+      return;
+    }
+    const targetPath = await pickRosettaExportPath(
+      defaultExportFilename(
+        sourceFile.relativePath,
+        sourceFile.format,
+        selectedTranslationFile.targetLang,
+        kind
+      ),
+      sourceFile.format
+    );
+    if (!targetPath) {
+      return;
+    }
+    await exportRosettaTranslationFile(
+      currentJobId,
+      selectedTranslationFile.id,
+      kind,
+      targetPath
+    );
+    refreshJobBundle(await loadRosettaJob(currentJobId));
   }
 
   if (jobs.length === 0) {
@@ -724,293 +540,372 @@ export function JobsPage() {
   }
 
   return (
-    <section className="grid h-full min-h-0 grid-rows-[auto_1fr] gap-4 px-6 py-5">
-      <Card className="min-h-0 gap-0 overflow-hidden py-0">
-        <button
-          aria-expanded={!isWorkbenchCollapsed}
-          aria-hidden={!isWorkbenchCollapsed}
-          className={cn(
-            "rosetta-workbench-collapse-trigger flex w-full items-center justify-between gap-3 border-b bg-card px-4 text-left transition-all hover:bg-muted/40",
-            isWorkbenchCollapsed
-              ? "h-9 translate-y-0 opacity-100"
-              : "pointer-events-none h-0 -translate-y-1 overflow-hidden border-transparent opacity-0"
-          )}
-          onClick={() => setIsWorkbenchCollapsed(false)}
-          tabIndex={isWorkbenchCollapsed ? 0 : -1}
-          type="button"
-        >
-          <span className="min-w-0 truncate text-sm font-medium">
-            {currentFile?.relativePath ?? "当前文件"}
-          </span>
-          <span className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
-            <span>{fileProgressText}</span>
-            <FileStateBadge state={currentFileState} />
-          </span>
-        </button>
-
-        <div
-          className={cn(
-            "rosetta-workbench-panel grid transition-[grid-template-rows,opacity]",
-            isWorkbenchCollapsed
-              ? "grid-rows-[0fr] opacity-0"
-              : "grid-rows-[1fr] opacity-100"
-          )}
-        >
-          <div className="min-h-0 overflow-hidden">
-            <div
-              className={cn(
-                "rosetta-workbench-panel-inner transition-transform",
-                isWorkbenchCollapsed ? "-translate-y-2" : "translate-y-0"
-              )}
-            >
-              <CardHeader className="border-b py-4">
-                <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
-                  <div className="flex min-w-0 gap-3">
-                    {/* <div className="flex size-10 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
-                      <FileText />
-                    </div> */}
-                    <div className="min-w-0">
-                      <div className="mb-1 flex flex-wrap items-center gap-2">
-                        {/* <span className="text-sm text-muted-foreground">当前文件</span> */}
-                        {currentFile ? (
-                          <Badge variant="outline">{currentFile.format}</Badge>
-                        ) : null}
-                        <FileStateBadge state={currentFileState} />
-                      </div>
-                      <CardTitle className="truncate text-lg">
-                        {currentFile?.relativePath ?? "加载文件中"}
-                      </CardTitle>
-                      <CardDescription className="mt-2 flex flex-wrap items-center gap-2">
-                        <span>
-                          {translatedFileSegments} /{" "}
-                          {translatableFileSegments.length} 段已翻译
-                        </span>
-                        <span>{fileProgress}%</span>
-                        {pendingSegments.length > 0 ? (
-                          <Badge variant="outline">
-                            {pendingSegments.length} 段待翻译
-                          </Badge>
-                        ) : null}
-                        {failedSegments.length > 0 ? (
-                          <Badge variant="destructive">
-                            {failedSegments.length} 段失败
-                          </Badge>
-                        ) : null}
-                        {skippedFileSegments > 0 ? (
-                          <Badge variant="outline">
-                            {skippedFileSegments} 段跳过
-                          </Badge>
-                        ) : null}
-                      </CardDescription>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-wrap items-center gap-2 xl:justify-end">
-                    <div className="flex items-center gap-1">
-                      <LanguageSelect
-                        ariaLabel="选择原文语言"
-                        disabled={isLoading || isTranslating || isSavingLanguages}
-                        onValueChange={(value) =>
-                          void updateLanguages(value, targetLang)
-                        }
-                        value={sourceLang}
-                      />
-                      <ArrowRight className="text-muted-foreground size-4" />
-                      <LanguageSelect
-                        ariaLabel="选择目标译文语言"
-                        disabled={isLoading || isTranslating || isSavingLanguages}
-                        onValueChange={(value) =>
-                          void updateLanguages(sourceLang, value)
-                        }
-                        value={targetLang}
-                      />
-                    </div>
-                    {isSavingLanguages ? (
-                      <span className="text-xs text-muted-foreground">保存中</span>
-                    ) : null}
-                    {hasSelectedBlocks ? (
-                      <span className="px-1 text-sm text-muted-foreground">
-                        已选 {selectedBlockIds.length} 段
-                      </span>
-                    ) : null}
-                    <Button
-                      disabled={mainActionDisabled}
-                      onClick={() =>
-                        void (hasSelectedBlocks
-                          ? translateSelectedBlocks()
-                          : translateCurrentFile())
-                      }
-                      title={
-                        rwkvConfigReady
-                          ? hasSelectedBlocks
-                            ? "重新翻译选中的段落"
-                            : pendingSegments.length > 0
-                              ? "翻译当前文件的待处理或失败段落"
-                              : "重新翻译当前文件并保留旧译文历史"
-                          : "请先在设置页完成 RWKV API 配置"
-                      }
-                      type="button"
-                      variant={mainActionVariant}
-                    >
-                      {hasSelectedBlocks || failedSegments.length > 0 ? (
-                        <RefreshCw data-icon="inline-start" />
-                      ) : (
-                        <Play data-icon="inline-start" />
-                      )}
-                      {mainActionLabel}
-                    </Button>
-                    {hasSelectedBlocks ? (
-                      <Button
-                        disabled={isTranslating || isLoading}
-                        onClick={() => setSelectedBlockIds([])}
-                        size="icon"
-                        title="取消段落选择"
-                        type="button"
-                        variant="ghost"
-                      >
-                        <X />
-                      </Button>
-                    ) : null}
-                  </div>
-                </div>
-              </CardHeader>
-
-              <CardContent className="grid gap-3 py-3">
-                <div className="grid gap-3 xl:grid-cols-[auto_minmax(0,1fr)_auto] xl:items-center">
-                  <Button
-                    onClick={() => setIsWorkbenchCollapsed(true)}
-                    size="sm"
-                    title="折叠操作栏"
-                    type="button"
-                    variant="ghost"
-                  >
-                    <ChevronUp data-icon="inline-start" />
-                    收起
-                  </Button>
-                  <div className="flex items-center gap-3">
-                    <div className="h-2 min-w-24 flex-1 overflow-hidden rounded-sm bg-muted">
-                      <div
-                        className={cn(
-                          "rosetta-workbench-progress h-full bg-primary transition-[width] rounded",
-                          isCurrentFileExportable && !isCurrentFileTranslationRunActive
-                            ? "opacity-100"
-                            : "opacity-80"
-                        )}
-                        style={{ width: `${fileProgress}%` }}
-                      />
-                    </div>
-                    {isCurrentFileExportable &&
-                      !isCurrentFileTranslationRunActive ? (
-                      <Badge
-                        className="border-green-600/20 bg-green-600/10 text-green-700 dark:text-green-400"
-                        variant="outline"
-                      >
-                        <CheckCircle2 data-icon="inline-start" />
-                        完成
-                      </Badge>
-                    ) : null}
-                    <span
-                      className={cn(
-                        "shrink-0 text-xs",
-                        isCurrentFileExportable && !isCurrentFileTranslationRunActive
-                          ? "font-medium text-foreground"
-                          : "text-muted-foreground"
-                      )}
-                    >
-                      {fileProgressText}
-                    </span>
-                  </div>
-                  <div className="flex flex-wrap items-center justify-end gap-2">
-                    <Button
-                      disabled={!isCurrentFileExportable || isLoading || isTranslating}
-                      onClick={() => void exportCurrentFile("translation")}
-                      size="sm"
-                      title={
-                        isCurrentFileExportable
-                          ? "导出当前文件译文"
-                          : "当前文件翻译完成后才能导出"
-                      }
-                      type="button"
-                      variant={isCurrentFileExportable ? "default" : "outline"}
-                    >
-                      <Download data-icon="inline-start" />
-                      导出译文
-                    </Button>
-                    <Button
-                      disabled={!isCurrentFileExportable || isLoading || isTranslating}
-                      onClick={() => void exportCurrentFile("bilingual")}
-                      size="sm"
-                      title={
-                        isCurrentFileExportable
-                          ? "导出当前文件双语对照"
-                          : "当前文件翻译完成后才能导出"
-                      }
-                      type="button"
-                      variant="outline"
-                    >
-                      <Languages data-icon="inline-start" />
-                      导出双语
-                    </Button>
-                    <Button
-                      disabled={!activeJob || isDeleting || isTranslating || !currentFile}
-                      onClick={() => void deleteCurrentFile()}
-                      size="sm"
-                      type="button"
-                      variant="destructive"
-                    >
-                      <Trash2 data-icon="inline-start" />
-                      删除当前文件
-                    </Button>
-                  </div>
-                </div>
-              </CardContent>
+    <section className="grid h-full min-h-0 grid-rows-[auto_1fr] gap-3 px-5 pb-5">
+      <Card className="gap-0 py-0">
+        <CardHeader className="flex-row items-center justify-between gap-4 border-b py-3">
+          <div className="min-w-0">
+            <CardTitle className="truncate text-base">
+              {activeJob?.filename ?? "项目"}
+            </CardTitle>
+            <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+              <span>{sourceFiles.length} 个源文件</span>
+              <span>{translationFiles.length} 个译文文件</span>
+              {selectedTranslationFile ? (
+                <FileStateBadge
+                  state={runAwareTranslationState(
+                    selectedTranslationFile,
+                    activeTranslationRun,
+                    currentJobId
+                  )}
+                />
+              ) : selectedSourceFile ? (
+                <span className="truncate">{selectedSourceFile.relativePath}</span>
+              ) : null}
             </div>
           </div>
-        </div>
+
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <LanguageSelect
+              disabled={isLoading || isTranslating}
+              onValueChange={setTargetLang}
+              value={targetLang}
+            />
+            <Button
+              disabled={!selectedSourceFile || isLoading || isTranslating}
+              onClick={() => void createTranslationFileForCurrentSource()}
+              type="button"
+              variant="outline"
+            >
+              <FilePlus data-icon="inline-start" />
+              新建译文
+            </Button>
+            <Button
+              disabled={
+                !rwkvConfigReady ||
+                isLoading ||
+                isTranslating ||
+                (!selectedTranslationFile && !selectedSourceFile) ||
+                (selectedTranslationFile != null && !canTranslateSelectedTranslation)
+              }
+              onClick={() => void translateCurrentTranslationFile()}
+              type="button"
+            >
+              {selectedTranslationFile?.failedSegments ? (
+                <RefreshCw data-icon="inline-start" />
+              ) : (
+                <Play data-icon="inline-start" />
+              )}
+              {selectedTranslationFile
+                ? canTranslateSelectedTranslation
+                  ? "翻译译文"
+                  : "已完成"
+                : "生成并翻译"}
+            </Button>
+            <Button
+              disabled={!isSelectedTranslationComplete || isTranslating}
+              onClick={() => void exportCurrentTranslationFile("translation")}
+              type="button"
+              variant="outline"
+            >
+              <Download data-icon="inline-start" />
+              导出译文
+            </Button>
+            <Button
+              disabled={!isSelectedTranslationComplete || isTranslating}
+              onClick={() => void exportCurrentTranslationFile("bilingual")}
+              type="button"
+              variant="outline"
+            >
+              <Languages data-icon="inline-start" />
+              导出双语
+            </Button>
+          </div>
+        </CardHeader>
+
+        <CardContent className="flex flex-wrap items-center justify-between gap-3 py-3">
+          <div className="flex min-w-0 items-center gap-2 text-sm text-muted-foreground">
+            <span>批量翻译</span>
+            <span>{selectedBatchCount} 项已选择</span>
+          </div>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <ToggleGroup
+              disabled={isTranslating}
+              onValueChange={(values) => setBatchTargetLangs(values)}
+              type="multiple"
+              value={batchTargetLangs}
+            >
+              {LANGUAGE_OPTIONS.slice(0, 6).map((language) => (
+                <ToggleGroupItem key={language.value} size="sm" value={language.value}>
+                  {language.value}
+                </ToggleGroupItem>
+              ))}
+            </ToggleGroup>
+            <Button
+              disabled={
+                !rwkvConfigReady ||
+                selectedBatchCount === 0 ||
+                (selectedSourceFileIds.length > 0 && batchTargetLangs.length === 0) ||
+                isTranslating
+              }
+              onClick={() => void translateSelectedBatch()}
+              size="sm"
+              type="button"
+            >
+              <Play data-icon="inline-start" />
+              批量开始
+            </Button>
+          </div>
+        </CardContent>
       </Card>
 
-      <DocumentPreview
-        currentFileId={currentFile?.id ?? null}
-        currentJobId={currentJobId}
-        onRevisionChange={(revisionId) => {
-          setSelectedRevisionId(revisionId);
-          setSelectedBlockIds([]);
-          setIsWorkbenchCollapsed(false);
-        }}
-        onToggleBlockSelection={(blockId) => {
-          if (!selectionEnabled) {
-            return;
-          }
-          setIsWorkbenchCollapsed(false);
-          setSelectedBlockIds((blockIds) =>
-            blockIds.includes(blockId)
-              ? blockIds.filter((candidate) => candidate !== blockId)
-              : [...blockIds, blockId]
+      <Card className="min-h-0 gap-0 overflow-hidden py-0">
+        <div className="flex items-center justify-between border-b px-4 py-3">
+          <div className="min-w-0">
+            <h2 className="text-sm font-medium">项目文件</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              左侧选择原文，右侧管理该原文的多语言译文。双击译文打开对照窗口。
+            </p>
+          </div>
+        </div>
+        <div className="grid min-h-0 flex-1 grid-cols-[minmax(16rem,24rem)_minmax(0,1fr)] overflow-hidden">
+          <SourceFileList
+            onSelectSource={selectSourceFile}
+            onToggleSourceSelection={toggleSourceSelection}
+            selectedSourceFileId={selectedSourceFile?.id ?? null}
+            selectedSourceFileIds={selectedSourceFileIds}
+            sourceFiles={sourceFiles}
+            sourceSegmentCountByFileId={sourceSegmentCountByFileId}
+            translationFilesBySourceId={translationFilesBySourceId}
+          />
+          <TranslationFileTable
+            activeTranslationRun={activeTranslationRun}
+            currentJobId={currentJobId}
+            onOpenTranslation={(translationFile) => {
+              void openTranslationFile(translationFile);
+            }}
+            onSelectTranslation={selectTranslationFile}
+            onToggleTranslationSelection={toggleTranslationSelection}
+            selectedSourceFile={selectedSourceFile}
+            selectedTranslationFileId={selectedTranslationFile?.id ?? null}
+            selectedTranslationFileIds={selectedTranslationFileIds}
+            translationFiles={
+              selectedSourceFile
+                ? translationFilesBySourceId.get(selectedSourceFile.id) ?? []
+                : []
+            }
+          />
+        </div>
+      </Card>
+    </section>
+  );
+}
+
+function SourceFileList({
+  onSelectSource,
+  onToggleSourceSelection,
+  selectedSourceFileId,
+  selectedSourceFileIds,
+  sourceFiles,
+  sourceSegmentCountByFileId,
+  translationFilesBySourceId,
+}: {
+  onSelectSource: (sourceFile: RosettaSourceFile) => void;
+  onToggleSourceSelection: (sourceFileId: string) => void;
+  selectedSourceFileId: string | null;
+  selectedSourceFileIds: string[];
+  sourceFiles: RosettaSourceFile[];
+  sourceSegmentCountByFileId: Map<string, number>;
+  translationFilesBySourceId: Map<string, RosettaTranslationFile[]>;
+}) {
+  if (sourceFiles.length === 0) {
+    return (
+      <div className="flex h-48 items-center justify-center text-sm text-muted-foreground">
+        当前项目没有源文件。
+      </div>
+    );
+  }
+
+  return (
+    <aside className="min-h-0 overflow-auto border-r bg-muted/20">
+      <div className="border-b px-3 py-2 text-sm font-medium">原文</div>
+      <div className="flex flex-col gap-1 p-2">
+        {sourceFiles.map((sourceFile) => {
+          const selected = selectedSourceFileId === sourceFile.id;
+          const translationFileCount =
+            translationFilesBySourceId.get(sourceFile.id)?.length ?? 0;
+
+          return (
+            <div
+              className={cn(
+                "flex min-w-0 items-center gap-2 rounded-md px-2 py-2 text-left text-sm",
+                selected
+                  ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                  : "hover:bg-muted"
+              )}
+              key={sourceFile.id}
+            >
+              <input
+                checked={selectedSourceFileIds.includes(sourceFile.id)}
+                className="shrink-0"
+                onChange={() => onToggleSourceSelection(sourceFile.id)}
+                title="加入批量翻译"
+                type="checkbox"
+              />
+              <button
+                className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                onClick={() => onSelectSource(sourceFile)}
+                type="button"
+              >
+                {sourceFile.relativePath.includes("/") ||
+                sourceFile.relativePath.includes("\\") ? (
+                  <Folder className="size-4 shrink-0 text-muted-foreground" />
+                ) : (
+                  <FileText className="size-4 shrink-0 text-muted-foreground" />
+                )}
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate font-medium">
+                    {sourceFile.relativePath}
+                  </span>
+                  <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+                    {sourceSegmentCountByFileId.get(sourceFile.id) ?? 0} 段 ·{" "}
+                    {translationFileCount} 个译文
+                  </span>
+                </span>
+              </button>
+            </div>
           );
-        }}
-        selectedBlockIds={selectedBlockIds}
-        selectedRevisionId={selectedRevisionId}
-        selectionEnabled={selectionEnabled}
-        translationRevisions={translationRevisions}
-      />
+        })}
+      </div>
+    </aside>
+  );
+}
+
+function TranslationFileTable({
+  activeTranslationRun,
+  currentJobId,
+  onOpenTranslation,
+  onSelectTranslation,
+  onToggleTranslationSelection,
+  selectedSourceFile,
+  selectedTranslationFileId,
+  selectedTranslationFileIds,
+  translationFiles,
+}: {
+  activeTranslationRun: ActiveTranslationRun | null;
+  currentJobId: string | null;
+  onOpenTranslation: (translationFile: RosettaTranslationFile) => void;
+  onSelectTranslation: (translationFile: RosettaTranslationFile) => void;
+  onToggleTranslationSelection: (translationFileId: string) => void;
+  selectedSourceFile: RosettaSourceFile | null;
+  selectedTranslationFileId: string | null;
+  selectedTranslationFileIds: string[];
+  translationFiles: RosettaTranslationFile[];
+}) {
+  if (!selectedSourceFile) {
+    return (
+      <section className="flex min-h-0 items-center justify-center text-sm text-muted-foreground">
+        选择一个原文文件。
+      </section>
+    );
+  }
+
+  return (
+    <section className="grid min-h-0 grid-rows-[auto_1fr]">
+      <div className="border-b px-4 py-3">
+        <h3 className="truncate text-sm font-medium">
+          {selectedSourceFile.relativePath}
+        </h3>
+        <p className="mt-1 text-sm text-muted-foreground">
+          {translationFiles.length} 个译文文件
+        </p>
+      </div>
+      {translationFiles.length === 0 ? (
+        <div className="flex min-h-0 items-center justify-center text-sm text-muted-foreground">
+          当前原文还没有译文。
+        </div>
+      ) : (
+        <div className="min-h-0 overflow-auto">
+          <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead className="w-10" />
+          <TableHead>译文</TableHead>
+          <TableHead className="w-32">语言</TableHead>
+          <TableHead className="w-32">状态</TableHead>
+          <TableHead className="w-36 text-right">进度</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {translationFiles.map((translationFile) => {
+                const selected = selectedTranslationFileId === translationFile.id;
+
+                return (
+                  <TableRow
+                    className={cn("cursor-default", selected && "bg-muted/60")}
+                    data-state={selected ? "selected" : undefined}
+                    key={translationFile.id}
+                    onClick={() => onSelectTranslation(translationFile)}
+                    onDoubleClick={() => onOpenTranslation(translationFile)}
+                  >
+                    <TableCell onClick={(event) => event.stopPropagation()}>
+                      <input
+                        checked={selectedTranslationFileIds.includes(
+                          translationFile.id
+                        )}
+                        onChange={() =>
+                          onToggleTranslationSelection(translationFile.id)
+                        }
+                        title="加入批量翻译"
+                        type="checkbox"
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex min-w-0 items-center gap-2">
+                        <Languages className="size-4 shrink-0 text-muted-foreground" />
+                        <span className="truncate">
+                          {translationLabel(translationFile)}
+                        </span>
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {translationFile.targetLang}
+                    </TableCell>
+                    <TableCell>
+                      <FileStateBadge
+                        state={runAwareTranslationState(
+                          translationFile,
+                          activeTranslationRun,
+                          currentJobId
+                        )}
+                      />
+                    </TableCell>
+                    <TableCell className="text-right text-muted-foreground">
+                      {translationFile.completedSegments}/
+                      {translationFile.segmentCount}
+                    </TableCell>
+                  </TableRow>
+                );
+        })}
+      </TableBody>
+    </Table>
+        </div>
+      )}
     </section>
   );
 }
 
 function LanguageSelect({
-  ariaLabel,
   disabled,
   onValueChange,
   value,
 }: {
-  ariaLabel: string;
   disabled: boolean;
   onValueChange: (value: string) => void;
   value: string;
 }) {
   return (
     <Select disabled={disabled} onValueChange={onValueChange} value={value}>
-      <SelectTrigger aria-label={ariaLabel} size="sm">
+      <SelectTrigger aria-label="选择目标语言" size="sm">
         <SelectValue />
       </SelectTrigger>
       <SelectContent>
@@ -1027,41 +922,151 @@ function LanguageSelect({
 }
 
 function FileStateBadge({ state }: { state: string }) {
-  if (state === "已完成") {
+  if (state === "translated") {
     return (
-      <Badge
-        className="border-green-600/20 bg-green-600/10 text-green-700 dark:text-green-400"
-        variant="outline"
-      >
+      <Badge variant="secondary">
         <CheckCircle2 data-icon="inline-start" />
-        {state}
+        已完成
       </Badge>
     );
   }
-
-  return (
-    <Badge variant={state === "需要重试" ? "destructive" : "secondary"}>
-      {state}
-    </Badge>
-  );
+  if (state === "failed") {
+    return <Badge variant="destructive">失败</Badge>;
+  }
+  if (state === "translating") {
+    return <Badge variant="secondary">翻译中</Badge>;
+  }
+  return <Badge variant="outline">待翻译</Badge>;
 }
 
-function chunkSegments(segments: Segment[], size: number) {
-  const chunks: Segment[][] = [];
+function runAwareTranslationState(
+  translationFile: RosettaTranslationFile,
+  activeTranslationRun: ActiveTranslationRun | null,
+  currentJobId: string | null
+) {
+  return activeTranslationRun?.jobId === currentJobId &&
+    activeTranslationRun.translationFileId === translationFile.id
+    ? "translating"
+    : translationFile.status;
+}
+
+function translationLabel(translationFile: RosettaTranslationFile) {
+  const language = LANGUAGE_OPTIONS.find(
+    (option) => option.value === translationFile.targetLang
+  );
+  return language?.label ?? translationFile.targetLang;
+}
+
+function groupTranslationFilesBySource(translationFiles: RosettaTranslationFile[]) {
+  const grouped = new Map<string, RosettaTranslationFile[]>();
+  for (const translationFile of translationFiles) {
+    const group = grouped.get(translationFile.sourceFileId);
+    if (group) {
+      group.push(translationFile);
+    } else {
+      grouped.set(translationFile.sourceFileId, [translationFile]);
+    }
+  }
+  for (const group of grouped.values()) {
+    group.sort((left, right) => left.targetLang.localeCompare(right.targetLang));
+  }
+  return grouped;
+}
+
+function groupSourceSegmentsByFile(segments: Segment[]) {
+  const grouped = new Map<string, Segment[]>();
+  for (const segment of segments) {
+    const fileId = segment.fileId ?? "file-1";
+    const group = grouped.get(fileId);
+    if (group) {
+      group.push(segment);
+    } else {
+      grouped.set(fileId, [segment]);
+    }
+  }
+  return grouped;
+}
+
+function countSourceSegmentsByFile(segments: { fileId?: string | null }[]) {
+  const grouped = new Map<string, number>();
+  for (const segment of segments) {
+    const fileId = segment.fileId ?? "file-1";
+    grouped.set(fileId, (grouped.get(fileId) ?? 0) + 1);
+  }
+  return grouped;
+}
+
+function chunkSegments<T>(segments: T[], size: number) {
+  const chunks: T[][] = [];
   for (let index = 0; index < segments.length; index += size) {
     chunks.push(segments.slice(index, index + size));
   }
   return chunks;
 }
 
+function markSegmentsTranslating(
+  segments: TranslationSegment[],
+  segmentIds: string[]
+) {
+  const segmentIdSet = new Set(segmentIds);
+  return segments.map((segment) =>
+    segmentIdSet.has(segment.sourceSegmentId)
+      ? {
+          ...segment,
+          status: "translating" as const,
+          translatedText: undefined,
+          error: undefined,
+        }
+      : segment
+  );
+}
+
+function markSegmentsDone(
+  segments: TranslationSegment[],
+  segmentIds: string[],
+  translations: string[]
+) {
+  const translationById = new Map(
+    segmentIds.map((segmentId, index) => [segmentId, translations[index]])
+  );
+  return segments.map((segment) =>
+    translationById.has(segment.sourceSegmentId)
+      ? {
+          ...segment,
+          translatedText: translationById.get(segment.sourceSegmentId),
+          status: "done" as const,
+          error: undefined,
+        }
+      : segment
+  );
+}
+
+function markSegmentsFailed(
+  segments: TranslationSegment[],
+  segmentIds: string[],
+  error: string
+) {
+  const segmentIdSet = new Set(segmentIds);
+  return segments.map((segment) =>
+    segmentIdSet.has(segment.sourceSegmentId)
+      ? {
+          ...segment,
+          status: "failed" as const,
+          error,
+        }
+      : segment
+  );
+}
+
 function defaultExportFilename(
   relativePath: string,
   format: "txt" | "markdown",
+  targetLang: string,
   kind: RosettaExportKind
 ) {
   const extension = format === "markdown" ? "md" : "txt";
   const filename = relativePath.split(/[\\/]/).pop() ?? relativePath;
   const baseName = filename.replace(/\.(txt|md|markdown)$/i, "");
-  const suffix = kind === "bilingual" ? "bilingual" : "zh";
+  const suffix = kind === "bilingual" ? `${targetLang}.bilingual` : targetLang;
   return `${baseName}.${suffix}.${extension}`;
 }

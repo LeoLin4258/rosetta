@@ -34,6 +34,9 @@ Rosetta 是本地长文本翻译工作台，不是聊天产品或营销页。
 
 - 第一屏应是可操作的工作台，不做 landing page。
 - 使用稳定的侧边导航、顶部标题和内容区结构。
+- 工作台遵循“原文 in，译文 out”：主窗口左侧列出项目内原文文件，右侧列出当前原文对应的所有译文文件，不在主工作台内直接渲染长文双栏预览。
+- App 全局侧边栏只管理项目；项目内源文件、译文文件、多语言状态和批量选择都放在工作台内部。项目内文件管理默认采用“左原文、右译文”的双栏布局。
+- 双击译文文件打开独立预览窗口，预览窗口只负责“原文 + 当前目标语言译文”的左右对照阅读和导出。
 - 控件保持克制，优先清晰和可扫描。
 - 不使用装饰性渐变、玻璃拟态、大型 hero、泛 AI 产品文案。
 - 长文档预览必须使用虚拟滚动。
@@ -48,13 +51,14 @@ Rosetta 是本地长文本翻译工作台，不是聊天产品或营销页。
 /          空白首页
 /new       新项目 / 导入
 /jobs      任务
-/jobs/:jobId/files/:fileId  当前文件工作台
+/jobs/:jobId/files/:fileId  当前源文件工作台
+/preview/:jobId/translations/:translationFileId  独立译文预览窗口
 /settings  设置
 ```
 
 新增页面时，应先确认它是长期导航入口，还是某个 feature 内的局部状态。不要为短期弹窗或 tab 直接增加全局路由。
 
-当前项目和当前文件以路由为事实来源。侧边栏高亮、任务工作台加载、预览选择都应优先读取 `/jobs/:jobId/files/:fileId`，Zustand 中的 `activeJobId` / `activeFileId` 只作为同步后的应用状态和旧路径回退，不应让异步 store 写入覆盖当前路由。
+当前项目和当前源文件以路由为事实来源。侧边栏高亮、任务工作台加载、文件列表选择都应优先读取 `/jobs/:jobId/files/:fileId`，Zustand 中的 `activeJobId` / `activeSourceFileId` 只作为同步后的应用状态和旧路径回退，不应让异步 store 写入覆盖当前路由。当前译文文件在主工作台内是轻量选择状态；双栏阅读器使用 `/preview/:jobId/translations/:translationFileId` 作为独立窗口深链接，不作为主窗口导航入口。
 
 ## State
 

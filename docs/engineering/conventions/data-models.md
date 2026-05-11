@@ -58,6 +58,7 @@ Document
 - 多文件项目中 `fileId` 应与所属 block 的 `fileId` 一致，用于按文件导出和文档式预览分组。
 - `order` 必须能恢复翻译前顺序。
 - `preserveWhitespace` 用于提示合并和导出阶段保留空白。
+- `Segment` 现在主要表示源文切分结果。新的译文文件工作流不应继续把多语言译文写回同一条 `Segment.translatedText` 作为唯一事实来源。
 - 用户编辑后的译文状态应标记为 `edited`，后续重翻不能静默覆盖。
 - `sourceLang` 和 `targetLang` 必须跟随所属 job/document 的语言方向。任务页修改语言方向时，需要更新所有 segments 的语言字段。
 - `sourceLang` 和 `targetLang` 必须跟随所属文件的语言方向。任务页修改当前文件语言方向时，只更新该文件下的 segments。
@@ -66,6 +67,19 @@ Document
 - 重新翻译当前文件表示启动一次新的完整文件翻译运行，不是只补翻缺失 segment。开始重翻前，当前文件内所有可翻译 segment 的当前译文应保存为文件级历史版本，然后清空当前译文并从 0 重新计算本次运行进度。
 - 选中段落重翻时，用户选择的是 block；如果一个 block 被拆成多个 segments，重翻范围包含该 block 下所有可翻译 segments。开始局部重翻前同样保存一份当前文件完整译文版本。
 - 用户查看历史记录时，应看到过去某一次翻译运行的完整文件译文版本，而不是零散 segment 记录。Segment 仍是调度和缓存单位，但历史查看使用 `TranslationRevision.segmentTranslations` 重建文件视图。
+
+## Translation File
+
+`RosettaTranslationFile` 表示一个源文件在某个目标语言下的内部译文文件。
+
+约定：
+
+- 一个 `RosettaSourceFile` 可以对应多个 `RosettaTranslationFile`，例如同一章同时有 `zh-CN` 和 `ja` 译文。
+- `translation_files.json` 保存译文文件列表和状态统计；每个译文文件的正文保存在 `translations/<translationFileId>.json`。
+- `TranslationSegment.sourceSegmentId` 指向源 `Segment.id`，译文状态和文本不再与源 segment 混在一起。
+- 工作台和导出必须以当前选中的 `translationFileId` 为译文事实来源。
+- 旧项目如果只有 `segments.json.translatedText`，加载时迁移成默认目标语言译文文件；旧字段暂不删除。
+- 译文文件是 Rosetta 内部管理对象，不自动写入用户磁盘路径；用户点击导出时才生成外部文件。
 
 ## TranslationRevision
 
@@ -95,7 +109,7 @@ Document
 - `RosettaJobSummary.targetLang` 只作为项目列表兼容字段。多文件项目可能存在不同目标语言，当前文件语言必须读取 `RosettaSourceFile.targetLang` 或其 document fallback。
 - MVP 阶段任务缓存使用 JSON 文件，根目录固定在 app data 的 `jobs/` 下。
 - Job store 的持久化文件必须带 `schemaVersion: 1`，后续格式变化需要迁移路径。
-- `RosettaJobBundle` 是前端加载项目的最小完整单位，包含 `job`、`document`、`segments`、`translationRevisions`。
+- `RosettaJobBundle` 是前端加载项目的最小完整单位，包含 `job`、`document`、`segments`、`translationFiles`、`translationRevisions`。
 - `index.json` 只保存 `RosettaJobSummary[]`，完整文档和 segments 分别保存在项目目录下。
 - 删除项目只删除 Rosetta 自己的 job cache，不删除用户原始文件，也不删除已经导出的文件。
 - 后续如果引入 SQLite，需要新增 ADR 说明原因和迁移策略。
@@ -110,6 +124,8 @@ AppData/Rosetta/jobs/
     sources/<relative-path>  # 文件夹项目
     document.json
     segments.json
+    translation_files.json
+    translations/<translationFileId>.json
     translation_revisions.json
     exports/
 ```
@@ -131,9 +147,9 @@ AppData/Rosetta/jobs/
 - `bilingual` 导出双语对照。
 - 未完成或失败 segment 导出时使用原文占位，避免输出断裂。
 - Markdown 导出只承诺保留基础 marker，不承诺完整 CommonMark AST 级别还原。
-- 任务工作台的导出最小单位是当前选中的文件，而不是整个项目。项目是文件集合与共享设置容器，不能让用户在当前文件视图里误触发整项目导出。
-- 当前文件必须完成翻译后才能导出；`done`、`edited` 和 `skipped` 视为已处理，`pending`、`translating`、`failed` 或空译文不能导出。
-- 当前文件导出到用户选择的具体文件路径，输出文件名默认来自当前文件名，例如 `chapter.zh.md` 或 `chapter.bilingual.md`。
+- 任务工作台的导出最小单位是当前选中的译文文件，而不是整个项目。项目是文件集合与共享设置容器，不能让用户在当前文件视图里误触发整项目导出。
+- 当前译文文件必须完成翻译后才能导出；`done`、`edited` 和 `skipped` 视为已处理，`pending`、`translating`、`failed` 或空译文不能导出。
+- 当前译文文件导出到用户选择的具体文件路径，输出文件名默认来自源文件名和目标语言，例如 `chapter.zh-CN.md` 或 `chapter.zh-CN.bilingual.md`。
 - 多文件项目的批量导出如果后续恢复，应作为单独的项目级入口，并明确提示会导出项目内所有文件。删除项目只删除 Rosetta job cache，不删除用户原始文件或已导出目录。
 
 ## Preview
@@ -142,13 +158,15 @@ AppData/Rosetta/jobs/
 
 约定：
 
-- 双语预览左侧渲染原文结构，右侧渲染译文结构。
+- 双语预览左侧渲染原文结构，右侧渲染当前选中译文文件的译文结构。
+- 主工作台不渲染双语预览，避免源文件切换时加载和测量大文档内容导致卡顿。双语预览放在独立窗口中按需加载。
 - 多文件项目的默认预览范围是“当前选中的一个文件”，不是把项目内所有文件连续渲染在同一个预览面板里。当前文件由前端 UI state `activeFileId` 控制。
-- 当前文件由 `/jobs/:jobId/files/:fileId` 路由表达。Zustand 的 `activeFileId` 是路由同步后的应用状态，不应成为与路由竞争的第二事实来源。
+- 当前源文件由 `/jobs/:jobId/files/:fileId` 路由表达。当前译文文件在主工作台内由 `activeTranslationFileId` 表达；独立预览窗口使用 `/preview/:jobId/translations/:translationFileId` 深链接直接加载译文文件。
 - 后台保存、导出刷新、翻译批次完成等异步结果不能无条件改变 active job/file。只有用户显式打开或导入项目时才允许设置 active bundle；后台结果应只刷新 job list，且仅在当前 active job 仍匹配时刷新已加载 bundle。
 - Markdown 预览使用 Markdown renderer，并启用 GFM 等常见语法支持；不要执行原文中的 HTML/script。
 - 原文和译文滚动应同步，hover 某个 block 时两侧对应 block 同步高亮。
 - 滚动期间应暂停 hover 高亮更新，避免鼠标停在文本上时 hover state 与滚动同步互相触发重渲染。
+- 独立预览窗口允许点击 block 选择局部重翻范围；选择单位是 block，保存单位仍是该 block 下的 `TranslationSegment[]`。
 - 未翻译的 translatable block 在译文侧显示为空，不回退显示原文；`skipped` 内容如代码块仍可按原文保留。
 - Segment 仍是调度和缓存单位，但不应作为普通用户默认看到的主要阅读结构。后续如果恢复结构切分调试视图，应作为单独的高级/诊断视图。
 - 预览必须使用 block 级虚拟滚动，避免长文档一次性渲染全部 Markdown blocks。

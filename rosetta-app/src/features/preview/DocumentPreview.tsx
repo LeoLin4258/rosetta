@@ -1,120 +1,58 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef } from "react";
 import type { RefObject } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import { useRosettaStore } from "../../store/useRosettaStore";
 import type {
   RosettaBlock,
   RosettaDocument,
   RosettaSourceFile,
+  RosettaTranslationFile,
   Segment,
-  TranslationRevision,
+  TranslationSegment,
 } from "../../types/rosetta";
 
 type PreviewSide = "source" | "translation";
 
-type RevisionOption = {
-  id: string;
-  label: string;
-  revision: TranslationRevision;
-};
-
 export function DocumentPreview({
-  currentFileId,
-  currentJobId,
-  onReaderScroll,
-  onRevisionChange,
+  document,
+  hoveredBlockId,
+  onBlockHover,
+  onBlockLeave,
   onToggleBlockSelection,
-  selectedBlockIds,
-  selectedRevisionId,
-  selectionEnabled,
-  translationRevisions,
+  selectedBlockIds = [],
+  selectionEnabled = false,
+  sourceFile,
+  sourceSegments,
+  translationFile,
+  translationSegments,
 }: {
-  currentFileId: string | null;
-  currentJobId: string | null;
-  onReaderScroll?: (direction: "down" | "up") => void;
-  onRevisionChange: (revisionId: string) => void;
-  onToggleBlockSelection: (blockId: string) => void;
-  selectedBlockIds: string[];
-  selectedRevisionId: string;
-  selectionEnabled: boolean;
-  translationRevisions: TranslationRevision[];
+  document: RosettaDocument | null;
+  hoveredBlockId?: string | null;
+  onBlockHover?: (blockId: string) => void;
+  onBlockLeave?: () => void;
+  onToggleBlockSelection?: (blockId: string) => void;
+  selectedBlockIds?: string[];
+  selectionEnabled?: boolean;
+  sourceFile: RosettaSourceFile | null;
+  sourceSegments: Segment[];
+  translationFile: RosettaTranslationFile | null;
+  translationSegments: TranslationSegment[];
 }) {
-  const activeJobId = useRosettaStore((state) => state.activeJobId);
-  const activeDocument = useRosettaStore((state) => state.activeDocument);
-  const previewSegments = useRosettaStore((state) => state.previewSegments);
-  const [hoveredBlockId, setHoveredBlockId] = useState<string | null>(null);
   const sourceRef = useRef<HTMLDivElement>(null);
   const translationRef = useRef<HTMLDivElement>(null);
   const isSyncingRef = useRef(false);
-  const isHoverPausedRef = useRef(false);
-  const hoverRestoreTimerRef = useRef<number | null>(null);
-  const syncFrameRef = useRef<number | null>(null);
-  const lastSourceScrollTopRef = useRef(0);
-  const lastTranslationScrollTopRef = useRef(0);
-  const document =
-    activeJobId === currentJobId && activeDocument ? activeDocument : null;
-  const segments = activeJobId === currentJobId ? previewSegments : [];
-  const files = useMemo(() => documentFiles(document), [document]);
-  const selectedFile = useMemo(
-    () =>
-      currentFileId
-        ? files.find((file) => file.id === currentFileId) ?? null
-        : files[0] ?? null,
-    [currentFileId, files]
-  );
-  const revisionOptions = useMemo(
-    () =>
-      selectedFile
-        ? buildRevisionOptions(translationRevisions, selectedFile.id)
-        : [],
-    [selectedFile, translationRevisions]
-  );
-  const selectedRevision =
-    selectedRevisionId === "current"
-      ? null
-      : revisionOptions.find((option) => option.id === selectedRevisionId)
-          ?.revision ?? null;
 
-  useEffect(() => {
-    if (
-      selectedRevisionId !== "current" &&
-      !revisionOptions.some((option) => option.id === selectedRevisionId)
-    ) {
-      onRevisionChange("current");
-    }
-  }, [onRevisionChange, revisionOptions, selectedRevisionId]);
-
-  useEffect(
-    () => () => {
-      if (hoverRestoreTimerRef.current != null) {
-        window.clearTimeout(hoverRestoreTimerRef.current);
-      }
-      if (syncFrameRef.current != null) {
-        window.cancelAnimationFrame(syncFrameRef.current);
-      }
-    },
-    []
-  );
-
-  if (!document || !selectedFile) {
+  if (!document || !sourceFile) {
     return (
       <Card className="flex h-full min-h-0 py-0">
         <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
-          选择一个文件后预览文档。
+          选择一个源文件。
         </div>
       </Card>
     );
@@ -127,125 +65,67 @@ export function DocumentPreview({
       return;
     }
 
-    pauseHoverDuringScroll();
     const from = side === "source" ? source : translation;
     const to = side === "source" ? translation : source;
     const maxFrom = from.scrollHeight - from.clientHeight;
     const maxTo = to.scrollHeight - to.clientHeight;
     const ratio = maxFrom > 0 ? from.scrollTop / maxFrom : 0;
-    reportReaderScroll(side, from.scrollTop);
 
-    if (syncFrameRef.current != null) {
-      window.cancelAnimationFrame(syncFrameRef.current);
-    }
-
-    syncFrameRef.current = window.requestAnimationFrame(() => {
-      isSyncingRef.current = true;
-      const nextScrollTop = ratio * Math.max(maxTo, 0);
-      to.scrollTop = nextScrollTop;
-      if (side === "source") {
-        lastTranslationScrollTopRef.current = nextScrollTop;
-      } else {
-        lastSourceScrollTopRef.current = nextScrollTop;
-      }
-      syncFrameRef.current = window.requestAnimationFrame(() => {
-        isSyncingRef.current = false;
-        syncFrameRef.current = null;
-      });
+    isSyncingRef.current = true;
+    to.scrollTop = ratio * Math.max(maxTo, 0);
+    window.requestAnimationFrame(() => {
+      isSyncingRef.current = false;
     });
-  }
-
-  function reportReaderScroll(side: PreviewSide, scrollTop: number) {
-    const lastScrollTopRef =
-      side === "source" ? lastSourceScrollTopRef : lastTranslationScrollTopRef;
-    const delta = scrollTop - lastScrollTopRef.current;
-    lastScrollTopRef.current = scrollTop;
-
-    if (Math.abs(delta) < 10) {
-      return;
-    }
-
-    onReaderScroll?.(delta > 0 ? "down" : "up");
-  }
-
-  function pauseHoverDuringScroll() {
-    if (!isHoverPausedRef.current) {
-      isHoverPausedRef.current = true;
-      setHoveredBlockId(null);
-    }
-
-    if (hoverRestoreTimerRef.current != null) {
-      window.clearTimeout(hoverRestoreTimerRef.current);
-    }
-
-    hoverRestoreTimerRef.current = window.setTimeout(() => {
-      isHoverPausedRef.current = false;
-      hoverRestoreTimerRef.current = null;
-    }, 90);
-  }
-
-  function updateHoveredBlock(blockId: string | null) {
-    if (isHoverPausedRef.current) {
-      return;
-    }
-    setHoveredBlockId(blockId);
   }
 
   return (
     <Card className="flex h-full min-h-0 flex-col gap-0 overflow-hidden py-0">
       <div className="grid grid-cols-2 border-b bg-muted/40 text-sm text-muted-foreground">
         <div className="border-r px-4 py-3">原文</div>
-        <div className="flex items-center justify-between gap-3 px-4 py-2">
-          <div className="flex min-w-0 items-center gap-2">
-            <span>译文</span>
-            {selectedRevision ? <Badge variant="outline">历史版本</Badge> : null}
-          </div>
-          <Select value={selectedRevisionId} onValueChange={onRevisionChange}>
-            <SelectTrigger size="sm" className="max-w-56">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectGroup>
-                <SelectItem value="current">当前译文</SelectItem>
-                {revisionOptions.map((option) => (
-                  <SelectItem key={option.id} value={option.id}>
-                    {option.label}
-                  </SelectItem>
-                ))}
-              </SelectGroup>
-            </SelectContent>
-          </Select>
+        <div className="flex items-center justify-between gap-3 px-4 py-3">
+          <span>译文</span>
+          {translationFile ? (
+            <Badge variant="outline">{translationFile.targetLang}</Badge>
+          ) : null}
         </div>
       </div>
       <div className="grid min-h-0 flex-1 grid-cols-2">
         <PreviewPane
           document={document}
-          file={selectedFile}
-          hoveredBlockId={hoveredBlockId}
-          onHoverBlock={updateHoveredBlock}
-          onScroll={() => syncScroll("source")}
+          file={sourceFile}
+          hoveredBlockId={hoveredBlockId ?? null}
+          onBlockHover={onBlockHover}
+          onBlockLeave={onBlockLeave}
           onToggleBlockSelection={onToggleBlockSelection}
+          onScroll={() => syncScroll("source")}
           paneRef={sourceRef}
           selectedBlockIds={selectedBlockIds}
-          selectedRevision={null}
-          segments={segments}
-          selectionEnabled={false}
+          selectionEnabled={selectionEnabled}
           side="source"
+          sourceSegments={sourceSegments}
+          translationSegments={translationSegments}
         />
-        <PreviewPane
-          document={document}
-          file={selectedFile}
-          hoveredBlockId={hoveredBlockId}
-          onHoverBlock={updateHoveredBlock}
-          onScroll={() => syncScroll("translation")}
-          onToggleBlockSelection={onToggleBlockSelection}
-          paneRef={translationRef}
-          selectedBlockIds={selectedBlockIds}
-          selectedRevision={selectedRevision}
-          segments={segments}
-          selectionEnabled={selectionEnabled && selectedRevision == null}
-          side="translation"
-        />
+        {translationFile ? (
+          <PreviewPane
+            document={document}
+            file={sourceFile}
+            hoveredBlockId={hoveredBlockId ?? null}
+            onBlockHover={onBlockHover}
+            onBlockLeave={onBlockLeave}
+            onToggleBlockSelection={onToggleBlockSelection}
+            onScroll={() => syncScroll("translation")}
+            paneRef={translationRef}
+            selectedBlockIds={selectedBlockIds}
+            selectionEnabled={selectionEnabled}
+            side="translation"
+            sourceSegments={sourceSegments}
+            translationSegments={translationSegments}
+          />
+        ) : (
+          <div className="flex min-h-0 items-center justify-center bg-background px-8 text-center text-sm text-muted-foreground">
+            选择或创建一个目标语言译文文件。
+          </div>
+        )}
       </div>
     </Card>
   );
@@ -255,33 +135,44 @@ function PreviewPane({
   document,
   file,
   hoveredBlockId,
-  onHoverBlock,
-  onScroll,
+  onBlockHover,
+  onBlockLeave,
   onToggleBlockSelection,
+  onScroll,
   paneRef,
   selectedBlockIds,
-  selectedRevision,
-  segments,
   selectionEnabled,
   side,
+  sourceSegments,
+  translationSegments,
 }: {
   document: RosettaDocument;
   file: RosettaSourceFile;
   hoveredBlockId: string | null;
-  onHoverBlock: (blockId: string | null) => void;
+  onBlockHover?: (blockId: string) => void;
+  onBlockLeave?: () => void;
+  onToggleBlockSelection?: (blockId: string) => void;
   onScroll: () => void;
-  onToggleBlockSelection: (blockId: string) => void;
   paneRef: RefObject<HTMLDivElement>;
   selectedBlockIds: string[];
-  selectedRevision: TranslationRevision | null;
-  segments: Segment[];
   selectionEnabled: boolean;
   side: PreviewSide;
+  sourceSegments: Segment[];
+  translationSegments: TranslationSegment[];
 }) {
-  const segmentsByBlock = useMemo(() => groupSegmentsByBlock(segments), [segments]);
-  const selectedBlockIdSet = useMemo(
-    () => new Set(selectedBlockIds),
-    [selectedBlockIds]
+  const segmentsByBlock = useMemo(
+    () => groupSegmentsByBlock(sourceSegments),
+    [sourceSegments]
+  );
+  const translationBySegmentId = useMemo(
+    () =>
+      new Map(
+        translationSegments.map((segment) => [
+          segment.sourceSegmentId,
+          segment,
+        ])
+      ),
+    [translationSegments]
   );
   const blocks = useMemo(
     () =>
@@ -291,7 +182,7 @@ function PreviewPane({
   const virtualizer = useVirtualizer({
     count: blocks.length,
     getScrollElement: () => paneRef.current,
-    estimateSize: () => 92,
+    estimateSize: () => 96,
     overscan: 8,
   });
 
@@ -329,13 +220,14 @@ function PreviewPane({
                     document={document}
                     file={file}
                     hovered={hoveredBlockId === block.id}
-                    onHoverBlock={onHoverBlock}
+                    onBlockHover={onBlockHover}
+                    onBlockLeave={onBlockLeave}
                     onToggleBlockSelection={onToggleBlockSelection}
-                    selected={selectedBlockIdSet.has(block.id)}
-                    selectedRevision={selectedRevision}
-                    segmentsByBlock={segmentsByBlock}
+                    selected={selectedBlockIds.includes(block.id)}
                     selectionEnabled={selectionEnabled}
+                    segmentsByBlock={segmentsByBlock}
                     side={side}
+                    translationBySegmentId={translationBySegmentId}
                   />
                 </div>
               );
@@ -352,35 +244,32 @@ function PreviewBlock({
   document,
   file,
   hovered,
-  onHoverBlock,
+  onBlockHover,
+  onBlockLeave,
   onToggleBlockSelection,
   selected,
-  selectedRevision,
-  segmentsByBlock,
   selectionEnabled,
+  segmentsByBlock,
   side,
+  translationBySegmentId,
 }: {
   block: RosettaBlock;
   document: RosettaDocument;
   file: RosettaSourceFile;
   hovered: boolean;
-  onHoverBlock: (blockId: string | null) => void;
-  onToggleBlockSelection: (blockId: string) => void;
+  onBlockHover?: (blockId: string) => void;
+  onBlockLeave?: () => void;
+  onToggleBlockSelection?: (blockId: string) => void;
   selected: boolean;
-  selectedRevision: TranslationRevision | null;
-  segmentsByBlock: Map<string, Segment[]>;
   selectionEnabled: boolean;
+  segmentsByBlock: Map<string, Segment[]>;
   side: PreviewSide;
+  translationBySegmentId: Map<string, TranslationSegment>;
 }) {
   const text =
     side === "source"
       ? block.sourceText
-      : blockTranslation(
-          block,
-          segmentsByBlock,
-          file.targetLang ?? document.targetLang,
-          selectedRevision
-        );
+      : blockTranslation(block, segmentsByBlock, translationBySegmentId);
   const hasEmptyTranslation =
     side === "translation" && block.shouldTranslate && !text.trim();
   const renderedText = hasEmptyTranslation
@@ -388,9 +277,8 @@ function PreviewBlock({
     : renderBlockMarkdown(file.format ?? document.format, block, text);
   const selectable =
     selectionEnabled &&
-    side === "translation" &&
     block.shouldTranslate &&
-    hasTranslatableSegments(block.id, segmentsByBlock);
+    (segmentsByBlock.get(block.id)?.length ?? 0) > 0;
 
   if (block.type === "metadata" && !renderedText.trim()) {
     return <div className="h-3" />;
@@ -400,16 +288,16 @@ function PreviewBlock({
     <div
       aria-pressed={selectable ? selected : undefined}
       className={cn(
-        "rounded-md px-3 py-2 transition-colors",
-        hovered && "bg-muted",
-        selected && "bg-muted ring-1 ring-ring",
+        "relative rounded-md px-3 py-2 transition-colors",
         selectable && "cursor-pointer",
-        block.status === "failed" && side === "translation" && "text-destructive"
+        hovered && "bg-muted/60",
+        selected && "bg-primary/10 ring-1 ring-primary/25",
+        hasEmptyTranslation && "text-muted-foreground"
       )}
       data-block-id={block.id}
       onClick={() => {
         if (selectable) {
-          onToggleBlockSelection(block.id);
+          onToggleBlockSelection?.(block.id);
         }
       }}
       onKeyDown={(event) => {
@@ -417,15 +305,16 @@ function PreviewBlock({
           return;
         }
         event.preventDefault();
-        onToggleBlockSelection(block.id);
+        onToggleBlockSelection?.(block.id);
       }}
-      onMouseEnter={() => onHoverBlock(block.id)}
-      onMouseLeave={() => onHoverBlock(null)}
+      onMouseEnter={() => onBlockHover?.(block.id)}
+      onMouseLeave={onBlockLeave}
       role={selectable ? "button" : undefined}
       tabIndex={selectable ? 0 : undefined}
+      title={selectable ? "点击选择重翻" : undefined}
     >
       {hasEmptyTranslation ? (
-        <div className="min-h-7" />
+        <p className="min-h-7 text-sm leading-7">等待翻译</p>
       ) : file.format === "markdown" ? (
         <div className="rosetta-markdown-preview">
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{renderedText}</ReactMarkdown>
@@ -435,26 +324,6 @@ function PreviewBlock({
       )}
     </div>
   );
-}
-
-function documentFiles(document: RosettaDocument | null): RosettaSourceFile[] {
-  if (!document) {
-    return [];
-  }
-  if (document.files.length > 0) {
-    return document.files;
-  }
-  return [
-    {
-      id: "file-1",
-      filename: document.filename,
-      relativePath: document.filename,
-      format: document.format,
-      sourceLang: document.sourceLang,
-      targetLang: document.targetLang,
-      blockIds: document.blocks.map((block) => block.id),
-    },
-  ];
 }
 
 function groupSegmentsByBlock(segments: Segment[]) {
@@ -479,8 +348,7 @@ function groupSegmentsByBlock(segments: Segment[]) {
 function blockTranslation(
   block: RosettaBlock,
   segmentsByBlock: Map<string, Segment[]>,
-  targetLang: string,
-  revision: TranslationRevision | null
+  translationBySegmentId: Map<string, TranslationSegment>
 ) {
   if (!block.shouldTranslate) {
     return block.sourceText;
@@ -488,80 +356,27 @@ function blockTranslation(
 
   const segments = segmentsByBlock.get(block.id);
   if (!segments || segments.length === 0) {
-    return revision ? "" : block.translatedText?.trim() || "";
+    return "";
   }
 
-  const translated = segments
-    .map((segment) =>
-      revision
-        ? revision.segmentTranslations[segment.id]?.trim() || ""
-        : segment.translatedText?.trim() || ""
-    )
-    .join(segmentJoiner(targetLang))
+  return segments
+    .map((segment) => {
+      const translation = translationBySegmentId.get(segment.id);
+      return translation?.translatedText?.trim() ?? "";
+    })
+    .join(segmentJoiner(translationBySegmentId, segments))
     .trim();
-
-  return translated;
 }
 
-function hasTranslatableSegments(
-  blockId: string,
-  segmentsByBlock: Map<string, Segment[]>
+function segmentJoiner(
+  translationBySegmentId: Map<string, TranslationSegment>,
+  segments: Segment[]
 ) {
-  return (
-    segmentsByBlock
-      .get(blockId)
-      ?.some(
-        (segment) =>
-          segment.status !== "skipped" && segment.sourceText.trim().length > 0
-      ) ?? false
-  );
-}
-
-function buildRevisionOptions(
-  revisions: TranslationRevision[],
-  fileId: string
-): RevisionOption[] {
-  const chronological = revisions
-    .filter((revision) => revision.fileId === fileId)
-    .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
-  const labels = new Map(
-    chronological.map((revision, index) => [
-      revision.id,
-      `第 ${index + 1} 次翻译`,
-    ])
-  );
-
-  return chronological
-    .map((revision) => ({
-      id: revision.id,
-      label: `${labels.get(revision.id) ?? "历史译文"} · ${formatRevisionTime(
-        revision.createdAt
-      )}`,
-      revision,
-    }))
-    .reverse();
-}
-
-function segmentJoiner(targetLang: string) {
-  return isCompactTargetLanguage(targetLang) ? "" : " ";
-}
-
-function isCompactTargetLanguage(targetLang: string) {
-  return /^(zh|ja|ko)/i.test(targetLang);
-}
-
-function formatRevisionTime(value: string) {
-  const timestamp = Number(value);
-  if (!Number.isFinite(timestamp)) {
-    return value;
-  }
-
-  return new Intl.DateTimeFormat(undefined, {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(timestamp));
+  const targetLang =
+    segments
+      .map((segment) => translationBySegmentId.get(segment.id)?.targetLang)
+      .find(Boolean) ?? "";
+  return /^(zh|ja|ko)/i.test(targetLang) ? "" : " ";
 }
 
 function renderBlockMarkdown(

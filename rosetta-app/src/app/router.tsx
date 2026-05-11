@@ -3,9 +3,14 @@ import { AppShell } from "./AppShell";
 import { HomePage } from "../features/home/HomePage";
 import { ImportPage } from "../features/import/ImportPage";
 import { JobsPage } from "../features/jobs/JobsPage";
+import { TranslationPreviewPage } from "../features/preview/TranslationPreviewPage";
 import { SettingsPage } from "../features/settings/SettingsPage";
 
 export const router = createHashRouter([
+  {
+    path: "/preview/:jobId/translations/:translationFileId",
+    element: <TranslationPreviewPage />,
+  },
   {
     path: "/",
     element: <AppShell />,

@@ -5,7 +5,9 @@ import type {
   RosettaJobFileDeleteResult,
   RosettaJobBundle,
   RosettaJobSummary,
+  RosettaTranslationFileBundle,
   Segment,
+  TranslationSegment,
   TranslationRevisionReason,
 } from "../types/rosetta";
 
@@ -48,6 +50,40 @@ export function loadRosettaJob(jobId: string) {
 export function saveRosettaSegments(jobId: string, segments: Segment[]) {
   return invoke<RosettaJobBundle>("save_rosetta_segments", {
     jobId,
+    segments,
+  });
+}
+
+export function ensureRosettaTranslationFile(
+  jobId: string,
+  sourceFileId: string,
+  targetLang: string
+) {
+  return invoke<RosettaTranslationFileBundle>("ensure_rosetta_translation_file", {
+    jobId,
+    sourceFileId,
+    targetLang,
+  });
+}
+
+export function loadRosettaTranslationFile(
+  jobId: string,
+  translationFileId: string
+) {
+  return invoke<RosettaTranslationFileBundle>("load_rosetta_translation_file", {
+    jobId,
+    translationFileId,
+  });
+}
+
+export function saveRosettaTranslationSegments(
+  jobId: string,
+  translationFileId: string,
+  segments: TranslationSegment[]
+) {
+  return invoke<RosettaTranslationFileBundle>("save_rosetta_translation_segments", {
+    jobId,
+    translationFileId,
     segments,
   });
 }
@@ -107,6 +143,20 @@ export function exportRosettaJobFile(
   return invoke<RosettaExportResult>("export_rosetta_job_file", {
     jobId,
     fileId,
+    kind,
+    targetPath,
+  });
+}
+
+export function exportRosettaTranslationFile(
+  jobId: string,
+  translationFileId: string,
+  kind: RosettaExportKind,
+  targetPath: string
+) {
+  return invoke<RosettaExportResult>("export_rosetta_translation_file", {
+    jobId,
+    translationFileId,
     kind,
     targetPath,
   });
