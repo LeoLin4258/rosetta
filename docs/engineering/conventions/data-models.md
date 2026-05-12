@@ -80,6 +80,8 @@ Document
 - 工作台和导出必须以当前选中的 `translationFileId` 为译文事实来源。
 - 旧项目如果只有 `segments.json.translatedText`，加载时迁移成默认目标语言译文文件；旧字段暂不删除。
 - 译文文件是 Rosetta 内部管理对象，不自动写入用户磁盘路径；用户点击导出时才生成外部文件。
+- `TranslationSegment.status === "translating"` 只表示一次前端翻译运行已把该批次交给模型请求，不能视为跨应用重启仍然存在的真实后台任务。工作台加载项目时必须把遗留的 `translating` segments 恢复为 `pending`，并重建 `RosettaTranslationFile.status`，避免异常退出或模型卡住后项目永久停在“翻译中”。
+- 用户手动停止翻译时，当前已经持久化为 `translating` 的批次应恢复为 `pending`，已完成的 `done` / `edited` segments 保留，失败的 segments 保留为 `failed`。停止不是失败，不应把用户主动停止写成模型错误。
 
 ## TranslationRevision
 

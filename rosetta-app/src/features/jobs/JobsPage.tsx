@@ -14,6 +14,7 @@ import {
   MoreVertical,
   Play,
   RefreshCw,
+  Square,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -51,17 +52,30 @@ import {
   saveRosettaTranslationSegments,
 } from "../../lib/rosettaJobs";
 import { rosettaJobDefaultPath, rosettaJobFilePath } from "../../lib/rosettaRoutes";
+import { defaultExportFilename, exportFormatForSource } from "../../lib/rosettaExport";
 import {
   openSourcePreviewWindow,
   openTranslationPreviewWindow,
 } from "../../lib/translationPreviewWindow";
 import { translateRwkvTextsWithApi } from "../../lib/rwkvApi";
+import {
+  LANGUAGE_OPTIONS,
+  SOURCE_LANGUAGE_OPTIONS,
+  isRwkvConfigReady,
+} from "../../lib/languages";
+import {
+  chunkItems,
+  markTranslationSegmentsDone as markSegmentsDone,
+  markTranslationSegmentsFailed as markSegmentsFailed,
+  markTranslationSegmentsPending as markSegmentsPending,
+  markTranslationSegmentsTranslating as markSegmentsTranslating,
+  translationProgressPercent,
+} from "../../lib/translationSegments";
 import { cn } from "../../lib/utils";
 import { useRosettaStore } from "../../store/useRosettaStore";
 import type {
   ActiveTranslationRun,
   RosettaExportKind,
-  RosettaSourceDocumentFormat,
   RosettaSourceFile,
   RosettaTranslationFile,
   Segment,
@@ -69,26 +83,6 @@ import type {
 } from "../../types/rosetta";
 
 const BATCH_SIZE = 16;
-
-const LANGUAGE_OPTIONS = [
-  { value: "zh-CN", label: "简体中文" },
-  { value: "zh-TW", label: "繁體中文" },
-  { value: "ja", label: "日本語" },
-  { value: "ko", label: "한국어" },
-  { value: "fr", label: "Français" },
-  { value: "de", label: "Deutsch" },
-  { value: "es", label: "Español" },
-  { value: "ru", label: "Русский" },
-  { value: "pt", label: "Português" },
-  { value: "it", label: "Italiano" },
-  { value: "vi", label: "Tiếng Việt" },
-  { value: "id", label: "Bahasa Indonesia" },
-];
-
-const SOURCE_LANGUAGE_OPTIONS = [
-  { value: "en", label: "English" },
-  ...LANGUAGE_OPTIONS,
-];
 
 export function JobsPage() {
   const { fileId, jobId } = useParams();
@@ -137,7 +131,9 @@ export function JobsPage() {
   const [queuedTranslationFileIds, setQueuedTranslationFileIds] = useState<
     string[]
   >([]);
+  const [pageError, setPageError] = useState<string | null>(null);
   const loadRequestIdRef = useRef(0);
+  const activeTranslationCancelRef = useRef<(() => void) | null>(null);
 
   const currentJobId = jobId ?? activeJobId ?? jobs[0]?.id ?? null;
   const activeJob = jobs.find((job) => job.id === currentJobId) ?? null;
@@ -170,12 +166,7 @@ export function JobsPage() {
     () => countSourceSegmentsByFile(previewSegments),
     [previewSegments]
   );
-  const rwkvConfigReady =
-    rwkv.baseUrl.trim().length > 0 &&
-    rwkv.endpoint.trim().length > 0 &&
-    rwkv.internalToken.trim().length > 0 &&
-    rwkv.bodyPassword.trim().length > 0 &&
-    rwkv.timeoutMs > 0;
+  const rwkvConfigReady = isRwkvConfigReady(rwkv);
   const selectedBatchCount = selectedSourceFileIds.length;
 
   useEffect(() => {
@@ -200,6 +191,7 @@ export function JobsPage() {
     const requestId = loadRequestIdRef.current + 1;
     loadRequestIdRef.current = requestId;
     void loadRosettaJob(currentJobId)
+      .then(recoverStaleTranslationRuns)
       .then((bundle) => {
         if (
           loadRequestIdRef.current !== requestId ||
@@ -207,10 +199,49 @@ export function JobsPage() {
         ) {
           return;
         }
+        setPageError(null);
         setActiveBundle(bundle);
       })
-      .catch(console.error);
+      .catch((error) => {
+        setPageError(
+          error instanceof Error ? error.message : "项目加载失败。"
+        );
+      });
   }, [currentJobId, setActiveBundle]);
+
+  async function recoverStaleTranslationRuns(
+    bundle: Awaited<ReturnType<typeof loadRosettaJob>>
+  ) {
+    const staleFiles = bundle.translationFiles.filter(
+      (translationFile) => translationFile.status === "translating"
+    );
+    if (staleFiles.length === 0) {
+      return bundle;
+    }
+
+    for (const translationFile of staleFiles) {
+      const translationBundle = await loadRosettaTranslationFile(
+        bundle.job.id,
+        translationFile.id
+      );
+      const recoveredSegments = translationBundle.segments.map((segment) =>
+        segment.status === "translating"
+          ? {
+              ...segment,
+              status: "pending" as const,
+              error: undefined,
+            }
+          : segment
+      );
+      await saveRosettaTranslationSegments(
+        bundle.job.id,
+        translationFile.id,
+        recoveredSegments
+      );
+    }
+
+    return loadRosettaJob(bundle.job.id);
+  }
 
   useEffect(() => {
     if (!currentJobId || !selectedSourceFileId) {
@@ -309,6 +340,7 @@ export function JobsPage() {
       return;
     }
 
+    setPageError(null);
     try {
       const visibleSourceFileId = selectedSourceFileIds.includes(
         selectedSourceFileId ?? ""
@@ -348,7 +380,7 @@ export function JobsPage() {
       }
 
       for (const queued of translationQueue) {
-        await translateTranslationFile(
+        const result = await translateTranslationFile(
           queued.translationFile,
           "batch",
           queued.segments,
@@ -357,6 +389,9 @@ export function JobsPage() {
         setQueuedTranslationFileIds((current) =>
           current.filter((id) => id !== queued.translationFile.id)
         );
+        if (result === "stopped") {
+          break;
+        }
       }
 
       if (translationQueue.length > 0) {
@@ -375,7 +410,9 @@ export function JobsPage() {
       }
       setSelectedSourceFileIds([]);
     } catch (error) {
-      console.error(error);
+      setPageError(
+        error instanceof Error ? error.message : "批量翻译启动失败。"
+      );
     }
   }
 
@@ -384,15 +421,15 @@ export function JobsPage() {
     scope: "file" | "batch" = "file",
     initialSegments?: TranslationSegment[],
     sourceLangOverride?: string
-  ) {
+  ): Promise<"completed" | "failed" | "noop" | "stopped"> {
     if (!currentJobId || !document || !rwkvConfigReady || isTranslating) {
-      return;
+      return "noop";
     }
     const sourceFile =
       document.files.find((file) => file.id === translationFile.sourceFileId) ??
       null;
     if (!sourceFile) {
-      return;
+      return "noop";
     }
 
     const loadedSegments =
@@ -412,11 +449,16 @@ export function JobsPage() {
     });
 
     if (targets.length === 0) {
-      return;
+      return "noop";
     }
 
     const runId = `run-${Date.now()}`;
+    let cancelCurrentRun: (() => void) | null = null;
+    const cancelled = new Promise<"stopped">((resolve) => {
+      cancelCurrentRun = () => resolve("stopped");
+    });
     setIsTranslating(true);
+    activeTranslationCancelRef.current = cancelCurrentRun;
     startTranslationRun({
       id: runId,
       jobId: currentJobId,
@@ -435,25 +477,50 @@ export function JobsPage() {
         return (leftSource?.order ?? 0) - (rightSource?.order ?? 0);
       });
 
-      for (const batch of chunkSegments(orderedTargets, BATCH_SIZE)) {
+      for (const batch of chunkItems(orderedTargets, BATCH_SIZE)) {
         currentBatchSegmentIds = batch.map((segment) => segment.sourceSegmentId);
         workingSegments = markSegmentsTranslating(
           workingSegments,
           currentBatchSegmentIds
         );
+        const translating = await saveRosettaTranslationSegments(
+          currentJobId,
+          translationFile.id,
+          workingSegments
+        );
+        upsertTranslationFile(translating.translationFile);
 
-        const result = await translateRwkvTextsWithApi({
-          baseUrl: rwkv.baseUrl,
-          endpoint: rwkv.endpoint,
-          internalToken: rwkv.internalToken,
-          bodyPassword: rwkv.bodyPassword,
-          timeoutMs: rwkv.timeoutMs,
-          sourceLang: sourceLangOverride ?? sourceFile.sourceLang ?? document.sourceLang,
-          targetLang: translationFile.targetLang,
-          sourceTexts: batch.map(
-            (segment) => sourceById.get(segment.sourceSegmentId)?.sourceText ?? ""
-          ),
-        });
+        const result = await Promise.race([
+          translateRwkvTextsWithApi({
+            baseUrl: rwkv.baseUrl,
+            endpoint: rwkv.endpoint,
+            internalToken: rwkv.internalToken,
+            bodyPassword: rwkv.bodyPassword,
+            timeoutMs: rwkv.timeoutMs,
+            sourceLang:
+              sourceLangOverride ?? sourceFile.sourceLang ?? document.sourceLang,
+            targetLang: translationFile.targetLang,
+            sourceTexts: batch.map(
+              (segment) =>
+                sourceById.get(segment.sourceSegmentId)?.sourceText ?? ""
+            ),
+          }),
+          cancelled,
+        ]);
+
+        if (result === "stopped") {
+          workingSegments = markSegmentsPending(
+            workingSegments,
+            currentBatchSegmentIds
+          );
+          const saved = await saveRosettaTranslationSegments(
+            currentJobId,
+            translationFile.id,
+            workingSegments
+          );
+          upsertTranslationFile(saved.translationFile);
+          return "stopped";
+        }
 
         if (!result.ok || result.translations.length !== batch.length) {
           const message = !result.ok
@@ -471,7 +538,7 @@ export function JobsPage() {
             workingSegments
           );
           upsertTranslationFile(saved.translationFile);
-          return;
+          return "failed";
         }
 
         workingSegments = markSegmentsDone(
@@ -487,6 +554,7 @@ export function JobsPage() {
         );
         upsertTranslationFile(saved.translationFile);
       }
+      return "completed";
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "RWKV API 翻译调用失败。";
@@ -504,10 +572,18 @@ export function JobsPage() {
         );
         upsertTranslationFile(saved.translationFile);
       }
+      return "failed";
     } finally {
       finishTranslationRun(runId);
       setIsTranslating(false);
+      if (activeTranslationCancelRef.current === cancelCurrentRun) {
+        activeTranslationCancelRef.current = null;
+      }
     }
+  }
+
+  function stopActiveTranslation() {
+    activeTranslationCancelRef.current?.();
   }
 
   async function exportTranslationFile(
@@ -517,6 +593,7 @@ export function JobsPage() {
     if (!currentJobId) {
       return;
     }
+    setPageError(null);
     const sourceFile =
       sourceFiles.find((file) => file.id === translationFile.sourceFileId) ??
       null;
@@ -535,13 +612,17 @@ export function JobsPage() {
     if (!targetPath) {
       return;
     }
-    await exportRosettaTranslationFile(
-      currentJobId,
-      translationFile.id,
-      kind,
-      targetPath
-    );
-    refreshJobBundle(await loadRosettaJob(currentJobId));
+    try {
+      await exportRosettaTranslationFile(
+        currentJobId,
+        translationFile.id,
+        kind,
+        targetPath
+      );
+      refreshJobBundle(await loadRosettaJob(currentJobId));
+    } catch (error) {
+      setPageError(error instanceof Error ? error.message : "导出失败。");
+    }
   }
 
   if (jobs.length === 0) {
@@ -568,9 +649,9 @@ export function JobsPage() {
   }
 
   return (
-    <section className="grid h-full min-h-0 grid-rows-[auto_1fr] bg-background">
+    <section className="grid h-full min-h-0 grid-rows-[auto_auto_1fr] bg-background">
       <header className="border-b bg-background">
-        <div className="flex min-h-12 items-center justify-between gap-4 px-5 py-2">
+        <div className="flex min-h-12 items-center justify-between gap-4 px-5 pt-2 pb-8">
           <div className="flex min-w-0 items-center gap-5 text-sm text-muted-foreground">
             <span>
               <strong className="mr-1 text-foreground">{sourceFiles.length}</strong>
@@ -646,6 +727,11 @@ export function JobsPage() {
           </div>
         </div>
       </header>
+      {pageError ? (
+        <div className="border-b border-destructive/20 bg-destructive/5 px-5 py-2 text-sm text-destructive">
+          {pageError}
+        </div>
+      ) : null}
 
       <div className="min-h-0 overflow-hidden">
         <ResizablePanelGroup
@@ -687,6 +773,7 @@ export function JobsPage() {
               onTranslateTranslation={(translationFile) => {
                 void translateTranslationFile(translationFile);
               }}
+              onStopTranslation={stopActiveTranslation}
               queuedTranslationFileIds={queuedTranslationFileIds}
               rwkvConfigReady={rwkvConfigReady}
               selectedSourceFile={selectedSourceFile}
@@ -801,6 +888,7 @@ function TranslationFileTable({
   onExportTranslation,
   onOpenTranslation,
   onSelectTranslation,
+  onStopTranslation,
   onTranslateTranslation,
   queuedTranslationFileIds,
   rwkvConfigReady,
@@ -817,6 +905,7 @@ function TranslationFileTable({
   ) => void;
   onOpenTranslation: (translationFile: RosettaTranslationFile) => void;
   onSelectTranslation: (translationFile: RosettaTranslationFile) => void;
+  onStopTranslation: () => void;
   onTranslateTranslation: (translationFile: RosettaTranslationFile) => void;
   queuedTranslationFileIds: string[];
   rwkvConfigReady: boolean;
@@ -885,6 +974,9 @@ function TranslationFileTable({
                   currentJobId,
                   queuedTranslationFileIds
                 );
+                const isCurrentRun =
+                  activeTranslationRun?.jobId === currentJobId &&
+                  activeTranslationRun.translationFileId === translationFile.id;
                 const canTranslate =
                   rwkvConfigReady &&
                   !isTranslating &&
@@ -953,19 +1045,27 @@ function TranslationFileTable({
                         </Button>
                         <Button
                           className="rounded-none border-l-0"
-                          disabled={!canTranslate}
-                          onClick={() => onTranslateTranslation(translationFile)}
+                          disabled={!canTranslate && !isCurrentRun}
+                          onClick={() =>
+                            isCurrentRun
+                              ? onStopTranslation()
+                              : onTranslateTranslation(translationFile)
+                          }
                           size="sm"
                           type="button"
                           variant="outline"
                         >
-                          {translationFile.failedSegments ? (
+                          {isCurrentRun ? (
+                            <Square data-icon="inline-start" />
+                          ) : translationFile.failedSegments ? (
                             <RefreshCw data-icon="inline-start" />
                           ) : (
                             <Play data-icon="inline-start" />
                           )}
-                          {state === "translating"
-                            ? "翻译中"
+                          {isCurrentRun
+                            ? "停止"
+                            : state === "translating"
+                              ? "翻译中"
                             : state === "queued"
                               ? "排队中"
                               : canTranslate
@@ -1187,97 +1287,4 @@ function countSourceSegmentsByFile(segments: { fileId?: string | null }[]) {
     grouped.set(fileId, (grouped.get(fileId) ?? 0) + 1);
   }
   return grouped;
-}
-
-function translationProgressPercent(translationFile: RosettaTranslationFile) {
-  if (translationFile.segmentCount <= 0) {
-    return 0;
-  }
-  return Math.min(
-    100,
-    Math.round(
-      (translationFile.completedSegments / translationFile.segmentCount) * 100
-    )
-  );
-}
-
-function chunkSegments<T>(segments: T[], size: number) {
-  const chunks: T[][] = [];
-  for (let index = 0; index < segments.length; index += size) {
-    chunks.push(segments.slice(index, index + size));
-  }
-  return chunks;
-}
-
-function markSegmentsTranslating(
-  segments: TranslationSegment[],
-  segmentIds: string[]
-) {
-  const segmentIdSet = new Set(segmentIds);
-  return segments.map((segment) =>
-    segmentIdSet.has(segment.sourceSegmentId)
-      ? {
-        ...segment,
-        status: "translating" as const,
-        translatedText: undefined,
-        error: undefined,
-      }
-      : segment
-  );
-}
-
-function markSegmentsDone(
-  segments: TranslationSegment[],
-  segmentIds: string[],
-  translations: string[]
-) {
-  const translationById = new Map(
-    segmentIds.map((segmentId, index) => [segmentId, translations[index]])
-  );
-  return segments.map((segment) =>
-    translationById.has(segment.sourceSegmentId)
-      ? {
-        ...segment,
-        translatedText: translationById.get(segment.sourceSegmentId),
-        status: "done" as const,
-        error: undefined,
-      }
-      : segment
-  );
-}
-
-function markSegmentsFailed(
-  segments: TranslationSegment[],
-  segmentIds: string[],
-  error: string
-) {
-  const segmentIdSet = new Set(segmentIds);
-  return segments.map((segment) =>
-    segmentIdSet.has(segment.sourceSegmentId)
-      ? {
-        ...segment,
-        status: "failed" as const,
-        error,
-      }
-      : segment
-  );
-}
-
-function defaultExportFilename(
-  relativePath: string,
-  format: RosettaSourceDocumentFormat,
-  targetLang: string,
-  kind: RosettaExportKind
-) {
-  const extension = format === "markdown" ? "md" : "txt";
-  const filename = relativePath.split(/[\\/]/).pop() ?? relativePath;
-  const baseName = filename.replace(/\.(txt|md|markdown|pdf)$/i, "");
-  const suffix = kind === "bilingual" ? `${targetLang}.bilingual` : targetLang;
-  return `${baseName}.${suffix}.${extension}`;
-}
-
-function exportFormatForSource(
-  format: RosettaSourceDocumentFormat
-): "txt" | "markdown" {
-  return format === "markdown" ? "markdown" : "txt";
 }

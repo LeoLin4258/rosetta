@@ -41,7 +41,7 @@
   --font-sans: Libre Baskerville, serif;
   --font-serif: Lora, serif;
   --font-mono: IBM Plex Mono, monospace;
-  --radius: 0.25rem;
+  --radius: 0.5rem;
   --rosetta-motion-duration: 220ms;
   --rosetta-motion-ease: cubic-bezier(0.22, 1, 0.36, 1);
   --rosetta-reader-max-width: 48rem;

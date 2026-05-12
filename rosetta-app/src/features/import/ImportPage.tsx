@@ -76,7 +76,9 @@ export function ImportPage() {
       <Card>
         <CardHeader>
           <CardTitle>新项目</CardTitle>
-          <CardDescription>导入 TXT 或 Markdown 文件</CardDescription>
+          <CardDescription>
+            当前支持 TXT 和 Markdown；PDF 与 Word 支持规划中。
+          </CardDescription>
           <CardAction>
             <FileText className="text-muted-foreground" />
           </CardAction>

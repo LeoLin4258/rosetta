@@ -1,7 +1,16 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { getCurrentWindow, type Theme } from "@tauri-apps/api/window";
-import { Download, Languages, RefreshCw } from "lucide-react";
+import {
+  AlertCircle,
+  CheckCircle2,
+  Clock3,
+  Download,
+  Languages,
+  LoaderCircle,
+  RefreshCw,
+  Square,
+} from "lucide-react";
 
 import { DocumentPreview } from "./DocumentPreview";
 import { Badge } from "@/components/ui/badge";
@@ -13,20 +22,30 @@ import {
   pickRosettaExportPath,
   saveRosettaTranslationSegments,
 } from "@/lib/rosettaJobs";
+import { defaultExportFilename, exportFormatForSource } from "@/lib/rosettaExport";
 import { translateRwkvTextsWithApi } from "@/lib/rwkvApi";
+import { isRwkvConfigReady } from "@/lib/languages";
+import {
+  chunkItems,
+  markTranslationSegmentsDone,
+  markTranslationSegmentsFailed,
+  markTranslationSegmentsPending,
+  markTranslationSegmentsTranslating,
+  translationProgressPercent,
+} from "@/lib/translationSegments";
 import { cn } from "@/lib/utils";
 import { useRosettaStore } from "@/store/useRosettaStore";
 import type {
   AppThemeMode,
   RosettaExportKind,
   RosettaJobBundle,
-  RosettaSourceDocumentFormat,
+  RosettaTranslationFile,
   RosettaTranslationFileBundle,
-  TranslationSegment,
 } from "@/types/rosetta";
 
 const appWindow = getCurrentWindow();
 const BATCH_SIZE = 16;
+const LIVE_REFRESH_INTERVAL_MS = 1_000;
 
 export function TranslationPreviewPage() {
   const { jobId, translationFileId } = useParams();
@@ -41,6 +60,7 @@ export function TranslationPreviewPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [isRetranslating, setIsRetranslating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const retranslationCancelRef = useRef<(() => void) | null>(null);
   const isDark = resolveIsDark(themeMode, systemPrefersDark);
 
   const translationFile = translationBundle?.translationFile ?? null;
@@ -67,12 +87,7 @@ export function TranslationPreviewPage() {
     translationFile.segmentCount > 0 &&
     translationFile.completedSegments >= translationFile.segmentCount &&
     translationFile.failedSegments === 0;
-  const rwkvConfigReady =
-    rwkv.baseUrl.trim().length > 0 &&
-    rwkv.endpoint.trim().length > 0 &&
-    rwkv.internalToken.trim().length > 0 &&
-    rwkv.bodyPassword.trim().length > 0 &&
-    rwkv.timeoutMs > 0;
+  const rwkvConfigReady = isRwkvConfigReady(rwkv);
   const canRetranslate =
     jobId != null &&
     jobBundle != null &&
@@ -159,6 +174,39 @@ export function TranslationPreviewPage() {
     };
   }, [jobId, translationFileId]);
 
+  useEffect(() => {
+    if (!jobId || !translationFileId || isRetranslating) {
+      return;
+    }
+
+    const currentJobId = jobId;
+    const currentTranslationFileId = translationFileId;
+    let cancelled = false;
+
+    async function refreshTranslation() {
+      try {
+        const nextBundle = await loadRosettaTranslationFile(
+          currentJobId,
+          currentTranslationFileId
+        );
+        if (!cancelled) {
+          setTranslationBundle(nextBundle);
+        }
+      } catch {
+        // Keep the current preview visible when a transient refresh fails.
+      }
+    }
+
+    const interval = window.setInterval(() => {
+      void refreshTranslation();
+    }, LIVE_REFRESH_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [isRetranslating, jobId, translationFileId]);
+
   async function exportTranslation(kind: RosettaExportKind) {
     if (!jobId || !translationFile || !sourceFile) {
       return;
@@ -202,31 +250,58 @@ export function TranslationPreviewPage() {
     const targets = selectedSourceSegments.sort(
       (left, right) => left.order - right.order
     );
-    const targetIds = new Set(targets.map((segment) => segment.id));
-    let workingSegments = markTranslationSegmentsTranslating(
-      translationBundle.segments,
-      targetIds
-    );
+    let cancelCurrentRun: (() => void) | null = null;
+    const cancelled = new Promise<"stopped">((resolve) => {
+      cancelCurrentRun = () => resolve("stopped");
+    });
+    let workingSegments = translationBundle.segments;
 
     setIsRetranslating(true);
-    setTranslationBundle({
-      translationFile,
-      segments: workingSegments,
-    });
+    retranslationCancelRef.current = cancelCurrentRun;
 
     try {
-      for (const batch of chunkSegments(targets, BATCH_SIZE)) {
-        const result = await translateRwkvTextsWithApi({
-          baseUrl: rwkv.baseUrl,
-          endpoint: rwkv.endpoint,
-          internalToken: rwkv.internalToken,
-          bodyPassword: rwkv.bodyPassword,
-          timeoutMs: rwkv.timeoutMs,
-          sourceLang: sourceFile.sourceLang ?? jobBundle.document.sourceLang,
-          targetLang: translationFile.targetLang,
-          sourceTexts: batch.map((segment) => segment.sourceText),
-        });
+      for (const batch of chunkItems(targets, BATCH_SIZE)) {
         const batchIds = batch.map((segment) => segment.id);
+        workingSegments = markTranslationSegmentsTranslating(
+          workingSegments,
+          new Set(batchIds)
+        );
+        setTranslationBundle(
+          await saveRosettaTranslationSegments(
+            jobId,
+            translationFile.id,
+            workingSegments
+          )
+        );
+
+        const result = await Promise.race([
+          translateRwkvTextsWithApi({
+            baseUrl: rwkv.baseUrl,
+            endpoint: rwkv.endpoint,
+            internalToken: rwkv.internalToken,
+            bodyPassword: rwkv.bodyPassword,
+            timeoutMs: rwkv.timeoutMs,
+            sourceLang: sourceFile.sourceLang ?? jobBundle.document.sourceLang,
+            targetLang: translationFile.targetLang,
+            sourceTexts: batch.map((segment) => segment.sourceText),
+          }),
+          cancelled,
+        ]);
+
+        if (result === "stopped") {
+          workingSegments = markTranslationSegmentsPending(
+            workingSegments,
+            batchIds
+          );
+          setTranslationBundle(
+            await saveRosettaTranslationSegments(
+              jobId,
+              translationFile.id,
+              workingSegments
+            )
+          );
+          return;
+        }
 
         if (!result.ok || result.translations.length !== batch.length) {
           const message = !result.ok
@@ -269,7 +344,14 @@ export function TranslationPreviewPage() {
       );
     } finally {
       setIsRetranslating(false);
+      if (retranslationCancelRef.current === cancelCurrentRun) {
+        retranslationCancelRef.current = null;
+      }
     }
+  }
+
+  function stopRetranslation() {
+    retranslationCancelRef.current?.();
   }
 
   return (
@@ -297,15 +379,23 @@ export function TranslationPreviewPage() {
         </div>
         <div className="flex items-center gap-2">
           <Button
-            disabled={!canRetranslate}
-            onClick={() => void retranslateSelectedBlocks()}
+            disabled={!canRetranslate && !isRetranslating}
+            onClick={() =>
+              isRetranslating
+                ? stopRetranslation()
+                : void retranslateSelectedBlocks()
+            }
             size="sm"
             type="button"
             variant="outline"
           >
-            <RefreshCw data-icon="inline-start" />
+            {isRetranslating ? (
+              <Square data-icon="inline-start" />
+            ) : (
+              <RefreshCw data-icon="inline-start" />
+            )}
             {isRetranslating
-              ? "重翻中"
+              ? "停止"
               : selectedSourceSegments.length > 0
                 ? `重翻 ${selectedBlockIds.length} 段`
                 : "重翻选中"}
@@ -332,6 +422,7 @@ export function TranslationPreviewPage() {
           </Button>
         </div>
       </header>
+      <TranslationStatusBar translationFile={translationFile} />
 
       <main className="min-h-0 flex-1 p-4 bg-[#f3f1e9] dark:bg-stone-900">
         {isLoading ? (
@@ -362,86 +453,104 @@ export function TranslationPreviewPage() {
   );
 }
 
-function markTranslationSegmentsTranslating(
-  segments: TranslationSegment[],
-  sourceSegmentIds: Set<string>
-) {
-  return segments.map((segment) =>
-    sourceSegmentIds.has(segment.sourceSegmentId)
-      ? {
-          ...segment,
-          translatedText: undefined,
-          status: "translating" as const,
-          error: undefined,
-        }
-      : segment
-  );
-}
-
-function markTranslationSegmentsDone(
-  segments: TranslationSegment[],
-  sourceSegmentIds: string[],
-  translations: string[]
-) {
-  const translationById = new Map(
-    sourceSegmentIds.map((segmentId, index) => [segmentId, translations[index]])
-  );
-  return segments.map((segment) =>
-    translationById.has(segment.sourceSegmentId)
-      ? {
-          ...segment,
-          translatedText: translationById.get(segment.sourceSegmentId),
-          status: "done" as const,
-          error: undefined,
-        }
-      : segment
-  );
-}
-
-function markTranslationSegmentsFailed(
-  segments: TranslationSegment[],
-  sourceSegmentIds: string[],
-  error: string
-) {
-  const segmentIds = new Set(sourceSegmentIds);
-  return segments.map((segment) =>
-    segmentIds.has(segment.sourceSegmentId)
-      ? {
-          ...segment,
-          status: "failed" as const,
-          error,
-        }
-      : segment
-  );
-}
-
-function chunkSegments<T>(segments: T[], size: number) {
-  const chunks: T[][] = [];
-  for (let index = 0; index < segments.length; index += size) {
-    chunks.push(segments.slice(index, index + size));
+function TranslationStatusBar({
+  translationFile,
+}: {
+  translationFile: RosettaTranslationFile | null;
+}) {
+  if (!translationFile) {
+    return (
+      <div className="flex h-10 shrink-0 items-center border-b bg-background px-4 text-sm text-muted-foreground">
+        等待译文状态
+      </div>
+    );
   }
-  return chunks;
+
+  const progressPercent = translationProgressPercent(translationFile);
+  const remainingSegments = Math.max(
+    translationFile.segmentCount -
+      translationFile.completedSegments -
+      translationFile.failedSegments,
+    0
+  );
+
+  return (
+    <div className="flex h-10 shrink-0 items-center justify-between gap-4 border-b bg-background px-4">
+      <div className="flex min-w-0 items-center gap-3">
+        <TranslationStateBadge state={translationFile.status} />
+        <div className="flex items-center gap-3 text-sm text-muted-foreground">
+          <span className="tabular-nums">
+            {translationFile.completedSegments}/{translationFile.segmentCount} 段
+          </span>
+          {translationFile.failedSegments > 0 ? (
+            <span className="tabular-nums">
+              失败 {translationFile.failedSegments}
+            </span>
+          ) : null}
+          {translationFile.status === "translating" ? (
+            <span className="tabular-nums">剩余 {remainingSegments}</span>
+          ) : null}
+        </div>
+      </div>
+      <div className="flex min-w-0 flex-1 items-center justify-end gap-3">
+        <div className="h-1.5 w-48 overflow-hidden rounded-full bg-muted">
+          <div
+            className={cn(
+              "h-full rounded-full",
+              translationFile.status === "failed"
+                ? "bg-destructive"
+                : translationFile.status === "translated"
+                  ? "bg-primary"
+                  : "bg-primary/80"
+            )}
+            style={{ width: `${progressPercent}%` }}
+          />
+        </div>
+        <span className="w-10 text-right text-xs tabular-nums text-muted-foreground">
+          {progressPercent}%
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function TranslationStateBadge({
+  state,
+}: {
+  state: RosettaTranslationFile["status"];
+}) {
+  if (state === "translated") {
+    return (
+      <Badge variant="outline">
+        <CheckCircle2 data-icon="inline-start" />
+        已完成
+      </Badge>
+    );
+  }
+  if (state === "failed") {
+    return (
+      <Badge variant="destructive">
+        <AlertCircle data-icon="inline-start" />
+        翻译失败
+      </Badge>
+    );
+  }
+  if (state === "translating") {
+    return (
+      <Badge variant="outline">
+        <LoaderCircle className="animate-spin" data-icon="inline-start" />
+        翻译中
+      </Badge>
+    );
+  }
+  return (
+    <Badge className="text-muted-foreground" variant="outline">
+      <Clock3 data-icon="inline-start" />
+      待翻译
+    </Badge>
+  );
 }
 
 function resolveIsDark(themeMode: AppThemeMode, systemPrefersDark: boolean) {
   return themeMode === "system" ? systemPrefersDark : themeMode === "dark";
-}
-
-function defaultExportFilename(
-  relativePath: string,
-  format: RosettaSourceDocumentFormat,
-  targetLang: string,
-  kind: RosettaExportKind
-) {
-  const extension = format === "markdown" ? "md" : "txt";
-  const filename = relativePath.split(/[\\/]/).pop() ?? relativePath;
-  const baseName = filename.replace(/\.(txt|md|markdown|pdf)$/i, "");
-  const suffix = kind === "bilingual" ? `${targetLang}.bilingual` : targetLang;
-  return `${baseName}.${suffix}.${extension}`;
-}
-
-function exportFormatForSource(
-  format: RosettaSourceDocumentFormat
-): "txt" | "markdown" {
-  return format === "markdown" ? "markdown" : "txt";
 }

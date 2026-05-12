@@ -345,7 +345,7 @@ export function SettingsPage() {
 
           <section className="flex flex-col gap-3" id="translation-service">
             <SettingsSectionHeader
-              description="配置当前用于文档翻译的 RWKV API。"
+              description="配置当前用于文档翻译的 RWKV API。外部 API 会作为可选后端长期保留。"
               icon={<Cloud />}
               title="翻译服务"
             >
@@ -354,6 +354,11 @@ export function SettingsPage() {
 
             <Card className="overflow-hidden">
               <CardContent className="flex flex-col gap-5 py-5">
+                <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm leading-6 text-muted-foreground">
+                  内嵌本地模型仍是 Rosetta 的长期首选路径；当前开发阶段先使用用户配置的
+                  RWKV API 跑通文档翻译闭环。若填写远程 API，待翻译文本会发送到该地址。
+                </div>
+
                 <div className="grid gap-4 md:grid-cols-2">
                   <SettingField
                     description="例如 https://example.com"
@@ -501,7 +506,7 @@ export function SettingsPage() {
                   <div>
                     <CardTitle>一键本地 RWKV</CardTitle>
                     <CardDescription>
-                      当前版本优先使用已配置的翻译服务。
+                      当前版本优先使用已配置的翻译服务；内嵌模型运行会在方案稳定后恢复。
                     </CardDescription>
                   </div>
                   <Badge variant="outline">即将支持</Badge>
@@ -509,6 +514,7 @@ export function SettingsPage() {
               </CardHeader>
               <CardContent className="text-sm text-muted-foreground">
                 后续恢复本地模型时，这里会提供清晰的安装、检测和启动入口；它不会和当前 API 配置混在一起。
+                文件格式规划为 TXT、Markdown、PDF 和 Word，当前导入能力先聚焦 TXT 和 Markdown。
               </CardContent>
             </Card>
           </section>
