@@ -57,20 +57,19 @@ import {
   openSourcePreviewWindow,
   openTranslationPreviewWindow,
 } from "../../lib/translationPreviewWindow";
-import { translateRwkvTextsWithApi } from "../../lib/rwkvApi";
 import {
   LANGUAGE_OPTIONS,
   SOURCE_LANGUAGE_OPTIONS,
   isRwkvConfigReady,
 } from "../../lib/languages";
 import {
-  chunkItems,
-  markTranslationSegmentsDone as markSegmentsDone,
-  markTranslationSegmentsFailed as markSegmentsFailed,
-  markTranslationSegmentsPending as markSegmentsPending,
-  markTranslationSegmentsTranslating as markSegmentsTranslating,
   translationProgressPercent,
 } from "../../lib/translationSegments";
+import {
+  runTranslationBatches,
+  translationTargetsForStatuses,
+  type TranslationRunResult,
+} from "../../lib/translationRunner";
 import { cn } from "../../lib/utils";
 import { useRosettaStore } from "../../store/useRosettaStore";
 import type {
@@ -421,7 +420,7 @@ export function JobsPage() {
     scope: "file" | "batch" = "file",
     initialSegments?: TranslationSegment[],
     sourceLangOverride?: string
-  ): Promise<"completed" | "failed" | "noop" | "stopped"> {
+  ): Promise<TranslationRunResult> {
     if (!currentJobId || !document || !rwkvConfigReady || isTranslating) {
       return "noop";
     }
@@ -436,16 +435,10 @@ export function JobsPage() {
       initialSegments ??
       (await loadRosettaTranslationFile(currentJobId, translationFile.id)).segments;
     const sourceSegmentsForFile = sourceSegmentsByFileId.get(sourceFile.id) ?? [];
-    const sourceById = new Map(
-      sourceSegmentsForFile.map((segment) => [segment.id, segment])
-    );
-    const targets = loadedSegments.filter((segment) => {
-      const source = sourceById.get(segment.sourceSegmentId);
-      return (
-        source != null &&
-        source.sourceText.trim().length > 0 &&
-        ["pending", "failed"].includes(segment.status)
-      );
+    const targets = translationTargetsForStatuses({
+      sourceSegments: sourceSegmentsForFile,
+      translationSegments: loadedSegments,
+      statuses: ["pending", "failed"],
     });
 
     if (targets.length === 0) {
@@ -465,114 +458,34 @@ export function JobsPage() {
       sourceFileId: sourceFile.id,
       translationFileId: translationFile.id,
       scope,
-      targetSegmentIds: targets.map((segment) => segment.sourceSegmentId),
+      targetSegmentIds: targets.map((segment) => segment.id),
     });
 
-    let workingSegments = loadedSegments;
-    let currentBatchSegmentIds: string[] = [];
     try {
-      const orderedTargets = targets.sort((left, right) => {
-        const leftSource = sourceById.get(left.sourceSegmentId);
-        const rightSource = sourceById.get(right.sourceSegmentId);
-        return (leftSource?.order ?? 0) - (rightSource?.order ?? 0);
+      return await runTranslationBatches({
+        batchSize: BATCH_SIZE,
+        cancelPromise: cancelled,
+        jobId: currentJobId,
+        onBatchCompleted: (segmentIds) =>
+          markTranslationRunCompleted(runId, segmentIds),
+        onBatchFailed: (segmentIds) =>
+          markTranslationRunFailed(runId, segmentIds),
+        onTranslationFileSaved: (bundle) =>
+          upsertTranslationFile(bundle.translationFile),
+        request: {
+          baseUrl: rwkv.baseUrl,
+          endpoint: rwkv.endpoint,
+          internalToken: rwkv.internalToken,
+          bodyPassword: rwkv.bodyPassword,
+          timeoutMs: rwkv.timeoutMs,
+          sourceLang:
+            sourceLangOverride ?? sourceFile.sourceLang ?? document.sourceLang,
+          targetLang: translationFile.targetLang,
+        },
+        targets,
+        translationFile,
+        translationSegments: loadedSegments,
       });
-
-      for (const batch of chunkItems(orderedTargets, BATCH_SIZE)) {
-        currentBatchSegmentIds = batch.map((segment) => segment.sourceSegmentId);
-        workingSegments = markSegmentsTranslating(
-          workingSegments,
-          currentBatchSegmentIds
-        );
-        const translating = await saveRosettaTranslationSegments(
-          currentJobId,
-          translationFile.id,
-          workingSegments
-        );
-        upsertTranslationFile(translating.translationFile);
-
-        const result = await Promise.race([
-          translateRwkvTextsWithApi({
-            baseUrl: rwkv.baseUrl,
-            endpoint: rwkv.endpoint,
-            internalToken: rwkv.internalToken,
-            bodyPassword: rwkv.bodyPassword,
-            timeoutMs: rwkv.timeoutMs,
-            sourceLang:
-              sourceLangOverride ?? sourceFile.sourceLang ?? document.sourceLang,
-            targetLang: translationFile.targetLang,
-            sourceTexts: batch.map(
-              (segment) =>
-                sourceById.get(segment.sourceSegmentId)?.sourceText ?? ""
-            ),
-          }),
-          cancelled,
-        ]);
-
-        if (result === "stopped") {
-          workingSegments = markSegmentsPending(
-            workingSegments,
-            currentBatchSegmentIds
-          );
-          const saved = await saveRosettaTranslationSegments(
-            currentJobId,
-            translationFile.id,
-            workingSegments
-          );
-          upsertTranslationFile(saved.translationFile);
-          return "stopped";
-        }
-
-        if (!result.ok || result.translations.length !== batch.length) {
-          const message = !result.ok
-            ? result.message
-            : `RWKV API 返回 ${result.translations.length} 条译文，但本批有 ${batch.length} 条文本。`;
-          workingSegments = markSegmentsFailed(
-            workingSegments,
-            currentBatchSegmentIds,
-            message
-          );
-          markTranslationRunFailed(runId, currentBatchSegmentIds);
-          const saved = await saveRosettaTranslationSegments(
-            currentJobId,
-            translationFile.id,
-            workingSegments
-          );
-          upsertTranslationFile(saved.translationFile);
-          return "failed";
-        }
-
-        workingSegments = markSegmentsDone(
-          workingSegments,
-          currentBatchSegmentIds,
-          result.translations
-        );
-        markTranslationRunCompleted(runId, currentBatchSegmentIds);
-        const saved = await saveRosettaTranslationSegments(
-          currentJobId,
-          translationFile.id,
-          workingSegments
-        );
-        upsertTranslationFile(saved.translationFile);
-      }
-      return "completed";
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "RWKV API 翻译调用失败。";
-      if (currentBatchSegmentIds.length > 0) {
-        workingSegments = markSegmentsFailed(
-          workingSegments,
-          currentBatchSegmentIds,
-          message
-        );
-        markTranslationRunFailed(runId, currentBatchSegmentIds);
-        const saved = await saveRosettaTranslationSegments(
-          currentJobId,
-          translationFile.id,
-          workingSegments
-        );
-        upsertTranslationFile(saved.translationFile);
-      }
-      return "failed";
     } finally {
       finishTranslationRun(runId);
       setIsTranslating(false);
