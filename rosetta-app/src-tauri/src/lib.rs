@@ -6,6 +6,7 @@ mod rwkv_runtime;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(rwkv_api::RwkvTranslationRunRegistry::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
@@ -28,7 +29,10 @@ pub fn run() {
             rosetta_jobs::save_rosetta_segments,
             rosetta_jobs::save_rosetta_translation_segments,
             rosetta_jobs::update_rosetta_job_file_languages,
+            rwkv_api::cancel_rwkv_translation_run,
+            rwkv_api::get_rwkv_translation_run_status,
             rwkv_api::probe_rwkv_translation_api,
+            rwkv_api::start_rwkv_translation_run,
             rwkv_api::translate_rwkv_texts_with_api
         ])
         .run(tauri::generate_context!())

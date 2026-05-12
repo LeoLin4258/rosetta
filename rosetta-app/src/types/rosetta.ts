@@ -268,6 +268,40 @@ export type RwkvTranslationApiTranslateResult = {
   latencyMs: number;
 };
 
+export type RwkvTranslationRunState =
+  | "running"
+  | "cancelling"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export type RwkvTranslationRunStartRequest = {
+  runId: string;
+  jobId: string;
+  translationFileId: string;
+  sourceSegmentIds: string[];
+  baseUrl: string;
+  endpoint: string;
+  internalToken: string;
+  bodyPassword: string;
+  timeoutMs: number;
+  sourceLang?: string | null;
+  targetLang: string;
+  batchSize: number;
+};
+
+export type RwkvTranslationRunStatus = {
+  runId: string;
+  jobId: string;
+  translationFileId: string;
+  state: RwkvTranslationRunState;
+  completedSegmentIds: string[];
+  failedSegmentIds: string[];
+  message: string;
+  translationFile?: RosettaTranslationFile | null;
+  segments?: TranslationSegment[] | null;
+};
+
 export type RwkvRuntimeState =
   | "not-installed"
   | "partial"

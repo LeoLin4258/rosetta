@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::str::FromStr;
 
 use tauri::AppHandle;
 use tauri_plugin_dialog::DialogExt;
@@ -7,18 +8,19 @@ mod document;
 mod export;
 mod formats;
 mod import;
-mod model;
-mod path;
+pub(crate) mod model;
+pub(crate) mod path;
 mod revisions;
 mod segmenter;
-mod store;
+pub(crate) mod store;
 #[cfg(test)]
 mod tests;
-mod translation_files;
+pub(crate) mod translation_files;
 
 use model::{
-    RosettaExportResult, RosettaJobBundle, RosettaJobFileDeleteResult, RosettaJobSummary,
-    RosettaTranslationFileBundle, Segment, TranslationSegment,
+    RosettaExportKind, RosettaExportResult, RosettaJobBundle, RosettaJobFileDeleteResult,
+    RosettaJobSummary, RosettaTranslationFileBundle, Segment, TranslationRevisionReason,
+    TranslationSegment,
 };
 
 #[tauri::command]
@@ -156,7 +158,8 @@ pub fn create_rosetta_translation_revision(
     reason: String,
     scope_block_ids: Option<Vec<String>>,
 ) -> Result<RosettaJobBundle, String> {
-    revisions::create_translation_revision(&app, &job_id, &file_id, &reason, scope_block_ids)
+    let reason = TranslationRevisionReason::from_str(&reason)?;
+    revisions::create_translation_revision(&app, &job_id, &file_id, reason, scope_block_ids)
 }
 
 #[tauri::command]
@@ -193,7 +196,8 @@ pub fn export_rosetta_job_file(
     kind: String,
     target_path: String,
 ) -> Result<RosettaExportResult, String> {
-    export::export_job_file(&app, &job_id, &file_id, &kind, Path::new(&target_path))
+    let kind = RosettaExportKind::from_str(&kind)?;
+    export::export_job_file(&app, &job_id, &file_id, kind, Path::new(&target_path))
 }
 
 #[tauri::command]
@@ -204,11 +208,12 @@ pub fn export_rosetta_translation_file(
     kind: String,
     target_path: String,
 ) -> Result<RosettaExportResult, String> {
+    let kind = RosettaExportKind::from_str(&kind)?;
     export::export_translation_file(
         &app,
         &job_id,
         &translation_file_id,
-        &kind,
+        kind,
         Path::new(&target_path),
     )
 }

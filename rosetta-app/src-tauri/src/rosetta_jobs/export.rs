@@ -8,7 +8,10 @@ use crate::rosetta_jobs::{
         document_files, ensure_document_files, segments_by_block, sync_document_file_statuses,
         sync_job_counts, sync_job_source_files,
     },
-    model::{RosettaBlock, RosettaDocument, RosettaExportResult, Segment, TranslationSegment},
+    model::{
+        RosettaBlock, RosettaDocument, RosettaExportKind, RosettaExportResult, Segment,
+        TranslationSegment,
+    },
     path::{checked_job_dir, jobs_root, timestamp_ms_string},
     store::{read_index, read_json, replace_index_job, write_index, write_translation_files},
     translation_files::{
@@ -20,13 +23,9 @@ pub(crate) fn export_job_file(
     app: &AppHandle,
     job_id: &str,
     file_id: &str,
-    kind: &str,
+    kind: RosettaExportKind,
     target_path: &Path,
 ) -> Result<RosettaExportResult, String> {
-    if kind != "translation" && kind != "bilingual" {
-        return Err("导出类型必须是 translation 或 bilingual。".to_string());
-    }
-
     let root = jobs_root(app)?;
     let dir = checked_job_dir(&root, job_id)?;
     let mut index = read_index(&root)?;
@@ -64,7 +63,7 @@ pub(crate) fn export_job_file(
         &document,
         &file_blocks,
         &file_segments,
-        kind,
+        kind.as_str(),
         &source_file.format,
     );
 
@@ -93,13 +92,9 @@ pub(crate) fn export_translation_file(
     app: &AppHandle,
     job_id: &str,
     translation_file_id: &str,
-    kind: &str,
+    kind: RosettaExportKind,
     target_path: &Path,
 ) -> Result<RosettaExportResult, String> {
-    if kind != "translation" && kind != "bilingual" {
-        return Err("导出类型必须是 translation 或 bilingual。".to_string());
-    }
-
     let root = jobs_root(app)?;
     let dir = checked_job_dir(&root, job_id)?;
     let mut index = read_index(&root)?;
@@ -145,7 +140,7 @@ pub(crate) fn export_translation_file(
         &document,
         &file_blocks,
         &file_segments,
-        kind,
+        kind.as_str(),
         &source_file.format,
     );
 

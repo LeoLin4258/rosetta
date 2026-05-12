@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::fmt;
+use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -11,6 +13,75 @@ pub(crate) const JOB_INDEX_FILENAME: &str = "index.json";
 pub(crate) const TRANSLATION_REVISIONS_FILENAME: &str = "translation_revisions.json";
 pub(crate) const TRANSLATION_FILES_FILENAME: &str = "translation_files.json";
 pub(crate) const TRANSLATIONS_DIRNAME: &str = "translations";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RosettaExportKind {
+    Translation,
+    Bilingual,
+}
+
+impl RosettaExportKind {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Translation => "translation",
+            Self::Bilingual => "bilingual",
+        }
+    }
+}
+
+impl FromStr for RosettaExportKind {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "translation" => Ok(Self::Translation),
+            "bilingual" => Ok(Self::Bilingual),
+            _ => Err("导出类型必须是 translation 或 bilingual。".to_string()),
+        }
+    }
+}
+
+impl fmt::Display for RosettaExportKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TranslationRevisionReason {
+    FileRetranslation,
+    SelectionRetranslation,
+    LanguageChange,
+}
+
+impl TranslationRevisionReason {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::FileRetranslation => "file-retranslation",
+            Self::SelectionRetranslation => "selection-retranslation",
+            Self::LanguageChange => "language-change",
+        }
+    }
+}
+
+impl FromStr for TranslationRevisionReason {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "file-retranslation" => Ok(Self::FileRetranslation),
+            "selection-retranslation" => Ok(Self::SelectionRetranslation),
+            "language-change" => Ok(Self::LanguageChange),
+            _ => Err("历史版本原因不支持。".to_string()),
+        }
+    }
+}
+
+impl fmt::Display for TranslationRevisionReason {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]

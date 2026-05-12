@@ -9,7 +9,7 @@ use crate::rosetta_jobs::{
     },
     model::{
         RosettaDocument, RosettaJobBundle, Segment, TranslationHistoryEntry, TranslationRevision,
-        SCHEMA_VERSION,
+        TranslationRevisionReason, SCHEMA_VERSION,
     },
     path::{checked_job_dir, jobs_root, timestamp_ms_string},
     store::{
@@ -23,16 +23,9 @@ pub(crate) fn create_translation_revision(
     app: &AppHandle,
     job_id: &str,
     file_id: &str,
-    reason: &str,
+    reason: TranslationRevisionReason,
     scope_block_ids: Option<Vec<String>>,
 ) -> Result<RosettaJobBundle, String> {
-    if !matches!(
-        reason,
-        "file-retranslation" | "selection-retranslation" | "language-change"
-    ) {
-        return Err("历史版本原因不支持。".to_string());
-    }
-
     let root = jobs_root(app)?;
     let dir = checked_job_dir(&root, job_id)?;
     let mut index = read_index(&root)?;
@@ -54,7 +47,7 @@ pub(crate) fn create_translation_revision(
     if let Some(revision) = create_revision_snapshot(
         job_id,
         file_id,
-        reason,
+        reason.as_str(),
         scope_block_ids,
         &document,
         &segments,
