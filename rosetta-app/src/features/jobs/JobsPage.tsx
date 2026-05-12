@@ -581,7 +581,7 @@ export function JobsPage() {
               译文文件
             </span>
           </div>
-          <div className="flex min-w-0 items-center gap-3 rounded-lg border bg-card px-2 py-1 shadow-xs">
+          <div className="flex min-w-0 items-center gap-3 rounded-lg border bg-white dark:bg-stone-900 px-2 py-1 shadow-xs">
             <span className="whitespace-nowrap text-sm text-muted-foreground">
               批量：{selectedBatchCount} 个原文已选择
             </span>
@@ -649,7 +649,9 @@ export function JobsPage() {
           className="h-full min-h-0 overflow-hidden"
           orientation="horizontal"
         >
-          <ResizablePanel defaultSize="32%" maxSize="45%" minSize="22%">
+          {/* TODO */}
+          {/*Replace hardcoded color */}
+          <ResizablePanel defaultSize="32%" maxSize="45%" minSize="22%" className="bg-[#fcfbf8] dark:bg-stone-800">
             <SourceFileList
               onOpenSource={(sourceFile) => {
                 void openSourceFile(sourceFile);
@@ -664,7 +666,10 @@ export function JobsPage() {
             />
           </ResizablePanel>
           <ResizableHandle withHandle />
-          <ResizablePanel defaultSize="68%" minSize="45%">
+
+          {/* TODO */}
+          {/*Replace hardcoded color */}
+          <ResizablePanel defaultSize="68%" minSize="45%" className="bg-white dark:bg-stone-900">
             <TranslationFileTable
               activeTranslationRun={activeTranslationRun}
               currentJobId={currentJobId}
@@ -724,7 +729,7 @@ function SourceFileList({
   }
 
   return (
-    <aside className="grid h-full min-h-0 grid-rows-[auto_1fr] border-r bg-muted/20">
+    <aside className="grid h-full min-h-0 grid-rows-[auto_1fr]  bg-muted/20">
       <div className="flex h-12 items-center justify-between border-b px-3">
         <span className="text-xs font-medium text-muted-foreground">
           原文文件
@@ -762,7 +767,7 @@ function SourceFileList({
                   type="button"
                 >
                   {sourceFile.relativePath.includes("/") ||
-                  sourceFile.relativePath.includes("\\") ? (
+                    sourceFile.relativePath.includes("\\") ? (
                     <Folder className="size-4 shrink-0 text-muted-foreground" />
                   ) : (
                     <FileText className="size-4 shrink-0 text-muted-foreground" />
@@ -825,7 +830,7 @@ function TranslationFileTable({
   }
 
   return (
-    <section className="grid h-full min-h-0 grid-rows-[auto_1fr] bg-background">
+    <section className="grid h-full min-h-0 grid-rows-[auto_1fr] ">
       <div className="flex min-h-32 items-start justify-between gap-4 border-b px-6 py-6">
         <div className="min-w-0">
           <h2 className="truncate text-lg font-semibold">
@@ -884,12 +889,12 @@ function TranslationFileTable({
                   state !== "translating" &&
                   (translationFile.failedSegments > 0 ||
                     translationFile.completedSegments <
-                      translationFile.segmentCount);
+                    translationFile.segmentCount);
                 const canExport =
                   !isTranslating &&
                   translationFile.segmentCount > 0 &&
                   translationFile.completedSegments >=
-                    translationFile.segmentCount &&
+                  translationFile.segmentCount &&
                   translationFile.failedSegments === 0;
                 const progressPercent = translationProgressPercent(translationFile);
 
@@ -1209,11 +1214,11 @@ function markSegmentsTranslating(
   return segments.map((segment) =>
     segmentIdSet.has(segment.sourceSegmentId)
       ? {
-          ...segment,
-          status: "translating" as const,
-          translatedText: undefined,
-          error: undefined,
-        }
+        ...segment,
+        status: "translating" as const,
+        translatedText: undefined,
+        error: undefined,
+      }
       : segment
   );
 }
@@ -1229,11 +1234,11 @@ function markSegmentsDone(
   return segments.map((segment) =>
     translationById.has(segment.sourceSegmentId)
       ? {
-          ...segment,
-          translatedText: translationById.get(segment.sourceSegmentId),
-          status: "done" as const,
-          error: undefined,
-        }
+        ...segment,
+        translatedText: translationById.get(segment.sourceSegmentId),
+        status: "done" as const,
+        error: undefined,
+      }
       : segment
   );
 }
@@ -1247,10 +1252,10 @@ function markSegmentsFailed(
   return segments.map((segment) =>
     segmentIdSet.has(segment.sourceSegmentId)
       ? {
-          ...segment,
-          status: "failed" as const,
-          error,
-        }
+        ...segment,
+        status: "failed" as const,
+        error,
+      }
       : segment
   );
 }
