@@ -50,9 +50,12 @@ Recommended Rust module boundary:
 ```txt
 src-tauri/src/rosetta_jobs/
   mod.rs
+  model.rs
   import.rs
   export.rs
   store.rs
+  translation_files.rs
+  revisions.rs
   formats/
     mod.rs
     txt.rs
@@ -65,7 +68,7 @@ The PDF contributor should primarily own:
 - `formats/pdf.rs`
 - PDF fixtures
 - PDF parser unit tests
-- small integration points in import path detection and file picker filters
+- small integration points in `formats/mod.rs`, import path detection, and file picker filters
 - preview labels or copy that mention PDF support
 
 They should not own:

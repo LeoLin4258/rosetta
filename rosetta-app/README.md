@@ -42,12 +42,23 @@ src/
 src-tauri/src/
   lib.rs
   main.rs
-  rosetta_jobs.rs      current job/import/export/cache implementation
+  rosetta_jobs/
+    mod.rs             Tauri command facade
+    model.rs           durable DTOs and cache constants
+    import.rs          single-file and directory import orchestration
+    export.rs          translation and bilingual export rendering
+    store.rs           JSON index and job bundle persistence
+    translation_files.rs
+    revisions.rs
+    formats/
+      mod.rs           source format detection and parser dispatch
+      txt.rs
+      markdown.rs
   rwkv_api.rs          external RWKV translation API connector
   rwkv_runtime.rs      parked runtime-management experiment
 ```
 
-`rosetta_jobs.rs` is currently large. New format work should move toward isolated importer modules instead of adding more unrelated behavior to one file.
+New format work should go through `rosetta_jobs/formats/` and the existing importer/exporter boundary instead of adding parsing logic to the command facade.
 
 ## Validation
 

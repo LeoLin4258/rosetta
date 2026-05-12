@@ -14,6 +14,7 @@ Prepared Rosetta for multi-contributor development with PDF support as a require
 - Updated the project plan to move text-based PDF from a later phase into Phase 1 / MVP scope.
 - Extended frontend source document format types to include `pdf`, while keeping PDF exports as text-like output for v1.
 - Clarified that high-fidelity PDF format restoration is a nice-to-have enhancement path, not the v1 baseline acceptance gate.
+- Moved the Rust job module from `rosetta_jobs.rs` to `rosetta_jobs/mod.rs` and split the backend job pipeline into model, path, format, import, export, store, translation file, revision, segmenter, document-helper, and test modules.
 
 ## Validation
 
