@@ -65,7 +65,6 @@ export async function runTranslationBatches({
   request,
   targets,
   translationFile,
-  translationSegments,
 }: {
   batchSize: number;
   cancelPromise?: Promise<"stopped">;
@@ -79,7 +78,6 @@ export async function runTranslationBatches({
   };
   targets: TranslationRunTarget[];
   translationFile: RosettaTranslationFile;
-  translationSegments: TranslationSegment[];
 }): Promise<TranslationRunResult> {
   if (targets.length === 0) {
     return "noop";

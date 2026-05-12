@@ -10,6 +10,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
 
+use crate::rosetta_jobs::store::{read_translation_files, write_translation_files};
 use crate::rosetta_jobs::{
     model::{Segment, TranslationSegment},
     path::{checked_job_dir, jobs_root},
@@ -18,7 +19,6 @@ use crate::rosetta_jobs::{
         build_translation_file, read_translation_segments, write_translation_segments,
     },
 };
-use crate::rosetta_jobs::store::{read_translation_files, write_translation_files};
 
 const PROBE_TEXTS: [&str; 2] = [
     "After a blissful two weeks, Jane encounters Rochester in the gardens.",
@@ -298,8 +298,7 @@ async fn start_translation_run(
     let root = jobs_root(&app)?;
     let dir = checked_job_dir(&root, &request.job_id)?;
     let source_segments: Vec<Segment> = read_json(&dir.join("segments.json"))?;
-    let mut translation_segments =
-        read_translation_segments(&dir, &request.translation_file_id)?;
+    let mut translation_segments = read_translation_segments(&dir, &request.translation_file_id)?;
     let source_segment_ids = request
         .source_segment_ids
         .iter()
@@ -355,14 +354,10 @@ async fn start_translation_run(
     }
 
     if targets.is_empty() {
-        let status = update_run_status(
-            registry,
-            &request.run_id,
-            |status| {
-                status.state = RwkvTranslationRunState::Completed;
-                status.message = "没有需要翻译的文本。".to_string();
-            },
-        )?;
+        let status = update_run_status(registry, &request.run_id, |status| {
+            status.state = RwkvTranslationRunState::Completed;
+            status.message = "没有需要翻译的文本。".to_string();
+        })?;
         return Ok(status);
     }
 
@@ -719,19 +714,18 @@ async fn request_translations_for_language_pair_with_cancel(
     };
 
     let status_code = response.status().as_u16();
-    let response_text = match response.text().await {
+    let response_text = match response_text_with_cancel(
+        response,
+        cancel.clone(),
+        internal_token,
+        body_password,
+        status_code,
+        started_at,
+    )
+    .await
+    {
         Ok(response_text) => response_text,
-        Err(error) => {
-            return translation_error(
-                Some(status_code),
-                "",
-                internal_token,
-                body_password,
-                false,
-                format!("无法读取 RWKV API 响应: {error}"),
-                started_at,
-            );
-        }
+        Err(error_result) => return error_result,
     };
 
     if !(200..300).contains(&status_code) {
@@ -911,6 +905,71 @@ fn is_cancelled(cancel: Option<&Arc<AtomicBool>>) -> bool {
     cancel.is_some_and(|cancel| cancel.load(Ordering::SeqCst))
 }
 
+async fn response_text_with_cancel(
+    response: reqwest::Response,
+    cancel: Option<Arc<AtomicBool>>,
+    internal_token: &str,
+    body_password: &str,
+    status_code: u16,
+    started_at: Instant,
+) -> Result<String, RwkvTranslationApiTranslateResult> {
+    let Some(cancel) = cancel else {
+        return response.text().await.map_err(|error| {
+            translation_error(
+                Some(status_code),
+                "",
+                internal_token,
+                body_password,
+                false,
+                format!("无法读取 RWKV API 响应: {error}"),
+                started_at,
+            )
+        });
+    };
+
+    let handle = tokio::spawn(response.text());
+    loop {
+        if cancel.load(Ordering::SeqCst) {
+            handle.abort();
+            return Err(translation_error(
+                Some(status_code),
+                "",
+                internal_token,
+                body_password,
+                false,
+                "RWKV API 请求已取消。".to_string(),
+                started_at,
+            ));
+        }
+
+        if handle.is_finished() {
+            return match handle.await {
+                Ok(Ok(response_text)) => Ok(response_text),
+                Ok(Err(error)) => Err(translation_error(
+                    Some(status_code),
+                    "",
+                    internal_token,
+                    body_password,
+                    false,
+                    format!("无法读取 RWKV API 响应: {error}"),
+                    started_at,
+                )),
+                Err(error) => Err(translation_error(
+                    Some(status_code),
+                    "",
+                    internal_token,
+                    body_password,
+                    false,
+                    format!("RWKV API 响应读取任务失败: {error}"),
+                    started_at,
+                )),
+            };
+        }
+
+        tokio::time::sleep(Duration::from_millis(RUN_POLL_INTERVAL_MS)).await;
+    }
+}
+
 fn update_run_status(
     registry: &RwkvTranslationRunRegistry,
     run_id: &str,
@@ -951,7 +1010,13 @@ fn save_run_segments(
     translation_file_id: &str,
     target_lang: &str,
     segments: Vec<TranslationSegment>,
-) -> Result<(crate::rosetta_jobs::model::RosettaTranslationFile, Vec<TranslationSegment>), String> {
+) -> Result<
+    (
+        crate::rosetta_jobs::model::RosettaTranslationFile,
+        Vec<TranslationSegment>,
+    ),
+    String,
+> {
     let mut translation_files = read_translation_files(dir)?;
     let Some(index) = translation_files
         .iter()
@@ -1233,5 +1298,100 @@ mod tests {
         );
 
         assert!(result.raw_response_preview.is_empty());
+    }
+
+    #[test]
+    fn run_status_marks_current_batch_translating() {
+        let mut segments = vec![
+            test_translation_segment(
+                "segment-1",
+                "pending",
+                Some("old translation"),
+                Some("old error"),
+            ),
+            test_translation_segment("segment-2", "done", Some("kept translation"), None),
+        ];
+
+        mark_translation_segments_translating(&mut segments, &["segment-1".to_string()]);
+
+        assert_eq!(segments[0].status, "translating");
+        assert_eq!(segments[0].translated_text, None);
+        assert_eq!(segments[0].error, None);
+        assert_eq!(segments[1].status, "done");
+        assert_eq!(
+            segments[1].translated_text,
+            Some("kept translation".to_string())
+        );
+    }
+
+    #[test]
+    fn run_status_cancel_restores_only_current_batch_to_pending() {
+        let mut segments = vec![
+            test_translation_segment("segment-1", "translating", None, None),
+            test_translation_segment("segment-2", "done", Some("finished"), None),
+        ];
+
+        mark_translation_segments_pending(&mut segments, &["segment-1".to_string()]);
+
+        assert_eq!(segments[0].status, "pending");
+        assert_eq!(segments[0].translated_text, None);
+        assert_eq!(segments[0].error, None);
+        assert_eq!(segments[1].status, "done");
+        assert_eq!(segments[1].translated_text, Some("finished".to_string()));
+    }
+
+    #[test]
+    fn run_status_failed_batch_records_error_without_clearing_existing_text() {
+        let mut segments = vec![
+            test_translation_segment("segment-1", "translating", Some("old"), None),
+            test_translation_segment("segment-2", "pending", None, None),
+        ];
+
+        mark_translation_segments_failed(
+            &mut segments,
+            &["segment-1".to_string()],
+            "model timeout",
+        );
+
+        assert_eq!(segments[0].status, "failed");
+        assert_eq!(segments[0].translated_text, Some("old".to_string()));
+        assert_eq!(segments[0].error, Some("model timeout".to_string()));
+        assert_eq!(segments[1].status, "pending");
+    }
+
+    #[test]
+    fn run_status_done_maps_translations_by_source_segment_id() {
+        let mut segments = vec![
+            test_translation_segment("segment-2", "translating", None, Some("old error")),
+            test_translation_segment("segment-1", "translating", None, None),
+        ];
+
+        mark_translation_segments_done(
+            &mut segments,
+            &["segment-1".to_string(), "segment-2".to_string()],
+            &["first".to_string(), "second".to_string()],
+        );
+
+        assert_eq!(segments[0].status, "done");
+        assert_eq!(segments[0].translated_text, Some("second".to_string()));
+        assert_eq!(segments[0].error, None);
+        assert_eq!(segments[1].status, "done");
+        assert_eq!(segments[1].translated_text, Some("first".to_string()));
+    }
+
+    fn test_translation_segment(
+        source_segment_id: &str,
+        status: &str,
+        translated_text: Option<&str>,
+        error: Option<&str>,
+    ) -> TranslationSegment {
+        TranslationSegment {
+            source_segment_id: source_segment_id.to_string(),
+            translated_text: translated_text.map(str::to_string),
+            target_lang: "zh-CN".to_string(),
+            status: status.to_string(),
+            error: error.map(str::to_string),
+            translation_history: Vec::new(),
+        }
     }
 }

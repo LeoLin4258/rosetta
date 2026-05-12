@@ -52,6 +52,7 @@ import {
   saveRosettaTranslationSegments,
 } from "../../lib/rosettaJobs";
 import { rosettaJobDefaultPath, rosettaJobFilePath } from "../../lib/rosettaRoutes";
+import { resolveJobsPageSelection } from "../../lib/rosettaSelection";
 import { defaultExportFilename, exportFormatForSource } from "../../lib/rosettaExport";
 import {
   openSourcePreviewWindow,
@@ -95,6 +96,9 @@ export function JobsPage() {
   const activeSourceFileIdByJobId = useRosettaStore(
     (state) => state.activeSourceFileIdByJobId
   );
+  const activeTranslationFileIdBySourceKey = useRosettaStore(
+    (state) => state.activeTranslationFileIdBySourceKey
+  );
   const activeDocument = useRosettaStore((state) => state.activeDocument);
   const previewSegments = useRosettaStore((state) => state.previewSegments);
   const translationFiles = useRosettaStore((state) => state.translationFiles);
@@ -134,25 +138,25 @@ export function JobsPage() {
   const loadRequestIdRef = useRef(0);
   const activeTranslationCancelRef = useRef<(() => void) | null>(null);
 
-  const currentJobId = jobId ?? activeJobId ?? jobs[0]?.id ?? null;
-  const activeJob = jobs.find((job) => job.id === currentJobId) ?? null;
-  const isCurrentBundleLoaded = activeJobId === currentJobId && activeDocument != null;
-  const document = isCurrentBundleLoaded ? activeDocument : null;
-  const sourceFiles = document?.files ?? activeJob?.sourceFiles ?? [];
-  const selectedSourceFileId =
-    fileId ??
-    (currentJobId ? activeSourceFileIdByJobId[currentJobId] : null) ??
-    (activeJobId === currentJobId ? activeSourceFileId : null) ??
-    sourceFiles[0]?.id ??
-    null;
-  const selectedSourceFile =
-    sourceFiles.find((file) => file.id === selectedSourceFileId) ?? null;
-  const selectedTranslationFile =
-    translationFiles.find(
-      (file) =>
-        file.id === activeTranslationFileId &&
-        file.sourceFileId === selectedSourceFileId
-    ) ?? null;
+  const {
+    currentJobId,
+    document,
+    selectedSourceFile,
+    selectedSourceFileId,
+    selectedTranslationFile,
+    sourceFiles,
+  } = resolveJobsPageSelection({
+    activeDocument,
+    activeJobId,
+    activeSourceFileId,
+    activeSourceFileIdByJobId,
+    activeTranslationFileId,
+    activeTranslationFileIdBySourceKey,
+    jobs,
+    routeJobId: jobId,
+    routeSourceFileId: fileId,
+    translationFiles,
+  });
   const translationFilesBySourceId = useMemo(
     () => groupTranslationFilesBySource(translationFiles),
     [translationFiles]
@@ -484,7 +488,6 @@ export function JobsPage() {
         },
         targets,
         translationFile,
-        translationSegments: loadedSegments,
       });
     } finally {
       finishTranslationRun(runId);

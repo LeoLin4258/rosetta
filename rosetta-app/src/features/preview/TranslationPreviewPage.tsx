@@ -288,7 +288,6 @@ export function TranslationPreviewPage() {
         },
         targets,
         translationFile,
-        translationSegments: translationBundle.segments,
       });
 
       if (result === "completed") {
