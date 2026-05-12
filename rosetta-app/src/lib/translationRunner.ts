@@ -1,12 +1,8 @@
-import { saveRosettaTranslationSegments } from "@/lib/rosettaJobs";
-import { translateRwkvTextsWithApi } from "@/lib/rwkvApi";
 import {
-  chunkItems,
-  markTranslationSegmentsDone,
-  markTranslationSegmentsFailed,
-  markTranslationSegmentsPending,
-  markTranslationSegmentsTranslating,
-} from "@/lib/translationSegments";
+  cancelRwkvTranslationRun,
+  getRwkvTranslationRunStatus,
+  startRwkvTranslationRun,
+} from "@/lib/rwkvApi";
 import type {
   RosettaTranslationFile,
   RosettaTranslationFileBundle,
@@ -19,6 +15,8 @@ import type {
 export type TranslationRunResult = "completed" | "failed" | "noop" | "stopped";
 
 export type TranslationRunTarget = Pick<Segment, "id" | "order" | "sourceText">;
+
+const RUN_STATUS_POLL_MS = 300;
 
 export function translationTargetsForStatuses({
   includeSkipped = false,
@@ -87,124 +85,103 @@ export async function runTranslationBatches({
     return "noop";
   }
 
-  let workingSegments = translationSegments;
-  let currentBatchSegmentIds: string[] = [];
+  const runId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const completed = new Set<string>();
+  const failed = new Set<string>();
+  let startError: unknown = null;
+  let cancelRequested = false;
+
+  const startPromise = startRwkvTranslationRun({
+    runId,
+    jobId,
+    translationFileId: translationFile.id,
+    sourceSegmentIds: targets.map((target) => target.id),
+    baseUrl: request.baseUrl,
+    endpoint: request.endpoint,
+    internalToken: request.internalToken,
+    bodyPassword: request.bodyPassword,
+    timeoutMs: request.timeoutMs,
+    sourceLang: request.sourceLang,
+    targetLang: request.targetLang,
+    batchSize,
+  }).catch((error) => {
+    startError = error;
+    throw error;
+  });
+
+  cancelPromise?.then(() => {
+    cancelRequested = true;
+    void cancelRwkvTranslationRun(runId).catch(() => {});
+  });
 
   try {
-    for (const batch of chunkItems(targets, batchSize)) {
-      currentBatchSegmentIds = batch.map((segment) => segment.id);
-      workingSegments = markTranslationSegmentsTranslating(
-        workingSegments,
-        currentBatchSegmentIds
-      );
-      workingSegments = await saveAndNotify({
-        jobId,
-        onTranslationFileSaved,
-        segments: workingSegments,
-        translationFileId: translationFile.id,
-      });
+    while (true) {
+      if (startError) {
+        throw startError;
+      }
 
-      const translationRequest = translateRwkvTextsWithApi({
-        baseUrl: request.baseUrl,
-        endpoint: request.endpoint,
-        internalToken: request.internalToken,
-        bodyPassword: request.bodyPassword,
-        timeoutMs: request.timeoutMs,
-        sourceLang: request.sourceLang,
-        targetLang: request.targetLang,
-        sourceTexts: batch.map((segment) => segment.sourceText),
-      });
-      const result = cancelPromise
-        ? await Promise.race([translationRequest, cancelPromise])
-        : await translationRequest;
-
-      if (result === "stopped") {
-        workingSegments = markTranslationSegmentsPending(
-          workingSegments,
-          currentBatchSegmentIds
-        );
-        await saveAndNotify({
-          jobId,
-          onTranslationFileSaved,
-          segments: workingSegments,
-          translationFileId: translationFile.id,
+      const status = await getRunStatusWithRetry(runId);
+      if (status.translationFile && status.segments) {
+        onTranslationFileSaved?.({
+          translationFile: status.translationFile,
+          segments: status.segments,
         });
+      }
+
+      const nextCompleted = status.completedSegmentIds.filter(
+        (segmentId) => !completed.has(segmentId)
+      );
+      if (nextCompleted.length > 0) {
+        nextCompleted.forEach((segmentId) => completed.add(segmentId));
+        onBatchCompleted?.(nextCompleted);
+      }
+
+      const nextFailed = status.failedSegmentIds.filter(
+        (segmentId) => !failed.has(segmentId)
+      );
+      if (nextFailed.length > 0) {
+        nextFailed.forEach((segmentId) => failed.add(segmentId));
+        onBatchFailed?.(nextFailed);
+      }
+
+      if (status.state === "completed") {
+        await startPromise.catch(() => {});
+        return "completed";
+      }
+      if (status.state === "failed") {
+        await startPromise.catch(() => {});
+        return "failed";
+      }
+      if (status.state === "cancelled") {
+        await startPromise.catch(() => {});
         return "stopped";
       }
 
-      if (!result.ok || result.translations.length !== batch.length) {
-        const message = !result.ok
-          ? result.message
-          : `RWKV API 返回 ${result.translations.length} 条译文，但本批有 ${batch.length} 条文本。`;
-        workingSegments = markTranslationSegmentsFailed(
-          workingSegments,
-          currentBatchSegmentIds,
-          message
-        );
-        onBatchFailed?.(currentBatchSegmentIds);
-        await saveAndNotify({
-          jobId,
-          onTranslationFileSaved,
-          segments: workingSegments,
-          translationFileId: translationFile.id,
-        });
-        return "failed";
+      if (cancelRequested && status.state === "running") {
+        void cancelRwkvTranslationRun(runId).catch(() => {});
       }
-
-      workingSegments = markTranslationSegmentsDone(
-        workingSegments,
-        currentBatchSegmentIds,
-        result.translations
-      );
-      onBatchCompleted?.(currentBatchSegmentIds);
-      workingSegments = await saveAndNotify({
-        jobId,
-        onTranslationFileSaved,
-        segments: workingSegments,
-        translationFileId: translationFile.id,
-      });
+      await delay(RUN_STATUS_POLL_MS);
     }
-
-    return "completed";
   } catch (error) {
-    if (currentBatchSegmentIds.length === 0) {
-      return "failed";
-    }
-
-    const message =
-      error instanceof Error ? error.message : "RWKV API 翻译调用失败。";
-    workingSegments = markTranslationSegmentsFailed(
-      workingSegments,
-      currentBatchSegmentIds,
-      message
-    );
-    onBatchFailed?.(currentBatchSegmentIds);
-    await saveAndNotify({
-      jobId,
-      onTranslationFileSaved,
-      segments: workingSegments,
-      translationFileId: translationFile.id,
-    });
-    return "failed";
+    await startPromise.catch(() => {});
+    throw error;
   }
 }
 
-async function saveAndNotify({
-  jobId,
-  onTranslationFileSaved,
-  segments,
-  translationFileId,
-}: {
-  jobId: string;
-  onTranslationFileSaved?: (bundle: RosettaTranslationFileBundle) => void;
-  segments: TranslationSegment[];
-  translationFileId: string;
-}) {
-  const bundle = await saveRosettaTranslationSegments(
-    jobId,
-    translationFileId,
-    segments
-  );
-  onTranslationFileSaved?.(bundle);
-  return bundle.segments;
+async function getRunStatusWithRetry(runId: string) {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      return await getRwkvTranslationRunStatus(runId);
+    } catch (error) {
+      if (attempt === 4) {
+        throw error;
+      }
+      await delay(RUN_STATUS_POLL_MS);
+    }
+  }
+  return getRwkvTranslationRunStatus(runId);
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
