@@ -6,7 +6,7 @@ Updated the external RWKV translation connector request body to match the model 
 
 ## Changes
 
-- Removed `stop_tokens` from the request body.
+- Added `stop_tokens: ["\n\n"]` to stop generation at the prompt separator requested by the backend.
 - Updated generation parameters to the backend-provided values: `max_tokens: 8292`, `temperature: 1`, `top_k: 1`, `top_p: 0`, `alpha_presence: 0`, `alpha_frequency: 0`, `alpha_decay: 0.99`.
 - Set `stream: true`.
 - Kept `password` sourced from local user settings instead of hardcoding any credential.

@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import type {
   RwkvRuntimeArtifactCatalog,
   RwkvRuntimeArtifactScanResult,
@@ -11,50 +10,53 @@ import type {
   RwkvRuntimeTranslationProbeResult,
 } from "../types/rosetta";
 
+const PAUSED_RUNTIME_MESSAGE =
+  "Managed RWKV runtime commands are paused. Configure an existing RWKV translation API in Settings instead.";
+
+function rejectPausedRuntime<T>(): Promise<T> {
+  return Promise.reject(new Error(PAUSED_RUNTIME_MESSAGE));
+}
+
 export function getRwkvRuntimeArtifactCatalog() {
-  return invoke<RwkvRuntimeArtifactCatalog>("get_rwkv_runtime_artifact_catalog");
+  return rejectPausedRuntime<RwkvRuntimeArtifactCatalog>();
 }
 
 export function getRwkvRuntimeStatus() {
-  return invoke<RwkvRuntimeStatus>("get_rwkv_runtime_status");
+  return rejectPausedRuntime<RwkvRuntimeStatus>();
 }
 
 export function getRwkvRuntimeInstallPlan() {
-  return invoke<RwkvRuntimeInstallPlan>("get_rwkv_runtime_install_plan");
+  return rejectPausedRuntime<RwkvRuntimeInstallPlan>();
 }
 
 export function getRwkvRuntimeInstallProgress() {
-  return invoke<RwkvRuntimeInstallProgress>(
-    "get_rwkv_runtime_install_progress"
-  );
+  return rejectPausedRuntime<RwkvRuntimeInstallProgress>();
 }
 
 export function initializeRwkvRuntimeLayout() {
-  return invoke<RwkvRuntimeStatus>("initialize_rwkv_runtime_layout");
+  return rejectPausedRuntime<RwkvRuntimeStatus>();
 }
 
 export function prepareRwkvRuntimeInstall() {
-  return invoke<RwkvRuntimeInstallProgress>("prepare_rwkv_runtime_install");
+  return rejectPausedRuntime<RwkvRuntimeInstallProgress>();
 }
 
 export function scanRwkvRuntimeArtifacts() {
-  return invoke<RwkvRuntimeArtifactScanResult>("scan_rwkv_runtime_artifacts");
+  return rejectPausedRuntime<RwkvRuntimeArtifactScanResult>();
 }
 
 export function extractRwkvRuntimeArtifact() {
-  return invoke<RwkvRuntimeExtractionResult>("extract_rwkv_runtime_artifact");
+  return rejectPausedRuntime<RwkvRuntimeExtractionResult>();
 }
 
 export function getRwkvRuntimeProcessStatus() {
-  return invoke<RwkvRuntimeProcessStatus>("get_rwkv_runtime_process_status");
+  return rejectPausedRuntime<RwkvRuntimeProcessStatus>();
 }
 
 export function startRwkvRuntime() {
-  return invoke<RwkvRuntimeStartResult>("start_rwkv_runtime");
+  return rejectPausedRuntime<RwkvRuntimeStartResult>();
 }
 
 export function probeRwkvRuntimeTranslation() {
-  return invoke<RwkvRuntimeTranslationProbeResult>(
-    "probe_rwkv_runtime_translation"
-  );
+  return rejectPausedRuntime<RwkvRuntimeTranslationProbeResult>();
 }

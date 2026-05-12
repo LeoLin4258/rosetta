@@ -60,6 +60,7 @@ struct RwkvChatCompletionsRequest {
     temperature: f64,
     top_k: u32,
     top_p: f64,
+    stop_tokens: Vec<String>,
     alpha_presence: f64,
     alpha_frequency: f64,
     alpha_decay: f64,
@@ -388,6 +389,7 @@ fn build_chat_completions_request(
         temperature: 1.0,
         top_k: 1,
         top_p: 0.0,
+        stop_tokens: vec!["\n\n".to_string()],
         alpha_presence: 0.0,
         alpha_frequency: 0.0,
         alpha_decay: 0.99,
@@ -585,7 +587,7 @@ mod tests {
             json!(["English: Hello world.\n\nChinese:"])
         );
         assert_eq!(value["max_tokens"], json!(8292));
-        assert!(value.get("stop_tokens").is_none());
+        assert_eq!(value["stop_tokens"], json!(["\n\n"]));
         assert_eq!(value["temperature"], json!(1.0));
         assert_eq!(value["top_k"], json!(1));
         assert_eq!(value["top_p"], json!(0.0));

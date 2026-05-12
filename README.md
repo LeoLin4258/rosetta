@@ -29,6 +29,7 @@ cargo check
 cargo test rosetta_jobs
 ```
 
+AI Agent:
 Do not run dev servers or production builds unless the current task explicitly calls for UI runtime verification or release packaging.
 
 ## Current Focus
