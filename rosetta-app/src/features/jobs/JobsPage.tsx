@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   AlertCircle,
+  ArrowRight,
   CheckCircle2,
   Clock3,
   Download,
@@ -60,6 +61,7 @@ import { useRosettaStore } from "../../store/useRosettaStore";
 import type {
   ActiveTranslationRun,
   RosettaExportKind,
+  RosettaSourceDocumentFormat,
   RosettaSourceFile,
   RosettaTranslationFile,
   Segment,
@@ -528,7 +530,7 @@ export function JobsPage() {
         translationFile.targetLang,
         kind
       ),
-      sourceFile.format
+      exportFormatForSource(sourceFile.format)
     );
     if (!targetPath) {
       return;
@@ -587,7 +589,7 @@ export function JobsPage() {
             </span>
             <div className="h-6 w-px bg-border" />
             <div className="flex items-center gap-2">
-              <span className="text-sm text-muted-foreground">原文</span>
+              {/* <span className="text-sm text-muted-foreground">原文</span> */}
               <Select
                 disabled={isTranslating}
                 onValueChange={setBatchSourceLang}
@@ -608,7 +610,8 @@ export function JobsPage() {
               </Select>
             </div>
             <div className="flex items-center gap-2">
-              <span className="text-sm text-muted-foreground">译文</span>
+              {/* <span className="text-sm text-muted-foreground">译文</span> */}
+              <ArrowRight className="size-4" />
               <ToggleGroup
                 disabled={isTranslating}
                 onValueChange={(values) => setBatchTargetLangs(values)}
@@ -1262,13 +1265,19 @@ function markSegmentsFailed(
 
 function defaultExportFilename(
   relativePath: string,
-  format: "txt" | "markdown",
+  format: RosettaSourceDocumentFormat,
   targetLang: string,
   kind: RosettaExportKind
 ) {
   const extension = format === "markdown" ? "md" : "txt";
   const filename = relativePath.split(/[\\/]/).pop() ?? relativePath;
-  const baseName = filename.replace(/\.(txt|md|markdown)$/i, "");
+  const baseName = filename.replace(/\.(txt|md|markdown|pdf)$/i, "");
   const suffix = kind === "bilingual" ? `${targetLang}.bilingual` : targetLang;
   return `${baseName}.${suffix}.${extension}`;
+}
+
+function exportFormatForSource(
+  format: RosettaSourceDocumentFormat
+): "txt" | "markdown" {
+  return format === "markdown" ? "markdown" : "txt";
 }

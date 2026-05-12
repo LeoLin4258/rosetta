@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils";
 import type {
   RosettaBlock,
   RosettaDocument,
+  RosettaSourceDocumentFormat,
   RosettaSourceFile,
   RosettaTranslationFile,
   Segment,
@@ -409,7 +410,7 @@ function segmentJoiner(
 }
 
 function renderBlockMarkdown(
-  format: "txt" | "markdown",
+  format: RosettaSourceDocumentFormat,
   block: RosettaBlock,
   text: string
 ) {

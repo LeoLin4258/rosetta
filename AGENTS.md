@@ -26,6 +26,10 @@ For stack-level decisions, also check:
 
 - `docs/engineering/decisions/`
 
+Before starting PDF support work, also read:
+
+- `docs/engineering/plans/2026-05-12-pdf-v1-support.md`
+
 ## Development Rules
 
 - Prefer the existing project structure over introducing new abstractions.
@@ -63,14 +67,14 @@ When relevant, run:
 
 ```bash
 cd rosetta-app
-corepack pnpm typecheck
-corepack pnpm build
+pnpm typecheck
 cd src-tauri
 cargo check
+cargo test rosetta_jobs
 ```
 
 If a validation command cannot be run, state why in the final response.
 
 
 ## DO NOT
-- Do not run dev or build
+- Do not run dev servers or production builds unless the user explicitly asks for runtime UI verification or release packaging.

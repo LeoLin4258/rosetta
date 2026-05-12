@@ -132,13 +132,17 @@ AppData/Rosetta/jobs/
 
 导入约定：
 
-- 当前只支持 TXT、Markdown。
+- v1 目标支持 TXT、Markdown 和文字型 PDF。当前已实现 TXT、Markdown；PDF 支持必须作为 importer 接入同一套 Rosetta IR，不应另起独立任务模型或预览模型。
 - 文件由 Tauri command 读取，前端不直接获得宽泛文件系统权限。
-- “新项目”可以导入单个文件，也可以导入文件夹。文件夹导入递归收集 `.txt`、`.md`、`.markdown`，跳过隐藏目录，并限制项目文件数量，避免原型阶段一次塞入过大项目。
-- 文件夹项目的 `RosettaJobSummary.sourceKind` 为 `directory`，`fileCount` 记录导入文件数。`format` 仍保持 `txt | markdown`，混合项目只用它作为总体显示和兼容字段，每个文件的真实格式以 `RosettaSourceFile.format` 为准。
+- “新项目”可以导入单个文件，也可以导入文件夹。文件夹导入递归收集受支持格式，跳过隐藏目录，并限制项目文件数量，避免原型阶段一次塞入过大项目。
+- 文件夹项目的 `RosettaJobSummary.sourceKind` 为 `directory`，`fileCount` 记录导入文件数。`format` 是轻量 summary 字段，混合项目只用它作为总体显示和兼容字段，每个文件的真实格式以 `RosettaSourceFile.format` 为准。
 - TXT 按空行切分为段落。
 - Markdown 使用轻量 block parser，首版只保留标题、段落、列表、引用、代码块和空行等基础结构。
 - fenced code block、纯 URL 行和空白行默认 `skipped`。
+- PDF v1 的基线支持是可提取文本的 PDF。扫描 PDF 和 OCR 不属于 v1 基线范围。PDF 格式高保真还原是 nice to have，可以探索，但不能阻塞文本提取、翻译、预览和文本式导出的主路径。
+- PDF importer 应输出 `RosettaDocument(format: "pdf")`、`RosettaSourceFile(format: "pdf")`、`RosettaBlock[]` 和 `Segment[]`，后续翻译、预览、译文文件和导出继续复用现有流程。
+- PDF 页码、页内顺序等来源信息先放入 `RosettaBlock.style.pdf`，例如 `{ page: 1, orderOnPage: 12 }`。高保真还原需要的 bbox、字体、列检测结果等布局信息也应先放在 `style.pdf` 中探索；不要在没有 ADR 的情况下把这些字段提升到核心模型顶层。
+- PDF importer 遇到 image-only、加密或无法解析的文件时必须返回清晰错误，不能创建空任务。
 - 系统文件选择和导出路径选择必须通过非阻塞 Tauri dialog command 完成，不能在 command 中调用 `blocking_pick_file` 或 `blocking_save_file`，避免 Windows 原生对话框打开时卡住应用窗口。
 
 导出约定：

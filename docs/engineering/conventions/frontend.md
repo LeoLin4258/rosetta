@@ -91,7 +91,7 @@ Tailwind CSS 和 shadcn/ui 是默认样式方式。全局样式只放入 `src/st
 - 业务组件优先使用 semantic tokens：`bg-background`、`bg-card`、`text-foreground`、`text-muted-foreground`、`border-border`。
 - 不在业务组件里直接使用 `zinc-*`、`emerald-*` 等固定色值作为主要视觉体系。
 - 通用按钮、卡片、表格、输入框、选择器、徽标等优先使用 `src/components/ui/` 中的 shadcn 组件。
-- 新增 shadcn 组件时使用 `corepack pnpm dlx shadcn@latest add <component>`。
+- 新增 shadcn 组件时使用 `pnpm dlx shadcn@latest add <component>`。
 - 主应用侧边栏基于 shadcn sidebar block 和 `src/components/ui/sidebar.tsx`，业务入口在 `src/components/app-sidebar.tsx` 中定制。
 - 侧边栏信息架构固定为：顶部 `新项目`，中间项目列表，底部 `设置`。`新项目` 指向 `/new`，应用启动默认进入 `/` 空白首页。不要把导入、任务、设置作为同一层工作台导航混放。
 - 桌面侧边栏宽度为 `14.4rem`，即 shadcn 默认 `16rem` 的 90%。不允许通过中间 rail 调整宽度，`SidebarRail` 当前不渲染。

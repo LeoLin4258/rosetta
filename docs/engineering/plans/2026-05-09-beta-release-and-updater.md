@@ -76,14 +76,14 @@ Password:
 
 ```powershell
 $env:TAURI_SIGNING_PRIVATE_KEY_PATH="C:\Users\Leo\.rosetta-release\rosetta-beta.key"
-corepack pnpm build:tauri
+pnpm build:tauri
 ```
 
 如果当前 Tauri CLI / bundler 提示必须设置 `TAURI_SIGNING_PRIVATE_KEY`，则把它作为私钥路径使用：
 
 ```powershell
 $env:TAURI_SIGNING_PRIVATE_KEY="C:\Users\Leo\.rosetta-release\rosetta-beta.key"
-corepack pnpm build:tauri
+pnpm build:tauri
 ```
 
 如果后续为私钥增加密码，还需要设置：
@@ -156,7 +156,7 @@ optional pre-release identifier in app version must be numeric-only and cannot b
 
 ```powershell
 cd rosetta-app
-corepack pnpm typecheck
+pnpm typecheck
 cd src-tauri
 cargo check
 cargo test rosetta_jobs
@@ -180,7 +180,7 @@ $env:TAURI_SIGNING_PRIVATE_KEY="C:\Users\Leo\.rosetta-release\rosetta-beta.key"
 
 ```powershell
 cd rosetta-app
-corepack pnpm build:tauri
+pnpm build:tauri
 ```
 
 5. 收集 Windows installer、updater artifact 和 `.sig`。

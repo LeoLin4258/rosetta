@@ -6,6 +6,11 @@ export type RosettaDocumentFormat =
   | "epub"
   | "html";
 
+export type RosettaSourceDocumentFormat = Extract<
+  RosettaDocumentFormat,
+  "txt" | "markdown" | "pdf"
+>;
+
 export type RosettaBlockType =
   | "heading"
   | "paragraph"
@@ -49,7 +54,7 @@ export type RosettaDocument = {
   schemaVersion: number;
   id: string;
   filename: string;
-  format: Extract<RosettaDocumentFormat, "txt" | "markdown">;
+  format: RosettaSourceDocumentFormat;
   sourceLang?: string | null;
   targetLang: string;
   files: RosettaSourceFile[];
@@ -60,7 +65,7 @@ export type RosettaSourceFile = {
   id: string;
   filename: string;
   relativePath: string;
-  format: Extract<RosettaDocumentFormat, "txt" | "markdown">;
+  format: RosettaSourceDocumentFormat;
   sourceLang?: string | null;
   targetLang?: string | null;
   translationStatus?: SourceFileTranslationStatus;
@@ -116,7 +121,7 @@ export type RosettaJob = {
   schemaVersion: number;
   id: string;
   filename: string;
-  format: Extract<RosettaDocumentFormat, "txt" | "markdown">;
+  format: RosettaSourceDocumentFormat;
   sourcePath?: string | null;
   sourceFilename: string;
   sourceKind: "file" | "directory";

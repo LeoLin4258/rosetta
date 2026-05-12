@@ -20,6 +20,7 @@ import type {
   AppThemeMode,
   RosettaExportKind,
   RosettaJobBundle,
+  RosettaSourceDocumentFormat,
   RosettaTranslationFileBundle,
   TranslationSegment,
 } from "@/types/rosetta";
@@ -169,7 +170,7 @@ export function TranslationPreviewPage() {
         translationFile.targetLang,
         kind
       ),
-      sourceFile.format
+      exportFormatForSource(sourceFile.format)
     );
     if (!targetPath) {
       return;
@@ -428,13 +429,19 @@ function resolveIsDark(themeMode: AppThemeMode, systemPrefersDark: boolean) {
 
 function defaultExportFilename(
   relativePath: string,
-  format: "txt" | "markdown",
+  format: RosettaSourceDocumentFormat,
   targetLang: string,
   kind: RosettaExportKind
 ) {
   const extension = format === "markdown" ? "md" : "txt";
   const filename = relativePath.split(/[\\/]/).pop() ?? relativePath;
-  const baseName = filename.replace(/\.(txt|md|markdown)$/i, "");
+  const baseName = filename.replace(/\.(txt|md|markdown|pdf)$/i, "");
   const suffix = kind === "bilingual" ? `${targetLang}.bilingual` : targetLang;
   return `${baseName}.${suffix}.${extension}`;
+}
+
+function exportFormatForSource(
+  format: RosettaSourceDocumentFormat
+): "txt" | "markdown" {
+  return format === "markdown" ? "markdown" : "txt";
 }
