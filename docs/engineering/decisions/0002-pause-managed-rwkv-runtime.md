@@ -45,7 +45,7 @@ Rosetta 的长期目标仍然是让普通用户可以在应用内傻瓜式运行
 
 现有 runtime manager 代码和文档保留为实验性历史上下文，不删除、不作为当前功能依赖。
 
-RWKV 工程师已确认当前 `/v1/chat/completions` 请求形态就是 `rwkv_lightning` 和翻译模型的稳定调用方式。Rosetta 当前 connector 因此以非流式 `contents[]` batch 请求为准：每条 source text 包装为 `English: {sourceText}\n\nChinese:`，再按 `choices[index].message.content` 映射回原 segment 顺序。旧文档中的 `/translate/v1/batch-translate` 和 `/big_batch/completions` 只保留为历史调研和未来 provider preset 可能性，不再作为当前默认实现路径。
+RWKV 工程师已确认当前 `/v1/chat/completions` 请求形态就是 `rwkv_lightning` 和翻译模型的稳定调用方式。Rosetta 当前 connector 因此以 `contents[]` batch 请求为准：每条 source text 包装为 `English: {sourceText}\n\nChinese:`，请求体使用当前模型后端要求的 streaming 参数，响应解析兼容普通 JSON `choices[index].message.content` 和 SSE `data:` chunk。旧文档中的 `/translate/v1/batch-translate` 和 `/big_batch/completions` 只保留为历史调研和未来 provider preset 可能性，不再作为当前默认实现路径。
 
 本决策不意味着 Rosetta 只能连接工程师临时部署的 API。长期产品形态可以支持多个由用户显式选择的 RWKV 后端：
 
@@ -61,7 +61,7 @@ RWKV 工程师已确认当前 `/v1/chat/completions` 请求形态就是 `rwkv_li
 
 - 不继续扩展 `start_rwkv_runtime`、下载器、runtime installer、模型 artifact 管理或 one-click launch UI。
 - 不让翻译 pipeline 依赖 Rosetta 托管 runtime 的 readiness。
-- 当前实际开发入口是外部 RWKV translation API connector，使用已确认的非流式 `/v1/chat/completions` batch `contents[]` API。
+- 当前实际开发入口是外部 RWKV translation API connector，使用已确认的 `/v1/chat/completions` batch `contents[]` API。
 - 翻译响应必须用 `choice.index` 还原输入顺序；缺失 index、空 content、HTTP 错误或 JSON parse 失败都不能静默写入 segment。
 - 翻译 connector 应面向“已存在的 RWKV 翻译 API base URL”，无论该 API 是本机、局域网、用户自部署远程服务，还是工程师临时部署环境。
 - 远程 / 云端 API 必须是用户显式配置和选择的可选后端，不能成为默认路径。

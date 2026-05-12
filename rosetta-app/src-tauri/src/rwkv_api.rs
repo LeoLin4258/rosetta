@@ -57,7 +57,6 @@ pub struct RwkvTranslationApiTranslateResult {
 struct RwkvChatCompletionsRequest {
     contents: Vec<String>,
     max_tokens: u32,
-    stop_tokens: Vec<u32>,
     temperature: f64,
     top_k: u32,
     top_p: f64,
@@ -82,6 +81,20 @@ struct RwkvChatCompletionChoice {
 #[derive(Debug, Deserialize)]
 struct RwkvChatCompletionMessage {
     content: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RwkvStreamingChunk {
+    choices: Vec<RwkvStreamingChoice>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RwkvStreamingChoice {
+    index: usize,
+    #[serde(default)]
+    delta: Option<RwkvChatCompletionMessage>,
+    #[serde(default)]
+    message: Option<RwkvChatCompletionMessage>,
 }
 
 #[tauri::command]
@@ -120,7 +133,7 @@ async fn probe_translation_api(
         translations: result.translations,
         raw_response_preview: result.raw_response_preview,
         message: if result.ok {
-            "RWKV API 非流式批量翻译探测成功。".to_string()
+            "RWKV API 批量翻译探测成功。".to_string()
         } else {
             result.message
         },
@@ -371,15 +384,14 @@ fn build_chat_completions_request(
             .iter()
             .map(|text| translation_prompt(text, source_lang, target_lang))
             .collect(),
-        max_tokens: 1024,
-        stop_tokens: vec![0, 261, 24281],
-        temperature: 0.8,
-        top_k: 50,
-        top_p: 0.6,
-        alpha_presence: 1.0,
-        alpha_frequency: 0.1,
+        max_tokens: 8292,
+        temperature: 1.0,
+        top_k: 1,
+        top_p: 0.0,
+        alpha_presence: 0.0,
+        alpha_frequency: 0.0,
         alpha_decay: 0.99,
-        stream: false,
+        stream: true,
         password: password.to_string(),
     }
 }
@@ -409,6 +421,10 @@ fn prompt_language_label(language: &str) -> &str {
 }
 
 fn parse_translations(response_text: &str, expected_count: usize) -> Result<Vec<String>, String> {
+    if looks_like_event_stream(response_text) {
+        return parse_streaming_translations(response_text, expected_count);
+    }
+
     let response: RwkvChatCompletionsResponse = serde_json::from_str(response_text)
         .map_err(|error| format!("JSON parse failed: {error}"))?;
     let mut translations: Vec<Option<String>> = vec![None; expected_count];
@@ -431,6 +447,59 @@ fn parse_translations(response_text: &str, expected_count: usize) -> Result<Vec<
         .enumerate()
         .map(|(index, translation)| {
             translation.ok_or_else(|| format!("missing translation for choice index {index}"))
+        })
+        .collect()
+}
+
+fn looks_like_event_stream(response_text: &str) -> bool {
+    response_text
+        .lines()
+        .any(|line| line.trim_start().starts_with("data:"))
+}
+
+fn parse_streaming_translations(
+    response_text: &str,
+    expected_count: usize,
+) -> Result<Vec<String>, String> {
+    let mut translations = vec![String::new(); expected_count];
+
+    for line in response_text.lines() {
+        let trimmed = line.trim();
+        let Some(payload) = trimmed.strip_prefix("data:") else {
+            continue;
+        };
+        let payload = payload.trim();
+        if payload.is_empty() || payload == "[DONE]" {
+            continue;
+        }
+
+        let chunk: RwkvStreamingChunk = serde_json::from_str(payload)
+            .map_err(|error| format!("stream JSON parse failed: {error}"))?;
+        for choice in chunk.choices {
+            if choice.index >= expected_count {
+                continue;
+            }
+            let content = choice
+                .delta
+                .or(choice.message)
+                .map(|message| message.content)
+                .unwrap_or_default();
+            translations[choice.index].push_str(&content);
+        }
+    }
+
+    translations
+        .into_iter()
+        .enumerate()
+        .map(|(index, translation)| {
+            let translation = translation.trim().to_string();
+            if translation.is_empty() {
+                Err(format!(
+                    "missing translation for stream choice index {index}"
+                ))
+            } else {
+                Ok(translation)
+            }
         })
         .collect()
 }
@@ -505,7 +574,7 @@ mod tests {
     }
 
     #[test]
-    fn request_body_serializes_non_streaming_batch_shape() {
+    fn request_body_serializes_current_batch_shape() {
         let source_texts = vec!["Hello world.".to_string()];
         let request =
             build_chat_completions_request(&source_texts, "model-password", "en", "zh-CN");
@@ -515,15 +584,15 @@ mod tests {
             value["contents"],
             json!(["English: Hello world.\n\nChinese:"])
         );
-        assert_eq!(value["max_tokens"], json!(1024));
-        assert_eq!(value["stop_tokens"], json!([0, 261, 24281]));
-        assert_eq!(value["temperature"], json!(0.8));
-        assert_eq!(value["top_k"], json!(50));
-        assert_eq!(value["top_p"], json!(0.6));
-        assert_eq!(value["alpha_presence"], json!(1.0));
-        assert_eq!(value["alpha_frequency"], json!(0.1));
+        assert_eq!(value["max_tokens"], json!(8292));
+        assert!(value.get("stop_tokens").is_none());
+        assert_eq!(value["temperature"], json!(1.0));
+        assert_eq!(value["top_k"], json!(1));
+        assert_eq!(value["top_p"], json!(0.0));
+        assert_eq!(value["alpha_presence"], json!(0.0));
+        assert_eq!(value["alpha_frequency"], json!(0.0));
         assert_eq!(value["alpha_decay"], json!(0.99));
-        assert_eq!(value["stream"], json!(false));
+        assert_eq!(value["stream"], json!(true));
         assert_eq!(value["password"], json!("model-password"));
     }
 
@@ -564,6 +633,22 @@ mod tests {
             .expect_err("missing translation should fail");
 
         assert!(error.contains("missing translation for choice index 1"));
+    }
+
+    #[test]
+    fn response_parser_accepts_streaming_data_chunks() {
+        let response = [
+            r#"data: {"choices":[{"index":0,"delta":{"content":"第"}}]}"#,
+            r#"data: {"choices":[{"index":1,"delta":{"content":"二"}}]}"#,
+            r#"data: {"choices":[{"index":0,"delta":{"content":"一段"}}]}"#,
+            r#"data: {"choices":[{"index":1,"delta":{"content":"段"}}]}"#,
+            "data: [DONE]",
+        ]
+        .join("\n");
+
+        let translations = parse_translations(&response, 2).expect("stream should parse");
+
+        assert_eq!(translations, vec!["第一段".to_string(), "二段".to_string()]);
     }
 
     #[test]
