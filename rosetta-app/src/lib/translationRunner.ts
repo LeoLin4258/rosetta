@@ -21,10 +21,12 @@ export type TranslationRunResult = "completed" | "failed" | "noop" | "stopped";
 export type TranslationRunTarget = Pick<Segment, "id" | "order" | "sourceText">;
 
 export function translationTargetsForStatuses({
+  includeSkipped = false,
   sourceSegments,
   translationSegments,
   statuses,
 }: {
+  includeSkipped?: boolean;
   sourceSegments: Segment[];
   translationSegments: TranslationSegment[];
   statuses: SegmentStatus[] | "all";
@@ -38,10 +40,13 @@ export function translationTargetsForStatuses({
       if (segment.sourceText.trim().length === 0) {
         return false;
       }
+      const status = statusBySourceSegmentId.get(segment.id);
+      if (!includeSkipped && (segment.status === "skipped" || status === "skipped")) {
+        return false;
+      }
       if (statuses === "all") {
         return true;
       }
-      const status = statusBySourceSegmentId.get(segment.id);
       return status != null && statuses.includes(status);
     })
     .sort((left, right) => left.order - right.order)

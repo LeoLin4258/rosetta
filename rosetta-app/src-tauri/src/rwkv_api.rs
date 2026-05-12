@@ -191,6 +191,7 @@ async fn request_translations(
                 "",
                 internal_token,
                 body_password,
+                true,
                 format!("无法创建 RWKV API client: {error}"),
                 started_at,
             );
@@ -214,6 +215,7 @@ async fn request_translations(
                 "",
                 internal_token,
                 body_password,
+                true,
                 format!("RWKV API 请求失败: {error}"),
                 started_at,
             );
@@ -229,6 +231,7 @@ async fn request_translations(
                 "",
                 internal_token,
                 body_password,
+                true,
                 format!("无法读取 RWKV API 响应: {error}"),
                 started_at,
             );
@@ -241,6 +244,7 @@ async fn request_translations(
             &response_text,
             internal_token,
             body_password,
+            true,
             format!("RWKV API 返回 HTTP {status_code}。"),
             started_at,
         );
@@ -264,6 +268,7 @@ async fn request_translations(
             &response_text,
             internal_token,
             body_password,
+            true,
             format!("RWKV API 响应格式不可用: {error}"),
             started_at,
         ),
@@ -295,6 +300,7 @@ async fn request_translations_for_language_pair(
                 "",
                 internal_token,
                 body_password,
+                false,
                 format!("无法创建 RWKV API client: {error}"),
                 started_at,
             );
@@ -318,6 +324,7 @@ async fn request_translations_for_language_pair(
                 "",
                 internal_token,
                 body_password,
+                false,
                 format!("RWKV API 请求失败: {error}"),
                 started_at,
             );
@@ -333,6 +340,7 @@ async fn request_translations_for_language_pair(
                 "",
                 internal_token,
                 body_password,
+                false,
                 format!("无法读取 RWKV API 响应: {error}"),
                 started_at,
             );
@@ -345,6 +353,7 @@ async fn request_translations_for_language_pair(
             &response_text,
             internal_token,
             body_password,
+            false,
             format!("RWKV API 返回 HTTP {status_code}。"),
             started_at,
         );
@@ -355,11 +364,7 @@ async fn request_translations_for_language_pair(
             ok: true,
             status_code: Some(status_code),
             translations,
-            raw_response_preview: preview_text_with_redactions(
-                &response_text,
-                internal_token,
-                body_password,
-            ),
+            raw_response_preview: String::new(),
             message: format!("RWKV API 已翻译 {} 条文本。", source_texts.len()),
             latency_ms: started_at.elapsed().as_millis(),
         },
@@ -368,6 +373,7 @@ async fn request_translations_for_language_pair(
             &response_text,
             internal_token,
             body_password,
+            false,
             format!("RWKV API 响应格式不可用: {error}"),
             started_at,
         ),
@@ -519,6 +525,7 @@ fn translation_error(
     response_text: &str,
     internal_token: &str,
     body_password: &str,
+    include_raw_response_preview: bool,
     message: String,
     started_at: Instant,
 ) -> RwkvTranslationApiTranslateResult {
@@ -526,11 +533,11 @@ fn translation_error(
         ok: false,
         status_code,
         translations: Vec::new(),
-        raw_response_preview: preview_text_with_redactions(
-            response_text,
-            internal_token,
-            body_password,
-        ),
+        raw_response_preview: if include_raw_response_preview {
+            preview_text_with_redactions(response_text, internal_token, body_password)
+        } else {
+            String::new()
+        },
         message,
         latency_ms: started_at.elapsed().as_millis(),
     }
@@ -689,6 +696,7 @@ mod tests {
             r#"{"error":"sensitive-token sensitive-password"}"#,
             "sensitive-token",
             "sensitive-password",
+            true,
             "RWKV API 返回 HTTP 500。".to_string(),
             Instant::now(),
         );
@@ -696,5 +704,20 @@ mod tests {
         assert!(!result.raw_response_preview.contains("sensitive-token"));
         assert!(!result.raw_response_preview.contains("sensitive-password"));
         assert!(result.raw_response_preview.contains("<redacted>"));
+    }
+
+    #[test]
+    fn translation_error_can_omit_raw_preview() {
+        let result = translation_error(
+            Some(500),
+            r#"{"error":"document text"}"#,
+            "token",
+            "password",
+            false,
+            "RWKV API 返回 HTTP 500。".to_string(),
+            Instant::now(),
+        );
+
+        assert!(result.raw_response_preview.is_empty());
     }
 }

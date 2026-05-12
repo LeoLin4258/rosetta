@@ -16,6 +16,7 @@ import { DocumentPreview } from "./DocumentPreview";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
+  createRosettaTranslationRevision,
   exportRosettaTranslationFile,
   loadRosettaJob,
   loadRosettaTranslationFile,
@@ -249,6 +250,11 @@ export function TranslationPreviewPage() {
       translationSegments: translationBundle.segments,
       statuses: "all",
     });
+    if (targets.length === 0) {
+      setError("选中的段落没有可重翻的文本。");
+      return;
+    }
+
     let cancelCurrentRun: (() => void) | null = null;
     const cancelled = new Promise<"stopped">((resolve) => {
       cancelCurrentRun = () => resolve("stopped");
@@ -258,6 +264,14 @@ export function TranslationPreviewPage() {
     retranslationCancelRef.current = cancelCurrentRun;
 
     try {
+      const revisionBundle = await createRosettaTranslationRevision(
+        jobId,
+        sourceFile.id,
+        "selection-retranslation",
+        selectedBlockIds
+      );
+      setJobBundle(revisionBundle);
+
       const result = await runTranslationBatches({
         batchSize: BATCH_SIZE,
         cancelPromise: cancelled,

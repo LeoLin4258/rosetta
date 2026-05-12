@@ -13,6 +13,7 @@ This pass intentionally avoids changing the current TXT/Markdown import, externa
 - Changed the parked frontend `rwkvRuntime.ts` adapter to reject with an explicit paused-runtime error instead of invoking unregistered commands.
 - Removed initialization of the unused `tauri-plugin-opener` plugin.
 - Removed `opener:default` from the default desktop capability.
+- Removed unused opener package dependencies from frontend and Rust manifests.
 - Kept `core:webview:allow-create-webview-window` because source and translation preview windows use Tauri `WebviewWindow`.
 - Kept `process:default` because the Settings updater flow uses `relaunch()`.
 - Kept `updater:default` because manual update checks remain part of Settings.
@@ -28,7 +29,7 @@ This pass intentionally avoids changing the current TXT/Markdown import, externa
 ## Deferred
 
 - CSP tightening is deferred to a runtime verification pass. The app currently uses custom Tauri webview windows, manual updater integration, and WebView IPC; changing CSP without running the desktop app can create silent runtime regressions that TypeScript and `cargo check` do not catch.
-- Removing the unused opener package dependencies from `package.json`, `pnpm-lock.yaml`, `Cargo.toml`, and `Cargo.lock` is deferred to a dependency hygiene pass. This stage only removes the runtime permission and plugin initialization surface.
+- The default external RWKV API endpoint remains unchanged during development. It is expected to be revisited when app-managed local RWKV runtime work resumes.
 
 ## Validation
 
