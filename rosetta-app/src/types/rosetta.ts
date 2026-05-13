@@ -522,3 +522,110 @@ export type RwkvRuntimeTranslationProbeResult = {
   process: RwkvRuntimeProcessStatus;
   message: string;
 };
+
+// -----------------------------------------------------------------------------
+// Managed local RWKV runtime (Phase 3 — macOS-first per ADR 0003).
+//
+// These types mirror `src-tauri/src/managed_rwkv/` and are deliberately
+// separate from the legacy `RwkvRuntime*` types above. The legacy ones stay
+// as "paused" placeholders until the Windows path resumes (Phase 8); the new
+// names below are what `selectProvider()` and the Settings UI (Phase 5) read.
+// -----------------------------------------------------------------------------
+
+export type ManagedRuntimeState =
+  | "unsupported"
+  | "not-installed"
+  | "installed"
+  | "starting"
+  | "ready"
+  | "failed"
+  | "stopped";
+
+export type ManagedRuntimeInstallItemKind = "sidecar" | "tokenizer" | "model";
+
+export type ManagedRuntimeInstallItemState = "missing" | "present";
+
+export type ManagedRuntimeInstallItem = {
+  kind: ManagedRuntimeInstallItemKind;
+  state: ManagedRuntimeInstallItemState;
+  path: string;
+  sizeBytes: number | null;
+  message: string;
+};
+
+export type ManagedRuntimeInstallPlan = {
+  ready: boolean;
+  items: ManagedRuntimeInstallItem[];
+  message: string;
+};
+
+export type ManagedRuntimeProfileSummary = {
+  id: string;
+  providerId: string;
+  platformOs: string;
+  platformArch: string;
+  backend: string;
+  modelFilename: string;
+  modelSizeBytesEstimate: number;
+  supportedDirections: string[];
+  bindHost: string;
+};
+
+export type ManagedRuntimePaths = {
+  sidecar: string | null;
+  tokenizer: string | null;
+  modelFile: string;
+  logsDir: string;
+};
+
+export type ManagedRuntimeProcessSnapshot = {
+  pid: number | null;
+  port: number | null;
+  baseUrl: string | null;
+  startedAt: string | null;
+  lastError: string | null;
+};
+
+export type ManagedRuntimeStatus = {
+  state: ManagedRuntimeState;
+  message: string;
+  profile: ManagedRuntimeProfileSummary | null;
+  paths: ManagedRuntimePaths | null;
+  installPlan: ManagedRuntimeInstallPlan | null;
+  process: ManagedRuntimeProcessSnapshot;
+};
+
+export type ManagedRuntimeStartResult = {
+  pid: number;
+  port: number;
+  baseUrl: string;
+  startedAt: string;
+  command: string[];
+  message: string;
+};
+
+export type ManagedRuntimeProbeResult = {
+  ok: boolean;
+  statusCode: number | null;
+  latencyMs: number;
+  baseUrl: string | null;
+  message: string;
+};
+
+export type ManagedRuntimeLogsSummary = {
+  logFile: string;
+  logTail: string[];
+  message: string;
+};
+
+/**
+ * Phase 3 returns this from `install_managed_rwkv_runtime` as a stub. Phase 4
+ * will replace it with a real download-progress shape, but keeping the same
+ * command name + a recognisable payload now lets the Phase 5 Settings UI land
+ * against a stable contract.
+ */
+export type ManagedRuntimeInstallStubResult = {
+  ready: boolean;
+  message: string;
+  installPlan: ManagedRuntimeInstallPlan;
+};

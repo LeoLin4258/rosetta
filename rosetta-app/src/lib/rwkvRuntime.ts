@@ -1,4 +1,11 @@
+import { invoke } from "@tauri-apps/api/core";
 import type {
+  ManagedRuntimeInstallPlan,
+  ManagedRuntimeInstallStubResult,
+  ManagedRuntimeLogsSummary,
+  ManagedRuntimeProbeResult,
+  ManagedRuntimeStartResult,
+  ManagedRuntimeStatus,
   RwkvRuntimeArtifactCatalog,
   RwkvRuntimeArtifactScanResult,
   RwkvRuntimeExtractionResult,
@@ -16,6 +23,50 @@ const PAUSED_RUNTIME_MESSAGE =
 function rejectPausedRuntime<T>(): Promise<T> {
   return Promise.reject(new Error(PAUSED_RUNTIME_MESSAGE));
 }
+
+// -----------------------------------------------------------------------------
+// Managed local RWKV runtime (Phase 3, ADR 0003).
+//
+// These wrap the seven Tauri commands defined in `src-tauri/src/managed_rwkv/`.
+// They are intentionally separate from the legacy `*RwkvRuntime*` stubs above,
+// which remain "paused" until the Windows path resumes in Phase 8.
+// -----------------------------------------------------------------------------
+
+export function getManagedRwkvRuntimeStatus() {
+  return invoke<ManagedRuntimeStatus>("get_managed_rwkv_runtime_status");
+}
+
+export function getManagedRwkvInstallPlan() {
+  return invoke<ManagedRuntimeInstallPlan>("get_managed_rwkv_install_plan");
+}
+
+export function installManagedRwkvRuntime() {
+  return invoke<ManagedRuntimeInstallStubResult>(
+    "install_managed_rwkv_runtime"
+  );
+}
+
+export function startManagedRwkvRuntime() {
+  return invoke<ManagedRuntimeStartResult>("start_managed_rwkv_runtime");
+}
+
+export function stopManagedRwkvRuntime() {
+  return invoke<string>("stop_managed_rwkv_runtime");
+}
+
+export function probeManagedRwkvRuntime() {
+  return invoke<ManagedRuntimeProbeResult>("probe_managed_rwkv_runtime");
+}
+
+export function getManagedRwkvRuntimeLogsSummary() {
+  return invoke<ManagedRuntimeLogsSummary>(
+    "get_managed_rwkv_runtime_logs_summary"
+  );
+}
+
+// -----------------------------------------------------------------------------
+// Legacy paused stubs — preserve existing call-site behavior unchanged.
+// -----------------------------------------------------------------------------
 
 export function getRwkvRuntimeArtifactCatalog() {
   return rejectPausedRuntime<RwkvRuntimeArtifactCatalog>();

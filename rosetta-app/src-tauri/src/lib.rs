@@ -1,3 +1,4 @@
+mod managed_rwkv;
 mod rosetta_jobs;
 mod rwkv_api;
 mod rwkv_providers;
@@ -8,10 +9,18 @@ mod rwkv_runtime;
 pub fn run() {
     tauri::Builder::default()
         .manage(rwkv_api::RwkvTranslationRunRegistry::default())
+        .manage(managed_rwkv::Registry::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
+            managed_rwkv::get_managed_rwkv_install_plan,
+            managed_rwkv::get_managed_rwkv_runtime_logs_summary,
+            managed_rwkv::get_managed_rwkv_runtime_status,
+            managed_rwkv::install_managed_rwkv_runtime,
+            managed_rwkv::probe_managed_rwkv_runtime,
+            managed_rwkv::start_managed_rwkv_runtime,
+            managed_rwkv::stop_managed_rwkv_runtime,
             rosetta_jobs::create_rosetta_translation_revision,
             rosetta_jobs::delete_rosetta_job,
             rosetta_jobs::delete_rosetta_job_file,
