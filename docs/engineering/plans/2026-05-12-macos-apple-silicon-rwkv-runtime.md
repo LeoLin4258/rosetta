@@ -617,23 +617,50 @@ Mitigation:
 - verify logs during Phase 0
 - avoid exposing raw logs in UI
 
-## Questions for RWKV Engineers
+## Internal Validation We Should Do Ourselves
+
+Before asking RWKV engineers for product-level decisions, Rosetta should answer the runtime behavior questions that are best resolved by direct testing on real Apple Silicon machines.
+
+We should validate internally:
+
+- whether `/v1/batch/chat` is stable on macOS MLX for Rosetta-style segment batches
+- whether `/v1/batch/supported_batch_sizes` reflects the actual loaded model/backend behavior
+- what batch sizes remain stable on representative M1, M2, M3, and M4 machines
+- what source segment length ranges are stable before timeout, quality collapse, or throughput degradation
+- whether an in-progress batch can be cancelled cleanly in practice
+- whether the runtime logs prompts or generated text by default under normal and failure cases
+
+Recommended internal benchmark dimensions:
+
+- language direction: start with English -> Chinese
+- model/runtime version: pin one candidate build for each test round
+- segment length buckets: for example `100`, `300`, `600`, `1000`, `1500`, `2000` characters
+- batch sizes: sweep the values reported by `/v1/batch/supported_batch_sizes`
+- machine classes: at least one M1/M2 class machine and one newer M3/M4 class machine if available
+
+Metrics to record:
+
+- success rate
+- timeout rate
+- empty or malformed translation rate
+- average latency per batch
+- throughput in segments per second and characters per second
+- cancellation behavior and recovery time
+- whether any prompt or output text appears in logs
+
+The goal is not to find one universal "correct" maximum segment length. The goal is to establish conservative Rosetta defaults and splitting thresholds for the first release.
+
+## Questions That Still Need RWKV Engineer Confirmation
 
 Before implementation should be considered committed, confirm:
 
 - Is `rwkv-mobile` the recommended macOS Apple Silicon runtime for Rosetta v1?
-- Is there a stable macOS arm64 server binary, or should Rosetta build/package one?
-- What is the exact MLX startup command and required arguments?
-- What model format should Rosetta use on macOS?
-- What tokenizer/vocab files are required?
-- Is `/v1/batch/chat` stable on macOS MLX?
-- Does `/v1/batch/supported_batch_sizes` reflect the actual loaded model/backend?
-- What batch sizes are recommended for M1, M2, M3, and M4 machines?
-- What is the recommended maximum source segment length?
-- Is language direction request-scoped or global?
-- Can `force_language` / `force_lang` replace global role setup for translation?
-- Does the runtime support cancelling an in-progress batch?
-- Does the runtime log prompts or generated text by default?
+- The public repository appears to build macOS library artifacts rather than a ready server binary. Should Rosetta build/package the macOS arm64 server itself, or is there an official server artifact we should use?
+- What is the exact MLX startup command and required arguments for the macOS server path Rosetta should support?
+- What model format should Rosetta use on macOS for the first English -> Chinese release?
+- Does macOS MLX use the same tokenizer/vocab requirement as the documented server examples, and if not, what files are required?
+- Is language direction request-scoped or global in the recommended macOS translation setup?
+- Can `force_language` / `force_lang` replace global role setup for translation in the recommended product path?
 - Can Rosetta redistribute or one-click download the runtime and model?
 - What versions should Rosetta pin for the first release?
 
