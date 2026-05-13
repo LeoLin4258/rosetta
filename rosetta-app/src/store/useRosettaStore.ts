@@ -3,6 +3,8 @@ import { persist } from "zustand/middleware";
 import type {
   ActiveTranslationRun,
   AppThemeMode,
+  ManagedRuntimeInstallProgress,
+  ManagedRuntimeStatus,
   RosettaDocument,
   RosettaJobBundle,
   RosettaJobSummary,
@@ -14,6 +16,32 @@ import type {
   TranslationRevision,
   TranslationMode,
 } from "../types/rosetta";
+
+export type ManagedRuntimeSlice = {
+  /**
+   * Last `get_managed_rwkv_runtime_status` response. `null` before the first
+   * call lands; afterwards refreshed on a coarse poll + after lifecycle/install
+   * actions. Intentionally **not** persisted — every Rosetta launch re-probes.
+   */
+  status: ManagedRuntimeStatus | null;
+  /**
+   * Latest install-progress snapshot from the `managed-rwkv://install-progress`
+   * Tauri event. `null` when no install has started this session.
+   */
+  progress: ManagedRuntimeInstallProgress | null;
+  /**
+   * Last error from any managed-runtime action (install / start / probe).
+   * Cleared on the next successful action.
+   */
+  lastError: string | null;
+  /**
+   * Whether the user has dismissed the "本地 RWKV 未安装" onboarding banner
+   * for this session. Persisted only as a transient session flag so closing
+   * the app and reopening shows the banner again if the runtime is still
+   * not installed.
+   */
+  bannerDismissed: boolean;
+};
 
 type RosettaState = {
   themeMode: AppThemeMode;
@@ -32,6 +60,13 @@ type RosettaState = {
   translationSegments: TranslationSegment[];
   translationRevisions: TranslationRevision[];
   activeTranslationRun: ActiveTranslationRun | null;
+  managedRuntime: ManagedRuntimeSlice;
+  setManagedRuntimeStatus: (status: ManagedRuntimeStatus | null) => void;
+  setManagedRuntimeProgress: (
+    progress: ManagedRuntimeInstallProgress | null
+  ) => void;
+  setManagedRuntimeError: (error: string | null) => void;
+  dismissManagedRuntimeBanner: () => void;
   setThemeMode: (mode: AppThemeMode) => void;
   updateRwkvConfig: (config: Partial<RwkvConnectionConfig>) => void;
   setTranslationMode: (mode: TranslationMode) => void;
@@ -169,6 +204,42 @@ export const useRosettaStore = create<RosettaState>()(
       translationSegments: [],
       translationRevisions: [],
       activeTranslationRun: null,
+      managedRuntime: {
+        status: null,
+        progress: null,
+        lastError: null,
+        bannerDismissed: false,
+      },
+      setManagedRuntimeStatus: (status) =>
+        set((state) => ({
+          managedRuntime: {
+            ...state.managedRuntime,
+            status,
+            // Clear stale error when we get a fresh successful status.
+            lastError: status ? null : state.managedRuntime.lastError,
+          },
+        })),
+      setManagedRuntimeProgress: (progress) =>
+        set((state) => ({
+          managedRuntime: {
+            ...state.managedRuntime,
+            progress,
+          },
+        })),
+      setManagedRuntimeError: (error) =>
+        set((state) => ({
+          managedRuntime: {
+            ...state.managedRuntime,
+            lastError: error,
+          },
+        })),
+      dismissManagedRuntimeBanner: () =>
+        set((state) => ({
+          managedRuntime: {
+            ...state.managedRuntime,
+            bannerDismissed: true,
+          },
+        })),
       setThemeMode: (mode) => set({ themeMode: mode }),
       updateRwkvConfig: (config) =>
         set((state) => ({

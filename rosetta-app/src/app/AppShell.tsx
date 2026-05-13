@@ -11,7 +11,9 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { ManagedRwkvOnboardingBanner } from "@/features/settings/ManagedRwkvOnboardingBanner";
 import { listRosettaJobs } from "@/lib/rosettaJobs";
+import { getManagedRwkvRuntimeStatus } from "@/lib/rwkvRuntime";
 import { useRosettaStore } from "@/store/useRosettaStore";
 import { cn } from "@/lib/utils";
 
@@ -66,6 +68,9 @@ export function AppShell() {
   const location = useLocation();
   const themeMode = useRosettaStore((state) => state.themeMode);
   const setJobList = useRosettaStore((state) => state.setJobList);
+  const setManagedRuntimeStatus = useRosettaStore(
+    (state) => state.setManagedRuntimeStatus
+  );
   const jobs = useRosettaStore((state) => state.jobs);
   const activeJobId = useRosettaStore((state) => state.activeJobId);
   const [systemPrefersDark, setSystemPrefersDark] = useState(true);
@@ -130,6 +135,19 @@ export function AppShell() {
       });
   }, [setJobList]);
 
+  useEffect(() => {
+    // Prime the managed runtime status once at app boot so the onboarding
+    // banner + Jobs page gate have something to read regardless of which
+    // page the user lands on first. Subsequent refreshes happen inside
+    // useManagedRwkvRuntime when the Settings panel mounts.
+    void getManagedRwkvRuntimeStatus()
+      .then(setManagedRuntimeStatus)
+      .catch(() => {
+        // Status is best-effort here; failure surfaces in Settings instead.
+        setManagedRuntimeStatus(null);
+      });
+  }, [setManagedRuntimeStatus]);
+
   return (
     <TooltipProvider>
       <div
@@ -160,6 +178,8 @@ export function AppShell() {
               onMouseDown={startHeaderDrag}
               title={title}
             />
+
+            <ManagedRwkvOnboardingBanner />
 
             <div className="min-h-0 flex-1 ">
                 <Outlet />

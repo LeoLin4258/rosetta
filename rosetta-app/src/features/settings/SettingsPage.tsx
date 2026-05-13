@@ -10,7 +10,6 @@ import {
   RefreshCw,
   Rocket,
   Send,
-  ServerOff,
   ShieldCheck,
   Timer,
   XCircle,
@@ -32,6 +31,7 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { probeRwkvTranslationApi } from "../../lib/rwkvApi";
 import { cn } from "../../lib/utils";
 import { useRosettaStore } from "../../store/useRosettaStore";
+import { LocalRwkvPanel } from "./LocalRwkvPanel";
 import type {
   AppThemeMode,
   RwkvConnectionConfig,
@@ -343,11 +343,13 @@ export function SettingsPage() {
             </Card>
           </section>
 
+          <LocalRwkvPanel />
+
           <section className="flex flex-col gap-3" id="translation-service">
             <SettingsSectionHeader
-              description="配置当前用于文档翻译的 RWKV API。外部 API 会作为可选后端长期保留。"
+              description="远程 / 自部署 RWKV API，可作为本地翻译未就绪时的回落方案。"
               icon={<Cloud />}
-              title="翻译服务"
+              title="外部翻译 API"
             >
               <StatusBadge status={apiStatus} />
             </SettingsSectionHeader>
@@ -355,8 +357,8 @@ export function SettingsPage() {
             <Card className="overflow-hidden">
               <CardContent className="flex flex-col gap-5 py-5">
                 <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm leading-6 text-muted-foreground">
-                  内嵌本地模型仍是 Rosetta 的长期首选路径；当前开发阶段先使用用户配置的
-                  RWKV API 跑通文档翻译闭环。若填写远程 API，待翻译文本会发送到该地址。
+                  本地翻译模型未就绪、或临时切换到外部端点时使用此区配置。
+                  若填写远程 API，待翻译文本会发送到该地址。
                 </div>
 
                 <div className="grid gap-4 md:grid-cols-2">
@@ -493,31 +495,6 @@ export function SettingsPage() {
             </Card>
           </section>
 
-          <section className="flex flex-col gap-3" id="local-model">
-            <SettingsSectionHeader
-              description="本地一键运行 RWKV 会作为独立选项恢复。"
-              icon={<ServerOff />}
-              title="本地模型"
-            />
-
-            <Card>
-              <CardHeader>
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <CardTitle>一键本地 RWKV</CardTitle>
-                    <CardDescription>
-                      当前版本优先使用已配置的翻译服务；内嵌模型运行会在方案稳定后恢复。
-                    </CardDescription>
-                  </div>
-                  <Badge variant="outline">即将支持</Badge>
-                </div>
-              </CardHeader>
-              <CardContent className="text-sm text-muted-foreground">
-                后续恢复本地模型时，这里会提供清晰的安装、检测和启动入口；它不会和当前 API 配置混在一起。
-                文件格式规划为 TXT、Markdown、PDF 和 Word，当前导入能力先聚焦 TXT 和 Markdown。
-              </CardContent>
-            </Card>
-          </section>
         </main>
       </section>
     </ScrollArea>

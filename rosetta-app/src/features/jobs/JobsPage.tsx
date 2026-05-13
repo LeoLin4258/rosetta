@@ -71,6 +71,8 @@ import {
   translationTargetsForStatuses,
   type TranslationRunResult,
 } from "../../lib/translationRunner";
+import { selectProvider } from "../../lib/providers";
+import { isManagedRuntimeReady } from "../../lib/useManagedRwkvRuntime";
 import { cn } from "../../lib/utils";
 import { useRosettaStore } from "../../store/useRosettaStore";
 import type {
@@ -83,6 +85,13 @@ import type {
 } from "../../types/rosetta";
 
 const BATCH_SIZE = 16;
+// Local rwkv-mobile sidecar advertises `supported_batch_sizes: [1..12]` on
+// its `/v1/batch/supported_batch_sizes` endpoint (verified Phase 0). Sending
+// 16 there returns `chat_batch: batch size 16 is not supported` and fails the
+// whole run. Phase 6 will query the endpoint dynamically; for now we clamp
+// per-provider so external API users keep the wider batch and local users
+// stay within the sidecar's slot count.
+const LOCAL_RUNTIME_BATCH_SIZE = 8;
 
 export function JobsPage() {
   const { fileId, jobId } = useParams();
@@ -169,7 +178,14 @@ export function JobsPage() {
     () => countSourceSegmentsByFile(previewSegments),
     [previewSegments]
   );
-  const rwkvConfigReady = isRwkvConfigReady(rwkv);
+  const managedRuntimeStatus = useRosettaStore(
+    (state) => state.managedRuntime.status
+  );
+  const managedRuntimeReady = isManagedRuntimeReady(managedRuntimeStatus);
+  // Translation can proceed when *either* a configured external API is ready
+  // or the local managed sidecar reports `state: ready`. `selectProvider`
+  // (see below) decides which one each batch actually flows through.
+  const rwkvConfigReady = managedRuntimeReady || isRwkvConfigReady(rwkv);
   const selectedBatchCount = selectedSourceFileIds.length;
 
   useEffect(() => {
@@ -465,9 +481,28 @@ export function JobsPage() {
       targetSegmentIds: targets.map((segment) => segment.id),
     });
 
+    // Pick the provider per-run so that toggling the managed runtime on/off
+    // inside Settings flips subsequent translations without a page reload.
+    const provider = selectProvider({
+      config: {
+        baseUrl: rwkv.baseUrl,
+        endpoint: rwkv.endpoint,
+        internalToken: rwkv.internalToken,
+        bodyPassword: rwkv.bodyPassword,
+        timeoutMs: rwkv.timeoutMs,
+      },
+      managedRuntimeReady,
+      managedRuntimeBaseUrl: managedRuntimeStatus?.process.baseUrl ?? undefined,
+    });
+
+    const batchSize =
+      provider.id === "rwkv-mobile-batch-chat"
+        ? LOCAL_RUNTIME_BATCH_SIZE
+        : BATCH_SIZE;
+
     try {
       return await runTranslationBatches({
-        batchSize: BATCH_SIZE,
+        batchSize,
         cancelPromise: cancelled,
         jobId: currentJobId,
         onBatchCompleted: (segmentIds) =>
@@ -476,6 +511,7 @@ export function JobsPage() {
           markTranslationRunFailed(runId, segmentIds),
         onTranslationFileSaved: (bundle) =>
           upsertTranslationFile(bundle.translationFile),
+        provider,
         request: {
           baseUrl: rwkv.baseUrl,
           endpoint: rwkv.endpoint,

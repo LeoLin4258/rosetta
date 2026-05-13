@@ -1,5 +1,26 @@
 # macOS Apple Silicon 一键本地 RWKV 翻译运行时 — 实施计划
 
+> **当前状态（2026-05-13 晚）**
+>
+> | Phase | 内容 | 状态 |
+> | --- | --- | --- |
+> | 0 | 上游契约 + Phase 0 验证（M4 mini 实测） | 🟢 [验证笔记](2026-05-13-rwkv-mobile-macos-validation-notes.md) |
+> | 1 | provider 抽象拆分（lightning-contents / mobile-batch-chat） | 🟢 [Phase 1 change-log](../change-log/2026-05-13-rwkv-provider-adapter-split.md) |
+> | 2 | macOS Sidecar CI + Tauri bundle | 🟢 [Phase 2 change-log](../change-log/2026-05-13-rwkv-sidecar-build-pipeline.md) |
+> | 3 | `managed_rwkv` Tauri 模块（lifecycle + 7 commands） | 🟢 [Phase 3 change-log](../change-log/2026-05-13-managed-rwkv-runtime-macos.md) |
+> | 4 | 模型下载 + SHA256 + manifest + 进度事件 | 🟢 [Phase 4 change-log](../change-log/2026-05-13-managed-rwkv-model-install.md) |
+> | 5 | UI 一键安装 + Jobs 就绪门控 + batch size clamp | 🟢 [Phase 5 change-log](../change-log/2026-05-13-managed-rwkv-settings-ui.md) + [batch clamp fix](../change-log/2026-05-13-managed-rwkv-batch-size-clamp.md)；**M4 mini 实机端到端通过** |
+> | 6 | 动态 batch / 取消语义 / 长文档回归 | ⬜ 下一站 |
+> | 7 | codesign + notarize + clean Mac 测试 | ⬜ |
+> | 8 | Windows / Intel Mac | ⬜ 不在本里程碑 |
+>
+> **下一步建议**：Phase 6。重点见本文档 [Phase 6 — 翻译集成](#phase-6--翻译集成) 小节；具体踩坑见 [memory: project-rwkv-mobile-batch-size-limit](../../../.claude/projects/-Users-leolin-Documents-GitHub-rosetta/memory/project_rwkv_mobile_batch_size_limit.md) 与 [memory: project-rwkv-mobile-translate-response-format](../../../.claude/projects/-Users-leolin-Documents-GitHub-rosetta/memory/project_rwkv_mobile_translate_response_format.md)。
+>
+> **本机当前实机状态**（Mac mini M4）：
+> - Sidecar 二进制已暂存到 `rosetta-app/src-tauri/binaries/`，分词表在 `rosetta-app/src-tauri/resources/rwkv-sidecar/`。
+> - 模型软链 `~/Library/Application Support/com.rosetta.desktop/managed-rwkv/models/rwkv-translate-1.5b-nf4/RWKV_v7_G1c_..._nf4.prefab` → `/Users/leolin/rwkv-test/models/<同名>`。
+> - 用 `pnpm tauri dev` 启动后，Settings → "本地 RWKV 翻译" → "启动本地翻译" → Jobs 页可以跑实际翻译。
+
 ## Context
 
 Rosetta v1 的目标是让 macOS Apple Silicon 用户**不开终端、不装 Python、不点 GitHub**，从 UI 一键安装本地 RWKV 翻译引擎并跑长文档翻译。
@@ -14,10 +35,10 @@ Rosetta v1 的目标是让 macOS Apple Silicon 用户**不开终端、不装 Pyt
 
 本计划采用：
 - **后端：从源码自建 rwkv-mobile + WebRWKV（基于 wgpu/Metal）**。绕开 MLX 的 Swift 工具链依赖与缺权重问题，仍复用上游 `/v1/batch/chat`、`/v1/chat/roles`、`/v1/batch/supported_batch_sizes` 端点。
-- **模型：`RWKV_v7_G1c_1.5B_Translate_ctx4096_20260118-nf4.prefab`**（~600MB nf4 量化，WebRWKV 兼容，Apache-2.0）。
+- **模型：`RWKV_v7_G1c_1.5B_Translate_ctx4096_20260118-nf4.prefab`**（实测 1.3 GB nf4 量化，WebRWKV 兼容，Apache-2.0；最初估算"~600MB"是 Phase 0 前的猜测，实际值已写入 `profile.rs::MACOS_ARM64_WEBRWKV.model_size_bytes`）。
 - **形态：独立 sidecar 进程**，Tauri 通过 stdout/health 监督，HTTP 仅绑定 `127.0.0.1`。
 
-预期成果：M1 8GB 起步的 Apple Silicon Mac，安装 Rosetta、点一次"安装本地翻译"、等一次 ~600MB 下载、看到"就绪"、即可翻译。
+预期成果：M1 8GB 起步的 Apple Silicon Mac，安装 Rosetta、点一次"安装本地翻译"、等一次 ~1.3 GB 下载、看到"就绪"、即可翻译。
 
 ## Strategic Risks & Gates
 
@@ -54,7 +75,7 @@ Rosetta UI (React)
 
 ## Implementation Phases
 
-### Phase 0 — Upstream Contract Validation （阻塞所有后续）
+### Phase 0 — Upstream Contract Validation （阻塞所有后续） 🟢
 
 **目标**：在写产品代码前，把"能不能跑、跑得多快、日志安不安全"这几件事钉死。
 
@@ -95,7 +116,7 @@ Rosetta UI (React)
 
 **交付物**：[`2026-05-13-rwkv-mobile-macos-validation-notes.md`](2026-05-13-rwkv-mobile-macos-validation-notes.md)（验证结果与基准数字）。
 
-### Phase 1 — Provider Adapter Split
+### Phase 1 — Provider Adapter Split 🟢
 
 **目标**：解耦 `rwkv-lightning-contents`（现 Windows 外部 API 路径）和 `rwkv-mobile-batch-chat`（macOS 新路径），让 runner 写一次、跑任意 provider。
 
@@ -116,7 +137,7 @@ Rosetta UI (React)
 - 手动指向本地 Phase 0 的 sidecar，能通过新 mobile-batch-chat 适配器跑通 probe + 8 条 batch。
 - 单测覆盖 batch 响应乱序、缺失 index、空 content。
 
-### Phase 2 — Sidecar Build Pipeline & Bundling
+### Phase 2 — Sidecar Build Pipeline & Bundling 🟢
 
 **目标**：让我们的 macOS CI 能产出可签名的 `rwkv_server` + `librwkv_mobile.dylib` + tokenizer。
 
@@ -141,7 +162,7 @@ Rosetta UI (React)
 - 解压 `.app` 后 `Contents/Resources/_up_/binaries/rwkv-server-aarch64-apple-darwin` 可执行且签名有效（`codesign --verify --deep --strict --verbose=4`）。
 - 在 clean Mac 上 Gatekeeper 不拦截。
 
-### Phase 3 — Tauri Runtime Module 改造
+### Phase 3 — Tauri Runtime Module 改造 🟢
 
 **目标**：把 [`rwkv_runtime.rs`](../../../rosetta-app/src-tauri/src/rwkv_runtime.rs) 从"Windows libtorch 专用"改成"按 profile 选平台"。
 
@@ -185,7 +206,7 @@ Rosetta UI (React)
 - 命令在 Intel Mac / Windows 调用返回 `unsupported` 状态，不 panic。
 - `start_managed_rwkv_runtime` 能起 sidecar、`probe` 通过、`stop` 干净退出（无僵尸进程）。
 
-### Phase 4 — 模型下载与首次安装流程
+### Phase 4 — 模型下载与首次安装流程 🟢
 
 **目标**：把现有 Windows 下载/校验流程改造为 macOS 模型专用，从 HuggingFace 拉 nf4 prefab。
 
@@ -201,7 +222,7 @@ Rosetta UI (React)
 - 模拟掉线后 resume 能继续。
 - SHA256 不匹配时 status 走 `failed: artifact-corrupted` 并允许 repair（删后重下）。
 
-### Phase 5 — UI 一键安装与就绪门控
+### Phase 5 — UI 一键安装与就绪门控 🟢
 
 **目标**：用户只点一个按钮、看一条进度条，主工作台不被模型管理噪音污染。
 
@@ -224,25 +245,39 @@ Rosetta UI (React)
 - 失败态有可读文案 + 修复按钮。
 - 主文档工作台无运行时管理控件。
 
-### Phase 6 — 翻译集成
+### Phase 6 — 翻译集成 ⬜ 下一站
 
-**目标**：让真实文档翻译走本地 sidecar 端到端。
+**目标**：把"能跑"升级为"跑得稳跑得快跑得规矩"。Phase 5 已经端到端跑通；Phase 6 是把临时常量替换成 dynamic 行为 + 加回归 fixture + 收口取消/重试语义。
 
-修改：
-- [`rosetta-app/src/lib/translationRunner.ts`](../../../rosetta-app/src/lib/translationRunner.ts)：
-  - 提交 batch 前查 `/v1/batch/supported_batch_sizes`，缓存。
-  - 按现有 segment 长度桶选择 batch size（小 segment 用最大、超长 segment 单独走或先切分）。
-  - 单运行时单方向：start translation run 时调一次 `/v1/chat/roles`，整个 run 内同方向。
-  - 取消：保留现有 cancel 信号；HTTP 请求 abort 后，前端把 `translating` segment 回退为 `pending` 走现有 retry 流程。
-- 验证：翻译一篇 ~50 段 Markdown + ~20 段 TXT，全程进度更新、中途取消、再续跑、导出与现有 pipeline 一致。
+**已知踩坑**（继承自前期实测，**Phase 6 必须解决**）：
+
+- Phase 5 端到端验证踩到 `chat_batch: batch size 16 is not supported`，临时 clamp 到 [JobsPage](../../../rosetta-app/src/features/jobs/JobsPage.tsx) `LOCAL_RUNTIME_BATCH_SIZE = 8` 与 [rwkv_api.rs](../../../rosetta-app/src-tauri/src/rwkv_api.rs) `SIDECAR_MAX_BATCH_SIZE = 12`，详见 [batch-size-clamp change-log](../change-log/2026-05-13-managed-rwkv-batch-size-clamp.md) 与 [memory: project-rwkv-mobile-batch-size-limit](../../../.claude/projects/-Users-leolin-Documents-GitHub-rosetta/memory/project_rwkv_mobile_batch_size_limit.md)。两处常量在 Phase 6 dynamic batch 落地后可删除。
+- 响应解析按 `assistant_role` 动态切分 `<原文>\n\n<lang>:` 前缀已在 Phase 1.A 落地（[mobile_batch_chat.rs](../../../rosetta-app/src-tauri/src/rwkv_providers/mobile_batch_chat.rs) `strip_response_prefix` + 单测），ZH→EN 实测已 work。Phase 6 不需要再动。
+
+**Phase 6 修改清单**：
+
+- [`rosetta-app/src-tauri/src/rwkv_providers/mobile_batch_chat.rs`](../../../rosetta-app/src-tauri/src/rwkv_providers/mobile_batch_chat.rs) 或新文件 — `query_supported_batch_sizes(config) -> Vec<u32>`，进程级缓存（重启 sidecar 时清）。
+- [`rosetta-app/src-tauri/src/rwkv_api.rs`](../../../rosetta-app/src-tauri/src/rwkv_api.rs) `start_mobile_batch_chat_run`：
+  - 启动时调一次 `query_supported_batch_sizes`，取数组最大值（或按 segment 长度桶选小一些）。
+  - 删掉 `SIDECAR_MAX_BATCH_SIZE = 12` 硬编码（dynamic 接管后冗余）。
+  - 单运行时单方向：start run 时调一次 `/v1/chat/roles`，整个 run 不重复设置（当前每个 batch 都重设，浪费）。
+- [`rosetta-app/src/features/jobs/JobsPage.tsx`](../../../rosetta-app/src/features/jobs/JobsPage.tsx)：
+  - 删掉 `LOCAL_RUNTIME_BATCH_SIZE = 8` 临时常量，把决策权交给 Rust。
+- 取消语义重审：当前 `stop_managed_rwkv_runtime` 是 SIGKILL；翻译 run 取消是 abort HTTP。两者衔接确认（特别是 stop 时是否要先取消 in-flight run）。
+- 回归 fixture：固化一篇 ~50 段 Markdown（中英混排 + 列表 + 代码块）+ ~20 段 TXT 进 `docs/engineering/fixtures/`（或 `rosetta-app/src-tauri/tests/`），每次大改后人工跑一遍。
+- 性能可观测性：sidecar log 可视化 segment 完成数 + 平均延迟 + 失败率（已在 LocalRwkvPanel 模型信息行预留位置）。
+- Phase 0 未完成的三项（cancel 测试、日志审计、M1/M2 基准）至少补完前两项作为 release gate。
+
+**验证**：翻译 ~50 段 Markdown + ~20 段 TXT，全程进度更新、中途取消、再续跑、导出与现有 pipeline 一致。
 
 **退出条件**：
-- 长文档 EN→ZH 端到端通过。
-- segment 顺序在批量乱序下仍稳定（用 `choices[].index` 还原）。
+- 长文档 EN↔ZH 双向端到端通过。
+- segment 顺序在批量乱序下仍稳定（用 `choices[].index` 还原 — Phase 1 已实现，回归验证不退步）。
 - 取消 → 续跑 → 导出无段落丢失或错位。
 - preview / export 不需要任何运行时特殊分支。
+- `BATCH_SIZE` / `LOCAL_RUNTIME_BATCH_SIZE` / `SIDECAR_MAX_BATCH_SIZE` 三个临时常量删除或注释清楚为何保留。
 
-### Phase 7 — 发布加固
+### Phase 7 — 发布加固 ⬜
 
 **目标**：clean Mac 上装得上、跑得动、卸得掉。
 

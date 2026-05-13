@@ -566,7 +566,8 @@ export type ManagedRuntimeProfileSummary = {
   platformArch: string;
   backend: string;
   modelFilename: string;
-  modelSizeBytesEstimate: number;
+  modelSizeBytes: number;
+  modelSha256: string;
   supportedDirections: string[];
   bindHost: string;
 };

@@ -1267,6 +1267,17 @@ async fn start_mobile_batch_chat_run(
     if request.batch_size == 0 {
         return Err("翻译批次大小必须大于 0。".to_string());
     }
+    // Defense-in-depth clamp: the WebRWKV sidecar publishes
+    // `supported_batch_sizes: [1..12]` from `/v1/batch/supported_batch_sizes`
+    // and rejects anything larger with `chat_batch: batch size N is not
+    // supported`, failing the whole batch. Phase 6 will query the endpoint
+    // dynamically; until then we hard-clamp here so a stale frontend can't
+    // brick a run.
+    const SIDECAR_MAX_BATCH_SIZE: usize = 12;
+    let mut request = request;
+    if request.batch_size > SIDECAR_MAX_BATCH_SIZE {
+        request.batch_size = SIDECAR_MAX_BATCH_SIZE;
+    }
 
     let root = jobs_root(&app)?;
     let dir = checked_job_dir(&root, &request.job_id)?;
