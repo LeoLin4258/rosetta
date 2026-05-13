@@ -1,12 +1,16 @@
+import { selectProvider } from "@/lib/providers";
 import {
   cancelRwkvTranslationRun,
   getRwkvTranslationRunStatus,
+  startRwkvMobileBatchChatRun,
   startRwkvTranslationRun,
 } from "@/lib/rwkvApi";
 import type {
   RosettaTranslationFile,
   RosettaTranslationFileBundle,
   RwkvConnectionConfig,
+  RwkvProviderHandle,
+  RwkvTranslationRunStatus,
   Segment,
   SegmentStatus,
   TranslationSegment,
@@ -62,6 +66,7 @@ export async function runTranslationBatches({
   onBatchCompleted,
   onBatchFailed,
   onTranslationFileSaved,
+  provider,
   request,
   targets,
   translationFile,
@@ -72,6 +77,12 @@ export async function runTranslationBatches({
   onBatchCompleted?: (sourceSegmentIds: string[]) => void;
   onBatchFailed?: (sourceSegmentIds: string[]) => void;
   onTranslationFileSaved?: (bundle: RosettaTranslationFileBundle) => void;
+  /**
+   * Provider handle to dispatch the run through. When omitted, the runner
+   * derives a `rwkv-lightning-contents` handle from `request` — preserving
+   * pre-Phase-1 behavior for every existing call site.
+   */
+  provider?: RwkvProviderHandle;
   request: Omit<RwkvConnectionConfig, "mode"> & {
     sourceLang?: string | null;
     targetLang: string;
@@ -89,16 +100,24 @@ export async function runTranslationBatches({
   let startError: unknown = null;
   let cancelRequested = false;
 
-  const startPromise = startRwkvTranslationRun({
+  const resolvedProvider: RwkvProviderHandle =
+    provider ??
+    selectProvider({
+      config: {
+        baseUrl: request.baseUrl,
+        endpoint: request.endpoint,
+        internalToken: request.internalToken,
+        bodyPassword: request.bodyPassword,
+        timeoutMs: request.timeoutMs,
+      },
+    });
+
+  const startPromise = startRunForProvider({
+    provider: resolvedProvider,
     runId,
     jobId,
     translationFileId: translationFile.id,
     sourceSegmentIds: targets.map((target) => target.id),
-    baseUrl: request.baseUrl,
-    endpoint: request.endpoint,
-    internalToken: request.internalToken,
-    bodyPassword: request.bodyPassword,
-    timeoutMs: request.timeoutMs,
     sourceLang: request.sourceLang,
     targetLang: request.targetLang,
     batchSize,
@@ -164,6 +183,57 @@ export async function runTranslationBatches({
     await startPromise.catch(() => {});
     throw error;
   }
+}
+
+function startRunForProvider(params: {
+  provider: RwkvProviderHandle;
+  runId: string;
+  jobId: string;
+  translationFileId: string;
+  sourceSegmentIds: string[];
+  sourceLang?: string | null;
+  targetLang: string;
+  batchSize: number;
+}): Promise<RwkvTranslationRunStatus> {
+  const {
+    provider,
+    runId,
+    jobId,
+    translationFileId,
+    sourceSegmentIds,
+    sourceLang,
+    targetLang,
+    batchSize,
+  } = params;
+
+  if (provider.id === "rwkv-mobile-batch-chat") {
+    return startRwkvMobileBatchChatRun({
+      runId,
+      jobId,
+      translationFileId,
+      sourceSegmentIds,
+      baseUrl: provider.baseUrl,
+      timeoutMs: provider.timeoutMs,
+      sourceLang,
+      targetLang,
+      batchSize,
+    });
+  }
+
+  return startRwkvTranslationRun({
+    runId,
+    jobId,
+    translationFileId,
+    sourceSegmentIds,
+    baseUrl: provider.baseUrl,
+    endpoint: provider.endpoint,
+    internalToken: provider.internalToken,
+    bodyPassword: provider.bodyPassword,
+    timeoutMs: provider.timeoutMs,
+    sourceLang,
+    targetLang,
+    batchSize,
+  });
 }
 
 async function getRunStatusWithRetry(runId: string) {

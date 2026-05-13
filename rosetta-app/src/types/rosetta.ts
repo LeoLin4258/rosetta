@@ -231,6 +231,57 @@ export type RwkvConnectionConfig = {
   mode: TranslationMode;
 };
 
+export type RwkvProviderId =
+  | "rwkv-lightning-contents"
+  | "rwkv-mobile-batch-chat"
+  | "custom-rwkv-api";
+
+export type RwkvLightningContentsProviderHandle = {
+  id: "rwkv-lightning-contents";
+  baseUrl: string;
+  endpoint: string;
+  internalToken: string;
+  bodyPassword: string;
+  timeoutMs: number;
+};
+
+export type RwkvMobileBatchChatProviderHandle = {
+  id: "rwkv-mobile-batch-chat";
+  baseUrl: string;
+  timeoutMs: number;
+};
+
+export type RwkvProviderHandle =
+  | RwkvLightningContentsProviderHandle
+  | RwkvMobileBatchChatProviderHandle;
+
+export type RwkvMobileBatchChatProbeRequest = {
+  baseUrl: string;
+  timeoutMs: number;
+  sourceLang?: string | null;
+  targetLang?: string | null;
+};
+
+export type RwkvMobileBatchChatTranslateRequest = {
+  baseUrl: string;
+  timeoutMs: number;
+  sourceLang?: string | null;
+  targetLang?: string | null;
+  sourceTexts: string[];
+};
+
+export type RwkvMobileBatchChatRunStartRequest = {
+  runId: string;
+  jobId: string;
+  translationFileId: string;
+  sourceSegmentIds: string[];
+  baseUrl: string;
+  timeoutMs: number;
+  sourceLang?: string | null;
+  targetLang: string;
+  batchSize: number;
+};
+
 export type RwkvTranslationApiProbeRequest = {
   baseUrl: string;
   endpoint: string;

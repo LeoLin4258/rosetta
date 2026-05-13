@@ -19,6 +19,10 @@ use crate::rosetta_jobs::{
         build_translation_file, read_translation_segments, write_translation_segments,
     },
 };
+use crate::rwkv_providers::{
+    mobile_batch_chat::{self, MobileBatchChatConfig},
+    ProviderTranslateBatch, ProviderTranslateResult,
+};
 
 const PROBE_TEXTS: [&str; 2] = [
     "After a blissful two weeks, Jane encounters Rochester in the gardens.",
@@ -1139,6 +1143,341 @@ fn redact_sensitive_values(text: &str, sensitive_values: &[&str]) -> String {
                 redacted.replace(value, "<redacted>")
             }
         })
+}
+
+// =============================================================================
+// rwkv-mobile batch-chat provider (Phase 1 — Provider Adapter Split)
+// =============================================================================
+//
+// Below is the parallel command/run-orchestration path for the
+// `rwkv-mobile-batch-chat` provider talking to a local sidecar that exposes
+// `/v1/chat/roles` + `/v1/batch/chat` (see `rwkv_providers::mobile_batch_chat`).
+//
+// The HTTP shape, auth model (none, sidecar is loopback-only), and response
+// parsing differ enough from the existing `rwkv-lightning-contents` flow that
+// they get their own request types and their own run-start command. Cancel /
+// status commands stay shared via `RwkvTranslationRunRegistry`.
+//
+// The run-orchestration body is intentionally a near-duplicate of
+// `start_translation_run`. Deduplication into a generic loop is deferred to a
+// future iteration that also migrates the lightning-contents path onto the
+// `ProviderTranslateBatch` trait — see plan
+// `docs/engineering/plans/2026-05-13-macos-rwkv-one-click-implementation.md`
+// Phase 1.B.
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RwkvMobileBatchChatProbeRequest {
+    base_url: String,
+    timeout_ms: u64,
+    source_lang: Option<String>,
+    target_lang: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RwkvMobileBatchChatTranslateRequest {
+    base_url: String,
+    timeout_ms: u64,
+    source_lang: Option<String>,
+    target_lang: Option<String>,
+    source_texts: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RwkvMobileBatchChatRunStartRequest {
+    run_id: String,
+    job_id: String,
+    translation_file_id: String,
+    source_segment_ids: Vec<String>,
+    base_url: String,
+    timeout_ms: u64,
+    source_lang: Option<String>,
+    target_lang: String,
+    batch_size: usize,
+}
+
+#[tauri::command]
+pub async fn probe_rwkv_mobile_batch_chat(
+    request: RwkvMobileBatchChatProbeRequest,
+) -> Result<RwkvTranslationApiProbeResult, String> {
+    let config = MobileBatchChatConfig {
+        base_url: request.base_url,
+        timeout_ms: request.timeout_ms,
+    };
+    let source_lang = request.source_lang.as_deref().unwrap_or("en");
+    let target_lang = request.target_lang.as_deref().unwrap_or("zh-CN");
+    let result = mobile_batch_chat::probe(&config, source_lang, target_lang).await;
+    Ok(provider_result_into_probe(result))
+}
+
+#[tauri::command]
+pub async fn translate_rwkv_mobile_batch_chat_texts(
+    request: RwkvMobileBatchChatTranslateRequest,
+) -> Result<RwkvTranslationApiTranslateResult, String> {
+    if request.source_texts.is_empty() {
+        return Ok(RwkvTranslationApiTranslateResult {
+            ok: true,
+            status_code: None,
+            translations: Vec::new(),
+            raw_response_preview: String::new(),
+            message: "没有需要翻译的文本。".to_string(),
+            latency_ms: 0,
+        });
+    }
+
+    let config = MobileBatchChatConfig {
+        base_url: request.base_url,
+        timeout_ms: request.timeout_ms,
+    };
+    let source_lang = request.source_lang.as_deref().unwrap_or("en").to_string();
+    let target_lang = request.target_lang.as_deref().unwrap_or("zh-CN").to_string();
+    let result = mobile_batch_chat::translate_batch(
+        &config,
+        ProviderTranslateBatch {
+            source_texts: &request.source_texts,
+            source_lang: &source_lang,
+            target_lang: &target_lang,
+            timeout_ms: config.timeout_ms,
+            cancel: None,
+        },
+    )
+    .await;
+    Ok(provider_result_into_translate(result))
+}
+
+#[tauri::command]
+pub async fn start_rwkv_mobile_batch_chat_run(
+    app: AppHandle,
+    registry: State<'_, RwkvTranslationRunRegistry>,
+    request: RwkvMobileBatchChatRunStartRequest,
+) -> Result<RwkvTranslationRunStatus, String> {
+    start_mobile_batch_chat_run(app, registry.inner(), request).await
+}
+
+async fn start_mobile_batch_chat_run(
+    app: AppHandle,
+    registry: &RwkvTranslationRunRegistry,
+    request: RwkvMobileBatchChatRunStartRequest,
+) -> Result<RwkvTranslationRunStatus, String> {
+    if request.run_id.trim().is_empty() {
+        return Err("翻译运行 id 不能为空。".to_string());
+    }
+    if request.batch_size == 0 {
+        return Err("翻译批次大小必须大于 0。".to_string());
+    }
+
+    let root = jobs_root(&app)?;
+    let dir = checked_job_dir(&root, &request.job_id)?;
+    let source_segments: Vec<Segment> = read_json(&dir.join("segments.json"))?;
+    let mut translation_segments = read_translation_segments(&dir, &request.translation_file_id)?;
+    let source_segment_ids = request
+        .source_segment_ids
+        .iter()
+        .cloned()
+        .collect::<HashSet<_>>();
+    let targets = source_segments
+        .iter()
+        .filter(|segment| source_segment_ids.contains(&segment.id))
+        .filter(|segment| segment.status != "skipped" && !segment.source_text.trim().is_empty())
+        .filter(|segment| {
+            translation_segments
+                .iter()
+                .find(|translation| translation.source_segment_id == segment.id)
+                .is_some_and(|translation| translation.status != "skipped")
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    let initial_bundle = save_run_segments(
+        &dir,
+        &request.translation_file_id,
+        &request.target_lang,
+        translation_segments.clone(),
+    )?;
+    let initial_status = RwkvTranslationRunStatus {
+        run_id: request.run_id.clone(),
+        job_id: request.job_id.clone(),
+        translation_file_id: request.translation_file_id.clone(),
+        state: RwkvTranslationRunState::Running,
+        completed_segment_ids: Vec::new(),
+        failed_segment_ids: Vec::new(),
+        message: if targets.is_empty() {
+            "没有需要翻译的文本。".to_string()
+        } else {
+            "翻译运行已开始。".to_string()
+        },
+        translation_file: Some(initial_bundle.0),
+        segments: Some(initial_bundle.1),
+    };
+    {
+        let mut runs = registry
+            .runs
+            .lock()
+            .map_err(|_| "翻译运行状态锁不可用。".to_string())?;
+        runs.insert(
+            request.run_id.clone(),
+            RwkvTranslationRunRecord {
+                cancel: cancel.clone(),
+                status: initial_status.clone(),
+            },
+        );
+    }
+
+    if targets.is_empty() {
+        let status = update_run_status(registry, &request.run_id, |status| {
+            status.state = RwkvTranslationRunState::Completed;
+            status.message = "没有需要翻译的文本。".to_string();
+        })?;
+        return Ok(status);
+    }
+
+    let provider_config = MobileBatchChatConfig {
+        base_url: request.base_url,
+        timeout_ms: request.timeout_ms,
+    };
+    let source_lang = request.source_lang.as_deref().unwrap_or("en").to_string();
+
+    let mut completed_segment_ids = Vec::new();
+    let mut failed_segment_ids = Vec::new();
+
+    for batch in targets.chunks(request.batch_size) {
+        if cancel.load(Ordering::SeqCst) {
+            let status = cancel_current_run(
+                registry,
+                &dir,
+                &request.run_id,
+                &request.translation_file_id,
+                &request.target_lang,
+                &mut translation_segments,
+                &[],
+            )?;
+            return Ok(status);
+        }
+
+        let batch_ids = batch
+            .iter()
+            .map(|segment| segment.id.clone())
+            .collect::<Vec<_>>();
+        mark_translation_segments_translating(&mut translation_segments, &batch_ids);
+        let bundle = save_run_segments(
+            &dir,
+            &request.translation_file_id,
+            &request.target_lang,
+            translation_segments.clone(),
+        )?;
+        update_run_status(registry, &request.run_id, |status| {
+            status.state = RwkvTranslationRunState::Running;
+            status.message = "正在翻译当前批次。".to_string();
+            status.translation_file = Some(bundle.0.clone());
+            status.segments = Some(bundle.1.clone());
+        })?;
+
+        let source_texts = batch
+            .iter()
+            .map(|segment| segment.source_text.clone())
+            .collect::<Vec<_>>();
+        let result = mobile_batch_chat::translate_batch(
+            &provider_config,
+            ProviderTranslateBatch {
+                source_texts: &source_texts,
+                source_lang: &source_lang,
+                target_lang: &request.target_lang,
+                timeout_ms: provider_config.timeout_ms,
+                cancel: Some(cancel.clone()),
+            },
+        )
+        .await;
+
+        if cancel.load(Ordering::SeqCst) {
+            let status = cancel_current_run(
+                registry,
+                &dir,
+                &request.run_id,
+                &request.translation_file_id,
+                &request.target_lang,
+                &mut translation_segments,
+                &batch_ids,
+            )?;
+            return Ok(status);
+        }
+
+        if !result.ok || result.translations.len() != batch.len() {
+            let message = if result.ok {
+                format!(
+                    "RWKV /v1/batch/chat 返回 {} 条译文，但本批有 {} 条文本。",
+                    result.translations.len(),
+                    batch.len()
+                )
+            } else {
+                result.message
+            };
+            mark_translation_segments_failed(&mut translation_segments, &batch_ids, &message);
+            failed_segment_ids.extend(batch_ids.clone());
+            let bundle = save_run_segments(
+                &dir,
+                &request.translation_file_id,
+                &request.target_lang,
+                translation_segments.clone(),
+            )?;
+            let status = update_run_status(registry, &request.run_id, |status| {
+                status.state = RwkvTranslationRunState::Failed;
+                status.failed_segment_ids = failed_segment_ids.clone();
+                status.message = message.clone();
+                status.translation_file = Some(bundle.0.clone());
+                status.segments = Some(bundle.1.clone());
+            })?;
+            return Ok(status);
+        }
+
+        mark_translation_segments_done(&mut translation_segments, &batch_ids, &result.translations);
+        completed_segment_ids.extend(batch_ids);
+        let bundle = save_run_segments(
+            &dir,
+            &request.translation_file_id,
+            &request.target_lang,
+            translation_segments.clone(),
+        )?;
+        update_run_status(registry, &request.run_id, |status| {
+            status.completed_segment_ids = completed_segment_ids.clone();
+            status.message = format!("已完成 {} 段。", status.completed_segment_ids.len());
+            status.translation_file = Some(bundle.0.clone());
+            status.segments = Some(bundle.1.clone());
+        })?;
+    }
+
+    update_run_status(registry, &request.run_id, |status| {
+        status.state = RwkvTranslationRunState::Completed;
+        status.completed_segment_ids = completed_segment_ids;
+        status.failed_segment_ids = failed_segment_ids;
+        status.message = "翻译运行完成。".to_string();
+    })
+}
+
+fn provider_result_into_probe(result: ProviderTranslateResult) -> RwkvTranslationApiProbeResult {
+    RwkvTranslationApiProbeResult {
+        ok: result.ok,
+        status_code: result.status_code,
+        translations: result.translations,
+        raw_response_preview: result.raw_response_preview,
+        message: result.message,
+        latency_ms: result.latency_ms,
+    }
+}
+
+fn provider_result_into_translate(
+    result: ProviderTranslateResult,
+) -> RwkvTranslationApiTranslateResult {
+    RwkvTranslationApiTranslateResult {
+        ok: result.ok,
+        status_code: result.status_code,
+        translations: result.translations,
+        raw_response_preview: result.raw_response_preview,
+        message: result.message,
+        latency_ms: result.latency_ms,
+    }
 }
 
 #[cfg(test)]
