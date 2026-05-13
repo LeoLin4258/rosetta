@@ -618,14 +618,57 @@ export type ManagedRuntimeLogsSummary = {
   message: string;
 };
 
-/**
- * Phase 3 returns this from `install_managed_rwkv_runtime` as a stub. Phase 4
- * will replace it with a real download-progress shape, but keeping the same
- * command name + a recognisable payload now lets the Phase 5 Settings UI land
- * against a stable contract.
- */
-export type ManagedRuntimeInstallStubResult = {
-  ready: boolean;
+// -----------------------------------------------------------------------------
+// Managed-runtime install (Phase 4) — model download progress + result.
+// -----------------------------------------------------------------------------
+
+export type ManagedRuntimeInstallPhase =
+  | "idle"
+  | "preflight"
+  | "downloading"
+  | "verifying"
+  | "writing-manifest"
+  | "done"
+  | "failed"
+  | "cancelled";
+
+export type ManagedRuntimeInstallProgress = {
+  phase: ManagedRuntimeInstallPhase;
+  bytesDone: number;
+  bytesTotal: number;
+  sourceUrl: string | null;
+  speedBytesPerSec: number;
+  startedAt: string | null;
   message: string;
-  installPlan: ManagedRuntimeInstallPlan;
+  lastError: string | null;
+};
+
+/**
+ * Options accepted by `install_managed_rwkv_runtime`. The Tauri command takes
+ * an optional `options` argument; pass `{ repair: true }` to wipe any existing
+ * `.part` / `.part.broken` / model files before retrying.
+ */
+export type ManagedRuntimeInstallOptions = {
+  repair?: boolean;
+};
+
+/**
+ * Final outcome of an install. Returned when the command resolves; UIs that
+ * want live progress should also subscribe to the
+ * `managed-rwkv://install-progress` event.
+ */
+export type ManagedRuntimeInstallResult = {
+  ready: boolean;
+  installed: boolean;
+  phase: ManagedRuntimeInstallPhase;
+  bytesDone: number;
+  bytesTotal: number;
+  sourceUrl: string | null;
+  message: string;
+  manifestPath: string;
+};
+
+export type ManagedRuntimeCancelInstallResult = {
+  cancelled: boolean;
+  message: string;
 };

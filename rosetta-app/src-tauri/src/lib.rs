@@ -10,11 +10,14 @@ pub fn run() {
     tauri::Builder::default()
         .manage(rwkv_api::RwkvTranslationRunRegistry::default())
         .manage(managed_rwkv::Registry::default())
+        .manage(managed_rwkv::InstallStateRegistry::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
+            managed_rwkv::cancel_managed_rwkv_install,
             managed_rwkv::get_managed_rwkv_install_plan,
+            managed_rwkv::get_managed_rwkv_install_progress,
             managed_rwkv::get_managed_rwkv_runtime_logs_summary,
             managed_rwkv::get_managed_rwkv_runtime_status,
             managed_rwkv::install_managed_rwkv_runtime,

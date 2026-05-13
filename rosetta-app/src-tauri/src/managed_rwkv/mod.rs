@@ -13,6 +13,7 @@
 //! flow; the command exists now so the frontend can land the install button
 //! UI in Phase 5 against a stable contract.
 
+pub mod install;
 pub mod layout;
 pub mod lifecycle;
 pub mod profile;
@@ -21,6 +22,7 @@ pub mod status;
 use serde::Serialize;
 use tauri::{AppHandle, State};
 
+use install::{install_model, InstallOptions, InstallProgress, InstallResult};
 use layout::RuntimeLayout;
 use lifecycle::{
     current_process_snapshot, probe_sidecar, read_log_tail, start_sidecar, stop_sidecar,
@@ -31,6 +33,7 @@ use status::{
 };
 
 /// Re-export so `lib.rs` can manage the registry as Tauri state.
+pub use install::InstallRegistry as InstallStateRegistry;
 pub use lifecycle::ManagedRwkvRuntimeRegistry as Registry;
 
 #[derive(Debug, Serialize)]
@@ -43,10 +46,9 @@ pub struct ManagedRuntimeLogsSummary {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ManagedRuntimeInstallStubResult {
-    pub ready: bool,
+pub struct ManagedRuntimeCancelInstallResult {
+    pub cancelled: bool,
     pub message: String,
-    pub install_plan: ManagedRuntimeInstallPlan,
 }
 
 // =============================================================================
@@ -83,21 +85,42 @@ pub fn get_managed_rwkv_install_plan(
 #[tauri::command]
 pub async fn install_managed_rwkv_runtime(
     app: AppHandle,
-) -> Result<ManagedRuntimeInstallStubResult, String> {
-    // Phase 4 will wire the actual download here. For Phase 3 we ensure the
-    // app-data layout exists (so Phase 4's downloader has somewhere to write)
-    // and report current readiness so the UI can show a coherent state.
-    let static_status = build_static_status(&app)?;
-    if let Some(profile) = profile::current_profile() {
-        let layout = RuntimeLayout::from_app(&app, profile)?;
-        layout.ensure_dirs()?;
-    }
+    install_registry: State<'_, InstallStateRegistry>,
+    options: Option<InstallOptions>,
+) -> Result<InstallResult, String> {
+    let Some(profile) = profile::current_profile() else {
+        return Err("当前平台不支持本地 RWKV 运行时。".to_string());
+    };
+    let layout = RuntimeLayout::from_app(&app, profile)?;
+    install_model(
+        &app,
+        install_registry.inner(),
+        profile,
+        &layout,
+        options.unwrap_or_default(),
+    )
+    .await
+}
 
-    Ok(ManagedRuntimeInstallStubResult {
-        ready: static_status.install_plan.ready,
-        message: "Phase 4 将接入自动下载；当前请等待 Phase 4 落地或手动放置模型文件。"
-            .to_string(),
-        install_plan: static_status.install_plan,
+#[tauri::command]
+pub async fn get_managed_rwkv_install_progress(
+    install_registry: State<'_, InstallStateRegistry>,
+) -> Result<InstallProgress, String> {
+    Ok(install_registry.snapshot().await)
+}
+
+#[tauri::command]
+pub async fn cancel_managed_rwkv_install(
+    install_registry: State<'_, InstallStateRegistry>,
+) -> Result<ManagedRuntimeCancelInstallResult, String> {
+    let cancelled = install_registry.request_cancel().await;
+    Ok(ManagedRuntimeCancelInstallResult {
+        cancelled,
+        message: if cancelled {
+            "已请求取消，当前批次完成后退出。".to_string()
+        } else {
+            "当前没有正在进行的安装任务。".to_string()
+        },
     })
 }
 

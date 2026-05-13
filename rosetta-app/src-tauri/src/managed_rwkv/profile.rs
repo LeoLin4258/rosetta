@@ -45,13 +45,23 @@ pub struct RuntimeProfile {
     pub tokenizer_filename: &'static str,
     /// Subdirectory under `<app-local-data>/models/` where the model file lives.
     pub model_directory_name: &'static str,
-    /// Model filename inside that directory. Phase 4 will populate the file
-    /// via download; Phase 3 just resolves the expected path.
+    /// Model filename inside that directory.
     pub model_filename: &'static str,
-    /// Approximate model size in bytes; informational for download progress
-    /// UI. The exact byte count from HuggingFace is filled in by Phase 4 when
-    /// the manifest stabilizes.
-    pub model_size_bytes_estimate: u64,
+    /// Exact size in bytes of the model file the SHA256 was computed against.
+    /// HEAD requests verify this matches before download starts; mismatched
+    /// content-length fails fast with `artifact-corrupted` instead of wasting
+    /// bandwidth.
+    pub model_size_bytes: u64,
+    /// Hex SHA256 of the canonical model file. Phase 0 verification on
+    /// 2026-05-13 used this exact file.
+    pub model_sha256: &'static str,
+    /// Mirror URLs to try in order. Phase 4 walks them top-to-bottom and
+    /// stops at the first one that returns a 2xx response (HEAD + GET).
+    /// ModelScope is intentionally not present for the WebRWKV `.prefab`
+    /// path — that file does not currently exist on AlicLi's ModelScope
+    /// repo, and the model author's parallel ModelScope namespace returned
+    /// empty file lists when probed on 2026-05-13.
+    pub model_download_urls: &'static [&'static str],
     /// Languages the model is trained for, as ISO direction codes.
     pub supported_directions: &'static [&'static str],
     /// `--model-name` argument passed to `rwkv_server` so the model name in
@@ -77,10 +87,18 @@ pub const MACOS_ARM64_WEBRWKV: RuntimeProfile = RuntimeProfile {
     tokenizer_filename: "b_rwkv_vocab_v20230424.txt",
     model_directory_name: "rwkv-translate-1.5b-nf4",
     model_filename: "RWKV_v7_G1c_1.5B_Translate_ctx4096_20260118-nf4.prefab",
-    // Phase 0 observed 1.3 GiB on disk (~1_374_389_534 bytes). Used only
-    // for download progress estimates; the actual byte count is verified
-    // by Phase 4 download manifest, not by this constant.
-    model_size_bytes_estimate: 1_374_389_534,
+    // Exact byte count of the file Phase 0 validated against on 2026-05-13.
+    // Matches the Content-Length the HuggingFace CDN reports.
+    model_size_bytes: 1_355_373_863,
+    model_sha256: "f6eeb1fff051bcba88539f641993d9a45e4f697f2db37e3bf0fcdd09bff2ef15",
+    // HuggingFace direct first; reqwest honors HTTPS_PROXY so users behind
+    // Clash / corporate proxy can still reach it. hf-mirror.com was unreliable
+    // on 2026-05-13 (returned LFS pointer files / empty bodies) but is kept
+    // as a fallback because it sometimes works without a proxy.
+    model_download_urls: &[
+        "https://huggingface.co/mollysama/rwkv-mobile-models/resolve/main/WebRWKV/RWKV_v7_G1c_1.5B_Translate_ctx4096_20260118-nf4.prefab",
+        "https://hf-mirror.com/mollysama/rwkv-mobile-models/resolve/main/WebRWKV/RWKV_v7_G1c_1.5B_Translate_ctx4096_20260118-nf4.prefab",
+    ],
     supported_directions: &["en-zh", "zh-en"],
     model_name_arg: "rwkv-translate",
     health_path: "/health",
@@ -106,7 +124,11 @@ pub const WINDOWS_AMD64_LIBTORCH: RuntimeProfile = RuntimeProfile {
     tokenizer_filename: "rwkv_vocab_v20230424.txt",
     model_directory_name: "rwkv-v7-g1-translate-1.5b",
     model_filename: "RWKV_v7_G1c_1.5B_Translate_ctx4096_20260118.pth",
-    model_size_bytes_estimate: 3_055_445_546,
+    model_size_bytes: 3_055_445_546,
+    model_sha256: "b51051a35949cbd6189da3d99b2bd9ae632d5665716a8e647abbe208f21120fa",
+    model_download_urls: &[
+        "https://modelscope.cn/models/AlicLi/RWKV_v7_G1_Translate/resolve/master/RWKV_v7_G1c_1.5B_Translate_ctx4096_20260118.pth",
+    ],
     supported_directions: &["en-zh", "zh-en"],
     model_name_arg: "rwkv-translate",
     health_path: "/health",
@@ -137,7 +159,8 @@ pub struct RuntimeProfileSummary {
     pub platform_arch: &'static str,
     pub backend: &'static str,
     pub model_filename: &'static str,
-    pub model_size_bytes_estimate: u64,
+    pub model_size_bytes: u64,
+    pub model_sha256: &'static str,
     pub supported_directions: &'static [&'static str],
     pub bind_host: &'static str,
 }
@@ -151,7 +174,8 @@ impl RuntimeProfileSummary {
             platform_arch: profile.platform_arch,
             backend: profile.backend,
             model_filename: profile.model_filename,
-            model_size_bytes_estimate: profile.model_size_bytes_estimate,
+            model_size_bytes: profile.model_size_bytes,
+            model_sha256: profile.model_sha256,
             supported_directions: profile.supported_directions,
             bind_host: profile.bind_host,
         }

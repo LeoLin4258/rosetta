@@ -1,7 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  ManagedRuntimeCancelInstallResult,
+  ManagedRuntimeInstallOptions,
   ManagedRuntimeInstallPlan,
-  ManagedRuntimeInstallStubResult,
+  ManagedRuntimeInstallProgress,
+  ManagedRuntimeInstallResult,
   ManagedRuntimeLogsSummary,
   ManagedRuntimeProbeResult,
   ManagedRuntimeStartResult,
@@ -40,9 +44,41 @@ export function getManagedRwkvInstallPlan() {
   return invoke<ManagedRuntimeInstallPlan>("get_managed_rwkv_install_plan");
 }
 
-export function installManagedRwkvRuntime() {
-  return invoke<ManagedRuntimeInstallStubResult>(
-    "install_managed_rwkv_runtime"
+export function installManagedRwkvRuntime(
+  options?: ManagedRuntimeInstallOptions
+) {
+  return invoke<ManagedRuntimeInstallResult>("install_managed_rwkv_runtime", {
+    options,
+  });
+}
+
+export function getManagedRwkvInstallProgress() {
+  return invoke<ManagedRuntimeInstallProgress>(
+    "get_managed_rwkv_install_progress"
+  );
+}
+
+export function cancelManagedRwkvInstall() {
+  return invoke<ManagedRuntimeCancelInstallResult>(
+    "cancel_managed_rwkv_install"
+  );
+}
+
+/**
+ * Subscribe to live install-progress events emitted by the Rust install
+ * pipeline (`managed-rwkv://install-progress`). Calls `handler` with the
+ * latest `ManagedRuntimeInstallProgress` each time the Rust side emits.
+ *
+ * Returns an unlisten function — call it in the React effect cleanup to
+ * avoid leaking subscriptions across mounts. Rust throttles emissions to
+ * roughly 10/sec, so it's safe to render on each call.
+ */
+export function subscribeManagedRwkvInstallProgress(
+  handler: (progress: ManagedRuntimeInstallProgress) => void
+): Promise<UnlistenFn> {
+  return listen<ManagedRuntimeInstallProgress>(
+    "managed-rwkv://install-progress",
+    (event) => handler(event.payload)
   );
 }
 
