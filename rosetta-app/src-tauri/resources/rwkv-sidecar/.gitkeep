@@ -1,0 +1,7 @@
+# Tauri bundled resources for the RWKV sidecar.
+#
+# Populated at build time by `src-tauri/scripts/fetch-rwkv-sidecar.sh` with
+# `b_rwkv_vocab_v20230424.txt` (tokenizer) and `MANIFEST.json`.
+#
+# These end up under `Contents/Resources/_up_/resources/rwkv-sidecar/` in the
+# bundled `.app` on macOS.

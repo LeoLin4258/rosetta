@@ -2,7 +2,13 @@
 
 ## Status
 
-Accepted
+Superseded by [ADR 0003](0003-macos-first-managed-rwkv-runtime.md) — 2026-05-13
+
+> 本 ADR 列出的"暂停"边界于 2026-05-13 被 ADR 0003 解除。RWKV 工程侧确认了首发 runtime 方案（`rwkv-mobile` + WebRWKV 后端、Apple Silicon 优先），并经过端到端实测验证。
+>
+> 本文件保留作为历史上下文：它记录了为什么 Rosetta 在 2026-05-08 选择暂停内置 runtime、什么条件下才能恢复、以及恢复之前外部 API 路径必须遵循的边界。**这些边界在 ADR 0003 时代继承且加严**，特别是隐私、绑定、token 处理、和文档结构不进日志的要求。
+>
+> 后续开发者请优先阅读 ADR 0003 了解当前路径；遇到外部 API connector（`rwkv-lightning-contents` provider）相关问题时再回看本 ADR 的"Current Development Rule"小节。
 
 ## Date
 

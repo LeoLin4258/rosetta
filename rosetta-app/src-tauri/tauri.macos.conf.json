@@ -24,5 +24,13 @@
         }
       }
     ]
+  },
+  "bundle": {
+    "targets": ["app", "dmg"],
+    "externalBin": ["binaries/rwkv-server"],
+    "resources": ["resources/rwkv-sidecar/*"],
+    "macOS": {
+      "minimumSystemVersion": "13.0"
+    }
   }
 }

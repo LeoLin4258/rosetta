@@ -1,0 +1,11 @@
+# Tauri sidecar binaries.
+#
+# This directory is populated at build time by
+# `src-tauri/scripts/fetch-rwkv-sidecar.sh` with files matching the
+# Tauri externalBin naming convention (`<name>-<target-triple>`).
+#
+# Do not commit the binaries themselves — they are produced by
+# `.github/workflows/build-rwkv-sidecar-macos.yml` and shipped via
+# tagged GitHub releases. See
+# `docs/engineering/plans/2026-05-13-macos-rwkv-one-click-implementation.md`
+# Phase 2.

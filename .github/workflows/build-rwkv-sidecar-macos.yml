@@ -1,0 +1,214 @@
+name: Build RWKV sidecar (macOS arm64)
+
+# Builds the rwkv-mobile WebRWKV-backend `rwkv_server` sidecar binary from
+# source against a pinned upstream commit, then publishes a tarball that the
+# Rosetta Tauri build consumes via `scripts/fetch-rwkv-sidecar.sh`.
+#
+# Background: ADR 0003 + plan
+# docs/engineering/plans/2026-05-13-macos-rwkv-one-click-implementation.md
+# Phase 2. rwkv-mobile upstream CI only publishes the dylib library, not the
+# `rwkv_server` HTTP binary we need, so Rosetta has to build it itself.
+#
+# Triggers:
+#   - workflow_dispatch:  manual run; default builds the pinned commit and
+#                         uploads the tarball as a workflow artifact only.
+#   - push tag `sidecar-v*`: in addition to the artifact, publishes the
+#                         tarball as a GitHub Release asset under that tag.
+#
+# The workflow does NOT trigger on every push or PR; sidecar updates are
+# deliberate. Bump `RWKV_MOBILE_COMMIT` below to track a new upstream commit
+# (verify locally first against the validation notes
+# docs/engineering/plans/2026-05-13-rwkv-mobile-macos-validation-notes.md).
+
+on:
+  workflow_dispatch:
+    inputs:
+      rwkv_mobile_commit:
+        description: "rwkv-mobile commit SHA (overrides RWKV_MOBILE_COMMIT env)"
+        required: false
+        default: ""
+  push:
+    tags:
+      - "sidecar-v*"
+
+env:
+  # Pinned to the commit that Phase 0 validation (2026-05-13) ran against.
+  # See docs/engineering/plans/2026-05-13-rwkv-mobile-macos-validation-notes.md.
+  RWKV_MOBILE_COMMIT: "498ae7e1e2b7c3abc998250b17f57948dbdd1dc0"
+  # File that ships next to the binary; rwkv-mobile checks it into
+  # `assets/b_rwkv_vocab_v20230424.txt`.
+  TOKENIZER_FILE: "b_rwkv_vocab_v20230424.txt"
+
+permissions:
+  contents: write  # required for the create-release step on tag pushes
+
+jobs:
+  build:
+    name: Build sidecar (macOS arm64)
+    runs-on: macos-15  # Apple Silicon runner — required for arm64 build
+    timeout-minutes: 30
+    steps:
+      - name: Resolve target commit
+        id: resolve
+        run: |
+          set -euo pipefail
+          commit="${{ github.event.inputs.rwkv_mobile_commit || env.RWKV_MOBILE_COMMIT }}"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "short=$(echo "$commit" | cut -c1-7)" >> "$GITHUB_OUTPUT"
+          echo "Pinned rwkv-mobile commit: $commit"
+
+      - name: Checkout rwkv-mobile
+        uses: actions/checkout@v4
+        with:
+          repository: MollySophia/rwkv-mobile
+          ref: ${{ steps.resolve.outputs.commit }}
+          path: rwkv-mobile
+
+      - name: Install build tools
+        run: |
+          set -euo pipefail
+          brew install cmake ninja
+          # Rust toolchain for the WebRWKV backend Rust crate.
+          if ! command -v cargo >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+              sh -s -- -y --default-toolchain stable --profile minimal
+          fi
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          cmake --version
+          ninja --version
+
+      - name: Configure CMake
+        working-directory: rwkv-mobile
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          cmake -S . -B build \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
+            -DENABLE_WEBRWKV_BACKEND=ON \
+            -DENABLE_MLX_BACKEND=OFF \
+            -DENABLE_NCNN_BACKEND=OFF \
+            -DENABLE_LLAMACPP_BACKEND=OFF \
+            -DENABLE_SERVER=ON \
+            -DBUILD_EXAMPLES=ON \
+            -DHTTPLIB_USE_OPENSSL_IF_AVAILABLE=OFF \
+            -DHTTPLIB_REQUIRE_OPENSSL=OFF
+
+      - name: Build rwkv_server
+        working-directory: rwkv-mobile
+        run: |
+          set -euo pipefail
+          ninja -C build -j "$(sysctl -n hw.ncpu)" rwkv_server
+          ls -lh build/examples/rwkv_server
+
+      - name: Verify no foreign dylib links
+        working-directory: rwkv-mobile
+        # Distribution safety: if rwkv_server links anything under
+        # /opt/homebrew/, /usr/local/, or /opt/local/, the artifact won't run
+        # on a clean Mac. Fail loudly so a future Rosetta dev sees it instead
+        # of shipping a broken binary.
+        run: |
+          set -euo pipefail
+          deps=$(otool -L build/examples/rwkv_server | awk 'NR>1 {print $1}')
+          echo "Linked libraries:"
+          echo "$deps"
+          if echo "$deps" | grep -E '^(/opt/homebrew/|/usr/local/|/opt/local/)' ; then
+            echo "::error::rwkv_server links non-system dylib(s); will not run on clean Macs."
+            exit 1
+          fi
+
+      - name: Stage release tarball
+        id: package
+        working-directory: rwkv-mobile
+        run: |
+          set -euo pipefail
+          short="${{ steps.resolve.outputs.short }}"
+          stage="$(mktemp -d)/rwkv-sidecar-macos-arm64-${short}"
+          mkdir -p "$stage"
+
+          # Tauri externalBin naming convention: <name>-<target-triple>.
+          cp build/examples/rwkv_server "$stage/rwkv-server-aarch64-apple-darwin"
+          cp "assets/${{ env.TOKENIZER_FILE }}" "$stage/${{ env.TOKENIZER_FILE }}"
+          chmod +x "$stage/rwkv-server-aarch64-apple-darwin"
+
+          # Per-file SHA256 + build metadata. Rosetta's fetch script will
+          # verify these before placing files into src-tauri/binaries/.
+          server_sha=$(shasum -a 256 "$stage/rwkv-server-aarch64-apple-darwin" | awk '{print $1}')
+          tok_sha=$(shasum -a 256 "$stage/${{ env.TOKENIZER_FILE }}" | awk '{print $1}')
+
+          cat > "$stage/MANIFEST.json" <<EOF
+          {
+            "schemaVersion": 1,
+            "targetTriple": "aarch64-apple-darwin",
+            "buildHost": "macos-15",
+            "buildTime": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "rwkvMobileCommit": "${{ steps.resolve.outputs.commit }}",
+            "cmakeOptions": [
+              "ENABLE_WEBRWKV_BACKEND=ON",
+              "ENABLE_MLX_BACKEND=OFF",
+              "ENABLE_NCNN_BACKEND=OFF",
+              "ENABLE_LLAMACPP_BACKEND=OFF",
+              "ENABLE_SERVER=ON",
+              "HTTPLIB_USE_OPENSSL_IF_AVAILABLE=OFF",
+              "CMAKE_OSX_DEPLOYMENT_TARGET=13.0"
+            ],
+            "files": [
+              {
+                "name": "rwkv-server-aarch64-apple-darwin",
+                "role": "sidecar",
+                "sha256": "${server_sha}"
+              },
+              {
+                "name": "${{ env.TOKENIZER_FILE }}",
+                "role": "tokenizer",
+                "sha256": "${tok_sha}"
+              }
+            ]
+          }
+          EOF
+
+          tar_dir="$(dirname "$stage")"
+          tar_name="rwkv-sidecar-macos-arm64-${short}.tar.gz"
+          tar -C "$tar_dir" -czf "$tar_name" "$(basename "$stage")"
+          tar_sha=$(shasum -a 256 "$tar_name" | awk '{print $1}')
+          echo "tar_name=$tar_name" >> "$GITHUB_OUTPUT"
+          echo "tar_path=$(pwd)/$tar_name" >> "$GITHUB_OUTPUT"
+          echo "tar_sha=$tar_sha" >> "$GITHUB_OUTPUT"
+          ls -lh "$tar_name"
+          echo "tarball SHA256: $tar_sha"
+
+      - name: Upload as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rwkv-sidecar-macos-arm64-${{ steps.resolve.outputs.short }}
+          path: rwkv-mobile/${{ steps.package.outputs.tar_name }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish to GitHub Release (tag pushes only)
+        if: startsWith(github.ref, 'refs/tags/sidecar-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          files: rwkv-mobile/${{ steps.package.outputs.tar_name }}
+          body: |
+            RWKV sidecar build for macOS arm64.
+
+            - rwkv-mobile commit: `${{ steps.resolve.outputs.commit }}`
+            - tarball SHA256: `${{ steps.package.outputs.tar_sha }}`
+
+            Consumed by `rosetta-app/src-tauri/scripts/fetch-rwkv-sidecar.sh`.
+
+# -----------------------------------------------------------------------------
+# Future work (Phase 7 — Release Hardening)
+# -----------------------------------------------------------------------------
+# - codesign the sidecar binary with a Developer ID Application cert + harden
+#   runtime. Requires APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD secrets.
+# - notarize via `xcrun notarytool submit` (requires APPLE_API_KEY_ID /
+#   APPLE_API_ISSUER / APPLE_API_KEY_CONTENT secrets) and staple the ticket.
+# - Both are deliberately not in this Phase 2 workflow because they require
+#   Apple Developer Program credentials and are easier to validate in the
+#   release pipeline next to the main Rosetta app signing flow.
