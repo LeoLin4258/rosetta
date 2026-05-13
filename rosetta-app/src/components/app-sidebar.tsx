@@ -20,8 +20,16 @@ import {
   SidebarRail,
 } from "@/components/ui/sidebar";
 import type { RosettaJobSummary } from "@/types/rosetta";
+import { cn } from "@/lib/utils";
 
-export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
+type AppSidebarProps = React.ComponentProps<typeof Sidebar> & {
+  hasMacTitlebarOverlay?: boolean;
+};
+
+export function AppSidebar({
+  hasMacTitlebarOverlay = false,
+  ...props
+}: AppSidebarProps) {
   const location = useLocation();
   const jobs = useRosettaStore((state) => state.jobs);
   const activeJobId = useRosettaStore((state) => state.activeJobId);
@@ -56,7 +64,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
 
   return (
     <Sidebar collapsible="offcanvas" {...props}>
-      <SidebarHeader>
+      <SidebarHeader className={cn(hasMacTitlebarOverlay && "pt-[3.25rem]")}>
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton asChild size="lg" tooltip="新项目">

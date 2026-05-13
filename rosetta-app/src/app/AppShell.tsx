@@ -8,11 +8,15 @@ import {
   SidebarInset,
   SidebarProvider,
   SidebarTrigger,
+  useSidebar,
 } from "@/components/ui/sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { listRosettaJobs } from "@/lib/rosettaJobs";
 import { useRosettaStore } from "@/store/useRosettaStore";
 import { cn } from "@/lib/utils";
+
+const isMacPlatform =
+  typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/.test(navigator.platform);
 
 const pageTitles: Record<string, string> = {
   "/": "Rosetta",
@@ -22,6 +26,41 @@ const pageTitles: Record<string, string> = {
 };
 
 const appWindow = getCurrentWindow();
+
+function AppHeader({
+  isMacPlatform,
+  onMouseDown,
+  title,
+}: {
+  isMacPlatform: boolean;
+  onMouseDown: (event: React.MouseEvent<HTMLElement>) => void;
+  title: string;
+}) {
+  const { state } = useSidebar();
+  const shouldAvoidMacTrafficLights = isMacPlatform && state === "collapsed";
+
+  return (
+    <header
+      className={cn(
+        "flex h-14 shrink-0 select-none items-center justify-between px-4",
+        isMacPlatform && "cursor-default"
+      )}
+      data-tauri-drag-region={isMacPlatform ? true : undefined}
+      onMouseDown={onMouseDown}
+    >
+      <div
+        className={cn(
+          "flex items-center justify-center gap-3 transition-transform duration-300 ease-out will-change-transform",
+          shouldAvoidMacTrafficLights && "translate-x-16"
+        )}
+      >
+        <SidebarTrigger />
+        <Separator className="h-6" orientation="vertical" />
+        <h1 className="text-lg font-semibold">{title}</h1>
+      </div>
+    </header>
+  );
+}
 
 export function AppShell() {
   const location = useLocation();
@@ -38,6 +77,29 @@ export function AppShell() {
     location.pathname === "/jobs" || location.pathname.startsWith("/jobs/")
       ? currentJob?.filename ?? "任务"
       : pageTitles[location.pathname] ?? "Rosetta";
+  const titlebarHeight = isMacPlatform ? "0px" : "2.25rem";
+
+  async function startHeaderDrag(event: React.MouseEvent<HTMLElement>) {
+    if (!isMacPlatform || event.button !== 0) {
+      return;
+    }
+
+    const target = event.target as HTMLElement;
+    if (
+      target.closest(
+        "button, a, input, select, textarea, [role='button'], [data-window-no-drag]"
+      )
+    ) {
+      return;
+    }
+
+    if (event.detail === 2) {
+      await appWindow.toggleMaximize();
+      return;
+    }
+
+    await appWindow.startDragging();
+  }
 
   useEffect(() => {
     const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
@@ -73,27 +135,31 @@ export function AppShell() {
       <div
         className={cn(
           "flex h-screen flex-col bg-transparent text-foreground",
+          isMacPlatform && "rosetta-macos",
           isDark && "dark"
         )}
       >
-        <WindowTitleBar />
+        {!isMacPlatform && <WindowTitleBar />}
         <SidebarProvider
           className="h-full min-h-0 flex-1 bg-transparent text-foreground"
           style={
             {
-              "--window-titlebar-height": "2.25rem",
+              "--window-titlebar-height": titlebarHeight,
             } as React.CSSProperties
           }
         >
-          <AppSidebar />
-          <SidebarInset className="min-h-0  rounded-tl-xl overflow-hidden border-l border-t">
-            <header className="flex h-14 shrink-0 items-center justify-between px-4">
-              <div className="flex items-center justify-center gap-3">
-                <SidebarTrigger />
-                <Separator className="h-6" orientation="vertical" />
-                <h1 className="text-lg font-semibold">{title}</h1>
-              </div>
-            </header>
+          <AppSidebar hasMacTitlebarOverlay={isMacPlatform} />
+          <SidebarInset
+            className={cn(
+              "min-h-0 overflow-hidden ",
+              isMacPlatform ? "rounded-none" : "rounded-tl-xl border-t"
+            )}
+          >
+            <AppHeader
+              isMacPlatform={isMacPlatform}
+              onMouseDown={startHeaderDrag}
+              title={title}
+            />
 
             <div className="min-h-0 flex-1 ">
                 <Outlet />

@@ -1,0 +1,28 @@
+{
+  "app": {
+    "macOSPrivateApi": true,
+    "windows": [
+      {
+        "title": "Rosetta",
+        "width": 1280,
+        "height": 780,
+        "minWidth": 960,
+        "minHeight": 640,
+        "decorations": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": {
+          "x": 20,
+          "y": 20
+        },
+        "shadow": true,
+        "theme": "Dark",
+        "transparent": true,
+        "windowEffects": {
+          "effects": ["sidebar"],
+          "state": "active"
+        }
+      }
+    ]
+  }
+}
