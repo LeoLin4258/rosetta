@@ -51,7 +51,7 @@ function AppHeader({
       <div
         className={cn(
           "flex items-center justify-center gap-3 transition-transform duration-300 ease-out will-change-transform",
-          shouldAvoidMacTrafficLights && "translate-x-16"
+          shouldAvoidMacTrafficLights && "translate-x-20"
         )}
       >
         <SidebarTrigger />

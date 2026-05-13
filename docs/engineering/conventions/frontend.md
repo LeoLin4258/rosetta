@@ -100,5 +100,10 @@ Tailwind CSS 和 shadcn/ui 是默认样式方式。全局样式只放入 `src/st
 - 侧边栏展开/合并动画使用 CSS width/position transition，当前为 `duration-300 ease-out`，菜单文本使用 opacity transition 辅助隐藏。
 - Windows 桌面端使用 Tauri `windowEffects.mica` 和自绘标题栏。主题模式支持 `light`、`dark`、`system`，并同步到 Tauri window theme。注意：`tauri.conf.json` 的默认窗口 theme 使用 `Dark` / `Light`，前端运行时 `setTheme` API 使用 `"dark"` / `"light"` / `null`。外层 app wrapper 和 `body` 必须保持透明，标题栏与侧边栏通过半透明 `--sidebar` token 露出系统材质，主内容区保持 `bg-background` 以保证长文本阅读对比度。
 - Mica 的壁纸采样强度由 Windows 控制。Rosetta 通过 `--sidebar`、`--sidebar-primary`、`--sidebar-accent` 的 alpha 值控制前端覆盖层透明度；调低 alpha 会让桌面颜色更明显。
-- 窗口标题栏由 `src/components/window-title-bar.tsx` 渲染。不要改回原生 decorations，除非新增 ADR 说明原因。
-- `src/components/ui/sidebar.tsx` 的 desktop fixed sidebar 必须从 `--window-titlebar-height` 下方开始，不能延伸到 title bar 后面，否则半透明 `--sidebar` 会在左上角叠加两次并造成色差。
+- macOS 桌面端使用平台覆盖配置 `src-tauri/tauri.macos.conf.json`，保留原生 traffic lights。主窗口使用 `decorations: true`、`titleBarStyle: "Overlay"`、`hiddenTitle: true`，前端不渲染 `src/components/window-title-bar.tsx`。
+- macOS 透明毛玻璃侧栏依赖 `transparent: true`、`windowEffects.sidebar` 和 `macOSPrivateApi: true`。`macOSPrivateApi` 会影响 Mac App Store 分发，调整前必须明确发布渠道取舍。
+- macOS-only 视觉 token 和 backdrop filter 必须挂在 `.rosetta-macos` 范围内，不要改动默认 `--sidebar` token 来实现 macOS 透明效果，否则会影响 Windows Mica 和普通浏览器调试外观。
+- macOS 右侧主 header 是窗口拖拽区；按钮、链接、输入控件和带 `data-window-no-drag` 的元素不能触发拖拽。双击 header 空白区域可以切换最大化。
+- macOS sidebar 合并时，header 左侧的侧边栏开关和页面标题必须向右偏移并保留动画，避免和 traffic lights 重叠。当前使用 `duration-300 ease-out`，与 sidebar 合并动画保持一致。
+- Windows 窗口标题栏由 `src/components/window-title-bar.tsx` 渲染。不要把 Windows 改回原生 decorations，除非新增 ADR 说明原因。
+- `src/components/ui/sidebar.tsx` 的 desktop fixed sidebar 在 Windows 必须从 `--window-titlebar-height` 下方开始，不能延伸到 title bar 后面，否则半透明 `--sidebar` 会在左上角叠加两次并造成色差。macOS 使用原生 overlay titlebar 时 `--window-titlebar-height` 为 `0px`，sidebar 可以延伸到窗口顶部，但 `src/components/app-sidebar.tsx` 必须为 traffic lights 留出顶部 padding。
