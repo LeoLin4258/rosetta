@@ -87,12 +87,21 @@ export function useManagedRwkvRuntime() {
     };
   }, [setProgress, setError]);
 
+  const proxyUrl = useRosettaStore((s) => s.downloadProxy.url);
+
   const install = useCallback(
     async (options?: ManagedRuntimeInstallOptions): Promise<ManagedRuntimeInstallResult | null> => {
       setIsInstalling(true);
       setError(null);
       try {
-        const result = await installManagedRwkvRuntime(options);
+        // Inject the user-configured download proxy unless the caller
+        // explicitly passed `proxyUrl` (e.g. for a one-off override). Empty
+        // string → no proxy, so the Rust side falls back to env / no-proxy.
+        const merged: ManagedRuntimeInstallOptions = {
+          ...options,
+          proxyUrl: options?.proxyUrl ?? proxyUrl,
+        };
+        const result = await installManagedRwkvRuntime(merged);
         // Refresh status after install — model file existence + install plan
         // both flip when this succeeds.
         await refreshStatus();
@@ -105,7 +114,7 @@ export function useManagedRwkvRuntime() {
         setIsInstalling(false);
       }
     },
-    [refreshStatus, setError]
+    [refreshStatus, setError, proxyUrl]
   );
 
   const cancelInstall = useCallback(async (): Promise<boolean> => {

@@ -646,11 +646,18 @@ export type ManagedRuntimeInstallProgress = {
 
 /**
  * Options accepted by `install_managed_rwkv_runtime`. The Tauri command takes
- * an optional `options` argument; pass `{ repair: true }` to wipe any existing
- * `.part` / `.part.broken` / model files before retrying.
+ * an optional `options` argument.
+ *
+ * - `repair`: wipe any existing `.part` / `.part.broken` / model files before
+ *   retrying.
+ * - `proxyUrl`: HTTP / HTTPS / SOCKS5 proxy used **only for remote artifact
+ *   downloads** (HuggingFace). Empty string / undefined → no Rosetta-managed
+ *   proxy (reqwest still falls back to `HTTPS_PROXY` env if present). Loopback
+ *   sidecar traffic always bypasses this.
  */
 export type ManagedRuntimeInstallOptions = {
   repair?: boolean;
+  proxyUrl?: string | null;
 };
 
 /**

@@ -95,6 +95,24 @@ pub struct InstallOptions {
     /// When true, delete any existing model + `.part` + `.part.broken` before
     /// starting. Used by the "Repair" button after SHA256 fails.
     pub repair: bool,
+    /// Optional HTTP/HTTPS/SOCKS5 proxy URL used **only for remote model
+    /// downloads** (HuggingFace etc). Empty / missing → no Rosetta-managed
+    /// proxy (reqwest still falls back to `HTTPS_PROXY` env if present).
+    ///
+    /// Loopback traffic to the local sidecar bypasses this entirely
+    /// (see `rwkv_providers::mobile_batch_chat::loopback_client`).
+    pub proxy_url: Option<String>,
+}
+
+impl InstallOptions {
+    /// Return the trimmed proxy URL if it's a usable value, else `None`.
+    /// Centralises the "empty string means no proxy" convention.
+    fn effective_proxy_url(&self) -> Option<&str> {
+        self.proxy_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -194,7 +212,16 @@ pub async fn install_model(
         cleanup_artifacts(layout)?;
     }
 
-    let result = install_inner(app, registry, profile, layout, &cancel).await;
+    let proxy_url = options.effective_proxy_url().map(str::to_string);
+    let result = install_inner(
+        app,
+        registry,
+        profile,
+        layout,
+        &cancel,
+        proxy_url.as_deref(),
+    )
+    .await;
 
     // Always clear the cancel flag on exit so the next install can rebind one.
     {
@@ -211,6 +238,7 @@ async fn install_inner(
     profile: &'static RuntimeProfile,
     layout: &RuntimeLayout,
     cancel: &Arc<AtomicBool>,
+    proxy_url: Option<&str>,
 ) -> Result<InstallResult, String> {
     // Already installed? Re-verify SHA256 to be safe and short-circuit.
     if layout.model_file.is_file() {
@@ -311,6 +339,7 @@ async fn install_inner(
             &mut hasher,
             &mut bytes_done_initial,
             cancel,
+            proxy_url,
         )
         .await
         {
@@ -441,10 +470,22 @@ async fn download_from_mirror(
     hasher: &mut Sha256,
     bytes_done: &mut u64,
     cancel: &Arc<AtomicBool>,
+    proxy_url: Option<&str>,
 ) -> Result<(), DownloadError> {
-    let client = reqwest::Client::builder()
-        .connect_timeout(STREAM_CONNECT_TIMEOUT)
-        // No total request timeout — large file, slow proxies, etc.
+    let mut builder = reqwest::Client::builder().connect_timeout(STREAM_CONNECT_TIMEOUT);
+    // No total request timeout — large file, slow proxies, etc.
+    if let Some(proxy) = proxy_url {
+        // `Proxy::all` accepts `http://`, `https://`, `socks5://` URLs and
+        // routes both HTTP and HTTPS through it. Bad URLs are bubbled up as
+        // Fatal so the user sees a clear error instead of a generic
+        // connect-refused later.
+        let parsed = reqwest::Proxy::all(proxy).map_err(|e| {
+            DownloadError::Fatal(format!("代理 URL 无效（{proxy}）: {e}"))
+        })?;
+        builder = builder.proxy(parsed);
+        eprintln!("[rwkv-install] mirror via proxy: {proxy}");
+    }
+    let client = builder
         .build()
         .map_err(|e| DownloadError::Fatal(format!("HTTP client 创建失败: {e}")))?;
 

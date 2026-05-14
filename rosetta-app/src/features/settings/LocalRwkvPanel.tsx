@@ -27,9 +27,12 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 import { useManagedRwkvRuntime } from "@/lib/useManagedRwkvRuntime";
+import { useRosettaStore } from "@/store/useRosettaStore";
 import type {
   ManagedRuntimeInstallPhase,
   ManagedRuntimeLogsSummary,
@@ -127,6 +130,10 @@ export function LocalRwkvPanel({ className }: LocalRwkvPanelProps) {
             onCancel={() => void rt.cancelInstall()}
             isUnsupported={isUnsupported}
           />
+
+          {showProxyInput(state, isInstallActive) ? (
+            <DownloadProxyField disabled={isInstallActive} />
+          ) : null}
 
           {rt.lastError ? (
             <div className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
@@ -394,6 +401,56 @@ function PrimaryActionRow({
         </Button>
       );
   }
+}
+
+/**
+ * Show the proxy input only when the next user action plausibly needs network:
+ * either the model isn't downloaded yet, or the last install attempt failed.
+ * Hiding it on `ready` / `installed` avoids cluttering the panel once setup
+ * is done — those users won't redownload until they explicitly hit "修复".
+ */
+function showProxyInput(
+  state: ManagedRuntimeState | null,
+  isInstallActive: boolean
+): boolean {
+  if (isInstallActive) return true; // keep visible (disabled) so user knows which proxy is in use
+  return state === "not-installed" || state === "failed";
+}
+
+function DownloadProxyField({ disabled }: { disabled: boolean }) {
+  const proxyUrl = useRosettaStore((s) => s.downloadProxy.url);
+  const setProxyUrl = useRosettaStore((s) => s.setDownloadProxyUrl);
+
+  return (
+    <div className="flex flex-col gap-1.5 rounded-md border bg-muted/30 p-3">
+      <div className="flex items-baseline justify-between gap-3">
+        <Label
+          htmlFor="managed-rwkv-download-proxy"
+          className="text-xs font-medium"
+        >
+          下载代理（可选）
+        </Label>
+        <span className="text-[11px] text-muted-foreground">
+          仅用于下载模型，不影响本地翻译
+        </span>
+      </div>
+      <Input
+        id="managed-rwkv-download-proxy"
+        type="text"
+        placeholder="例如 http://127.0.0.1:7897 或留空"
+        value={proxyUrl}
+        disabled={disabled}
+        spellCheck={false}
+        autoComplete="off"
+        onChange={(event) => setProxyUrl(event.target.value)}
+        className="h-8 font-mono text-xs"
+      />
+      <p className="text-[11px] leading-relaxed text-muted-foreground">
+        国内访问 HuggingFace 通常需要代理。支持 HTTP/HTTPS/SOCKS5（如
+        Clash 默认 <code className="rounded bg-background px-1">http://127.0.0.1:7897</code>）。
+      </p>
+    </div>
+  );
 }
 
 function ModelInfoRows({ status }: { status: ManagedRuntimeStatus }) {

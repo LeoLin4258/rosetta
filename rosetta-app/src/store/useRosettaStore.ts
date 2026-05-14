@@ -17,6 +17,24 @@ import type {
   TranslationMode,
 } from "../types/rosetta";
 
+/**
+ * Persisted proxy config used **only for remote downloads** of managed runtime
+ * artifacts (today: the 1.3 GB model on HuggingFace). Loopback traffic to the
+ * local sidecar always bypasses this.
+ *
+ * Why this exists: bundled `.app` launched from Finder doesn't inherit shell
+ * env, so `HTTPS_PROXY` is invisible to reqwest. Users in regions where HF
+ * needs a proxy need a UI surface to point Rosetta at one. See
+ * `docs/engineering/change-log/2026-05-14-managed-rwkv-a1-fixes-loopback-no-proxy.md`
+ * for the loopback-vs-egress reasoning.
+ */
+export type DownloadProxyConfig = {
+  /** Proxy URL such as `http://127.0.0.1:7897` or `socks5://127.0.0.1:7898`.
+   *  Empty string = no proxy (reqwest will still fall back to `HTTPS_PROXY`
+   *  env if set). */
+  url: string;
+};
+
 export type ManagedRuntimeSlice = {
   /**
    * Last `get_managed_rwkv_runtime_status` response. `null` before the first
@@ -61,12 +79,14 @@ type RosettaState = {
   translationRevisions: TranslationRevision[];
   activeTranslationRun: ActiveTranslationRun | null;
   managedRuntime: ManagedRuntimeSlice;
+  downloadProxy: DownloadProxyConfig;
   setManagedRuntimeStatus: (status: ManagedRuntimeStatus | null) => void;
   setManagedRuntimeProgress: (
     progress: ManagedRuntimeInstallProgress | null
   ) => void;
   setManagedRuntimeError: (error: string | null) => void;
   dismissManagedRuntimeBanner: () => void;
+  setDownloadProxyUrl: (url: string) => void;
   setThemeMode: (mode: AppThemeMode) => void;
   updateRwkvConfig: (config: Partial<RwkvConnectionConfig>) => void;
   setTranslationMode: (mode: TranslationMode) => void;
@@ -210,6 +230,13 @@ export const useRosettaStore = create<RosettaState>()(
         lastError: null,
         bannerDismissed: false,
       },
+      downloadProxy: {
+        url: "",
+      },
+      setDownloadProxyUrl: (url) =>
+        set(() => ({
+          downloadProxy: { url: url.trim() },
+        })),
       setManagedRuntimeStatus: (status) =>
         set((state) => ({
           managedRuntime: {
@@ -724,11 +751,16 @@ export const useRosettaStore = create<RosettaState>()(
             ...current.rwkv,
             ...persistedState?.rwkv,
           },
+          downloadProxy: {
+            ...current.downloadProxy,
+            ...persistedState?.downloadProxy,
+          },
         };
       },
       partialize: (state) => ({
         themeMode: state.themeMode,
         rwkv: state.rwkv,
+        downloadProxy: state.downloadProxy,
         activeJobId: state.activeJobId,
         activeFileId: state.activeFileId,
         activeFileIdByJobId: state.activeFileIdByJobId,
