@@ -11,10 +11,15 @@
 > | 4 | 模型下载 + SHA256 + manifest + 进度事件 | 🟢 [Phase 4 change-log](../change-log/2026-05-13-managed-rwkv-model-install.md) |
 > | 5 | UI 一键安装 + Jobs 就绪门控 + batch size clamp | 🟢 [Phase 5 change-log](../change-log/2026-05-13-managed-rwkv-settings-ui.md) + [batch clamp fix](../change-log/2026-05-13-managed-rwkv-batch-size-clamp.md)；**M4 mini 实机端到端通过** |
 > | 6 | 动态 batch / 取消语义 / 长文档回归 | ⬜ 下一站 |
-> | 7 | codesign + notarize + clean Mac 测试 | ⬜ |
+> | 7.A1 | dev 从零安装下载 | 🟢 [change-log](../change-log/2026-05-14-managed-rwkv-a1-fixes-loopback-no-proxy.md) — 修 lastError 可见性 + loopback `.no_proxy()` |
+> | 7.A2 | bundled `.app` 本机 | 🟢 [change-log](../change-log/2026-05-14-managed-rwkv-bundle-path-resolution.md) — 修 sidecar 文件名 trim + resources 路径 |
+> | 7.A.C | Settings 代理输入框 | 🟢 [change-log](../change-log/2026-05-14-managed-rwkv-download-proxy-setting.md) — store 持久化 + 透传到 install reqwest |
+> | 7.A3b | 同 Mac 重置状态 Finder 启动 | 🟢 双击 .app → 填代理 → 下载 → 启动 → 翻译 → 导出 全链路通过 |
+> | 7.A3a | 全新 Mac / 新用户 | ⬜ — 用户另一台 Mac，主要验 Gatekeeper / Developer ID signing |
+> | 7.B | codesign + notarize + DMG + updater 私钥 | ⬜ **阻塞中** — 公司 Apple ID 2FA 需要管理员配合，暂缓 |
 > | 8 | Windows / Intel Mac | ⬜ 不在本里程碑 |
 >
-> **下一步建议**：Phase 6。重点见本文档 [Phase 6 — 翻译集成](#phase-6--翻译集成) 小节；具体踩坑见 [memory: project-rwkv-mobile-batch-size-limit](../../../.claude/projects/-Users-leolin-Documents-GitHub-rosetta/memory/project_rwkv_mobile_batch_size_limit.md) 与 [memory: project-rwkv-mobile-translate-response-format](../../../.claude/projects/-Users-leolin-Documents-GitHub-rosetta/memory/project_rwkv_mobile_translate_response_format.md)。
+> **下一步建议**：7.A3a（第二台 Mac 验 Gatekeeper）或 7.B（codesign）。Phase 6 全部完成；Phase 7.A 核心交付物已稳定通过自身机 + bundled 双重验证；剩下的差距是真实 Mac 跨机 + Apple Developer 签名链。
 >
 > **本机当前实机状态**（Mac mini M4）：
 > - Sidecar 二进制已暂存到 `rosetta-app/src-tauri/binaries/`，分词表在 `rosetta-app/src-tauri/resources/rwkv-sidecar/`。

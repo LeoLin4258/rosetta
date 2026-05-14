@@ -212,7 +212,23 @@ pub async fn install_model(
         cleanup_artifacts(layout)?;
     }
 
-    let proxy_url = options.effective_proxy_url().map(str::to_string);
+    // Precedence: user-configured proxy (Settings input) > macOS system proxy
+    // (detected via `scutil --proxy`) > none (relies on env / direct connect).
+    // Eprintln traces the chosen source so dev terminals can confirm at a glance.
+    let proxy_url: Option<String> = options
+        .effective_proxy_url()
+        .map(|url| {
+            eprintln!("[rwkv-install] proxy source: user-configured ({url})");
+            url.to_string()
+        })
+        .or_else(|| {
+            detect_system_proxy().inspect(|url| {
+                eprintln!("[rwkv-install] proxy source: macOS system proxy ({url})");
+            })
+        });
+    if proxy_url.is_none() {
+        eprintln!("[rwkv-install] proxy source: none (direct / HTTPS_PROXY env if set)");
+    }
     let result = install_inner(
         app,
         registry,
@@ -811,6 +827,98 @@ fn days_since_epoch_to_ymd(mut days: i64) -> (u32, u32, u32) {
     (year, m, d)
 }
 
+// -----------------------------------------------------------------------------
+// macOS system proxy auto-detection (Phase 7.B0 — B 方案)
+// -----------------------------------------------------------------------------
+//
+// Tauri `.app` launched from Finder doesn't inherit shell env, so `HTTPS_PROXY`
+// is invisible. Clash Verge users in China typically set the macOS *system*
+// proxy via Network preferences (or the Clash menu bar UI), which is reported
+// by `scutil --proxy`. We shell out to that, parse the output, and feed the
+// detected URL into reqwest as a fallback when the user hasn't filled
+// Settings → Download Proxy explicitly.
+//
+// Precedence (set in `install_model`):
+//   1. Settings input (`options.proxy_url`)
+//   2. macOS system proxy from `scutil --proxy`
+//   3. None (rely on env / direct connect)
+//
+// Linux / Windows: not implemented; users still have the Settings input + env
+// var fallback.
+
+#[cfg(target_os = "macos")]
+fn detect_system_proxy() -> Option<String> {
+    use std::process::Command;
+    let output = Command::new("scutil").arg("--proxy").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_scutil_proxy_output(&String::from_utf8_lossy(&output.stdout))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn detect_system_proxy() -> Option<String> {
+    None
+}
+
+/// Pure parser split out for unit testing. Accepts the verbatim stdout of
+/// `scutil --proxy`. Returns the strongest proxy declared (HTTPS > HTTP >
+/// SOCKS), prefixed with the right URL scheme for reqwest.
+fn parse_scutil_proxy_output(text: &str) -> Option<String> {
+    let mut https_enable = false;
+    let mut https_host: Option<String> = None;
+    let mut https_port: Option<u16> = None;
+    let mut http_enable = false;
+    let mut http_host: Option<String> = None;
+    let mut http_port: Option<u16> = None;
+    let mut socks_enable = false;
+    let mut socks_host: Option<String> = None;
+    let mut socks_port: Option<u16> = None;
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        let Some((key, value)) = trimmed.split_once(':') else {
+            continue;
+        };
+        let key = key.trim();
+        let value = value.trim();
+        match key {
+            "HTTPSEnable" => https_enable = value == "1",
+            "HTTPSProxy" => https_host = Some(value.to_string()),
+            "HTTPSPort" => https_port = value.parse().ok(),
+            "HTTPEnable" => http_enable = value == "1",
+            "HTTPProxy" => http_host = Some(value.to_string()),
+            "HTTPPort" => http_port = value.parse().ok(),
+            "SOCKSEnable" => socks_enable = value == "1",
+            "SOCKSProxy" => socks_host = Some(value.to_string()),
+            "SOCKSPort" => socks_port = value.parse().ok(),
+            _ => {}
+        }
+    }
+
+    // reqwest::Proxy::all accepts `http://` for both HTTP and HTTPS CONNECT
+    // tunnels; only SOCKS needs a different scheme. Most Clash setups expose
+    // the same port for HTTP/HTTPS/SOCKS so the choice rarely matters, but
+    // explicit precedence keeps results deterministic if someone configures
+    // them differently.
+    if https_enable {
+        if let (Some(host), Some(port)) = (https_host.as_ref(), https_port) {
+            return Some(format!("http://{host}:{port}"));
+        }
+    }
+    if http_enable {
+        if let (Some(host), Some(port)) = (http_host.as_ref(), http_port) {
+            return Some(format!("http://{host}:{port}"));
+        }
+    }
+    if socks_enable {
+        if let (Some(host), Some(port)) = (socks_host.as_ref(), socks_port) {
+            return Some(format!("socks5://{host}:{port}"));
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -907,5 +1015,118 @@ mod tests {
         assert!(value["installedAt"].as_str().unwrap().ends_with('Z'));
 
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_scutil_proxy_output — pure-fn parser tests. Fixtures captured
+    // verbatim from real `scutil --proxy` output on macOS 13–15 in 2026-05
+    // (with Clash Verge configured as system proxy on 127.0.0.1:7897).
+    // -----------------------------------------------------------------------
+
+    const SCUTIL_REAL_CLASH_OUTPUT: &str = r#"<dictionary> {
+  ExceptionsList : <array> {
+    0 : 127.0.0.1
+    1 : 192.168.0.0/16
+    2 : 10.0.0.0/8
+    3 : 172.16.0.0/12
+    4 : localhost
+    5 : *.local
+    6 : *.crashlytics.com
+    7 : <local>
+  }
+  HTTPEnable : 1
+  HTTPPort : 7897
+  HTTPProxy : 127.0.0.1
+  HTTPSEnable : 1
+  HTTPSPort : 7897
+  HTTPSProxy : 127.0.0.1
+  ProxyAutoConfigEnable : 0
+  SOCKSEnable : 1
+  SOCKSPort : 7897
+  SOCKSProxy : 127.0.0.1
+}"#;
+
+    #[test]
+    fn parse_scutil_prefers_https_when_all_enabled() {
+        // Real Clash output: HTTPS / HTTP / SOCKS all on the same port.
+        // We pick HTTPS first per documented precedence.
+        assert_eq!(
+            parse_scutil_proxy_output(SCUTIL_REAL_CLASH_OUTPUT),
+            Some("http://127.0.0.1:7897".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_scutil_returns_none_when_proxy_disabled() {
+        // macOS default with no proxy configured: every *Enable is 0.
+        let text = r#"<dictionary> {
+  ExceptionsList : <array> {
+    0 : *.local
+  }
+  HTTPEnable : 0
+  HTTPSEnable : 0
+  SOCKSEnable : 0
+  ProxyAutoConfigEnable : 0
+}"#;
+        assert_eq!(parse_scutil_proxy_output(text), None);
+    }
+
+    #[test]
+    fn parse_scutil_returns_none_for_empty_input() {
+        assert_eq!(parse_scutil_proxy_output(""), None);
+        assert_eq!(parse_scutil_proxy_output("<dictionary> { }"), None);
+    }
+
+    #[test]
+    fn parse_scutil_falls_back_to_http_when_https_off() {
+        let text = r#"<dictionary> {
+  HTTPEnable : 1
+  HTTPPort : 8888
+  HTTPProxy : 10.0.0.1
+  HTTPSEnable : 0
+  SOCKSEnable : 0
+}"#;
+        assert_eq!(
+            parse_scutil_proxy_output(text),
+            Some("http://10.0.0.1:8888".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_scutil_falls_back_to_socks_when_no_http() {
+        let text = r#"<dictionary> {
+  HTTPEnable : 0
+  HTTPSEnable : 0
+  SOCKSEnable : 1
+  SOCKSPort : 1080
+  SOCKSProxy : socks.internal
+}"#;
+        assert_eq!(
+            parse_scutil_proxy_output(text),
+            Some("socks5://socks.internal:1080".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_scutil_ignores_enable_with_missing_host_or_port() {
+        // Enable=1 but no Host → can't construct URL; skip and try lower-precedence
+        // entries (none here), returning None.
+        let text = r#"<dictionary> {
+  HTTPSEnable : 1
+  HTTPEnable : 0
+  SOCKSEnable : 0
+}"#;
+        assert_eq!(parse_scutil_proxy_output(text), None);
+    }
+
+    #[test]
+    fn parse_scutil_tolerates_extra_whitespace() {
+        // scutil sometimes emits trailing whitespace or odd separators on
+        // edge macOS builds — make sure we don't choke.
+        let text = "  HTTPSEnable :  1  \n  HTTPSPort:7897\n  HTTPSProxy :127.0.0.1\n";
+        assert_eq!(
+            parse_scutil_proxy_output(text),
+            Some("http://127.0.0.1:7897".to_string())
+        );
     }
 }
