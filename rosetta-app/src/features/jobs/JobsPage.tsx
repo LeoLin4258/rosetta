@@ -84,14 +84,12 @@ import type {
   TranslationSegment,
 } from "../../types/rosetta";
 
+// Upper-bound hint for the batch scheduler. External-API (`rwkv-lightning-contents`)
+// uses this verbatim — it has no GPU-slot concept and 16 has been the stable
+// throughput tuning. The local rwkv-mobile sidecar treats it as a *hint*:
+// Phase 6 has Rust query `/v1/batch/supported_batch_sizes` per run and clamp
+// to the model's reported maximum, so this value can safely overshoot.
 const BATCH_SIZE = 16;
-// Local rwkv-mobile sidecar advertises `supported_batch_sizes: [1..12]` on
-// its `/v1/batch/supported_batch_sizes` endpoint (verified Phase 0). Sending
-// 16 there returns `chat_batch: batch size 16 is not supported` and fails the
-// whole run. Phase 6 will query the endpoint dynamically; for now we clamp
-// per-provider so external API users keep the wider batch and local users
-// stay within the sidecar's slot count.
-const LOCAL_RUNTIME_BATCH_SIZE = 8;
 
 export function JobsPage() {
   const { fileId, jobId } = useParams();
@@ -495,14 +493,12 @@ export function JobsPage() {
       managedRuntimeBaseUrl: managedRuntimeStatus?.process.baseUrl ?? undefined,
     });
 
-    const batchSize =
-      provider.id === "rwkv-mobile-batch-chat"
-        ? LOCAL_RUNTIME_BATCH_SIZE
-        : BATCH_SIZE;
-
     try {
       return await runTranslationBatches({
-        batchSize,
+        // `BATCH_SIZE` is a hint; the local sidecar provider clamps it
+        // against `/v1/batch/supported_batch_sizes` in Rust (Phase 6), the
+        // external API provider uses it verbatim.
+        batchSize: BATCH_SIZE,
         cancelPromise: cancelled,
         jobId: currentJobId,
         onBatchCompleted: (segmentIds) =>

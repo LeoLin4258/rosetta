@@ -1233,11 +1233,29 @@ pub async fn translate_rwkv_mobile_batch_chat_texts(
     };
     let source_lang = request.source_lang.as_deref().unwrap_or("en").to_string();
     let target_lang = request.target_lang.as_deref().unwrap_or("zh-CN").to_string();
+    // One-shot ad-hoc translation: set roles ourselves (the orchestrated
+    // run-mode path is the one that owns the once-per-run set_roles call).
+    if let Err(message) = mobile_batch_chat::set_chat_roles_for_pair(
+        &config,
+        &source_lang,
+        &target_lang,
+        None,
+    )
+    .await
+    {
+        return Ok(RwkvTranslationApiTranslateResult {
+            ok: false,
+            status_code: None,
+            translations: Vec::new(),
+            raw_response_preview: String::new(),
+            message,
+            latency_ms: 0,
+        });
+    }
     let result = mobile_batch_chat::translate_batch(
         &config,
         ProviderTranslateBatch {
             source_texts: &request.source_texts,
-            source_lang: &source_lang,
             target_lang: &target_lang,
             timeout_ms: config.timeout_ms,
             cancel: None,
@@ -1264,20 +1282,9 @@ async fn start_mobile_batch_chat_run(
     if request.run_id.trim().is_empty() {
         return Err("翻译运行 id 不能为空。".to_string());
     }
-    if request.batch_size == 0 {
-        return Err("翻译批次大小必须大于 0。".to_string());
-    }
-    // Defense-in-depth clamp: the WebRWKV sidecar publishes
-    // `supported_batch_sizes: [1..12]` from `/v1/batch/supported_batch_sizes`
-    // and rejects anything larger with `chat_batch: batch size N is not
-    // supported`, failing the whole batch. Phase 6 will query the endpoint
-    // dynamically; until then we hard-clamp here so a stale frontend can't
-    // brick a run.
-    const SIDECAR_MAX_BATCH_SIZE: usize = 12;
-    let mut request = request;
-    if request.batch_size > SIDECAR_MAX_BATCH_SIZE {
-        request.batch_size = SIDECAR_MAX_BATCH_SIZE;
-    }
+    // `request.batch_size` is treated as an upper-bound hint from the
+    // frontend; 0 means "let Rust pick the sidecar maximum". The real value
+    // is decided after we query `/v1/batch/supported_batch_sizes` below.
 
     let root = jobs_root(&app)?;
     let dir = checked_job_dir(&root, &request.job_id)?;
@@ -1351,10 +1358,57 @@ async fn start_mobile_batch_chat_run(
     };
     let source_lang = request.source_lang.as_deref().unwrap_or("en").to_string();
 
+    // Phase 6 dynamic batch policy: ask the sidecar what batch sizes its
+    // loaded model accepts, then clamp the frontend hint against the reported
+    // maximum. Replaces the old `SIDECAR_MAX_BATCH_SIZE = 12` hardcode. A
+    // failure here (sidecar unreachable, bad JSON) fails the run before any
+    // segment is marked translating, so the user sees a clear error and can
+    // retry without manual state recovery.
+    let supported_sizes = match mobile_batch_chat::query_supported_batch_sizes(&provider_config)
+        .await
+    {
+        Ok(sizes) => sizes,
+        Err(message) => {
+            let detail =
+                format!("无法获取 /v1/batch/supported_batch_sizes: {message}");
+            let status = update_run_status(registry, &request.run_id, |status| {
+                status.state = RwkvTranslationRunState::Failed;
+                status.message = detail.clone();
+            })?;
+            let _ = status;
+            return Err(detail);
+        }
+    };
+    let effective_batch_size = mobile_batch_chat::pick_batch_size(
+        &supported_sizes,
+        request.batch_size,
+    );
+
+    // Phase 6 single-direction-per-run: set roles **once** at the top of the
+    // run instead of per batch. `/v1/chat/roles` is global sidecar state and
+    // repeated POSTs are wasted RTTs (a 50-segment run with batch=8 used to
+    // hit roles 7 times). Subsequent translate_batch calls inherit.
+    if let Err(message) = mobile_batch_chat::set_chat_roles_for_pair(
+        &provider_config,
+        &source_lang,
+        &request.target_lang,
+        Some(cancel.clone()),
+    )
+    .await
+    {
+        let detail = format!("设置 /v1/chat/roles 失败: {message}");
+        let status = update_run_status(registry, &request.run_id, |status| {
+            status.state = RwkvTranslationRunState::Failed;
+            status.message = detail.clone();
+        })?;
+        let _ = status;
+        return Err(detail);
+    }
+
     let mut completed_segment_ids = Vec::new();
     let mut failed_segment_ids = Vec::new();
 
-    for batch in targets.chunks(request.batch_size) {
+    for batch in targets.chunks(effective_batch_size) {
         if cancel.load(Ordering::SeqCst) {
             let status = cancel_current_run(
                 registry,
@@ -1394,7 +1448,6 @@ async fn start_mobile_batch_chat_run(
             &provider_config,
             ProviderTranslateBatch {
                 source_texts: &source_texts,
-                source_lang: &source_lang,
                 target_lang: &request.target_lang,
                 timeout_ms: provider_config.timeout_ms,
                 cancel: Some(cancel.clone()),

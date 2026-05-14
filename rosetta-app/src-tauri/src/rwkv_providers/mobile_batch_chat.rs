@@ -12,6 +12,8 @@ use super::{ProviderTranslateBatch, ProviderTranslateResult};
 
 const SET_ROLES_PATH: &str = "/v1/chat/roles";
 const BATCH_CHAT_PATH: &str = "/v1/batch/chat";
+const SUPPORTED_BATCH_SIZES_PATH: &str = "/v1/batch/supported_batch_sizes";
+const SUPPORTED_BATCH_SIZES_TIMEOUT_MS: u64 = 8_000;
 const RESPONSE_PREVIEW_CHARS: usize = 2_000;
 const POLL_INTERVAL_MS: u64 = 50;
 const MAX_TOKENS_PER_SEGMENT: u32 = 1024;
@@ -66,6 +68,110 @@ struct BatchChatMessage {
     content: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct SupportedBatchSizesResponse {
+    supported_batch_sizes: Vec<u32>,
+}
+
+/// Ask the sidecar what batch sizes its loaded model can serve.
+///
+/// Phase 0 observed `[1..12]` on M4 mini + 1.5B G1c nf4. The values are model
+/// + backend specific; never hardcode them in the orchestrator. The
+/// orchestrator is expected to call this once per run, pick `.iter().max()`
+/// (clamped against the segment-length policy in the future), and reuse for
+/// every batch in the run.
+pub async fn query_supported_batch_sizes(
+    config: &MobileBatchChatConfig,
+) -> Result<Vec<u32>, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_millis(SUPPORTED_BATCH_SIZES_TIMEOUT_MS))
+        .build()
+        .map_err(|error| format!("无法创建 RWKV HTTP client: {error}"))?;
+    let url = join_url(&config.base_url, SUPPORTED_BATCH_SIZES_PATH);
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|error| format!("GET {url} 失败: {error}"))?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(format!(
+            "{SUPPORTED_BATCH_SIZES_PATH} 返回 HTTP {}",
+            status.as_u16()
+        ));
+    }
+    let parsed: SupportedBatchSizesResponse = resp
+        .json()
+        .await
+        .map_err(|error| format!("解析 {SUPPORTED_BATCH_SIZES_PATH} 响应失败: {error}"))?;
+    if parsed.supported_batch_sizes.is_empty() {
+        return Err(format!("{SUPPORTED_BATCH_SIZES_PATH} 返回了空数组。"));
+    }
+    Ok(parsed.supported_batch_sizes)
+}
+
+/// Pick the batch size to use for a run. Takes the sidecar's reported sizes
+/// plus an optional hint from the caller (e.g. legacy `BATCH_SIZE = 16`).
+///
+/// Rules:
+/// - If the hint is `0` (or absent), return the supported max.
+/// - Otherwise return `min(hint, supported.max)`. Floor of 1 because every
+///   sidecar supports batch=1.
+pub fn pick_batch_size(supported: &[u32], hint: usize) -> usize {
+    let max_supported = supported.iter().copied().max().unwrap_or(1) as usize;
+    if hint == 0 {
+        return max_supported.max(1);
+    }
+    hint.min(max_supported).max(1)
+}
+
+/// Set `/v1/chat/roles` once per run. Extracted from `translate_batch` so the
+/// orchestrator can hit the server one time per direction instead of once per
+/// batch — `roles` is global server state, repeated POSTs are wasted RTTs.
+pub async fn set_chat_roles_for_pair(
+    config: &MobileBatchChatConfig,
+    source_lang: &str,
+    target_lang: &str,
+    cancel: Option<Arc<AtomicBool>>,
+) -> Result<(), String> {
+    let user_role = role_label_for_lang(source_lang);
+    let assistant_role = role_label_for_lang(target_lang);
+    set_chat_roles(config, user_role, assistant_role, cancel).await
+}
+
+async fn set_chat_roles(
+    config: &MobileBatchChatConfig,
+    user_role: &str,
+    assistant_role: &str,
+    cancel: Option<Arc<AtomicBool>>,
+) -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_millis(config.timeout_ms))
+        .build()
+        .map_err(|error| format!("无法创建 RWKV HTTP client: {error}"))?;
+
+    if is_cancelled(cancel.as_ref()) {
+        return Err("RWKV 翻译请求已取消。".to_string());
+    }
+
+    let url = join_url(&config.base_url, SET_ROLES_PATH);
+    let body = SetRolesRequest {
+        user_role,
+        assistant_role,
+    };
+    let resp = send_request_with_cancel(client.post(&url).json(&body), cancel).await?;
+    let status = resp.status().as_u16();
+    if !(200..300).contains(&status) {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!(
+            "{SET_ROLES_PATH} 返回 HTTP {status}: {body}"
+        ));
+    }
+    // Drain to release the connection back to the pool.
+    let _ = resp.bytes().await;
+    Ok(())
+}
+
 pub async fn translate_batch(
     config: &MobileBatchChatConfig,
     batch: ProviderTranslateBatch<'_>,
@@ -83,7 +189,7 @@ pub async fn translate_batch(
         };
     }
 
-    let user_role = role_label_for_lang(batch.source_lang);
+    // Assistant role label is needed for response parsing (strip prefix).
     let assistant_role = role_label_for_lang(batch.target_lang);
 
     let client = match reqwest::Client::builder()
@@ -104,39 +210,12 @@ pub async fn translate_batch(
         return error_result(None, started_at, "RWKV 翻译请求已取消。".to_string());
     }
 
-    // Step 1 — set chat roles on the server. /v1/chat/roles is global server
-    // state, so the orchestrator must keep one translation direction per run.
-    let roles_url = join_url(&config.base_url, SET_ROLES_PATH);
-    let roles_body = SetRolesRequest {
-        user_role,
-        assistant_role,
-    };
-    let roles_resp = match send_request_with_cancel(
-        client.post(&roles_url).json(&roles_body),
-        batch.cancel.clone(),
-    )
-    .await
-    {
-        Ok(resp) => resp,
-        Err(message) => return error_result(None, started_at, message),
-    };
-    let roles_status = roles_resp.status().as_u16();
-    if !(200..300).contains(&roles_status) {
-        let body = roles_resp.text().await.unwrap_or_default();
-        return error_result(
-            Some(roles_status),
-            started_at,
-            format!("/v1/chat/roles 返回 HTTP {roles_status}: {body}"),
-        );
-    }
-    // Drain to free the connection back to the pool.
-    let _ = roles_resp.bytes().await;
+    // NOTE: `/v1/chat/roles` is **not** posted here. The orchestrator is
+    // expected to set roles once per run via `set_chat_roles_for_pair`. This
+    // saves one HTTP round-trip per batch and keeps a single direction per run.
+    // Callers that need an ad-hoc one-shot translation should call
+    // `set_chat_roles_for_pair` first.
 
-    if is_cancelled(batch.cancel.as_ref()) {
-        return error_result(None, started_at, "RWKV 翻译请求已取消。".to_string());
-    }
-
-    // Step 2 — issue the batch chat.
     let conversations: Vec<Conversation> = batch
         .source_texts
         .iter()
@@ -202,12 +281,19 @@ pub async fn probe(
     source_lang: &str,
     target_lang: &str,
 ) -> ProviderTranslateResult {
+    let started_at = Instant::now();
+    // Probe is a one-shot operation, so it sets its own roles instead of
+    // assuming an orchestrator already did. `translate_batch` itself no longer
+    // touches `/v1/chat/roles`.
+    if let Err(message) = set_chat_roles_for_pair(config, source_lang, target_lang, None).await {
+        return error_result(None, started_at, message);
+    }
+
     let texts: Vec<String> = PROBE_TEXTS.iter().map(|s| s.to_string()).collect();
     let mut result = translate_batch(
         config,
         ProviderTranslateBatch {
             source_texts: &texts,
-            source_lang,
             target_lang,
             timeout_ms: config.timeout_ms,
             cancel: None,
@@ -539,5 +625,43 @@ mod tests {
         assert_eq!(role_label_for_lang("zh"), "Chinese");
         assert_eq!(role_label_for_lang("ja"), "Japanese");
         assert_eq!(role_label_for_lang("unknown"), "English");
+    }
+
+    #[test]
+    fn pick_batch_size_returns_supported_max_when_hint_is_zero() {
+        // Hint=0 means "auto" — let Rust pick the sidecar's reported maximum.
+        assert_eq!(pick_batch_size(&[1, 2, 4, 8, 12], 0), 12);
+        assert_eq!(pick_batch_size(&[1], 0), 1);
+    }
+
+    #[test]
+    fn pick_batch_size_clamps_hint_to_supported_max() {
+        // Legacy frontend passes 16; sidecar advertises max=12 → clamp to 12.
+        assert_eq!(pick_batch_size(&[1, 2, 4, 8, 12], 16), 12);
+        assert_eq!(pick_batch_size(&[8], 99), 8);
+    }
+
+    #[test]
+    fn pick_batch_size_keeps_hint_when_below_max() {
+        // A conservative hint below sidecar max should be respected (Phase 6.B
+        // length-bucket scheduler will use this to keep long segments small).
+        assert_eq!(pick_batch_size(&[1, 2, 4, 8, 12], 4), 4);
+        assert_eq!(pick_batch_size(&[1, 2, 4, 8, 12], 1), 1);
+    }
+
+    #[test]
+    fn pick_batch_size_floors_at_one() {
+        // Degenerate inputs shouldn't yield 0 — every sidecar supports 1.
+        assert_eq!(pick_batch_size(&[], 0), 1);
+        assert_eq!(pick_batch_size(&[5], 0), 5);
+    }
+
+    #[test]
+    fn supported_batch_sizes_response_parses_phase_0_shape() {
+        // Locks in the wire format observed on M4 mini + 1.5B G1c nf4.
+        let body = r#"{"model":"rwkv-translate","supported_batch_sizes":[1,2,3,4,5,6,7,8,9,10,11,12]}"#;
+        let parsed: SupportedBatchSizesResponse =
+            serde_json::from_str(body).expect("phase 0 response shape should parse");
+        assert_eq!(parsed.supported_batch_sizes, (1u32..=12).collect::<Vec<_>>());
     }
 }
