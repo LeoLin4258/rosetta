@@ -294,6 +294,7 @@ async fn install_inner(
             return Err("安装已取消。".to_string());
         }
 
+        eprintln!("[rwkv-install] trying mirror: {url}");
         update_progress(registry, |p| {
             p.source_url = Some(url.to_string());
             p.message = format!("正在连接 {url}…");
@@ -314,15 +315,18 @@ async fn install_inner(
         .await
         {
             Ok(()) => {
+                eprintln!("[rwkv-install] mirror succeeded: {url}");
                 last_error = None;
                 break;
             }
             Err(DownloadError::Cancelled) => {
+                eprintln!("[rwkv-install] mirror cancelled by user: {url}");
                 set_cancelled(registry).await;
                 emit_progress(app, registry).await;
                 return Err("安装已取消。".to_string());
             }
             Err(DownloadError::Mirror(msg)) => {
+                eprintln!("[rwkv-install] mirror failed: {url} → {msg}");
                 last_error = Some(msg.clone());
                 // Reset hasher + bytes_done because the next mirror's stream
                 // restarts from byte 0 (we can't guarantee continuity across
@@ -339,6 +343,7 @@ async fn install_inner(
                 emit_progress(app, registry).await;
             }
             Err(DownloadError::Fatal(msg)) => {
+                eprintln!("[rwkv-install] fatal error: {msg}");
                 set_failed_message(registry, profile, msg.clone()).await;
                 emit_progress(app, registry).await;
                 return Err(msg);
@@ -348,6 +353,7 @@ async fn install_inner(
 
     if let Some(msg) = last_error {
         let full = format!("所有镜像都未能下载模型: {msg}");
+        eprintln!("[rwkv-install] all mirrors exhausted: {full}");
         set_failed_message(registry, profile, full.clone()).await;
         emit_progress(app, registry).await;
         return Err(full);

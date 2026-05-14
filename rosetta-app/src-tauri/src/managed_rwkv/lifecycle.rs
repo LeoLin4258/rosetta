@@ -239,7 +239,15 @@ pub async fn probe_sidecar(
     };
 
     let url = format!("{}{}", base, profile.health_path);
-    let client = match reqwest::Client::builder().timeout(PROBE_TIMEOUT).build() {
+    // `.no_proxy()` is critical: reqwest reads `HTTPS_PROXY` by default, and
+    // users running Tauri behind Clash routinely have that set so the install
+    // step can reach HuggingFace. Without `.no_proxy()` every loopback /health
+    // / batch_chat call would also be funnelled through Clash → fails.
+    let client = match reqwest::Client::builder()
+        .no_proxy()
+        .timeout(PROBE_TIMEOUT)
+        .build()
+    {
         Ok(c) => c,
         Err(error) => {
             return ManagedRuntimeProbeResult {
@@ -351,7 +359,10 @@ fn open_log_file(path: &std::path::Path) -> std::io::Result<std::fs::File> {
 
 async fn wait_for_health(base_url: &str, health_path: &str) -> Result<(), String> {
     let url = format!("{base_url}{health_path}");
+    // See `probe_sidecar` for the proxy reasoning. Loopback never goes
+    // through the system / env proxy.
     let client = match reqwest::Client::builder()
+        .no_proxy()
         .timeout(Duration::from_secs(2))
         .build()
     {

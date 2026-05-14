@@ -215,8 +215,12 @@ export const useRosettaStore = create<RosettaState>()(
           managedRuntime: {
             ...state.managedRuntime,
             status,
-            // Clear stale error when we get a fresh successful status.
-            lastError: status ? null : state.managedRuntime.lastError,
+            // Deliberately do NOT touch `lastError` here. Status refreshes
+            // happen after install/start/stop actions (success and failure);
+            // wiping the error on every refresh hides the very reason the
+            // user just tried to retry. Action handlers in
+            // `useManagedRwkvRuntime` reset the error at the start of each
+            // attempt instead.
           },
         })),
       setManagedRuntimeProgress: (progress) =>

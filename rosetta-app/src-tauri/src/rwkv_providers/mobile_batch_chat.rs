@@ -83,9 +83,7 @@ struct SupportedBatchSizesResponse {
 pub async fn query_supported_batch_sizes(
     config: &MobileBatchChatConfig,
 ) -> Result<Vec<u32>, String> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_millis(SUPPORTED_BATCH_SIZES_TIMEOUT_MS))
-        .build()
+    let client = loopback_client(SUPPORTED_BATCH_SIZES_TIMEOUT_MS)
         .map_err(|error| format!("无法创建 RWKV HTTP client: {error}"))?;
     let url = join_url(&config.base_url, SUPPORTED_BATCH_SIZES_PATH);
     let resp = client
@@ -218,9 +216,7 @@ async fn set_chat_roles(
     assistant_role: &str,
     cancel: Option<Arc<AtomicBool>>,
 ) -> Result<(), String> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_millis(config.timeout_ms))
-        .build()
+    let client = loopback_client(config.timeout_ms)
         .map_err(|error| format!("无法创建 RWKV HTTP client: {error}"))?;
 
     if is_cancelled(cancel.as_ref()) {
@@ -265,10 +261,7 @@ pub async fn translate_batch(
     // Assistant role label is needed for response parsing (strip prefix).
     let assistant_role = role_label_for_lang(batch.target_lang);
 
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_millis(batch.timeout_ms))
-        .build()
-    {
+    let client = match loopback_client(batch.timeout_ms) {
         Ok(client) => client,
         Err(error) => {
             return error_result(
@@ -434,6 +427,21 @@ fn strip_response_prefix(content: &str, assistant_role: &str) -> String {
         Some(idx) => content[idx + marker.len()..].trim().to_string(),
         None => content.trim().to_string(),
     }
+}
+
+/// Build a reqwest client tuned for **loopback** (`127.0.0.1`) traffic.
+///
+/// Critically calls `.no_proxy()`: reqwest reads `HTTPS_PROXY` / `HTTP_PROXY`
+/// env vars by default, and users running Tauri behind Clash routinely have
+/// those set so the install step can reach HuggingFace. Without `.no_proxy()`
+/// every loopback request (set_chat_roles, batch_chat, supported_batch_sizes,
+/// /health probe) would also be funnelled through Clash → connections refused
+/// or hung. Loopback traffic should never be proxied.
+fn loopback_client(timeout_ms: u64) -> Result<reqwest::Client, reqwest::Error> {
+    reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_millis(timeout_ms))
+        .build()
 }
 
 fn role_label_for_lang(lang: &str) -> &'static str {
