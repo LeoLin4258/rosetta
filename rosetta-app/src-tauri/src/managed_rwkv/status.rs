@@ -295,51 +295,103 @@ fn make_item(
 
 /// Locate the sidecar binary across dev / bundle contexts.
 ///
-/// - **Bundle**: `<App>.app/Contents/MacOS/<sidecar-name>` (sibling of the
-///   main Rosetta binary; this is where Tauri's externalBin places it).
-/// - **Dev**: `<src-tauri>/binaries/<sidecar-name>` (where
-///   `scripts/fetch-rwkv-sidecar.sh` stages it).
+/// Tauri 2 sidecar layout discovered via A2 bundle test (2026-05-14):
+///
+/// - **Dev**: `<src-tauri>/binaries/<name>-<target-triple>` —
+///   `scripts/fetch-rwkv-sidecar.sh` stages with the triple suffix so multiple
+///   platforms can coexist; the dev runtime keeps the full name.
+/// - **Bundle**: `<App>.app/Contents/MacOS/<name>` — Tauri 2 strips the
+///   `-<target-triple>` suffix when packaging the bundle (each `.app` is
+///   architecture-specific so the suffix would be redundant).
+///
+/// We probe both names in each location so the resolver doesn't care which
+/// mode we're running under.
 fn locate_sidecar(app: &AppHandle, profile: &RuntimeProfile) -> Option<PathBuf> {
-    let name = profile.sidecar_binary_name;
+    let full_name = profile.sidecar_binary_name;
+    // Strip the `-aarch64-apple-darwin` (or whichever) suffix that Tauri's
+    // bundler removes in production. Look up dynamically rather than
+    // hard-coding the triple so the same logic works on future Intel /
+    // Windows bundles too.
+    let bundle_name = strip_target_triple_suffix(full_name);
 
-    // Bundle: derive from resource_dir().parent()/MacOS/.
+    // Bundle: derive from resource_dir().parent()/MacOS/<bundle_name>.
     if let Ok(resource_dir) = app.path().resource_dir() {
         if let Some(contents_dir) = resource_dir.parent() {
-            let candidate = contents_dir.join("MacOS").join(name);
-            if candidate.exists() {
-                return Some(candidate);
+            let macos_dir = contents_dir.join("MacOS");
+            for candidate in [
+                macos_dir.join(bundle_name),
+                macos_dir.join(full_name),
+            ] {
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
             }
         }
     }
 
-    // Dev: <CARGO_MANIFEST_DIR>/binaries/<name>. CARGO_MANIFEST_DIR is the
-    // crate root (src-tauri/); the fetch script stages binaries/ there.
-    let dev_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("binaries")
-        .join(name);
-    if dev_path.exists() {
-        return Some(dev_path);
+    // Dev: <CARGO_MANIFEST_DIR>/binaries/<full_name> (with triple). Some
+    // future dev flows might also stage the trimmed name; try both.
+    let bin_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries");
+    for candidate in [bin_dir.join(full_name), bin_dir.join(bundle_name)] {
+        if candidate.is_file() {
+            return Some(candidate);
+        }
     }
 
     None
 }
 
+/// Strip a `-<target-triple>` suffix if present. Mirrors Tauri 2's bundler
+/// renaming. Triples we care about right now: `aarch64-apple-darwin`,
+/// `x86_64-apple-darwin`, `x86_64-pc-windows-msvc`. Pattern: trailing
+/// `-<arch>-<vendor>-<sys>(-<env>)?` separated by dashes. Conservatively we
+/// just match by known suffixes to avoid false positives.
+fn strip_target_triple_suffix(name: &str) -> &str {
+    const SUFFIXES: &[&str] = &[
+        "-aarch64-apple-darwin",
+        "-x86_64-apple-darwin",
+        "-x86_64-pc-windows-msvc.exe",
+        "-x86_64-pc-windows-gnu.exe",
+    ];
+    for suffix in SUFFIXES {
+        if let Some(prefix) = name.strip_suffix(suffix) {
+            return prefix;
+        }
+    }
+    name
+}
+
 /// Locate the tokenizer across dev / bundle contexts.
+///
+/// Tauri 2 resource layout discovered via A2 bundle test (2026-05-14):
+///
+/// - **Bundle**: `<App>.app/Contents/Resources/<rel-path>` — Tauri 2 places
+///   `bundle.resources` entries directly under `Contents/Resources/`. (Tauri 1
+///   used to interpose an `_up_/` directory; Tauri 2 does not.)
+/// - **Dev**: `<src-tauri>/<rel-path>`.
+///
+/// Our `tauri.macos.conf.json` declares `resources/rwkv-sidecar/*`, so the
+/// tokenizer lands at `Contents/Resources/resources/rwkv-sidecar/<name>` in
+/// bundle and `src-tauri/resources/rwkv-sidecar/<name>` in dev.
 fn locate_tokenizer(app: &AppHandle, profile: &RuntimeProfile) -> Option<PathBuf> {
     let name = profile.tokenizer_filename;
 
-    // Bundle: Tauri places `bundle.resources` entries under
-    // Contents/Resources/_up_/<rel-path>. Our tauri.macos.conf.json declares
-    // `resources/rwkv-sidecar/*`, so the file ends up at
-    // Contents/Resources/_up_/resources/rwkv-sidecar/<name>.
+    // Bundle path (Tauri 2): Contents/Resources/resources/rwkv-sidecar/<name>.
+    // Also probe the legacy `_up_/` path in case a future Tauri release
+    // reintroduces it; harmless when the file isn't there.
     if let Ok(resource_dir) = app.path().resource_dir() {
-        let bundle_candidate = resource_dir
-            .join("_up_")
-            .join("resources")
-            .join("rwkv-sidecar")
-            .join(name);
-        if bundle_candidate.exists() {
-            return Some(bundle_candidate);
+        let base = resource_dir.join("resources").join("rwkv-sidecar");
+        for candidate in [
+            base.join(name),
+            resource_dir
+                .join("_up_")
+                .join("resources")
+                .join("rwkv-sidecar")
+                .join(name),
+        ] {
+            if candidate.is_file() {
+                return Some(candidate);
+            }
         }
     }
 
@@ -348,7 +400,7 @@ fn locate_tokenizer(app: &AppHandle, profile: &RuntimeProfile) -> Option<PathBuf
         .join("resources")
         .join("rwkv-sidecar")
         .join(name);
-    if dev_path.exists() {
+    if dev_path.is_file() {
         return Some(dev_path);
     }
 
