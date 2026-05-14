@@ -125,6 +125,79 @@ pub fn pick_batch_size(supported: &[u32], hint: usize) -> usize {
     hint.min(max_supported).max(1)
 }
 
+/// Decide the batch cap for a batch whose **longest** segment is `max_chars`
+/// characters. Returns a value `≤ ceiling` so the per-run cap from
+/// `pick_batch_size` still wins.
+///
+/// Heuristic (Phase 6.B):
+/// - `≤ 300` chars → use ceiling (short segments, low compute per slot)
+/// - `301..=1200` → ceiling / 2 (medium segments)
+/// - `1201..=2500` → ceiling / 4 (long, watch latency / VRAM)
+/// - `> 2500` → 1 (sequential; Phase 6.C may pre-split these)
+///
+/// Numbers are heuristics, not bench-validated against every M-series chip.
+/// They are deliberately easy to tune without changing the call site shape.
+pub fn pick_batch_for_length(ceiling: usize, max_chars: usize) -> usize {
+    let limit = match max_chars {
+        0..=300 => ceiling,
+        301..=1200 => ceiling.div_ceil(2),
+        1201..=2500 => ceiling.div_ceil(4),
+        _ => 1,
+    };
+    limit.max(1).min(ceiling.max(1))
+}
+
+/// Greedy length-bucket batch planner.
+///
+/// Walks `targets` in original order (preserving the user's segment ordering
+/// in the output document) and groups them into batches such that:
+///
+/// 1. No batch is larger than `pick_batch_for_length(ceiling, batch_max_chars)`.
+/// 2. When adding a segment would push the batch's longest segment into a
+///    smaller bucket — i.e., the new `max_chars` allows fewer slots than the
+///    batch already holds — the current batch is flushed first so the new
+///    (longer) segment starts a fresh, smaller batch.
+///
+/// This keeps short segments throughputs at the sidecar's max while long
+/// segments naturally fall into smaller batches without explicit sorting.
+///
+/// The closure `text_len` lets callers extract char-count from any item type;
+/// tests use `String` directly, the run loop uses `Segment::source_text`.
+pub fn plan_batches<'a, T, F>(
+    targets: &'a [T],
+    ceiling: usize,
+    text_len: F,
+) -> Vec<Vec<&'a T>>
+where
+    F: Fn(&T) -> usize,
+{
+    let mut batches: Vec<Vec<&'a T>> = Vec::new();
+    let mut current: Vec<&'a T> = Vec::new();
+    let mut current_max_chars: usize = 0;
+
+    for target in targets {
+        let target_len = text_len(target);
+        let next_max_chars = current_max_chars.max(target_len);
+        let cap = pick_batch_for_length(ceiling, next_max_chars);
+
+        // Adding this segment would either exceed the cap implied by the new
+        // max length, OR shrink an already-formed batch past its current
+        // length — flush before adding.
+        if !current.is_empty() && current.len() + 1 > cap {
+            batches.push(std::mem::take(&mut current));
+            current_max_chars = 0;
+        }
+
+        current.push(target);
+        current_max_chars = current_max_chars.max(target_len);
+    }
+
+    if !current.is_empty() {
+        batches.push(current);
+    }
+    batches
+}
+
 /// Set `/v1/chat/roles` once per run. Extracted from `translate_batch` so the
 /// orchestrator can hit the server one time per direction instead of once per
 /// batch — `roles` is global server state, repeated POSTs are wasted RTTs.
@@ -407,6 +480,7 @@ async fn send_request_with_cancel(
     let handle = tokio::spawn(future);
     loop {
         if cancel.load(Ordering::SeqCst) {
+            eprintln!("[rwkv-cancel] send_request_with_cancel: cancel observed, aborting in-flight POST");
             handle.abort();
             return Err("RWKV 翻译请求已取消。".to_string());
         }
@@ -435,6 +509,7 @@ async fn read_text_with_cancel(
     let handle = tokio::spawn(response.text());
     loop {
         if cancel.load(Ordering::SeqCst) {
+            eprintln!("[rwkv-cancel] read_text_with_cancel: cancel observed, aborting response body read");
             handle.abort();
             return Err("RWKV 翻译请求已取消。".to_string());
         }
@@ -663,5 +738,96 @@ mod tests {
         let parsed: SupportedBatchSizesResponse =
             serde_json::from_str(body).expect("phase 0 response shape should parse");
         assert_eq!(parsed.supported_batch_sizes, (1u32..=12).collect::<Vec<_>>());
+    }
+
+    // ---- Phase 6.B: length bucket policy + greedy batch planner ----
+
+    #[test]
+    fn pick_batch_for_length_bucket_transitions_on_ceiling_12() {
+        // Same ceiling the Phase 0 sidecar reports (max of [1..12]).
+        assert_eq!(pick_batch_for_length(12, 0), 12);
+        assert_eq!(pick_batch_for_length(12, 300), 12); // boundary inclusive
+        assert_eq!(pick_batch_for_length(12, 301), 6); // medium
+        assert_eq!(pick_batch_for_length(12, 1200), 6); // medium upper boundary
+        assert_eq!(pick_batch_for_length(12, 1201), 3); // long
+        assert_eq!(pick_batch_for_length(12, 2500), 3); // long upper boundary
+        assert_eq!(pick_batch_for_length(12, 2501), 1); // huge — sequential
+        assert_eq!(pick_batch_for_length(12, 10_000), 1);
+    }
+
+    #[test]
+    fn pick_batch_for_length_floors_at_one_and_respects_ceiling() {
+        // Tiny ceilings shouldn't accidentally yield 0 from div_ceil math.
+        assert_eq!(pick_batch_for_length(1, 50), 1);
+        assert_eq!(pick_batch_for_length(1, 5000), 1);
+        // div_ceil(2) of 3 = 2 not 1.5 — make sure short/medium for ceiling=3
+        // doesn't get rounded into invalid territory.
+        assert_eq!(pick_batch_for_length(3, 500), 2);
+        assert_eq!(pick_batch_for_length(3, 1500), 1);
+    }
+
+    #[test]
+    fn plan_batches_uses_full_ceiling_for_short_segments() {
+        let targets: Vec<String> = (0..15).map(|_| "short text".to_string()).collect();
+        let batches = plan_batches(&targets, 12, |s| s.chars().count());
+        // 12 short + 3 leftover.
+        assert_eq!(batches.iter().map(|b| b.len()).collect::<Vec<_>>(), vec![12, 3]);
+    }
+
+    #[test]
+    fn plan_batches_shrinks_when_a_long_segment_appears() {
+        // 8 short, then 1 long (1500 chars → bucket 3), then 8 short.
+        let mut targets: Vec<String> = (0..8).map(|i| format!("seg-{i}")).collect();
+        targets.push("x".repeat(1500));
+        targets.extend((9..17).map(|i| format!("seg-{i}")));
+        let batches = plan_batches(&targets, 12, |s| s.chars().count());
+        // First flush at boundary: when the 1500-char segment arrives, the
+        // cap drops to 3 → batch of 8 short flushes, then the long segment
+        // starts a fresh batch capped at 3, picking up the next 2 short ones,
+        // then the remaining short segments form batches of 12.
+        let sizes: Vec<usize> = batches.iter().map(|b| b.len()).collect();
+        assert_eq!(sizes, vec![8, 3, 6]);
+        // Total preserved and order preserved.
+        let total: usize = sizes.iter().sum();
+        assert_eq!(total, targets.len());
+        let flat: Vec<&String> = batches.into_iter().flatten().collect();
+        for (idx, item) in flat.iter().enumerate() {
+            assert_eq!(*item, &targets[idx]);
+        }
+    }
+
+    #[test]
+    fn plan_batches_isolates_huge_segments_to_their_own_batch() {
+        // > 2500 chars forces batch=1.
+        let targets: Vec<String> = vec![
+            "short".to_string(),
+            "x".repeat(3000),
+            "short".to_string(),
+        ];
+        let batches = plan_batches(&targets, 12, |s| s.chars().count());
+        // First batch: short (would have allowed 12). When the 3000-char seg
+        // arrives, cap drops to 1 → flush. Huge alone. Then short alone (it
+        // formed after the huge flush; current is empty so it joins).
+        let sizes: Vec<usize> = batches.iter().map(|b| b.len()).collect();
+        assert_eq!(sizes, vec![1, 1, 1]);
+    }
+
+    #[test]
+    fn plan_batches_empty_input_yields_no_batches() {
+        let targets: Vec<String> = Vec::new();
+        let batches = plan_batches(&targets, 12, |s| s.chars().count());
+        assert!(batches.is_empty());
+    }
+
+    #[test]
+    fn plan_batches_with_ceiling_one_collapses_to_singletons() {
+        // Sidecar that only reports batch=1 (very low-end). Every segment is
+        // its own batch regardless of length.
+        let targets: Vec<String> = (0..5).map(|i| format!("seg-{i}")).collect();
+        let batches = plan_batches(&targets, 1, |s| s.chars().count());
+        assert_eq!(batches.len(), 5);
+        for b in &batches {
+            assert_eq!(b.len(), 1);
+        }
     }
 }

@@ -205,9 +205,14 @@ pub fn cancel_rwkv_translation_run(
         .lock()
         .map_err(|_| "翻译运行状态锁不可用。".to_string())?;
     let Some(record) = runs.get_mut(&run_id) else {
+        eprintln!("[rwkv-cancel] cancel_rwkv_translation_run: run_id={run_id} NOT FOUND in registry");
         return Err("翻译运行不存在。".to_string());
     };
 
+    eprintln!(
+        "[rwkv-cancel] cancel_rwkv_translation_run: setting flag for run_id={run_id} (was state={:?})",
+        record.status.state
+    );
     record.cancel.store(true, Ordering::SeqCst);
     if matches!(record.status.state, RwkvTranslationRunState::Running) {
         record.status.state = RwkvTranslationRunState::Cancelling;
@@ -1358,6 +1363,23 @@ async fn start_mobile_batch_chat_run(
     };
     let source_lang = request.source_lang.as_deref().unwrap_or("en").to_string();
 
+    // If the user already clicked stop before we even reach the query, bail
+    // out cleanly instead of running it. (Mostly defensive — the registry
+    // insertion above is the earliest the cancel command can possibly fire.)
+    if cancel.load(Ordering::SeqCst) {
+        eprintln!("[rwkv-cancel] mobile_batch_chat: cancel set before query_supported_batch_sizes");
+        let status = cancel_current_run(
+            registry,
+            &dir,
+            &request.run_id,
+            &request.translation_file_id,
+            &request.target_lang,
+            &mut translation_segments,
+            &[],
+        )?;
+        return Ok(status);
+    }
+
     // Phase 6 dynamic batch policy: ask the sidecar what batch sizes its
     // loaded model accepts, then clamp the frontend hint against the reported
     // maximum. Replaces the old `SIDECAR_MAX_BATCH_SIZE = 12` hardcode. A
@@ -1369,6 +1391,21 @@ async fn start_mobile_batch_chat_run(
     {
         Ok(sizes) => sizes,
         Err(message) => {
+            // If the user clicked stop while the GET was in flight, prefer
+            // the Cancelled state — UI shows "已停止" rather than "失败".
+            if cancel.load(Ordering::SeqCst) {
+                eprintln!("[rwkv-cancel] mobile_batch_chat: cancel during query_supported_batch_sizes");
+                let status = cancel_current_run(
+                    registry,
+                    &dir,
+                    &request.run_id,
+                    &request.translation_file_id,
+                    &request.target_lang,
+                    &mut translation_segments,
+                    &[],
+                )?;
+                return Ok(status);
+            }
             let detail =
                 format!("无法获取 /v1/batch/supported_batch_sizes: {message}");
             let status = update_run_status(registry, &request.run_id, |status| {
@@ -1379,10 +1416,8 @@ async fn start_mobile_batch_chat_run(
             return Err(detail);
         }
     };
-    let effective_batch_size = mobile_batch_chat::pick_batch_size(
-        &supported_sizes,
-        request.batch_size,
-    );
+    let ceiling =
+        mobile_batch_chat::pick_batch_size(&supported_sizes, request.batch_size);
 
     // Phase 6 single-direction-per-run: set roles **once** at the top of the
     // run instead of per batch. `/v1/chat/roles` is global sidecar state and
@@ -1396,6 +1431,22 @@ async fn start_mobile_batch_chat_run(
     )
     .await
     {
+        // set_chat_roles_for_pair returns "RWKV 翻译请求已取消。" when the
+        // cancel flag was tripped during its HTTP roundtrip. Treat that as
+        // Cancelled, not Failed.
+        if cancel.load(Ordering::SeqCst) {
+            eprintln!("[rwkv-cancel] mobile_batch_chat: cancel during set_chat_roles_for_pair");
+            let status = cancel_current_run(
+                registry,
+                &dir,
+                &request.run_id,
+                &request.translation_file_id,
+                &request.target_lang,
+                &mut translation_segments,
+                &[],
+            )?;
+            return Ok(status);
+        }
         let detail = format!("设置 /v1/chat/roles 失败: {message}");
         let status = update_run_status(registry, &request.run_id, |status| {
             status.state = RwkvTranslationRunState::Failed;
@@ -1405,11 +1456,25 @@ async fn start_mobile_batch_chat_run(
         return Err(detail);
     }
 
+    // Phase 6.B length-bucket batch planning: instead of fixed `chunks(N)`,
+    // group consecutive segments greedily so that long segments fall into
+    // smaller batches automatically (≤300 chars stays at ceiling, 301..1200
+    // ceiling/2, 1201..2500 ceiling/4, >2500 batch=1). Order is preserved.
+    let planned_batches = mobile_batch_chat::plan_batches(
+        &targets,
+        ceiling,
+        |segment| segment.source_text.chars().count(),
+    );
+
     let mut completed_segment_ids = Vec::new();
     let mut failed_segment_ids = Vec::new();
 
-    for batch in targets.chunks(effective_batch_size) {
+    for (batch_index, batch) in planned_batches.iter().enumerate() {
         if cancel.load(Ordering::SeqCst) {
+            eprintln!(
+                "[rwkv-cancel] mobile_batch_chat: cancel before batch #{batch_index} (of {})",
+                planned_batches.len()
+            );
             let status = cancel_current_run(
                 registry,
                 &dir,
@@ -1456,6 +1521,10 @@ async fn start_mobile_batch_chat_run(
         .await;
 
         if cancel.load(Ordering::SeqCst) {
+            eprintln!(
+                "[rwkv-cancel] mobile_batch_chat: cancel after batch #{batch_index} translate_batch returned ok={}",
+                result.ok
+            );
             let status = cancel_current_run(
                 registry,
                 &dir,
