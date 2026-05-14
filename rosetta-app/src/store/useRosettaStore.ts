@@ -52,13 +52,6 @@ export type ManagedRuntimeSlice = {
    * Cleared on the next successful action.
    */
   lastError: string | null;
-  /**
-   * Whether the user has dismissed the "本地 RWKV 未安装" onboarding banner
-   * for this session. Persisted only as a transient session flag so closing
-   * the app and reopening shows the banner again if the runtime is still
-   * not installed.
-   */
-  bannerDismissed: boolean;
 };
 
 type RosettaState = {
@@ -85,7 +78,6 @@ type RosettaState = {
     progress: ManagedRuntimeInstallProgress | null
   ) => void;
   setManagedRuntimeError: (error: string | null) => void;
-  dismissManagedRuntimeBanner: () => void;
   setDownloadProxyUrl: (url: string) => void;
   setThemeMode: (mode: AppThemeMode) => void;
   updateRwkvConfig: (config: Partial<RwkvConnectionConfig>) => void;
@@ -228,7 +220,6 @@ export const useRosettaStore = create<RosettaState>()(
         status: null,
         progress: null,
         lastError: null,
-        bannerDismissed: false,
       },
       downloadProxy: {
         url: "",
@@ -262,13 +253,6 @@ export const useRosettaStore = create<RosettaState>()(
           managedRuntime: {
             ...state.managedRuntime,
             lastError: error,
-          },
-        })),
-      dismissManagedRuntimeBanner: () =>
-        set((state) => ({
-          managedRuntime: {
-            ...state.managedRuntime,
-            bannerDismissed: true,
           },
         })),
       setThemeMode: (mode) => set({ themeMode: mode }),

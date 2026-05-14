@@ -680,3 +680,31 @@ export type ManagedRuntimeCancelInstallResult = {
   cancelled: boolean;
   message: string;
 };
+
+// -----------------------------------------------------------------------------
+// Onboarding (first-launch wizard, P1)
+// -----------------------------------------------------------------------------
+
+export type OnboardingState = {
+  /** User completed onboarding (downloaded local engine OR opted into
+   *  external API). Persists across launches in a Rust-side JSON file. */
+  completed: boolean;
+  /** ISO-8601 timestamp of completion. */
+  completedAt: string | null;
+  /** User chose "use my own external API" instead of downloading the local
+   *  engine — Workspace should not nag about local engine state. */
+  skippedLocalInstall: boolean;
+};
+
+export type OnboardingDecision = {
+  state: OnboardingState;
+  /** The local model file actually exists on disk right now. */
+  modelInstalled: boolean;
+  /** Derived: app should show the Onboarding window instead of Workspace.
+   *  True iff `!completed` OR (`!skippedLocalInstall` AND `!modelInstalled`). */
+  needsOnboarding: boolean;
+};
+
+export type CompleteOnboardingRequest = {
+  skippedLocalInstall: boolean;
+};

@@ -12,6 +12,7 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "Rosetta",
         "width": 1280,
         "height": 780,
@@ -23,7 +24,26 @@
         "transparent": true,
         "windowEffects": {
           "effects": ["mica"]
-        }
+        },
+        "visible": false
+      },
+      {
+        "label": "onboarding",
+        "title": "Welcome to Rosetta",
+        "width": 720,
+        "height": 560,
+        "resizable": false,
+        "maximizable": false,
+        "minimizable": true,
+        "center": true,
+        "decorations": false,
+        "shadow": true,
+        "theme": "Dark",
+        "transparent": true,
+        "windowEffects": {
+          "effects": ["mica"]
+        },
+        "visible": false
       }
     ],
     "security": {

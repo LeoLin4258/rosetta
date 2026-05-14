@@ -1,9 +1,12 @@
 mod managed_rwkv;
+mod onboarding;
 mod rosetta_jobs;
 mod rwkv_api;
 mod rwkv_providers;
 #[allow(dead_code)]
 mod rwkv_runtime;
+
+use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -14,6 +17,26 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .setup(|app| {
+            // Both `main` and `onboarding` are declared in tauri.conf.json
+            // with `visible: false`. Pick one to show now based on whether
+            // the user has completed onboarding AND the model is on disk.
+            // Bundled `.app` launched from Finder lands here too — this is
+            // the only entry point that decides "fresh user vs returning
+            // user".
+            let handle = app.handle();
+            let decision = onboarding::decide(handle);
+            let target_label = if decision.needs_onboarding {
+                "onboarding"
+            } else {
+                "main"
+            };
+            if let Some(window) = handle.get_webview_window(target_label) {
+                window.show().ok();
+                window.set_focus().ok();
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             managed_rwkv::cancel_managed_rwkv_install,
             managed_rwkv::get_managed_rwkv_install_plan,
@@ -24,6 +47,9 @@ pub fn run() {
             managed_rwkv::probe_managed_rwkv_runtime,
             managed_rwkv::start_managed_rwkv_runtime,
             managed_rwkv::stop_managed_rwkv_runtime,
+            onboarding::complete_onboarding_and_open_main,
+            onboarding::get_onboarding_decision,
+            onboarding::reopen_onboarding_window,
             rosetta_jobs::create_rosetta_translation_revision,
             rosetta_jobs::delete_rosetta_job,
             rosetta_jobs::delete_rosetta_job_file,

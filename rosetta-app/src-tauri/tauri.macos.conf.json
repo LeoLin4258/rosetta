@@ -3,6 +3,7 @@
     "macOSPrivateApi": true,
     "windows": [
       {
+        "label": "main",
         "title": "Rosetta",
         "width": 1280,
         "height": 780,
@@ -21,7 +22,33 @@
         "windowEffects": {
           "effects": ["sidebar"],
           "state": "active"
-        }
+        },
+        "visible": false
+      },
+      {
+        "label": "onboarding",
+        "title": "Welcome to Rosetta",
+        "width": 720,
+        "height": 560,
+        "resizable": false,
+        "maximizable": false,
+        "minimizable": true,
+        "center": true,
+        "decorations": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": {
+          "x": 14,
+          "y": 18
+        },
+        "shadow": true,
+        "theme": "Dark",
+        "transparent": true,
+        "windowEffects": {
+          "effects": ["sidebar"],
+          "state": "active"
+        },
+        "visible": false
       }
     ]
   },
