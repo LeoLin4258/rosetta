@@ -19,9 +19,6 @@ const isMacPlatform =
   typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/.test(navigator.platform);
 
 const pageTitles: Record<string, string> = {
-  "/": "Rosetta",
-  "/new": "新项目",
-  "/jobs": "任务",
   "/settings": "设置",
 };
 
@@ -66,17 +63,10 @@ export function AppShell() {
   const location = useLocation();
   const themeMode = useRosettaStore((state) => state.themeMode);
   const setJobList = useRosettaStore((state) => state.setJobList);
-  const jobs = useRosettaStore((state) => state.jobs);
-  const activeJobId = useRosettaStore((state) => state.activeJobId);
+  const activeDocument = useRosettaStore((state) => state.activeDocument);
   const [systemPrefersDark, setSystemPrefersDark] = useState(true);
   const isDark = themeMode === "system" ? systemPrefersDark : themeMode === "dark";
-  const routeJobId = location.pathname.match(/^\/jobs\/([^/]+)/)?.[1] ?? null;
-  const currentJobId = routeJobId ?? activeJobId;
-  const currentJob = jobs.find((job) => job.id === currentJobId) ?? null;
-  const title =
-    location.pathname === "/jobs" || location.pathname.startsWith("/jobs/")
-      ? currentJob?.filename ?? "任务"
-      : pageTitles[location.pathname] ?? "Rosetta";
+  const title = pageTitles[location.pathname] ?? activeDocument?.filename ?? "Rosetta";
   const titlebarHeight = isMacPlatform ? "0px" : "2.25rem";
 
   async function startHeaderDrag(event: React.MouseEvent<HTMLElement>) {

@@ -1,11 +1,9 @@
 import { createHashRouter } from "react-router-dom";
 import { AppShell } from "./AppShell";
-import { HomePage } from "../features/home/HomePage";
-import { ImportPage } from "../features/import/ImportPage";
-import { JobsPage } from "../features/jobs/JobsPage";
 import { SourcePreviewPage } from "../features/preview/SourcePreviewPage";
 import { TranslationPreviewPage } from "../features/preview/TranslationPreviewPage";
 import { SettingsPage } from "../features/settings/SettingsPage";
+import { WorkspacePage } from "../features/workspace/WorkspacePage";
 
 export const router = createHashRouter([
   {
@@ -20,11 +18,7 @@ export const router = createHashRouter([
     path: "/",
     element: <AppShell />,
     children: [
-      { index: true, element: <HomePage /> },
-      { path: "new", element: <ImportPage /> },
-      { path: "jobs", element: <JobsPage /> },
-      { path: "jobs/:jobId/files/:fileId", element: <JobsPage /> },
-      { path: "jobs/:jobId", element: <JobsPage /> },
+      { index: true, element: <WorkspacePage /> },
       { path: "settings", element: <SettingsPage /> },
     ],
   },

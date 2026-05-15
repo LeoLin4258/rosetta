@@ -1,9 +1,15 @@
-import { useState } from "react";
-import { matchPath, NavLink, useLocation } from "react-router-dom";
-import { FolderIcon, PencilIcon, PlusIcon, SettingsIcon } from "lucide-react";
+import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { FileTextIcon, PencilIcon, PlusIcon, SettingsIcon } from "lucide-react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
-import { loadRosettaJob, renameRosettaJob } from "@/lib/rosettaJobs";
-import { rosettaJobDefaultPath } from "@/lib/rosettaRoutes";
+import {
+  importRosettaDocumentFromPath,
+  loadRosettaJob,
+  pickRosettaImportPath,
+  renameRosettaJob,
+} from "@/lib/rosettaJobs";
+import { formatRelativeTime } from "@/lib/formatRelativeTime";
 import { useRosettaStore } from "@/store/useRosettaStore";
 import {
   Sidebar,
@@ -30,33 +36,83 @@ export function AppSidebar({
   hasMacTitlebarOverlay = false,
   ...props
 }: AppSidebarProps) {
-  const location = useLocation();
-  const jobs = useRosettaStore((state) => state.jobs);
-  const activeJobId = useRosettaStore((state) => state.activeJobId);
-  const setJobList = useRosettaStore((state) => state.setJobList);
-  const refreshJobBundle = useRosettaStore((state) => state.refreshJobBundle);
+  const navigate = useNavigate();
+  const jobs = useRosettaStore((s) => s.jobs);
+  const activeJobId = useRosettaStore((s) => s.activeJobId);
+  const setJobList = useRosettaStore((s) => s.setJobList);
+  const setActiveBundle = useRosettaStore((s) => s.setActiveBundle);
   const [renamingJobId, setRenamingJobId] = useState<string | null>(null);
-  const routeJobId =
-    matchPath("/jobs/:jobId/files/:fileId", location.pathname)?.params.jobId ??
-    matchPath("/jobs/:jobId", location.pathname)?.params.jobId ??
-    null;
-  const visibleJobId = routeJobId ?? activeJobId;
+  const [isDraggingOver, setIsDraggingOver] = useState(false);
+
+  // Lightweight drag listener for visual feedback only — does not handle drop.
+  // Same StrictMode-safe async cleanup pattern as WorkspacePage.
+  useEffect(() => {
+    const appWindow = getCurrentWindow();
+    let unmounted = false;
+    let unlisten: (() => void) | null = null;
+
+    appWindow
+      .onDragDropEvent((event) => {
+        if (event.payload.type === "enter" || event.payload.type === "over") {
+          setIsDraggingOver(true);
+        } else if (
+          event.payload.type === "leave" ||
+          event.payload.type === "drop"
+        ) {
+          setIsDraggingOver(false);
+        }
+      })
+      .then((fn) => {
+        if (unmounted) {
+          fn();
+        } else {
+          unlisten = fn;
+        }
+      })
+      .catch(console.error);
+
+    return () => {
+      unmounted = true;
+      unlisten?.();
+    };
+  }, []);
+
+  const recentJobs = [...jobs]
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+    .slice(0, 5);
+
+  async function addNewDocument() {
+    try {
+      const path = await pickRosettaImportPath();
+      if (!path) return;
+      const bundle = await importRosettaDocumentFromPath(path);
+      setActiveBundle(bundle);
+      navigate("/");
+    } catch {
+      // silent — picker cancel or import error
+    }
+  }
+
+  async function openJob(job: RosettaJobSummary) {
+    try {
+      const bundle = await loadRosettaJob(job.id);
+      setActiveBundle(bundle);
+      navigate("/");
+    } catch {
+      // silent — user stays on current doc
+    }
+  }
 
   async function renameJob(job: RosettaJobSummary) {
-    const nextName = window.prompt("项目名", job.filename);
-    if (nextName == null || nextName.trim() === job.filename) {
-      return;
-    }
+    const nextName = window.prompt("文档名", job.filename);
+    if (nextName == null || nextName.trim() === job.filename) return;
 
     setRenamingJobId(job.id);
     try {
       const nextJobs = await renameRosettaJob(job.id, nextName);
       setJobList(nextJobs);
-      if (activeJobId === job.id) {
-        refreshJobBundle(await loadRosettaJob(job.id));
-      }
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "重命名项目失败。");
+      window.alert(error instanceof Error ? error.message : "重命名失败。");
     } finally {
       setRenamingJobId(null);
     }
@@ -64,46 +120,54 @@ export function AppSidebar({
 
   return (
     <Sidebar collapsible="offcanvas" {...props}>
-      <SidebarHeader className={cn(hasMacTitlebarOverlay && "pt-[3.25rem]")}>
+      <SidebarHeader className={cn(hasMacTitlebarOverlay && "pt-13")}>
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton asChild size="lg" tooltip="新项目">
-              <NavLink to="/new">
-                <PlusIcon />
-                <span>新项目</span>
-              </NavLink>
+            <SidebarMenuButton
+              onClick={() => void addNewDocument()}
+              tooltip="打开文件"
+            >
+              <PlusIcon />
+              <span>新建文档</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarHeader>
 
-      <SidebarContent>
+      <SidebarContent className="relative">
+        {isDraggingOver && (
+          <div className="pointer-events-none absolute inset-2 z-10 flex flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-primary/60 bg-primary/5">
+            <PlusIcon className="size-6 text-primary/70" strokeWidth={1.5} />
+            <span className="text-xs font-medium text-primary/70">拖入以添加文档</span>
+          </div>
+        )}
         <SidebarGroup>
-          <SidebarGroupLabel>项目</SidebarGroupLabel>
+          <SidebarGroupLabel>最近文档</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {jobs.map((job) => (
+              {recentJobs.map((job) => (
                 <SidebarMenuItem key={job.id}>
                   <SidebarMenuButton
-                    asChild
                     className="pr-8"
-                    isActive={visibleJobId === job.id}
+                    isActive={activeJobId === job.id}
+                    onClick={() => void openJob(job)}
                     tooltip={job.filename}
                   >
-                    <NavLink to={rosettaJobDefaultPath(job)}>
-                      <FolderIcon />
-                      <span>{job.filename}</span>
-                    </NavLink>
+                    <FileTextIcon />
+                    <span className="flex-1 truncate">{job.filename}</span>
+                    <span className="shrink-0 text-xs text-muted-foreground/40">
+                      {formatRelativeTime(job.updatedAt)}
+                    </span>
                   </SidebarMenuButton>
                   <SidebarMenuAction
                     disabled={renamingJobId === job.id}
-                    onClick={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
                       void renameJob(job);
                     }}
                     showOnHover
-                    title="重命名项目"
+                    title="重命名"
                     type="button"
                   >
                     <PencilIcon />
@@ -111,11 +175,11 @@ export function AppSidebar({
                 </SidebarMenuItem>
               ))}
 
-              {jobs.length === 0 && (
+              {recentJobs.length === 0 && (
                 <SidebarMenuItem>
-                  <SidebarMenuButton className="text-muted-foreground" disabled>
-                    <FolderIcon />
-                    <span>暂无项目</span>
+                  <SidebarMenuButton className="text-muted-foreground/50" disabled>
+                    <FileTextIcon />
+                    <span>暂无文档</span>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
               )}
@@ -129,13 +193,12 @@ export function AppSidebar({
           <SidebarMenuItem>
             <SidebarMenuButton
               asChild
-              isActive={location.pathname === "/settings"}
               tooltip="设置"
             >
-              <NavLink to="/settings">
+              <button type="button" onClick={() => navigate("/settings")}>
                 <SettingsIcon />
                 <span>设置</span>
-              </NavLink>
+              </button>
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>

@@ -73,12 +73,14 @@ type RosettaState = {
   activeTranslationRun: ActiveTranslationRun | null;
   managedRuntime: ManagedRuntimeSlice;
   downloadProxy: DownloadProxyConfig;
+  defaultTargetLang: string;
   setManagedRuntimeStatus: (status: ManagedRuntimeStatus | null) => void;
   setManagedRuntimeProgress: (
     progress: ManagedRuntimeInstallProgress | null
   ) => void;
   setManagedRuntimeError: (error: string | null) => void;
   setDownloadProxyUrl: (url: string) => void;
+  setDefaultTargetLang: (lang: string) => void;
   setThemeMode: (mode: AppThemeMode) => void;
   updateRwkvConfig: (config: Partial<RwkvConnectionConfig>) => void;
   setTranslationMode: (mode: TranslationMode) => void;
@@ -224,10 +226,12 @@ export const useRosettaStore = create<RosettaState>()(
       downloadProxy: {
         url: "",
       },
+      defaultTargetLang: "zh-CN",
       setDownloadProxyUrl: (url) =>
         set(() => ({
           downloadProxy: { url: url.trim() },
         })),
+      setDefaultTargetLang: (lang) => set({ defaultTargetLang: lang }),
       setManagedRuntimeStatus: (status) =>
         set((state) => ({
           managedRuntime: {
@@ -739,12 +743,15 @@ export const useRosettaStore = create<RosettaState>()(
             ...current.downloadProxy,
             ...persistedState?.downloadProxy,
           },
+          defaultTargetLang:
+            persistedState?.defaultTargetLang ?? current.defaultTargetLang,
         };
       },
       partialize: (state) => ({
         themeMode: state.themeMode,
         rwkv: state.rwkv,
         downloadProxy: state.downloadProxy,
+        defaultTargetLang: state.defaultTargetLang,
         activeJobId: state.activeJobId,
         activeFileId: state.activeFileId,
         activeFileIdByJobId: state.activeFileIdByJobId,
