@@ -1,4 +1,4 @@
-import { useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import type { RefObject } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import ReactMarkdown from "react-markdown";
@@ -51,6 +51,12 @@ export function DocumentPreview({
   const translationRef = useRef<HTMLDivElement>(null);
   const scrollDriverRef = useRef<PreviewSide | null>(null);
   const scrollDriverTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (scrollDriverTimeoutRef.current) clearTimeout(scrollDriverTimeoutRef.current);
+    };
+  }, []);
 
   if (!document || !sourceFile) {
     return (

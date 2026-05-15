@@ -145,6 +145,7 @@ export function useManagedRwkvRuntime() {
 
   const stop = useCallback(async (): Promise<boolean> => {
     setIsStopping(true);
+    setError(null);
     try {
       await stopManagedRwkvRuntime();
       await refreshStatus();

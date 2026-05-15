@@ -147,13 +147,15 @@ function syncJobWithSegments(
     (segment) => segment.status === "translating"
   ).length;
   const status =
-    translatingSegments > 0
-      ? "translating"
-      : failedSegments > 0
-        ? "failed"
-        : completedSegments === segments.length
-          ? "completed"
-          : "ready";
+    segments.length === 0
+      ? "ready"
+      : translatingSegments > 0
+        ? "translating"
+        : failedSegments > 0
+          ? "failed"
+          : completedSegments === segments.length
+            ? "completed"
+            : "ready";
 
   return {
     ...job,

@@ -12,7 +12,7 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { listRosettaJobs } from "@/lib/rosettaJobs";
+import { listRosettaJobs, loadRosettaJob } from "@/lib/rosettaJobs";
 import { getManagedRwkvRuntimeStatus, startManagedRwkvRuntime } from "@/lib/rwkvRuntime";
 import { useMenuEvents } from "@/lib/useMenuEvents";
 import { useRosettaStore } from "@/store/useRosettaStore";
@@ -91,8 +91,10 @@ export function AppShell() {
   const themeMode = useRosettaStore((state) => state.themeMode);
   const setJobList = useRosettaStore((state) => state.setJobList);
   const activeDocument = useRosettaStore((state) => state.activeDocument);
+  const activeJobId = useRosettaStore((state) => state.activeJobId);
   const managedRuntimeStatus = useRosettaStore((state) => state.managedRuntime.status);
   const setManagedRuntimeStatus = useRosettaStore((state) => state.setManagedRuntimeStatus);
+  const refreshJobBundle = useRosettaStore((state) => state.refreshJobBundle);
   // Tracks whether the one-shot auto-start has been attempted this session.
   // Prevents re-starting the runtime when the user explicitly stops it.
   const runtimeAutoStartedRef = useRef(false);
@@ -155,6 +157,16 @@ export function AppShell() {
         setJobList([]);
       });
   }, [setJobList]);
+
+  // Auto-restore the active document after restart (activeJobId is persisted
+  // but activeDocument is in-memory only).
+  useEffect(() => {
+    if (!activeJobId || activeDocument) return;
+    void loadRosettaJob(activeJobId)
+      .then((bundle) => refreshJobBundle(bundle))
+      .catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeJobId, activeDocument?.id]);
 
   // Probe managed runtime status on startup so WorkspacePage can use it.
   useEffect(() => {

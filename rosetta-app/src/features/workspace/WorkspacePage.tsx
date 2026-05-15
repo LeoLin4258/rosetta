@@ -189,6 +189,9 @@ export function WorkspacePage() {
     setPageError(null);
     setSelectedBlockIds([]);
 
+    // Declared outside try so the catch block can always call finishTranslationRun.
+    let runId: string | null = null;
+
     try {
       const tfBundle = await ensureRosettaTranslationFile(
         activeJobId,
@@ -205,7 +208,7 @@ export function WorkspacePage() {
 
       if (targets.length === 0) return;
 
-      const runId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      runId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const [cancelPromise, cancelResolve] = buildCancelPair();
       cancelRef.current = cancelResolve;
 
@@ -252,7 +255,7 @@ export function WorkspacePage() {
       refreshJobBundle(freshBundle);
     } catch (err) {
       setPageError(err instanceof Error ? err.message : "翻译出错。");
-      if (activeTranslationRun) finishTranslationRun(activeTranslationRun.id);
+      if (runId) finishTranslationRun(runId);
     }
   }
 
@@ -260,6 +263,8 @@ export function WorkspacePage() {
     if (!activeJobId || !activeSourceFileId || selectedBlockIds.length === 0) return;
     const retranslateTargetLang = activeTranslationFile?.targetLang ?? targetLang;
     setPageError(null);
+
+    let runId: string | null = null;
 
     try {
       // Reset the selected blocks' segments to pending via a revision
@@ -298,7 +303,7 @@ export function WorkspacePage() {
       // segments to translate — avoids blanking the translation column on early return.
       setActiveTranslationFileBundle(tfBundle);
 
-      const runId = `run-sel-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      runId = `run-sel-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const [cancelPromise, cancelResolve] = buildCancelPair();
       cancelRef.current = cancelResolve;
 
@@ -341,7 +346,7 @@ export function WorkspacePage() {
       refreshJobBundle(freshBundle);
     } catch (err) {
       setPageError(err instanceof Error ? err.message : "重新翻译失败。");
-      if (activeTranslationRun) finishTranslationRun(activeTranslationRun.id);
+      if (runId) finishTranslationRun(runId);
     }
   }
 
