@@ -24,7 +24,7 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::managed_rwkv;
 
@@ -155,6 +155,10 @@ pub async fn complete_onboarding_and_open_main(
     if let Some(onb) = app.get_webview_window("onboarding") {
         onb.close().ok();
     }
+
+    // Signal the main window to discard any stale job history from a
+    // previous session so the workspace opens to a clean welcome screen.
+    app.emit("rosetta-onboarding-completed", ()).ok();
 
     Ok(decide(&app))
 }

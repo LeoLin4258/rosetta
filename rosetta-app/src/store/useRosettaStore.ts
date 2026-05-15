@@ -99,6 +99,7 @@ type RosettaState = {
   ) => void;
   upsertTranslationFile: (translationFile: RosettaTranslationFile) => void;
   clearActiveJob: () => void;
+  clearJobHistory: () => void;
   updateActiveSegments: (segments: Segment[]) => void;
   updateActiveTranslationSegments: (segments: TranslationSegment[]) => void;
   beginTranslationFileSegmentTranslation: (
@@ -538,6 +539,23 @@ export const useRosettaStore = create<RosettaState>()(
           activeFileId: null,
           activeSourceFileId: null,
           activeTranslationFileId: null,
+          activeDocument: null,
+          previewSegments: [],
+          translationFiles: [],
+          translationSegments: [],
+          translationRevisions: [],
+          activeTranslationRun: null,
+        }),
+      clearJobHistory: () =>
+        set({
+          jobs: [],
+          activeJobId: null,
+          activeFileId: null,
+          activeFileIdByJobId: {},
+          activeSourceFileId: null,
+          activeTranslationFileId: null,
+          activeSourceFileIdByJobId: {},
+          activeTranslationFileIdBySourceKey: {},
           activeDocument: null,
           previewSegments: [],
           translationFiles: [],

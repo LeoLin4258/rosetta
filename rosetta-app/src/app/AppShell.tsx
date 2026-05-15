@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Outlet, useLocation } from "react-router-dom";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, type Theme } from "@tauri-apps/api/window";
 import { AppSidebar } from "@/components/app-sidebar";
 import { WindowTitleBar } from "@/components/window-title-bar";
@@ -25,9 +26,29 @@ const pageTitles: Record<string, string> = {
 
 const appWindow = getCurrentWindow();
 
+function useOnboardingCompleted() {
+  const clearJobHistory = useRosettaStore((s) => s.clearJobHistory);
+  const setJobList = useRosettaStore((s) => s.setJobList);
+
+  useEffect(() => {
+    let unmounted = false;
+    let unlisten: (() => void) | null = null;
+
+    listen("rosetta-onboarding-completed", () => {
+      clearJobHistory();
+      setJobList([]);
+    }).then((fn) => {
+      if (unmounted) { fn(); } else { unlisten = fn; }
+    }).catch(console.error);
+
+    return () => { unmounted = true; unlisten?.(); };
+  }, [clearJobHistory, setJobList]);
+}
+
 function MenuEventHandler() {
   const { toggleSidebar } = useSidebar();
   useMenuEvents(toggleSidebar);
+  useOnboardingCompleted();
   return null;
 }
 
