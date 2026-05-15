@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Download, Play, RefreshCw, Square } from "lucide-react";
+import { Download, Loader2, Play, RefreshCw, Square } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -26,6 +26,7 @@ type WorkspaceTopbarProps = {
   job: RosettaJobSummary;
   activeTranslationFile: RosettaTranslationFile | null;
   isTranslating: boolean;
+  isRuntimeStarting: boolean;
   translatedCount: number;
   totalCount: number;
   sourceLang: string;
@@ -43,6 +44,7 @@ export function WorkspaceTopbar({
   job,
   activeTranslationFile,
   isTranslating,
+  isRuntimeStarting,
   translatedCount,
   totalCount,
   sourceLang,
@@ -164,13 +166,22 @@ export function WorkspaceTopbar({
               </SelectContent>
             </Select>
 
-            <Button
-              size="sm"
-              onClick={() => onTranslate(targetLang, sourceLang)}
-              className="gap-1.5"
-            >
-              <Play className="size-3.5" /> 翻译
-            </Button>
+            {isRuntimeStarting ? (
+              <Button size="sm" disabled className="gap-1.5">
+                <Loader2 className="size-3.5 animate-spin" />
+                正在启动模型…
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                disabled={sourceLang !== "auto" && sourceLang === targetLang}
+                onClick={() => onTranslate(targetLang, sourceLang)}
+                className="gap-1.5"
+                title={sourceLang !== "auto" && sourceLang === targetLang ? "原文与译文语言不能相同" : undefined}
+              >
+                <Play className="size-3.5" /> 翻译
+              </Button>
+            )}
           </>
         )}
       </div>

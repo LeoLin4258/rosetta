@@ -55,6 +55,7 @@ export function WorkspacePage() {
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [pageError, setPageError] = useState<string | null>(null);
   const [selectedBlockIds, setSelectedBlockIds] = useState<string[]>([]);
+  const [hoveredBlockId, setHoveredBlockId] = useState<string | null>(null);
 
   const cancelRef = useRef<(() => void) | null>(null);
 
@@ -395,6 +396,7 @@ export function WorkspacePage() {
             job={activeJob}
             activeTranslationFile={activeTranslationFile}
             isTranslating={isTranslating}
+            isRuntimeStarting={managedRuntimeStatus?.state === "starting"}
             translatedCount={completedCount}
             totalCount={totalCount}
             sourceLang={sourceLang}
@@ -415,6 +417,9 @@ export function WorkspacePage() {
           <div className="min-h-0 flex-1 overflow-hidden">
             <DocumentPreview
               document={activeDocument}
+              hoveredBlockId={hoveredBlockId}
+              onBlockHover={setHoveredBlockId}
+              onBlockLeave={() => setHoveredBlockId(null)}
               selectionEnabled={!isTranslating}
               selectedBlockIds={selectedBlockIds}
               onToggleBlockSelection={handleBlockSelect}

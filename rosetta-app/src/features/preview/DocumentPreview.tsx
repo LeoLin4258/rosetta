@@ -246,7 +246,7 @@ function PreviewPane({
 
               return (
                 <div
-                  className="absolute left-0 top-0 w-full py-1"
+                  className="absolute left-0 top-0 w-full"
                   data-index={item.index}
                   key={`${side}-${block.id}`}
                   ref={virtualizer.measureElement}
@@ -327,7 +327,7 @@ function PreviewBlock({
     <div
       aria-pressed={selectable ? selected : undefined}
       className={cn(
-        "relative rounded-md px-3 py-2 transition-colors",
+        "relative rounded-md px-3 py-1.5 transition-colors",
         selectable && "cursor-pointer",
         hovered && "bg-muted/60",
         selected && "bg-primary/10 ring-1 ring-primary/25",
