@@ -13,13 +13,13 @@ import type { RosettaJobSummary, RosettaTranslationFile } from "@/types/rosetta"
 
 const TARGET_LANGS = [
   { value: "zh-CN", label: "简体中文" },
-  { value: "en", label: "English" },
+  { value: "en", label: "英文" },
 ];
 
 const SOURCE_LANGS = [
   { value: "auto", label: "自动检测" },
-  { value: "zh-CN", label: "中文" },
-  { value: "en", label: "English" },
+  { value: "zh-CN", label: "简体中文" },
+  { value: "en", label: "英文" },
 ];
 
 type WorkspaceTopbarProps = {
@@ -38,6 +38,7 @@ type WorkspaceTopbarProps = {
   onCancelTranslation: () => void;
   onExport: (kind: "translation" | "bilingual") => void;
   onRetranslateSelected: () => void;
+  onRetranslateAll: () => void;
 };
 
 export function WorkspaceTopbar({
@@ -56,11 +57,17 @@ export function WorkspaceTopbar({
   onCancelTranslation,
   onExport,
   onRetranslateSelected,
+  onRetranslateAll,
 }: WorkspaceTopbarProps) {
   const [confirmingCancel, setConfirmingCancel] = useState(false);
+  const [confirmingRetranslateAll, setConfirmingRetranslateAll] = useState(false);
 
   const hasTranslation =
     activeTranslationFile && activeTranslationFile.completedSegments > 0;
+  const allTranslated =
+    !!activeTranslationFile &&
+    activeTranslationFile.segmentCount > 0 &&
+    activeTranslationFile.completedSegments >= activeTranslationFile.segmentCount;
   const progressPercent =
     totalCount > 0 ? Math.round((translatedCount / totalCount) * 100) : 0;
 
@@ -115,18 +122,6 @@ export function WorkspaceTopbar({
           </>
         ) : (
           <>
-            {selectedBlockCount > 0 && (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={onRetranslateSelected}
-                className="gap-1.5"
-              >
-                <RefreshCw className="size-3.5" />
-                重翻选中 {selectedBlockCount} 段
-              </Button>
-            )}
-
             {hasTranslation && (
               <Button
                 size="sm"
@@ -171,6 +166,50 @@ export function WorkspaceTopbar({
                 <Loader2 className="size-3.5 animate-spin" />
                 正在启动模型…
               </Button>
+            ) : selectedBlockCount > 0 ? (
+              <Button
+                size="sm"
+                disabled={sourceLang !== "auto" && sourceLang === targetLang}
+                onClick={onRetranslateSelected}
+                className="gap-1.5"
+                title={sourceLang !== "auto" && sourceLang === targetLang ? "原文与译文语言不能相同" : undefined}
+              >
+                <RefreshCw className="size-3.5" />
+                重翻选中 {selectedBlockCount} 段
+              </Button>
+            ) : allTranslated ? (
+              confirmingRetranslateAll ? (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-muted-foreground/60">确认重翻全部？</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onRetranslateAll();
+                      setConfirmingRetranslateAll(false);
+                    }}
+                    className="text-xs text-destructive/70 transition-colors hover:text-destructive"
+                  >
+                    确定
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmingRetranslateAll(false)}
+                    className="text-xs text-muted-foreground/40 transition-colors hover:text-muted-foreground"
+                  >
+                    取消
+                  </button>
+                </div>
+              ) : (
+                <Button
+                  size="sm"
+                  disabled={sourceLang !== "auto" && sourceLang === targetLang}
+                  onClick={() => setConfirmingRetranslateAll(true)}
+                  className="gap-1.5"
+                  title={sourceLang !== "auto" && sourceLang === targetLang ? "原文与译文语言不能相同" : undefined}
+                >
+                  <RefreshCw className="size-3.5" /> 重翻全部
+                </Button>
+              )
             ) : (
               <Button
                 size="sm"

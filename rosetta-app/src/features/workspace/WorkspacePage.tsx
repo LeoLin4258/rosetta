@@ -350,6 +350,91 @@ export function WorkspacePage() {
     }
   }
 
+  async function handleRetranslateAll() {
+    if (!activeJobId || !activeSourceFileId) return;
+    const retranslateTargetLang = activeTranslationFile?.targetLang ?? targetLang;
+    setPageError(null);
+    setSelectedBlockIds([]);
+
+    let runId: string | null = null;
+
+    try {
+      const revisionBundle = await createRosettaTranslationRevision(
+        activeJobId,
+        activeSourceFileId,
+        "file-retranslation",
+        null
+      );
+      if (revisionBundle.segments.length > 0) {
+        refreshJobBundle(revisionBundle);
+      }
+
+      const tfBundle = await ensureRosettaTranslationFile(
+        activeJobId,
+        activeSourceFileId,
+        retranslateTargetLang
+      );
+
+      const targets = translationTargetsForStatuses({
+        sourceSegments: previewSegments,
+        translationSegments: tfBundle.segments,
+        statuses: "all",
+      });
+
+      if (targets.length === 0) return;
+
+      setActiveTranslationFileBundle(tfBundle);
+
+      runId = `run-all-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const [cancelPromise, cancelResolve] = buildCancelPair();
+      cancelRef.current = cancelResolve;
+
+      startTranslationRun({
+        id: runId,
+        jobId: activeJobId,
+        sourceFileId: activeSourceFileId,
+        translationFileId: tfBundle.translationFile.id,
+        scope: "file",
+        targetSegmentIds: targets.map((t) => t.id),
+      });
+
+      const result = await runTranslationBatches({
+        batchSize: BATCH_SIZE,
+        cancelPromise,
+        jobId: activeJobId,
+        provider: buildProvider(),
+        request: {
+          baseUrl: rwkv.baseUrl,
+          endpoint: rwkv.endpoint,
+          internalToken: rwkv.internalToken,
+          bodyPassword: rwkv.bodyPassword,
+          timeoutMs: rwkv.timeoutMs,
+          sourceLang: sourceLang && sourceLang !== "auto" ? sourceLang : undefined,
+          targetLang: retranslateTargetLang,
+        },
+        targets,
+        translationFile: tfBundle.translationFile,
+        onBatchCompleted: (ids) => markTranslationRunCompleted(runId!, ids),
+        onBatchFailed: (ids) => markTranslationRunFailed(runId!, ids),
+        onTranslationFileSaved: (saved) =>
+          updateActiveTranslationSegments(saved.segments),
+      });
+
+      finishTranslationRun(runId!);
+      cancelRef.current = null;
+
+      if (result === "failed") {
+        setPageError("翻译失败，请检查 API 配置或网络。");
+      }
+
+      const freshBundle = await loadRosettaJob(activeJobId);
+      refreshJobBundle(freshBundle);
+    } catch (err) {
+      setPageError(err instanceof Error ? err.message : "重新翻译失败。");
+      if (runId) finishTranslationRun(runId);
+    }
+  }
+
   function handleCancelTranslation() {
     cancelRef.current?.();
     cancelRef.current = null;
@@ -413,6 +498,7 @@ export function WorkspacePage() {
             onCancelTranslation={handleCancelTranslation}
             onExport={(kind) => void handleExport(kind)}
             onRetranslateSelected={() => void handleRetranslateSelected()}
+            onRetranslateAll={() => void handleRetranslateAll()}
           />
           {pageError && (
             <div className="border-b border-destructive/20 bg-destructive/5 px-6 py-2 text-xs text-destructive">

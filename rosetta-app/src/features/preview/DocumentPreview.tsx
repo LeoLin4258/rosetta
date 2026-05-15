@@ -7,6 +7,7 @@ import remarkGfm from "remark-gfm";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { languageLabel } from "@/lib/languages";
 import { cn } from "@/lib/utils";
 import type {
   RosettaBlock,
@@ -130,7 +131,7 @@ export function DocumentPreview({
         <div className="flex items-center justify-between gap-3 px-4 py-3">
           <span>译文</span>
           {translationFile ? (
-            <Badge variant="outline">{translationFile.targetLang}</Badge>
+            <Badge variant="outline">{languageLabel(translationFile.targetLang)}</Badge>
           ) : null}
         </div>
       </div>
