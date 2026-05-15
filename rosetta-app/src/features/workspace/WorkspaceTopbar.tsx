@@ -9,7 +9,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { useRosettaStore } from "@/store/useRosettaStore";
 import type { RosettaJobSummary, RosettaTranslationFile } from "@/types/rosetta";
 
 const TARGET_LANGS = [
@@ -30,8 +29,10 @@ type WorkspaceTopbarProps = {
   translatedCount: number;
   totalCount: number;
   sourceLang: string;
+  targetLang: string;
   selectedBlockCount: number;
   onSourceLangChange: (lang: string) => void;
+  onTargetLangChange: (lang: string) => void;
   onTranslate: (targetLang: string, sourceLang: string) => void;
   onCancelTranslation: () => void;
   onExport: (kind: "translation" | "bilingual") => void;
@@ -45,15 +46,15 @@ export function WorkspaceTopbar({
   translatedCount,
   totalCount,
   sourceLang,
+  targetLang,
   selectedBlockCount,
   onSourceLangChange,
+  onTargetLangChange,
   onTranslate,
   onCancelTranslation,
   onExport,
   onRetranslateSelected,
 }: WorkspaceTopbarProps) {
-  const defaultTargetLang = useRosettaStore((s) => s.defaultTargetLang);
-  const setDefaultTargetLang = useRosettaStore((s) => s.setDefaultTargetLang);
   const [confirmingCancel, setConfirmingCancel] = useState(false);
 
   const hasTranslation =
@@ -150,7 +151,7 @@ export function WorkspaceTopbar({
             </Select>
 
             {/* Target language + translate */}
-            <Select value={defaultTargetLang} onValueChange={setDefaultTargetLang}>
+            <Select value={targetLang} onValueChange={onTargetLangChange}>
               <SelectTrigger className="h-8 w-24 text-xs">
                 <SelectValue />
               </SelectTrigger>
@@ -165,7 +166,7 @@ export function WorkspaceTopbar({
 
             <Button
               size="sm"
-              onClick={() => onTranslate(defaultTargetLang, sourceLang)}
+              onClick={() => onTranslate(targetLang, sourceLang)}
               className="gap-1.5"
             >
               <Play className="size-3.5" /> 翻译

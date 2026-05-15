@@ -28,7 +28,6 @@ const appWindow = getCurrentWindow();
 
 function useOnboardingCompleted() {
   const clearJobHistory = useRosettaStore((s) => s.clearJobHistory);
-  const setJobList = useRosettaStore((s) => s.setJobList);
 
   useEffect(() => {
     let unmounted = false;
@@ -36,13 +35,12 @@ function useOnboardingCompleted() {
 
     listen("rosetta-onboarding-completed", () => {
       clearJobHistory();
-      setJobList([]);
     }).then((fn) => {
       if (unmounted) { fn(); } else { unlisten = fn; }
     }).catch(console.error);
 
     return () => { unmounted = true; unlisten?.(); };
-  }, [clearJobHistory, setJobList]);
+  }, [clearJobHistory]);
 }
 
 function MenuEventHandler() {
@@ -139,6 +137,10 @@ export function AppShell() {
       // Plain browser dev mode does not expose the Tauri window API.
     });
   }, [themeMode]);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("dark", isDark);
+  }, [isDark]);
 
   useEffect(() => {
     void listRosettaJobs()

@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { useNavigate } from "react-router-dom";
 import { importRosettaDocumentFromPath, pickRosettaImportPath } from "./rosettaJobs";
@@ -7,6 +7,14 @@ import { useRosettaStore } from "@/store/useRosettaStore";
 export function useMenuEvents(toggleSidebar: () => void) {
   const navigate = useNavigate();
   const setActiveBundle = useRosettaStore((s) => s.setActiveBundle);
+
+  // Keep a ref so the listener closure always calls the latest toggleSidebar
+  // without needing it in the effect's dependency array. toggleSidebar from
+  // shadcn changes identity on every sidebar state change (its useCallback
+  // deps include `open`), so including it in deps would re-register the
+  // Tauri listener on every toggle.
+  const toggleSidebarRef = useRef(toggleSidebar);
+  useEffect(() => { toggleSidebarRef.current = toggleSidebar; }, [toggleSidebar]);
 
   useEffect(() => {
     let unmounted = false;
@@ -30,7 +38,7 @@ export function useMenuEvents(toggleSidebar: () => void) {
           navigate("/settings");
           break;
         case "toggle-sidebar":
-          toggleSidebar();
+          toggleSidebarRef.current();
           break;
       }
     }).then((fn) => {
@@ -45,5 +53,5 @@ export function useMenuEvents(toggleSidebar: () => void) {
       unmounted = true;
       unlisten?.();
     };
-  }, [navigate, setActiveBundle, toggleSidebar]);
+  }, [navigate, setActiveBundle]);
 }

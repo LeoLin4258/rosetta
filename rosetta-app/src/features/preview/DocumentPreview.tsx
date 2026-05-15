@@ -49,7 +49,8 @@ export function DocumentPreview({
 }) {
   const sourceRef = useRef<HTMLDivElement>(null);
   const translationRef = useRef<HTMLDivElement>(null);
-  const isSyncingRef = useRef(false);
+  const scrollDriverRef = useRef<PreviewSide | null>(null);
+  const scrollDriverTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   if (!document || !sourceFile) {
     return (
@@ -89,23 +90,31 @@ export function DocumentPreview({
   }
 
   function syncScroll(side: PreviewSide) {
-    const source = sourceRef.current;
-    const translation = translationRef.current;
-    if (!source || !translation || isSyncingRef.current) {
-      return;
-    }
+    // Ignore scroll events fired by the pane we just programmatically scrolled.
+    if (scrollDriverRef.current !== null && scrollDriverRef.current !== side) return;
 
-    const from = side === "source" ? source : translation;
-    const to = side === "source" ? translation : source;
+    const from = side === "source" ? sourceRef.current : translationRef.current;
+    const to = side === "source" ? translationRef.current : sourceRef.current;
+    if (!from || !to) return;
+
     const maxFrom = from.scrollHeight - from.clientHeight;
     const maxTo = to.scrollHeight - to.clientHeight;
     const ratio = maxFrom > 0 ? from.scrollTop / maxFrom : 0;
+    const targetScrollTop = ratio * Math.max(maxTo, 0);
 
-    isSyncingRef.current = true;
-    to.scrollTop = ratio * Math.max(maxTo, 0);
-    window.requestAnimationFrame(() => {
-      isSyncingRef.current = false;
-    });
+    // Dead-zone: skip tiny adjustments that the virtualizer triggers as it
+    // re-measures items — these cause the 5-second tail of continued scrolling.
+    if (Math.abs(to.scrollTop - targetScrollTop) < 2) return;
+
+    // Mark this side as the scroll driver for 150 ms.  Any scroll events from
+    // the other pane during that window are treated as programmatic echoes.
+    scrollDriverRef.current = side;
+    if (scrollDriverTimeoutRef.current) clearTimeout(scrollDriverTimeoutRef.current);
+    scrollDriverTimeoutRef.current = setTimeout(() => {
+      scrollDriverRef.current = null;
+    }, 150);
+
+    to.scrollTop = targetScrollTop;
   }
 
   return (

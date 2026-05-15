@@ -74,6 +74,7 @@ type RosettaState = {
   managedRuntime: ManagedRuntimeSlice;
   downloadProxy: DownloadProxyConfig;
   defaultTargetLang: string;
+  langByJobId: Record<string, { sourceLang: string; targetLang: string }>;
   setManagedRuntimeStatus: (status: ManagedRuntimeStatus | null) => void;
   setManagedRuntimeProgress: (
     progress: ManagedRuntimeInstallProgress | null
@@ -81,6 +82,7 @@ type RosettaState = {
   setManagedRuntimeError: (error: string | null) => void;
   setDownloadProxyUrl: (url: string) => void;
   setDefaultTargetLang: (lang: string) => void;
+  setJobLangs: (jobId: string, sourceLang: string, targetLang: string) => void;
   setThemeMode: (mode: AppThemeMode) => void;
   updateRwkvConfig: (config: Partial<RwkvConnectionConfig>) => void;
   setTranslationMode: (mode: TranslationMode) => void;
@@ -228,11 +230,19 @@ export const useRosettaStore = create<RosettaState>()(
         url: "",
       },
       defaultTargetLang: "zh-CN",
+      langByJobId: {},
       setDownloadProxyUrl: (url) =>
         set(() => ({
           downloadProxy: { url: url.trim() },
         })),
       setDefaultTargetLang: (lang) => set({ defaultTargetLang: lang }),
+      setJobLangs: (jobId, sourceLang, targetLang) =>
+        set((state) => ({
+          langByJobId: {
+            ...state.langByJobId,
+            [jobId]: { sourceLang, targetLang },
+          },
+        })),
       setManagedRuntimeStatus: (status) =>
         set((state) => ({
           managedRuntime: {
@@ -763,6 +773,8 @@ export const useRosettaStore = create<RosettaState>()(
           },
           defaultTargetLang:
             persistedState?.defaultTargetLang ?? current.defaultTargetLang,
+          langByJobId:
+            persistedState?.langByJobId ?? current.langByJobId,
         };
       },
       partialize: (state) => ({
@@ -778,6 +790,7 @@ export const useRosettaStore = create<RosettaState>()(
         activeSourceFileIdByJobId: state.activeSourceFileIdByJobId,
         activeTranslationFileIdBySourceKey:
           state.activeTranslationFileIdBySourceKey,
+        langByJobId: state.langByJobId,
       }),
     }
   )

@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import {
   importRosettaDocumentFromPath,
   importRosettaProjectFromDirectory,
+  loadRosettaJob,
   pickRosettaImportDirectory,
   pickRosettaImportPath,
 } from "@/lib/rosettaJobs";
@@ -19,7 +20,6 @@ type WorkspaceEmptyProps = {
 
 export function WorkspaceEmpty({ onImported, isDraggingOver }: WorkspaceEmptyProps) {
   const jobs = useRosettaStore((s) => s.jobs);
-  const setActiveBundle = useRosettaStore((s) => s.setActiveBundle);
   const [isImporting, setIsImporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
 
@@ -34,7 +34,6 @@ export function WorkspaceEmpty({ onImported, isDraggingOver }: WorkspaceEmptyPro
       const path = await pickRosettaImportPath();
       if (!path) return;
       const bundle = await importRosettaDocumentFromPath(path);
-      setActiveBundle(bundle);
       onImported(bundle);
     } catch (err) {
       setImportError(err instanceof Error ? err.message : "无法导入这个文件。");
@@ -50,7 +49,6 @@ export function WorkspaceEmpty({ onImported, isDraggingOver }: WorkspaceEmptyPro
       const path = await pickRosettaImportDirectory();
       if (!path) return;
       const bundle = await importRosettaProjectFromDirectory(path);
-      setActiveBundle(bundle);
       onImported(bundle);
     } catch (err) {
       setImportError(err instanceof Error ? err.message : "无法导入这个文件夹。");
@@ -60,10 +58,8 @@ export function WorkspaceEmpty({ onImported, isDraggingOver }: WorkspaceEmptyPro
   }
 
   async function openRecentJob(jobId: string) {
-    const { loadRosettaJob } = await import("@/lib/rosettaJobs");
     try {
       const bundle = await loadRosettaJob(jobId);
-      setActiveBundle(bundle);
       onImported(bundle);
     } catch (err) {
       setImportError(err instanceof Error ? err.message : "无法加载文档。");

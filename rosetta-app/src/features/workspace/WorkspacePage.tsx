@@ -8,6 +8,7 @@ import {
   importRosettaDocumentFromPath,
   importRosettaProjectFromDirectory,
   loadRosettaJob,
+  loadRosettaTranslationFile,
   pickRosettaExportPath,
 } from "@/lib/rosettaJobs";
 import { selectProvider } from "@/lib/providers";
@@ -39,6 +40,8 @@ export function WorkspacePage() {
   const rwkv = useRosettaStore((s) => s.rwkv);
   const managedRuntimeStatus = useRosettaStore((s) => s.managedRuntime.status);
   const defaultTargetLang = useRosettaStore((s) => s.defaultTargetLang);
+  const langByJobId = useRosettaStore((s) => s.langByJobId);
+  const setJobLangs = useRosettaStore((s) => s.setJobLangs);
 
   const setActiveBundle = useRosettaStore((s) => s.setActiveBundle);
   const refreshJobBundle = useRosettaStore((s) => s.refreshJobBundle);
@@ -53,12 +56,20 @@ export function WorkspacePage() {
   const [pageError, setPageError] = useState<string | null>(null);
   const [selectedBlockIds, setSelectedBlockIds] = useState<string[]>([]);
 
-  // Source language: "auto" = let the model infer; otherwise explicit code
-  const [sourceLang, setSourceLang] = useState<string>(
-    activeDocument?.sourceLang ?? "auto"
-  );
-
   const cancelRef = useRef<(() => void) | null>(null);
+
+  // Per-job language selections, with fallback to document default / global default
+  const jobLangs = activeJobId ? langByJobId[activeJobId] : undefined;
+  const sourceLang = jobLangs?.sourceLang ?? activeDocument?.sourceLang ?? "auto";
+  const targetLang = jobLangs?.targetLang ?? defaultTargetLang;
+
+  function handleSourceLangChange(lang: string) {
+    if (activeJobId) setJobLangs(activeJobId, lang, targetLang);
+  }
+
+  function handleTargetLangChange(lang: string) {
+    if (activeJobId) setJobLangs(activeJobId, sourceLang, lang);
+  }
 
   const activeJob = jobs.find((j) => j.id === activeJobId) ?? null;
   const activeTranslationFile =
@@ -72,11 +83,22 @@ export function WorkspacePage() {
   const completedCount = activeTranslationRun?.completedSegmentIds.length ?? 0;
   const totalCount = activeTranslationRun?.targetSegmentIds.length ?? 0;
 
-  // Reset selected blocks and source lang when active document changes
+  // Reset block selection when switching documents
   useEffect(() => {
     setSelectedBlockIds([]);
-    setSourceLang(activeDocument?.sourceLang ?? "auto");
-  }, [activeDocument?.id, activeDocument?.sourceLang]);
+  }, [activeDocument?.id]);
+
+  // After a document is loaded (or switched), restore translation segments if
+  // there's a known active translation file but no segments in memory yet.
+  useEffect(() => {
+    if (!activeJobId || !activeTranslationFileId || !activeDocument || isTranslating) return;
+    if (translationSegments.length > 0) return;
+
+    void loadRosettaTranslationFile(activeJobId, activeTranslationFileId)
+      .then((bundle) => setActiveTranslationFileBundle(bundle))
+      .catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeDocument?.id, activeTranslationFileId, activeJobId]);
 
   // Register Tauri window file-drop events.
   // Use an `unmounted` flag so the async `.then(fn => ...)` callback can
@@ -235,7 +257,7 @@ export function WorkspacePage() {
 
   async function handleRetranslateSelected() {
     if (!activeJobId || !activeSourceFileId || selectedBlockIds.length === 0) return;
-    const targetLang = activeTranslationFile?.targetLang ?? defaultTargetLang;
+    const retranslateTargetLang = activeTranslationFile?.targetLang ?? targetLang;
     setPageError(null);
 
     try {
@@ -246,16 +268,21 @@ export function WorkspacePage() {
         "selection-retranslation",
         selectedBlockIds
       );
-      refreshJobBundle(revisionBundle);
+      // Only refresh if the backend included source segments; some backends return
+      // an empty segments list for revision bundles, which would wipe the preview.
+      if (revisionBundle.segments.length > 0) {
+        refreshJobBundle(revisionBundle);
+      }
 
       const tfBundle = await ensureRosettaTranslationFile(
         activeJobId,
         activeSourceFileId,
-        targetLang
+        retranslateTargetLang
       );
-      setActiveTranslationFileBundle(tfBundle);
 
-      const blockSegments = revisionBundle.segments.filter(
+      // Use previewSegments from the store (always populated) rather than
+      // revisionBundle.segments, which may be empty on some backends.
+      const blockSegments = previewSegments.filter(
         (s) => selectedBlockIds.includes(s.blockId) && s.sourceText.trim()
       );
       const targets = translationTargetsForStatuses({
@@ -265,6 +292,10 @@ export function WorkspacePage() {
       });
 
       if (targets.length === 0) return;
+
+      // Only update the store's translation file state after confirming there are
+      // segments to translate — avoids blanking the translation column on early return.
+      setActiveTranslationFileBundle(tfBundle);
 
       const runId = `run-sel-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const [cancelPromise, cancelResolve] = buildCancelPair();
@@ -291,7 +322,7 @@ export function WorkspacePage() {
           bodyPassword: rwkv.bodyPassword,
           timeoutMs: rwkv.timeoutMs,
           sourceLang: sourceLang || undefined,
-          targetLang,
+          targetLang: retranslateTargetLang,
         },
         targets,
         translationFile: tfBundle.translationFile,
@@ -367,8 +398,10 @@ export function WorkspacePage() {
             translatedCount={completedCount}
             totalCount={totalCount}
             sourceLang={sourceLang}
+            targetLang={targetLang}
             selectedBlockCount={selectedBlockIds.length}
-            onSourceLangChange={setSourceLang}
+            onSourceLangChange={handleSourceLangChange}
+            onTargetLangChange={handleTargetLangChange}
             onTranslate={(lang, src) => void handleTranslate(lang, src)}
             onCancelTranslation={handleCancelTranslation}
             onExport={(kind) => void handleExport(kind)}
