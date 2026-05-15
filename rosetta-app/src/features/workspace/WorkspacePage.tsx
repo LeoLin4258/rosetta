@@ -18,10 +18,9 @@ import {
 } from "@/lib/translationRunner";
 import { defaultExportFilename, exportFormatForSource } from "@/lib/rosettaExport";
 import { useRosettaStore } from "@/store/useRosettaStore";
-import type { RosettaBlock, RosettaJobBundle } from "@/types/rosetta";
+import type { RosettaJobBundle } from "@/types/rosetta";
 import { DocumentPreview } from "@/features/preview/DocumentPreview";
 
-import { SegmentEditorDrawer } from "./SegmentEditorDrawer";
 import { WorkspaceEmpty } from "./WorkspaceEmpty";
 import { WorkspaceTopbar } from "./WorkspaceTopbar";
 
@@ -42,6 +41,7 @@ export function WorkspacePage() {
   const defaultTargetLang = useRosettaStore((s) => s.defaultTargetLang);
 
   const setActiveBundle = useRosettaStore((s) => s.setActiveBundle);
+  const refreshJobBundle = useRosettaStore((s) => s.refreshJobBundle);
   const setActiveTranslationFileBundle = useRosettaStore((s) => s.setActiveTranslationFileBundle);
   const updateActiveTranslationSegments = useRosettaStore((s) => s.updateActiveTranslationSegments);
   const startTranslationRun = useRosettaStore((s) => s.startTranslationRun);
@@ -51,7 +51,13 @@ export function WorkspacePage() {
 
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [pageError, setPageError] = useState<string | null>(null);
-  const [drawerBlockId, setDrawerBlockId] = useState<string | null>(null);
+  const [selectedBlockIds, setSelectedBlockIds] = useState<string[]>([]);
+
+  // Source language: "auto" = let the model infer; otherwise explicit code
+  const [sourceLang, setSourceLang] = useState<string>(
+    activeDocument?.sourceLang ?? "auto"
+  );
+
   const cancelRef = useRef<(() => void) | null>(null);
 
   const activeJob = jobs.find((j) => j.id === activeJobId) ?? null;
@@ -66,10 +72,11 @@ export function WorkspacePage() {
   const completedCount = activeTranslationRun?.completedSegmentIds.length ?? 0;
   const totalCount = activeTranslationRun?.targetSegmentIds.length ?? 0;
 
-  const drawerBlock: RosettaBlock | null =
-    drawerBlockId != null
-      ? (activeDocument?.blocks.find((b) => b.id === drawerBlockId) ?? null)
-      : null;
+  // Reset selected blocks and source lang when active document changes
+  useEffect(() => {
+    setSelectedBlockIds([]);
+    setSourceLang(activeDocument?.sourceLang ?? "auto");
+  }, [activeDocument?.id, activeDocument?.sourceLang]);
 
   // Register Tauri window file-drop events.
   // Use an `unmounted` flag so the async `.then(fn => ...)` callback can
@@ -94,7 +101,7 @@ export function WorkspacePage() {
       })
       .then((fn) => {
         if (unmounted) {
-          fn(); // cleanup already ran — unsubscribe immediately
+          fn();
         } else {
           unlisten = fn;
         }
@@ -147,16 +154,17 @@ export function WorkspacePage() {
   }
 
   function buildCancelPair(): [Promise<"stopped">, () => void] {
-    let resolve: (() => void) | null = null;
+    let resolve!: () => void;
     const promise = new Promise<"stopped">((r) => {
       resolve = () => r("stopped");
     });
-    return [promise, resolve!];
+    return [promise, resolve];
   }
 
-  async function handleTranslate(targetLang: string) {
+  async function handleTranslate(targetLang: string, srcLang: string) {
     if (!activeJobId || !activeSourceFileId) return;
     setPageError(null);
+    setSelectedBlockIds([]);
 
     try {
       const tfBundle = await ensureRosettaTranslationFile(
@@ -198,6 +206,7 @@ export function WorkspacePage() {
           internalToken: rwkv.internalToken,
           bodyPassword: rwkv.bodyPassword,
           timeoutMs: rwkv.timeoutMs,
+          sourceLang: srcLang && srcLang !== "auto" ? srcLang : undefined,
           targetLang,
         },
         targets,
@@ -215,30 +224,30 @@ export function WorkspacePage() {
         setPageError("翻译失败，请检查 API 配置或网络。");
       }
 
+      // Use refreshJobBundle (not setActiveBundle) to preserve translation segments
       const freshBundle = await loadRosettaJob(activeJobId);
-      setActiveBundle(freshBundle);
+      refreshJobBundle(freshBundle);
     } catch (err) {
       setPageError(err instanceof Error ? err.message : "翻译出错。");
       if (activeTranslationRun) finishTranslationRun(activeTranslationRun.id);
     }
   }
 
-  async function handleRetranslateBlock(blockId: string) {
-    if (!activeJobId || !activeSourceFileId) return;
+  async function handleRetranslateSelected() {
+    if (!activeJobId || !activeSourceFileId || selectedBlockIds.length === 0) return;
     const targetLang = activeTranslationFile?.targetLang ?? defaultTargetLang;
     setPageError(null);
 
     try {
-      // Reset the block's segments to pending via a revision
+      // Reset the selected blocks' segments to pending via a revision
       const revisionBundle = await createRosettaTranslationRevision(
         activeJobId,
         activeSourceFileId,
         "selection-retranslation",
-        [blockId]
+        selectedBlockIds
       );
-      setActiveBundle(revisionBundle);
+      refreshJobBundle(revisionBundle);
 
-      // Reload translation file to pick up reset segment statuses
       const tfBundle = await ensureRosettaTranslationFile(
         activeJobId,
         activeSourceFileId,
@@ -246,18 +255,18 @@ export function WorkspacePage() {
       );
       setActiveTranslationFileBundle(tfBundle);
 
-      const blockSourceSegs = revisionBundle.segments.filter(
-        (s) => s.blockId === blockId && s.sourceText.trim()
+      const blockSegments = revisionBundle.segments.filter(
+        (s) => selectedBlockIds.includes(s.blockId) && s.sourceText.trim()
       );
       const targets = translationTargetsForStatuses({
-        sourceSegments: blockSourceSegs,
+        sourceSegments: blockSegments,
         translationSegments: tfBundle.segments,
         statuses: "all",
       });
 
       if (targets.length === 0) return;
 
-      const runId = `run-block-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const runId = `run-sel-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const [cancelPromise, cancelResolve] = buildCancelPair();
       cancelRef.current = cancelResolve;
 
@@ -281,6 +290,7 @@ export function WorkspacePage() {
           internalToken: rwkv.internalToken,
           bodyPassword: rwkv.bodyPassword,
           timeoutMs: rwkv.timeoutMs,
+          sourceLang: sourceLang || undefined,
           targetLang,
         },
         targets,
@@ -293,6 +303,10 @@ export function WorkspacePage() {
 
       finishTranslationRun(runId);
       cancelRef.current = null;
+      setSelectedBlockIds([]);
+
+      const freshBundle = await loadRosettaJob(activeJobId);
+      refreshJobBundle(freshBundle);
     } catch (err) {
       setPageError(err instanceof Error ? err.message : "重新翻译失败。");
       if (activeTranslationRun) finishTranslationRun(activeTranslationRun.id);
@@ -333,7 +347,11 @@ export function WorkspacePage() {
   }
 
   function handleBlockSelect(blockId: string) {
-    setDrawerBlockId((current) => (current === blockId ? null : blockId));
+    setSelectedBlockIds((current) =>
+      current.includes(blockId)
+        ? current.filter((id) => id !== blockId)
+        : [...current, blockId]
+    );
   }
 
   const hasActiveDocument = !!activeJobId && !!activeDocument;
@@ -348,41 +366,30 @@ export function WorkspacePage() {
             isTranslating={isTranslating}
             translatedCount={completedCount}
             totalCount={totalCount}
-            onTranslate={(lang) => void handleTranslate(lang)}
+            sourceLang={sourceLang}
+            selectedBlockCount={selectedBlockIds.length}
+            onSourceLangChange={setSourceLang}
+            onTranslate={(lang, src) => void handleTranslate(lang, src)}
             onCancelTranslation={handleCancelTranslation}
             onExport={(kind) => void handleExport(kind)}
+            onRetranslateSelected={() => void handleRetranslateSelected()}
           />
           {pageError && (
             <div className="border-b border-destructive/20 bg-destructive/5 px-6 py-2 text-xs text-destructive">
               {pageError}
             </div>
           )}
-          <div className="flex min-h-0 flex-1">
-            {/* Bilingual document view */}
-            <div className="min-h-0 flex-1 overflow-hidden">
-              <DocumentPreview
-                document={activeDocument}
-                selectionEnabled={!isTranslating}
-                selectedBlockIds={drawerBlockId ? [drawerBlockId] : []}
-                onToggleBlockSelection={handleBlockSelect}
-                sourceFile={sourceFile}
-                sourceSegments={previewSegments}
-                translationFile={activeTranslationFile}
-                translationSegments={translationSegments}
-              />
-            </div>
-
-            {/* Segment editor drawer (non-modal side panel) */}
-            {drawerBlock && (
-              <SegmentEditorDrawer
-                block={drawerBlock}
-                jobId={activeJobId}
-                translationFileId={activeTranslationFileId}
-                onClose={() => setDrawerBlockId(null)}
-                onRetranslate={(blockId) => void handleRetranslateBlock(blockId)}
-                isRetranslating={isTranslating}
-              />
-            )}
+          <div className="min-h-0 flex-1 overflow-hidden">
+            <DocumentPreview
+              document={activeDocument}
+              selectionEnabled={!isTranslating}
+              selectedBlockIds={selectedBlockIds}
+              onToggleBlockSelection={handleBlockSelect}
+              sourceFile={sourceFile}
+              sourceSegments={previewSegments}
+              translationFile={activeTranslationFile}
+              translationSegments={translationSegments}
+            />
           </div>
         </>
       ) : (

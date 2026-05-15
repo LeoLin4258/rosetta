@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Download, Play, Square } from "lucide-react";
+import { Download, Play, RefreshCw, Square } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -14,12 +14,13 @@ import type { RosettaJobSummary, RosettaTranslationFile } from "@/types/rosetta"
 
 const TARGET_LANGS = [
   { value: "zh-CN", label: "简体中文" },
-  { value: "zh-TW", label: "繁體中文" },
   { value: "en", label: "English" },
-  { value: "ja", label: "日本語" },
-  { value: "ko", label: "한국어" },
-  { value: "fr", label: "Français" },
-  { value: "de", label: "Deutsch" },
+];
+
+const SOURCE_LANGS = [
+  { value: "auto", label: "自动检测" },
+  { value: "zh-CN", label: "中文" },
+  { value: "en", label: "English" },
 ];
 
 type WorkspaceTopbarProps = {
@@ -28,9 +29,13 @@ type WorkspaceTopbarProps = {
   isTranslating: boolean;
   translatedCount: number;
   totalCount: number;
-  onTranslate: (targetLang: string) => void;
+  sourceLang: string;
+  selectedBlockCount: number;
+  onSourceLangChange: (lang: string) => void;
+  onTranslate: (targetLang: string, sourceLang: string) => void;
   onCancelTranslation: () => void;
   onExport: (kind: "translation" | "bilingual") => void;
+  onRetranslateSelected: () => void;
 };
 
 export function WorkspaceTopbar({
@@ -39,25 +44,22 @@ export function WorkspaceTopbar({
   isTranslating,
   translatedCount,
   totalCount,
+  sourceLang,
+  selectedBlockCount,
+  onSourceLangChange,
   onTranslate,
   onCancelTranslation,
   onExport,
+  onRetranslateSelected,
 }: WorkspaceTopbarProps) {
   const defaultTargetLang = useRosettaStore((s) => s.defaultTargetLang);
   const setDefaultTargetLang = useRosettaStore((s) => s.setDefaultTargetLang);
   const [confirmingCancel, setConfirmingCancel] = useState(false);
 
-  const hasTranslation = activeTranslationFile && activeTranslationFile.completedSegments > 0;
-  const progressPercent = totalCount > 0 ? Math.round((translatedCount / totalCount) * 100) : 0;
-
-  function handleCancel() {
-    if (confirmingCancel) {
-      onCancelTranslation();
-      setConfirmingCancel(false);
-    } else {
-      setConfirmingCancel(true);
-    }
-  }
+  const hasTranslation =
+    activeTranslationFile && activeTranslationFile.completedSegments > 0;
+  const progressPercent =
+    totalCount > 0 ? Math.round((translatedCount / totalCount) * 100) : 0;
 
   return (
     <div className="flex items-center justify-between border-b border-border/40 px-6 py-2.5">
@@ -73,7 +75,7 @@ export function WorkspaceTopbar({
       <div className="flex shrink-0 items-center gap-2">
         {isTranslating ? (
           <>
-            <span className="text-xs text-muted-foreground/60 tabular-nums">
+            <span className="text-xs tabular-nums text-muted-foreground/60">
               {translatedCount} / {totalCount} · {progressPercent}%
             </span>
             {confirmingCancel ? (
@@ -81,7 +83,10 @@ export function WorkspaceTopbar({
                 <span className="text-xs text-muted-foreground/60">确认取消？</span>
                 <button
                   type="button"
-                  onClick={handleCancel}
+                  onClick={() => {
+                    onCancelTranslation();
+                    setConfirmingCancel(false);
+                  }}
                   className="text-xs text-destructive/70 transition-colors hover:text-destructive"
                 >
                   确定
@@ -95,13 +100,30 @@ export function WorkspaceTopbar({
                 </button>
               </div>
             ) : (
-              <Button size="sm" variant="outline" onClick={() => setConfirmingCancel(true)} className="gap-1.5">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setConfirmingCancel(true)}
+                className="gap-1.5"
+              >
                 <Square className="size-3" /> 取消
               </Button>
             )}
           </>
         ) : (
           <>
+            {selectedBlockCount > 0 && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={onRetranslateSelected}
+                className="gap-1.5"
+              >
+                <RefreshCw className="size-3.5" />
+                重翻选中 {selectedBlockCount} 段
+              </Button>
+            )}
+
             {hasTranslation && (
               <Button
                 size="sm"
@@ -112,8 +134,24 @@ export function WorkspaceTopbar({
                 <Download className="size-3.5" /> 导出译文
               </Button>
             )}
-            <Select value={defaultTargetLang} onValueChange={setDefaultTargetLang}>
+
+            {/* Source language */}
+            <Select value={sourceLang} onValueChange={onSourceLangChange}>
               <SelectTrigger className="h-8 w-28 text-xs">
+                <SelectValue placeholder="原文语言" />
+              </SelectTrigger>
+              <SelectContent>
+                {SOURCE_LANGS.map((lang) => (
+                  <SelectItem key={lang.value} value={lang.value} className="text-xs">
+                    {lang.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            {/* Target language + translate */}
+            <Select value={defaultTargetLang} onValueChange={setDefaultTargetLang}>
+              <SelectTrigger className="h-8 w-24 text-xs">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -124,9 +162,10 @@ export function WorkspaceTopbar({
                 ))}
               </SelectContent>
             </Select>
+
             <Button
               size="sm"
-              onClick={() => onTranslate(defaultTargetLang)}
+              onClick={() => onTranslate(defaultTargetLang, sourceLang)}
               className="gap-1.5"
             >
               <Play className="size-3.5" /> 翻译
