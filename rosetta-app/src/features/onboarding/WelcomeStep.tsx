@@ -20,10 +20,10 @@ export function WelcomeStep({ onBeginInstall, onSkipToExternal, isInstalling }: 
   return (
     <div className="flex h-full flex-col justify-between px-14 py-10">
       {/* Group 1: Icon + App name + Description */}
-      <div className="flex flex-col items-center gap-5 text-center">
-        <div className="flex size-16 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+      <div className="flex flex-col items-center gap-5 text-center mt-10">
+        {/* <div className="flex size-16 items-center justify-center rounded-2xl bg-primary/10 text-primary p-2">
           <Sparkles className="size-8" strokeWidth={1.5} />
-        </div>
+        </div> */}
         <div className="space-y-3">
           <h1 className="text-6xl font-bold tracking-tight">Rosetta</h1>
           <p className="max-w-sm text-sm leading-relaxed text-muted-foreground">

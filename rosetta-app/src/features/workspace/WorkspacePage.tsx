@@ -237,13 +237,13 @@ export function WorkspacePage() {
         },
         targets,
         translationFile: tfBundle.translationFile,
-        onBatchCompleted: (ids) => markTranslationRunCompleted(runId, ids),
-        onBatchFailed: (ids) => markTranslationRunFailed(runId, ids),
+        onBatchCompleted: (ids) => markTranslationRunCompleted(runId!, ids),
+        onBatchFailed: (ids) => markTranslationRunFailed(runId!, ids),
         onTranslationFileSaved: (saved) =>
           updateActiveTranslationSegments(saved.segments),
       });
 
-      finishTranslationRun(runId);
+      finishTranslationRun(runId!);
       cancelRef.current = null;
 
       if (result === "failed") {
@@ -332,13 +332,13 @@ export function WorkspacePage() {
         },
         targets,
         translationFile: tfBundle.translationFile,
-        onBatchCompleted: (ids) => markTranslationRunCompleted(runId, ids),
-        onBatchFailed: (ids) => markTranslationRunFailed(runId, ids),
+        onBatchCompleted: (ids) => markTranslationRunCompleted(runId!, ids),
+        onBatchFailed: (ids) => markTranslationRunFailed(runId!, ids),
         onTranslationFileSaved: (saved) =>
           updateActiveTranslationSegments(saved.segments),
       });
 
-      finishTranslationRun(runId);
+      finishTranslationRun(runId!);
       cancelRef.current = null;
       setSelectedBlockIds([]);
 
