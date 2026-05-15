@@ -4,6 +4,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { check } from "@tauri-apps/plugin-updater";
 import {
   CheckCircle2,
+  ChevronDown,
   Cloud,
   Download,
   Palette,
@@ -24,6 +25,11 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
@@ -70,6 +76,7 @@ export function SettingsPage() {
   const rwkv = useRosettaStore((state) => state.rwkv);
   const updateRwkvConfig = useRosettaStore((state) => state.updateRwkvConfig);
   const setTranslationMode = useRosettaStore((state) => state.setTranslationMode);
+  const [externalApiOpen, setExternalApiOpen] = useState(false);
   const [apiProbeResult, setApiProbeResult] =
     useState<RwkvTranslationApiProbeResult | null>(null);
   const [apiError, setApiError] = useState<string | null>(null);
@@ -346,153 +353,144 @@ export function SettingsPage() {
           <LocalRwkvPanel />
 
           <section className="flex flex-col gap-3" id="translation-service">
-            <SettingsSectionHeader
-              description="远程 / 自部署 RWKV API，可作为本地翻译未就绪时的回落方案。"
-              icon={<Cloud />}
-              title="外部翻译 API"
-            >
-              <StatusBadge status={apiStatus} />
-            </SettingsSectionHeader>
-
-            <Card className="overflow-hidden">
-              <CardContent className="flex flex-col gap-5 py-5">
-                <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm leading-6 text-muted-foreground">
-                  本地翻译模型未就绪、或临时切换到外部端点时使用此区配置。
-                  若填写远程 API，待翻译文本会发送到该地址。
-                </div>
-
-                <div className="grid gap-4 md:grid-cols-2">
-                  <SettingField
-                    description="例如 https://example.com"
-                    htmlFor="rwkv-base-url"
-                    label="API 地址"
+            <Collapsible open={externalApiOpen} onOpenChange={setExternalApiOpen}>
+              <div className="flex items-start justify-between gap-4">
+                <SettingsSectionHeader
+                  description="本地翻译未就绪时可回落到远程或自部署接口。"
+                  icon={<Cloud />}
+                  title="外部翻译 API"
+                >
+                  <StatusBadge status={apiStatus} />
+                </SettingsSectionHeader>
+                <CollapsibleTrigger asChild>
+                  <button
+                    type="button"
+                    className="mt-1 flex shrink-0 items-center gap-1 rounded px-2 py-1 text-xs text-muted-foreground/60 transition-colors hover:text-muted-foreground"
                   >
-                    <Input
-                      id="rwkv-base-url"
-                      onChange={updateTextField("baseUrl")}
-                      placeholder="https://..."
-                      value={rwkv.baseUrl}
+                    <ChevronDown
+                      className={cn(
+                        "size-3.5 transition-transform",
+                        externalApiOpen && "rotate-180"
+                      )}
                     />
-                  </SettingField>
+                    {externalApiOpen ? "收起" : "展开"}
+                  </button>
+                </CollapsibleTrigger>
+              </div>
 
-                  <SettingField
-                    description="当前接口使用 /v1/chat/completions"
-                    htmlFor="rwkv-endpoint"
-                    label="接口路径"
-                  >
-                    <Input
-                      id="rwkv-endpoint"
-                      onChange={updateTextField("endpoint")}
-                      placeholder="/v1/chat/completions"
-                      value={rwkv.endpoint}
-                    />
-                  </SettingField>
+              <CollapsibleContent>
+                <Card className="mt-3 overflow-hidden">
+                  <CardContent className="flex flex-col gap-5 py-5">
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <SettingField htmlFor="rwkv-base-url" label="API 地址">
+                        <Input
+                          id="rwkv-base-url"
+                          onChange={updateTextField("baseUrl")}
+                          placeholder="https://..."
+                          value={rwkv.baseUrl}
+                        />
+                      </SettingField>
 
-                  <SettingField
-                    description="X-Internal-Token"
-                    htmlFor="rwkv-internal-token"
-                    label="访问密钥"
-                  >
-                    <Input
-                      autoComplete="off"
-                      id="rwkv-internal-token"
-                      onChange={updateTextField("internalToken")}
-                      type="password"
-                      value={rwkv.internalToken}
-                    />
-                  </SettingField>
+                      <SettingField htmlFor="rwkv-endpoint" label="接口路径">
+                        <Input
+                          id="rwkv-endpoint"
+                          onChange={updateTextField("endpoint")}
+                          placeholder="/v1/chat/completions"
+                          value={rwkv.endpoint}
+                        />
+                      </SettingField>
 
-                  <SettingField
-                    description="body password"
-                    htmlFor="rwkv-body-password"
-                    label="模型口令"
-                  >
-                    <Input
-                      autoComplete="off"
-                      id="rwkv-body-password"
-                      onChange={updateTextField("bodyPassword")}
-                      type="password"
-                      value={rwkv.bodyPassword}
-                    />
-                  </SettingField>
-                </div>
+                      <SettingField htmlFor="rwkv-internal-token" label="访问密钥">
+                        <Input
+                          autoComplete="off"
+                          id="rwkv-internal-token"
+                          onChange={updateTextField("internalToken")}
+                          type="password"
+                          value={rwkv.internalToken}
+                        />
+                      </SettingField>
 
-                <Separator />
-
-                <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_12rem]">
-                  <SettingField
-                    description="长文档建议保留较长等待时间"
-                    htmlFor="rwkv-timeout"
-                    label="超时时间"
-                  >
-                    <Input
-                      id="rwkv-timeout"
-                      min={1}
-                      onChange={updateTimeout}
-                      type="number"
-                      value={rwkv.timeoutMs}
-                    />
-                  </SettingField>
-
-                  <div className="flex flex-col gap-2">
-                    <Label>翻译偏好</Label>
-                    <ToggleGroup
-                      className="grid grid-cols-3"
-                      onValueChange={(value) => {
-                        if (value) {
-                          setTranslationMode(value as TranslationMode);
-                        }
-                      }}
-                      type="single"
-                      value={rwkv.mode}
-                      variant="outline"
-                    >
-                      {modeOptions.map((option) => (
-                        <ToggleGroupItem key={option.value} value={option.value}>
-                          {option.label}
-                        </ToggleGroupItem>
-                      ))}
-                    </ToggleGroup>
-                  </div>
-                </div>
-
-                <div className="flex flex-col gap-3 rounded-md border bg-muted/30 p-3">
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div className="flex min-w-0 items-center gap-2 text-sm">
-                      <ShieldCheck className="text-muted-foreground" />
-                      <span className="font-medium">连接测试</span>
-                      <span className="text-muted-foreground">
-                        会发送两句英文样本文本到当前接口。
-                      </span>
+                      <SettingField htmlFor="rwkv-body-password" label="模型口令">
+                        <Input
+                          autoComplete="off"
+                          id="rwkv-body-password"
+                          onChange={updateTextField("bodyPassword")}
+                          type="password"
+                          value={rwkv.bodyPassword}
+                        />
+                      </SettingField>
                     </div>
-                    <Button
-                      disabled={!canProbeApi}
-                      onClick={() => void probeApi()}
-                      title="测试 RWKV API"
-                      type="button"
-                      variant={apiStatus === "connected" ? "outline" : "default"}
-                    >
-                      <Send data-icon="inline-start" />
-                      {isProbingApi ? "测试中" : "测试连接"}
-                    </Button>
-                  </div>
 
-                  {missingConnectionFields.length > 0 ? (
-                    <p className="text-xs text-muted-foreground">
-                      还需要填写：{missingConnectionFields.join("、")}。
-                    </p>
-                  ) : null}
+                    <Separator />
 
-                  {apiError ? (
-                    <p className="text-sm text-destructive">{apiError}</p>
-                  ) : null}
+                    <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_12rem]">
+                      <SettingField
+                        description="长文档建议保留较长等待时间"
+                        htmlFor="rwkv-timeout"
+                        label="超时时间（毫秒）"
+                      >
+                        <Input
+                          id="rwkv-timeout"
+                          min={1}
+                          onChange={updateTimeout}
+                          type="number"
+                          value={rwkv.timeoutMs}
+                        />
+                      </SettingField>
 
-                  {apiProbeResult ? (
-                    <ApiProbeResult result={apiProbeResult} />
-                  ) : null}
-                </div>
-              </CardContent>
-            </Card>
+                      <div className="flex flex-col gap-2">
+                        <Label>翻译偏好</Label>
+                        <ToggleGroup
+                          className="grid grid-cols-3"
+                          onValueChange={(value) => {
+                            if (value) setTranslationMode(value as TranslationMode);
+                          }}
+                          type="single"
+                          value={rwkv.mode}
+                          variant="outline"
+                        >
+                          {modeOptions.map((option) => (
+                            <ToggleGroupItem key={option.value} value={option.value}>
+                              {option.label}
+                            </ToggleGroupItem>
+                          ))}
+                        </ToggleGroup>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col gap-3 rounded-md border bg-muted/30 p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="flex min-w-0 items-center gap-2 text-sm">
+                          <ShieldCheck className="text-muted-foreground" />
+                          <span className="font-medium">连接测试</span>
+                        </div>
+                        <Button
+                          disabled={!canProbeApi}
+                          onClick={() => void probeApi()}
+                          type="button"
+                          variant={apiStatus === "connected" ? "outline" : "default"}
+                        >
+                          <Send data-icon="inline-start" />
+                          {isProbingApi ? "测试中…" : "测试连接"}
+                        </Button>
+                      </div>
+
+                      {missingConnectionFields.length > 0 && (
+                        <p className="text-xs text-muted-foreground">
+                          还需要填写：{missingConnectionFields.join("、")}。
+                        </p>
+                      )}
+                      {apiError && (
+                        <p className="text-sm text-destructive">{apiError}</p>
+                      )}
+                      {apiProbeResult && (
+                        <ApiProbeResult result={apiProbeResult} />
+                      )}
+                    </div>
+                  </CardContent>
+                </Card>
+              </CollapsibleContent>
+            </Collapsible>
           </section>
 
         </main>

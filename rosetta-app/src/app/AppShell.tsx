@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { listRosettaJobs } from "@/lib/rosettaJobs";
+import { useMenuEvents } from "@/lib/useMenuEvents";
 import { useRosettaStore } from "@/store/useRosettaStore";
 import { cn } from "@/lib/utils";
 
@@ -23,6 +24,12 @@ const pageTitles: Record<string, string> = {
 };
 
 const appWindow = getCurrentWindow();
+
+function MenuEventHandler() {
+  const { toggleSidebar } = useSidebar();
+  useMenuEvents(toggleSidebar);
+  return null;
+}
 
 function AppHeader({
   isMacPlatform,
@@ -143,6 +150,7 @@ export function AppShell() {
             } as React.CSSProperties
           }
         >
+          <MenuEventHandler />
           <AppSidebar hasMacTitlebarOverlay={isMacPlatform} />
           <SidebarInset
             className={cn(

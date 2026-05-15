@@ -6,7 +6,8 @@ mod rwkv_providers;
 #[allow(dead_code)]
 mod rwkv_runtime;
 
-use tauri::Manager;
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::{Emitter, Manager};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -35,7 +36,105 @@ pub fn run() {
                 window.show().ok();
                 window.set_focus().ok();
             }
+
+            // macOS native menu bar
+            #[cfg(target_os = "macos")]
+            {
+                let menu = Menu::with_items(
+                    app,
+                    &[
+                        // App menu (auto-named "Rosetta" by macOS)
+                        &Submenu::with_items(
+                            app,
+                            "Rosetta",
+                            true,
+                            &[
+                                &PredefinedMenuItem::about(app, None, None)?,
+                                &PredefinedMenuItem::separator(app)?,
+                                &MenuItem::with_id(
+                                    app,
+                                    "preferences",
+                                    "Preferences...",
+                                    true,
+                                    Some("CmdOrCtrl+,"),
+                                )?,
+                                &PredefinedMenuItem::separator(app)?,
+                                &PredefinedMenuItem::services(app, None)?,
+                                &PredefinedMenuItem::separator(app)?,
+                                &PredefinedMenuItem::hide(app, None)?,
+                                &PredefinedMenuItem::hide_others(app, None)?,
+                                &PredefinedMenuItem::show_all(app, None)?,
+                                &PredefinedMenuItem::separator(app)?,
+                                &PredefinedMenuItem::quit(app, None)?,
+                            ],
+                        )?,
+                        // File menu
+                        &Submenu::with_items(
+                            app,
+                            "File",
+                            true,
+                            &[
+                                &MenuItem::with_id(
+                                    app,
+                                    "open-file",
+                                    "Open...",
+                                    true,
+                                    Some("CmdOrCtrl+O"),
+                                )?,
+                                &PredefinedMenuItem::close_window(app, None)?,
+                            ],
+                        )?,
+                        // Edit menu (gives system text-editing shortcuts for free)
+                        &Submenu::with_items(
+                            app,
+                            "Edit",
+                            true,
+                            &[
+                                &PredefinedMenuItem::undo(app, None)?,
+                                &PredefinedMenuItem::redo(app, None)?,
+                                &PredefinedMenuItem::separator(app)?,
+                                &PredefinedMenuItem::cut(app, None)?,
+                                &PredefinedMenuItem::copy(app, None)?,
+                                &PredefinedMenuItem::paste(app, None)?,
+                                &PredefinedMenuItem::select_all(app, None)?,
+                            ],
+                        )?,
+                        // View menu
+                        &Submenu::with_items(
+                            app,
+                            "View",
+                            true,
+                            &[
+                                &MenuItem::with_id(
+                                    app,
+                                    "toggle-sidebar",
+                                    "Toggle Sidebar",
+                                    true,
+                                    Some("CmdOrCtrl+\\"),
+                                )?,
+                            ],
+                        )?,
+                        // Window menu
+                        &Submenu::with_items(
+                            app,
+                            "Window",
+                            true,
+                            &[
+                                &PredefinedMenuItem::minimize(app, None)?,
+                                &PredefinedMenuItem::maximize(app, None)?,
+                                &PredefinedMenuItem::fullscreen(app, None)?,
+                            ],
+                        )?,
+                    ],
+                )?;
+                app.set_menu(menu)?;
+            }
+
             Ok(())
+        })
+        .on_menu_event(|app, event| {
+            let payload = event.id.as_ref().to_string();
+            app.emit("rosetta-menu-event", payload).ok();
         })
         .invoke_handler(tauri::generate_handler![
             managed_rwkv::cancel_managed_rwkv_install,
