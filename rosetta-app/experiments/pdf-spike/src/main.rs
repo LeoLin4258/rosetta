@@ -4,16 +4,19 @@
 //   1. Generate a source PDF with English text at known positions (proxy for real input).
 //   2. Open source, create a new destination PDF.
 //   3. For each source page:
-//        a. Use pdfium-render's `copy_into_x_object_form_object` to import the
-//           entire source page as a Form XObject into the destination — preserves
-//           all images, vectors, original fonts byte-for-byte.
-//        b. Walk `page.text().segments()` to get bbox+text for each line.
-//        c. On the destination page, draw a white rect over each original segment
-//           bbox, then draw the translation in a custom-loaded CJK font.
+//        a. Walk `page.text().segments()` to capture bbox+text BEFORE we copy.
+//        b. Use `copy_page_from_document` to clone the entire source page into
+//           the destination as a *real* page — preserves images, vectors, etc.
+//        c. Walk the destination page's objects and DELETE every Text object.
+//           This wipes the original text from both the visible page AND the
+//           text-extraction layer (so copy/paste returns only the translation).
+//        d. Draw the translation on top using a custom-loaded CJK font.
 //   4. Save destination PDF.
 //
-// Hypothesis being tested: this combo produces a translated PDF whose layout
-// matches the source's, with selectable real text, in any PDF viewer.
+// Original spike used `copy_into_x_object_form_object` + white rectangles, but
+// the Form XObject encapsulation kept original text reachable by text selection
+// — copy/paste from the output returned English, not Chinese. Switching to
+// page-copy + text-object-deletion fixes that.
 
 use std::path::Path;
 
@@ -51,8 +54,42 @@ fn main() -> Result<()> {
     let translated_path = spike_root.join(TRANSLATED_PDF);
     translate_pdf(&pdfium, &source_path, &translated_path, &spike_root.join(CJK_FONT))?;
     println!("[spike] wrote translated PDF to {}", translated_path.display());
-    println!("[spike] DONE — diff the two PDFs visually to evaluate fidelity.");
+
+    // Verify what text-extraction (i.e. copy/paste) gets out of the translated PDF.
+    println!("\n[spike] --- text-layer audit of translated PDF ---");
+    let extracted = extract_text_from_pdf(&pdfium, &translated_path)?;
+    for (page_idx, segs) in extracted.iter().enumerate() {
+        for s in segs {
+            println!("[spike]   page {} extracted: {:?}", page_idx, s);
+        }
+    }
+    let any_english_residue = extracted.iter().any(|page| {
+        page.iter().any(|s| {
+            s.contains("Hello, world!")
+                || s.contains("brown fox")
+                || s.contains("lazy dog")
+                || s.contains("translates PDFs")
+        })
+    });
+    if any_english_residue {
+        println!("[spike] ❌ ENGLISH RESIDUE detected in text layer — copy/paste will still leak source text");
+    } else {
+        println!("[spike] ✅ text layer clean of English source");
+    }
     Ok(())
+}
+
+fn extract_text_from_pdf(pdfium: &Pdfium, path: &Path) -> Result<Vec<Vec<String>>> {
+    let doc = pdfium.load_pdf_from_file(path.to_str().unwrap(), None)?;
+    let mut all = Vec::new();
+    let n = doc.pages().len();
+    for i in 0..n {
+        let page = doc.pages().get(i)?;
+        let text = page.text()?;
+        let segs: Vec<String> = text.segments().iter().map(|s| s.text()).collect();
+        all.push(segs);
+    }
+    Ok(all)
 }
 
 fn bind_pdfium(spike_root: &Path) -> Result<Pdfium> {
@@ -103,74 +140,86 @@ fn translate_pdf(pdfium: &Pdfium, source: &Path, dest: &Path, cjk_font: &Path) -
     println!("[spike] source has {} page(s)", n_pages);
 
     for page_idx in 0..n_pages {
-        // Two scopes so we can borrow src_doc / dst_doc separately and drop refs.
-        let (size_width, size_height, segments_to_draw) = {
+        // Capture text bbox+content from source BEFORE we copy the page (we want
+        // the original text positions, not the post-deletion state).
+        let segments_to_draw: Vec<(PdfRect, String, f32)> = {
             let src_page = src_doc.pages().get(page_idx)?;
-            let size = src_page.page_size();
             let page_text = src_page.text()?;
-
-            let mut segs = Vec::new();
-            for seg in page_text.segments().iter() {
-                let text = seg.text();
-                let bounds = seg.bounds();
-                let translation = lookup_translation(&text);
-                println!(
-                    "[spike]   page {} seg '{}' bbox=({:.1},{:.1},{:.1},{:.1}) → '{}'",
-                    page_idx,
-                    text,
-                    bounds.left().value,
-                    bounds.bottom().value,
-                    bounds.right().value,
-                    bounds.top().value,
-                    translation,
-                );
-                segs.push((bounds, translation, seg.height().value));
-            }
-            (size.width(), size.height(), segs)
+            page_text
+                .segments()
+                .iter()
+                .map(|seg| {
+                    let text = seg.text();
+                    let bounds = seg.bounds();
+                    let translation = lookup_translation(&text);
+                    println!(
+                        "[spike]   page {} seg '{}' bbox=({:.1},{:.1},{:.1},{:.1}) → '{}'",
+                        page_idx,
+                        text,
+                        bounds.left().value,
+                        bounds.bottom().value,
+                        bounds.right().value,
+                        bounds.top().value,
+                        translation,
+                    );
+                    (bounds, translation, seg.height().value)
+                })
+                .collect()
         };
 
-        let paper = PdfPagePaperSize::from_points(size_width, size_height);
-        let mut dst_page = dst_doc.pages_mut().create_page_at_end(paper)?;
+        // Copy the source page into the destination as a real page (not as an
+        // opaque Form XObject). This keeps individual page objects accessible
+        // so we can mutate the text layer.
+        let dst_idx = dst_doc.pages().len();
+        println!("[spike]   about to copy_page_from_document page {} to dst_idx {}", page_idx, dst_idx);
+        dst_doc
+            .pages_mut()
+            .copy_page_from_document(&src_doc, page_idx, dst_idx)?;
+        println!("[spike]   copy ok, dst has {} pages", dst_doc.pages().len());
 
-        // Import source page as Form XObject — this is the key high-fidelity step.
-        // copy_into_x_object_form_object handles FPDF_NewXObjectFromPage +
-        // FPDF_NewFormObjectFromXObject + FPDF_CloseXObject internally.
+        // Wipe original text objects. Walk back-to-front so deletions don't
+        // invalidate indices in front of the cursor. NOTE: must use pages()
+        // (immutable accessor) not pages_mut() — combining pages_mut().get()
+        // with FPDFPage_GetObject right after FPDF_ImportPages segfaults in
+        // pdfium-render 0.9.1. The returned PdfPage is owned, so we can still
+        // call objects_mut() on it.
+        // Clear original text by setting each text object's text to "".
+        // We avoid `remove_object_at_index` here because in pdfium-render 0.9.1
+        // it segfaults when called on a page produced by FPDF_ImportPages
+        // (the FPDFPage_RemoveObject path appears to deref a stale handle).
+        // Setting empty text is safer and achieves the same visual + text-layer
+        // result: the glyphs are gone, copy/paste returns nothing for them.
+        let mut text_cleared = 0usize;
         {
-            let src_page = src_doc.pages().get(page_idx)?;
-            let xobj_obj = src_page.objects().copy_into_x_object_form_object(&mut dst_doc)?;
-            dst_page.objects_mut().add_object(xobj_obj)?;
+            let mut dst_page = dst_doc.pages().get(dst_idx)?;
+            dst_page.set_content_regeneration_strategy(PdfPageContentRegenerationStrategy::Manual);
+            let total_objs = dst_page.objects().len();
+            for i in 0..total_objs {
+                let mut obj = dst_page.objects().get(i)?;
+                if let PdfPageObject::Text(text_obj) = &mut obj {
+                    text_obj.set_text("")?;
+                    text_cleared += 1;
+                }
+            }
+            dst_page.regenerate_content()?;
         }
+        println!("[spike]   page {} cleared {} text objects", page_idx, text_cleared);
 
-        // White rectangles to mask original text, then translated text on top.
-        for (bounds, translation, line_height) in segments_to_draw {
-            // Pad the mask a hair to avoid leaving stroke edges from the original.
-            let padded = PdfRect::new(
-                PdfPoints::new(bounds.bottom().value - 1.5),
-                PdfPoints::new(bounds.left().value - 1.0),
-                PdfPoints::new(bounds.top().value + 1.5),
-                PdfPoints::new(bounds.right().value + 2.0),
-            );
-            let rect = PdfPagePathObject::new_rect(
-                &dst_doc,
-                padded,
-                None,
-                None,
-                Some(PdfColor::WHITE),
-            )?;
-            dst_page.objects_mut().add_path_object(rect)?;
-
-            // Translated text. Use the original line's height as a font-size proxy.
-            let mut text_obj = PdfPageTextObject::new(
-                &dst_doc,
-                &translation,
-                cjk_token,
-                PdfPoints::new(line_height.max(10.0)),
-            )?;
-            text_obj.translate(bounds.left(), bounds.bottom())?;
-            dst_page.objects_mut().add_text_object(text_obj)?;
+        // Draw translations.
+        {
+            let mut dst_page = dst_doc.pages().get(dst_idx)?;
+            for (bounds, translation, line_height) in segments_to_draw {
+                let mut text_obj = PdfPageTextObject::new(
+                    &dst_doc,
+                    &translation,
+                    cjk_token,
+                    PdfPoints::new(line_height.max(10.0)),
+                )?;
+                text_obj.translate(bounds.left(), bounds.bottom())?;
+                dst_page.objects_mut().add_text_object(text_obj)?;
+            }
+            dst_page.regenerate_content()?;
         }
-
-        dst_page.regenerate_content()?;
     }
 
     dst_doc.save_to_file(dest)?;
