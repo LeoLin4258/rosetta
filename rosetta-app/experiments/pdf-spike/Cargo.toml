@@ -1,0 +1,10 @@
+[package]
+name = "pdf-spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Throwaway spike: verify pdfium-render Form XObject page-import + text overlay for Rosetta PDF translation"
+
+[dependencies]
+pdfium-render = "0.9"
+anyhow = "1"
