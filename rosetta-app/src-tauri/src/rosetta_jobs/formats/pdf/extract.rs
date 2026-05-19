@@ -46,14 +46,18 @@ use tauri::{AppHandle, Manager};
 ///    sidecar isn't installed yet (download UX → Phase 1.6g) or refuses to start.
 ///    Extraction-side errors from a *running* sidecar propagate; we don't
 ///    silently degrade a real failure into the weaker fallback.
-pub(crate) fn parse_pdf(
+/// Async because the Docling backend uses async HTTP (reqwest). Earlier this
+/// was sync + `tauri::async_runtime::block_on(...)` inside the command, which
+/// blocked a Tokio worker thread and stalled the webview's IPC handler — the
+/// "import freezes the app for a few seconds" symptom from 2026-05-19 dogfood.
+pub(crate) async fn parse_pdf(
     app: &AppHandle,
     document_id: &str,
     source_path: &Path,
 ) -> Result<(Vec<RosettaBlock>, Vec<Segment>), PdfError> {
     pre_flight(app, source_path)?;
 
-    match try_docling_extract(app, document_id, source_path) {
+    match try_docling_extract(app, document_id, source_path).await {
         Ok(Some(result)) => return Ok(result),
         Ok(None) => {
             // Sidecar unavailable — fall through to chars+baseline.
@@ -107,7 +111,7 @@ fn pre_flight(app: &AppHandle, source_path: &Path) -> Result<(), PdfError> {
 ///   the pdfium chars+baseline path.
 /// - `Err(_)` — sidecar IS running but failed to convert this specific PDF.
 ///   We don't silently fall back because that would mask real bugs.
-fn try_docling_extract(
+async fn try_docling_extract(
     app: &AppHandle,
     document_id: &str,
     source_path: &Path,
@@ -118,16 +122,12 @@ fn try_docling_extract(
         return Ok(None);
     };
 
-    let base_url = match tauri::async_runtime::block_on(registry.ensure_running(app)) {
+    let base_url = match registry.ensure_running(app).await {
         Ok(url) => url,
         Err(_) => return Ok(None),
     };
 
-    let result = tauri::async_runtime::block_on(extract_via_docling(
-        &base_url,
-        document_id,
-        source_path,
-    ))?;
+    let result = extract_via_docling(&base_url, document_id, source_path).await?;
     Ok(Some(result))
 }
 

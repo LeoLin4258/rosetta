@@ -84,11 +84,16 @@ pub fn import_rosetta_project_from_directory(
 }
 
 #[tauri::command]
-pub fn import_rosetta_document_from_path(
+pub async fn import_rosetta_document_from_path(
     app: AppHandle,
     path: String,
 ) -> Result<RosettaJobBundle, String> {
-    import::import_document_from_path(&app, Path::new(&path))
+    // Async because the PDF backend calls into the Docling sidecar over HTTP.
+    // Keeping this sync + block_on would tie up a Tokio worker for the whole
+    // import (~10s on a 1-page doc), starving the webview's IPC handler and
+    // freezing the UI. Tauri 2 awaits async commands natively without extra
+    // glue, so propagating async upward is the cheapest correct fix.
+    import::import_document_from_path(&app, Path::new(&path)).await
 }
 
 /// Smoke test: confirm the bundled pdfium dylib and CJK font can be located

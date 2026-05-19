@@ -28,7 +28,7 @@ use crate::rosetta_jobs::{
     translation_files::{read_or_migrate_translation_files, translation_segments_path},
 };
 
-pub(crate) fn import_document_from_path(
+pub(crate) async fn import_document_from_path(
     app: &AppHandle,
     source_path: &Path,
 ) -> Result<RosettaJobBundle, String> {
@@ -60,6 +60,7 @@ pub(crate) fn import_document_from_path(
     let (blocks, segments, source_contents) = match format {
         SourceFormat::Pdf => {
             let (blocks, segments) = parse_pdf(app, &document_id, source_path)
+                .await
                 .map_err(|error| error.user_message())?;
             (blocks, segments, None)
         }
