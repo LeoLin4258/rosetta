@@ -63,11 +63,15 @@ export function WorkspaceTopbar({
   const [confirmingRetranslateAll, setConfirmingRetranslateAll] = useState(false);
 
   const hasTranslation =
-    activeTranslationFile && activeTranslationFile.completedSegments > 0;
+    activeTranslationFile &&
+    (activeTranslationFile.completedSegments > 0 ||
+      (job.format === "pdf" && activeTranslationFile.status === "translated"));
   const allTranslated =
     !!activeTranslationFile &&
-    activeTranslationFile.segmentCount > 0 &&
-    activeTranslationFile.completedSegments >= activeTranslationFile.segmentCount;
+    (job.format === "pdf"
+      ? activeTranslationFile.status === "translated"
+      : activeTranslationFile.segmentCount > 0 &&
+        activeTranslationFile.completedSegments >= activeTranslationFile.segmentCount);
   const progressPercent =
     totalCount > 0 ? Math.round((translatedCount / totalCount) * 100) : 0;
 

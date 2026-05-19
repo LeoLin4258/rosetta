@@ -122,11 +122,9 @@ pub(crate) fn parse_source(
         SourceFormat::Txt => txt::parse_txt(document_id, contents),
         SourceFormat::Markdown => markdown::parse_markdown(document_id, contents),
         SourceFormat::Pdf => {
-            // PDFs flow through `parse_pdf` in [`import::import_document_from_path`]
-            // instead of [`parse_source`] because they're binary and need an
-            // AppHandle to bind the pdfium runtime. Hitting this branch means
-            // someone called parse_source on a PDF format — that's a bug.
-            panic!("parse_source called with SourceFormat::Pdf; PDFs must go through formats::pdf::parse_pdf");
+            // PDFs are imported as cached binary sources and translated by
+            // pdf2zh, so they never pass through this text parser.
+            panic!("parse_source called with SourceFormat::Pdf");
         }
     };
 

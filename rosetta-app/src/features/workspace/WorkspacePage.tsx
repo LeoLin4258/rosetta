@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import {
+  generateRosettaTranslatedPdf,
   createRosettaTranslationRevision,
   ensureRosettaTranslationFile,
   exportRosettaTranslatedPdf,
@@ -148,7 +149,7 @@ export function WorkspacePage() {
         const bundle = await tryImportPath(path);
         setActiveBundle(bundle);
       } catch (err) {
-        setPageError(err instanceof Error ? err.message : "导入失败");
+      setPageError(errorMessage(err, "导入失败"));
       }
     }
   }
@@ -200,6 +201,41 @@ export function WorkspacePage() {
         targetLang
       );
       setActiveTranslationFileBundle(tfBundle);
+
+      if (sourceFile?.format === "pdf") {
+        const provider = buildProvider();
+        runId = `run-pdf-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        startTranslationRun({
+          id: runId,
+          jobId: activeJobId,
+          sourceFileId: activeSourceFileId,
+          translationFileId: tfBundle.translationFile.id,
+          scope: "file",
+          targetSegmentIds: ["pdf-document"],
+        });
+        await generateRosettaTranslatedPdf(activeJobId, {
+          rwkvBaseUrl: provider.baseUrl,
+          sourceLang: srcLang && srcLang !== "auto" ? srcLang : "en",
+          targetLang,
+          timeoutMs: rwkv.timeoutMs,
+          ignoreCache: false,
+        });
+        markTranslationRunCompleted(runId, ["pdf-document"]);
+        finishTranslationRun(runId);
+        runId = null;
+        const freshBundle = await loadRosettaJob(activeJobId);
+        refreshJobBundle(freshBundle);
+        const refreshedTranslation = freshBundle.translationFiles.find(
+          (file) => file.id === tfBundle.translationFile.id,
+        );
+        if (refreshedTranslation) {
+          setActiveTranslationFileBundle({
+            translationFile: refreshedTranslation,
+            segments: [],
+          });
+        }
+        return;
+      }
 
       const targets = translationTargetsForStatuses({
         sourceSegments: previewSegments,
@@ -255,7 +291,7 @@ export function WorkspacePage() {
       const freshBundle = await loadRosettaJob(activeJobId);
       refreshJobBundle(freshBundle);
     } catch (err) {
-      setPageError(err instanceof Error ? err.message : "翻译出错。");
+      setPageError(errorMessage(err, "翻译出错。"));
       if (runId) finishTranslationRun(runId);
     }
   }
@@ -346,7 +382,7 @@ export function WorkspacePage() {
       const freshBundle = await loadRosettaJob(activeJobId);
       refreshJobBundle(freshBundle);
     } catch (err) {
-      setPageError(err instanceof Error ? err.message : "重新翻译失败。");
+      setPageError(errorMessage(err, "重新翻译失败。"));
       if (runId) finishTranslationRun(runId);
     }
   }
@@ -360,6 +396,47 @@ export function WorkspacePage() {
     let runId: string | null = null;
 
     try {
+      if (sourceFile?.format === "pdf") {
+        const tfBundle = await ensureRosettaTranslationFile(
+          activeJobId,
+          activeSourceFileId,
+          retranslateTargetLang
+        );
+        setActiveTranslationFileBundle(tfBundle);
+        const provider = buildProvider();
+        runId = `run-pdf-all-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        startTranslationRun({
+          id: runId,
+          jobId: activeJobId,
+          sourceFileId: activeSourceFileId,
+          translationFileId: tfBundle.translationFile.id,
+          scope: "file",
+          targetSegmentIds: ["pdf-document"],
+        });
+        await generateRosettaTranslatedPdf(activeJobId, {
+          rwkvBaseUrl: provider.baseUrl,
+          sourceLang: sourceLang && sourceLang !== "auto" ? sourceLang : "en",
+          targetLang: retranslateTargetLang,
+          timeoutMs: rwkv.timeoutMs,
+          ignoreCache: true,
+        });
+        markTranslationRunCompleted(runId, ["pdf-document"]);
+        finishTranslationRun(runId);
+        runId = null;
+        const freshBundle = await loadRosettaJob(activeJobId);
+        refreshJobBundle(freshBundle);
+        const refreshedTranslation = freshBundle.translationFiles.find(
+          (file) => file.id === tfBundle.translationFile.id,
+        );
+        if (refreshedTranslation) {
+          setActiveTranslationFileBundle({
+            translationFile: refreshedTranslation,
+            segments: [],
+          });
+        }
+        return;
+      }
+
       const revisionBundle = await createRosettaTranslationRevision(
         activeJobId,
         activeSourceFileId,
@@ -431,7 +508,7 @@ export function WorkspacePage() {
       const freshBundle = await loadRosettaJob(activeJobId);
       refreshJobBundle(freshBundle);
     } catch (err) {
-      setPageError(err instanceof Error ? err.message : "重新翻译失败。");
+      setPageError(errorMessage(err, "重新翻译失败。"));
       if (runId) finishTranslationRun(runId);
     }
   }
@@ -476,7 +553,7 @@ export function WorkspacePage() {
         );
       }
     } catch (err) {
-      setPageError(err instanceof Error ? err.message : "导出失败。");
+      setPageError(errorMessage(err, "导出失败。"));
     }
   }
 
@@ -546,4 +623,10 @@ export function WorkspacePage() {
       )}
     </div>
   );
+}
+
+function errorMessage(error: unknown, fallback: string) {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string" && error.trim()) return error;
+  return fallback;
 }

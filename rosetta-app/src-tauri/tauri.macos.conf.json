@@ -57,8 +57,7 @@
     "externalBin": ["binaries/rwkv-server"],
     "resources": [
       "resources/rwkv-sidecar/*",
-      "resources/pdf-sidecar/pdfium/*/*",
-      "resources/pdf-sidecar/fonts/*"
+      "resources/pdf-sidecar/pdfium/*/*"
     ],
     "macOS": {
       "minimumSystemVersion": "13.0"

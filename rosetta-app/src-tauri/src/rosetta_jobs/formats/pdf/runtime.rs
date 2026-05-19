@@ -1,4 +1,4 @@
-//! pdfium native library + bundled CJK font path resolution.
+//! pdfium native library path resolution.
 //!
 //! Mirrors the path-resolution pattern used by [`managed_rwkv::status::locate_tokenizer`]
 //! so the layout of pdf-sidecar resources stays consistent with rwkv-sidecar:
@@ -81,34 +81,6 @@ pub(crate) fn locate_pdfium_lib(app: &AppHandle) -> Option<PathBuf> {
     None
 }
 
-/// Probe candidate paths for the bundled CJK font. v1 ships a single font
-/// (Source Han Sans CN Regular, OFL-1.1) and embeds it into every translated
-/// PDF — see [`crate::rosetta_jobs::formats::pdf`] for the embedding step.
-pub(crate) fn locate_cjk_font(app: &AppHandle) -> Option<PathBuf> {
-    let rel = Path::new("resources")
-        .join("pdf-sidecar")
-        .join("fonts")
-        .join("SourceHanSansCN-Regular.otf");
-
-    if let Ok(resource_dir) = app.path().resource_dir() {
-        for candidate in [
-            resource_dir.join(&rel),
-            resource_dir.join("_up_").join(&rel),
-        ] {
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
-
-    let dev_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(&rel);
-    if dev_path.is_file() {
-        return Some(dev_path);
-    }
-
-    None
-}
-
 /// Lazily bind libpdfium.dylib and return a process-wide [`Pdfium`].
 pub(crate) fn get_pdfium(app: &AppHandle) -> Result<&'static Pdfium, String> {
     PDFIUM.get_or_try_init(|| {
@@ -133,25 +105,17 @@ pub(crate) struct PdfRuntimeStatus {
     pub pdfium_lib_path: Option<String>,
     pub pdfium_lib_loaded: bool,
     pub pdfium_version_tag: Option<String>,
-    pub cjk_font_path: Option<String>,
-    pub cjk_font_size_bytes: Option<u64>,
     pub error: Option<String>,
 }
 
 pub(crate) fn probe_status(app: &AppHandle) -> PdfRuntimeStatus {
     let pdfium_lib_path = locate_pdfium_lib(app);
-    let cjk_font_path = locate_cjk_font(app);
 
     let pdfium_version_tag = pdfium_lib_path
         .as_ref()
         .and_then(|p| p.parent().map(|d| d.join("VERSION")))
         .and_then(|version_file| std::fs::read_to_string(version_file).ok())
         .map(|tag| tag.trim().to_string());
-
-    let cjk_font_size_bytes = cjk_font_path
-        .as_ref()
-        .and_then(|p| std::fs::metadata(p).ok())
-        .map(|meta| meta.len());
 
     let (loaded, error) = match get_pdfium(app) {
         Ok(_) => (true, None),
@@ -162,8 +126,6 @@ pub(crate) fn probe_status(app: &AppHandle) -> PdfRuntimeStatus {
         pdfium_lib_path: pdfium_lib_path.map(|p| p.display().to_string()),
         pdfium_lib_loaded: loaded,
         pdfium_version_tag,
-        cjk_font_path: cjk_font_path.map(|p| p.display().to_string()),
-        cjk_font_size_bytes,
         error,
     }
 }
@@ -185,14 +147,6 @@ mod tests {
             .join(lib_filename())
     }
 
-    fn dev_font_path() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("resources")
-            .join("pdf-sidecar")
-            .join("fonts")
-            .join("SourceHanSansCN-Regular.otf")
-    }
-
     #[test]
     fn pdfium_dylib_is_staged() {
         let p = dev_pdfium_path();
@@ -203,18 +157,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn cjk_font_is_staged() {
-        let p = dev_font_path();
-        assert!(
-            p.is_file(),
-            "CJK font not staged at {}. Run scripts/fetch-pdfium.sh first.",
-            p.display(),
-        );
-    }
-
     // Binding pdfium is covered by [`super::extract::tests`] via a shared
     // OnceLock — duplicating it here would race the global FPDF_InitLibrary
     // and SIGTRAP in parallel test runs.
 }
-

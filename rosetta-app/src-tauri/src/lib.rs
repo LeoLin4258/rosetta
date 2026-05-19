@@ -1,3 +1,4 @@
+mod managed_pdf2zh;
 mod managed_rwkv;
 mod onboarding;
 mod rosetta_jobs;
@@ -15,7 +16,6 @@ pub fn run() {
         .manage(rwkv_api::RwkvTranslationRunRegistry::default())
         .manage(managed_rwkv::Registry::default())
         .manage(managed_rwkv::InstallStateRegistry::default())
-        .manage(rosetta_jobs::formats::pdf::docling::DoclingSidecarRegistry::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
@@ -147,6 +147,10 @@ pub fn run() {
             managed_rwkv::probe_managed_rwkv_runtime,
             managed_rwkv::start_managed_rwkv_runtime,
             managed_rwkv::stop_managed_rwkv_runtime,
+            managed_pdf2zh::cancel_pdf2zh_install,
+            managed_pdf2zh::get_pdf2zh_install_progress,
+            managed_pdf2zh::get_pdf2zh_status,
+            managed_pdf2zh::install_pdf2zh_pack,
             onboarding::complete_onboarding_and_open_main,
             onboarding::get_onboarding_decision,
             onboarding::reopen_onboarding_window,

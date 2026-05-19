@@ -274,17 +274,16 @@ pub fn export_rosetta_translated_pdf(
     })
 }
 
-/// Generate a translated PDF for a job by reading the cached source PDF and
-/// each block's translated text. Returns the absolute path of the rendered
-/// PDF so the frontend can show it side-by-side with the source.
-///
-/// Translation data lives in `<job_dir>/translations/<tr-file-id>.json`, NOT
-/// in `document.json` / `segments.json` — the latter only hold the source-side
-/// state. So before handing the document to the renderer we merge the
-/// translation segments back onto the source segments and apply them to the
-/// document's blocks (same flow `export.rs` uses for .md/.txt exports).
 #[tauri::command]
-pub fn generate_rosetta_translated_pdf(app: AppHandle, job_id: String) -> Result<String, String> {
+pub async fn generate_rosetta_translated_pdf(
+    app: AppHandle,
+    job_id: String,
+    rwkv_base_url: Option<String>,
+    source_lang: Option<String>,
+    target_lang: Option<String>,
+    timeout_ms: Option<u64>,
+    ignore_cache: Option<bool>,
+) -> Result<String, String> {
     let bundle = store::load_job_bundle(&app, &job_id)?;
     if bundle.document.format != "pdf" {
         return Err("当前文档不是 PDF，无法生成翻译后 PDF。".to_string());
@@ -294,38 +293,108 @@ pub fn generate_rosetta_translated_pdf(app: AppHandle, job_id: String) -> Result
         return Err("项目缓存里找不到源 PDF，请重新导入。".to_string());
     }
 
-    // Pick the translation file for the (single) source file. PDF v1 always
-    // has exactly one source file per job — see import.rs.
-    let translation_file = bundle
-        .translation_files
-        .iter()
-        .next()
-        .cloned()
-        .ok_or_else(|| "尚未生成任何译文，请先完成翻译。".to_string())?;
-    let source_file_id = translation_file.source_file_id.clone();
-
     let root = path::jobs_root(&app)?;
     let dir = path::checked_job_dir(&root, &job_id)?;
-    let translation_segments =
-        translation_files::read_translation_segments(&dir, &translation_file.id)?;
-    let merged_segments = translation_files::translated_source_segments(
-        &bundle.segments,
-        &translation_segments,
-        &source_file_id,
-        &translation_file.target_lang,
-    );
-
-    let mut document = bundle.document.clone();
-    document::apply_segment_translations_to_document(&mut document, &merged_segments);
-
     let output_path = store::translated_pdf_output_path(&app, &job_id)?;
     if let Some(parent) = output_path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("无法创建导出目录: {error}"))?;
     }
-    formats::pdf::render_translated_pdf(&app, &document, &source_path, &output_path)
-        .map_err(|error| error.user_message())?;
+    let pdf2zh_output_dir = dir.join("pdf2zh-output");
+    if pdf2zh_output_dir.exists() {
+        std::fs::remove_dir_all(&pdf2zh_output_dir)
+            .map_err(|error| format!("无法清理旧 PDFMathTranslate 输出: {error}"))?;
+    }
+    std::fs::create_dir_all(&pdf2zh_output_dir)
+        .map_err(|error| format!("无法创建 PDFMathTranslate 输出目录: {error}"))?;
+
+    let target_lang = target_lang
+        .or_else(|| {
+            bundle
+                .document
+                .files
+                .first()
+                .and_then(|file| file.target_lang.clone())
+        })
+        .unwrap_or_else(|| bundle.document.target_lang.clone());
+    let source_lang = source_lang
+        .filter(|lang| lang != "auto")
+        .or_else(|| {
+            bundle
+                .document
+                .files
+                .first()
+                .and_then(|file| file.source_lang.clone())
+        })
+        .unwrap_or_else(|| "en".to_string());
+    let rwkv_base_url = rwkv_base_url
+        .filter(|url| !url.trim().is_empty())
+        .ok_or_else(|| "PDF 翻译需要一个本地 RWKV base URL。请先启动本地运行时。".to_string())?;
+
+    let output = formats::pdf::pdf2zh_invoke::invoke_pdf2zh(
+        &app,
+        &source_path,
+        &pdf2zh_output_dir,
+        formats::pdf::pdf2zh_invoke::Pdf2zhInvokeOptions {
+            job_id: job_id.clone(),
+            rwkv_base_url,
+            source_lang,
+            target_lang: target_lang.clone(),
+            timeout_ms: timeout_ms.unwrap_or(120_000),
+            ignore_cache: ignore_cache.unwrap_or(false),
+        },
+    )
+    .await
+    .map_err(|error| error.user_message())?;
+    std::fs::copy(&output.mono_pdf, &output_path)
+        .map_err(|error| format!("无法缓存 pdf2zh 译文 PDF: {error}"))?;
+    mark_pdf_translation_ready(&app, &job_id, &target_lang)?;
     Ok(output_path.to_string_lossy().to_string())
+}
+
+fn mark_pdf_translation_ready(
+    app: &AppHandle,
+    job_id: &str,
+    target_lang: &str,
+) -> Result<(), String> {
+    let root = path::jobs_root(app)?;
+    let dir = path::checked_job_dir(&root, job_id)?;
+    let mut translation_files = store::read_translation_files(&dir)?;
+    let source_file_id = "file-1";
+    let id = path::translation_file_id(source_file_id, target_lang);
+    if let Some(file) = translation_files.iter_mut().find(|file| file.id == id) {
+        file.status = "translated".to_string();
+        file.segment_count = 1;
+        file.completed_segments = 1;
+        file.failed_segments = 0;
+        file.updated_at = path::timestamp_ms_string();
+    } else {
+        translation_files.push(model::RosettaTranslationFile {
+            id,
+            source_file_id: source_file_id.to_string(),
+            target_lang: target_lang.to_string(),
+            status: "translated".to_string(),
+            segment_count: 1,
+            completed_segments: 1,
+            failed_segments: 0,
+            updated_at: path::timestamp_ms_string(),
+            exported_at: None,
+        });
+    }
+    store::write_translation_files(&dir, &translation_files)?;
+
+    let mut index = store::read_index(&root)?;
+    if let Some(job) = index.jobs.iter_mut().find(|job| job.id == job_id) {
+        job.status = "completed".to_string();
+        job.segment_count = 1;
+        job.completed_segments = 1;
+        job.failed_segments = 0;
+        job.target_lang = target_lang.to_string();
+        job.last_error = None;
+        job.updated_at = path::timestamp_ms_string();
+    }
+    store::write_index(&root, &index)?;
+    Ok(())
 }
 
 #[tauri::command]

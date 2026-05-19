@@ -1,24 +1,15 @@
 //! PDF format support.
 //!
-//! v1 pipeline (validated by [`experiments/pdf-spike`]): extract text + bbox via
-//! pdfium-render → translate per existing block/segment workflow → regenerate
-//! a translated PDF that preserves images / vectors / background by copying the
-//! source page and clearing only the original text objects, then drawing the
-//! translation in an embedded CJK font.
-//!
-//! Sub-modules are intentionally small and single-purpose so Phase 3 work
-//! (layout confidence, complex-page handling) can land in `layout.rs` without
-//! touching extract/generate.
+//! Phase 3 pipeline: PDF import is a lightweight pre-flight + source cache,
+//! while translation is delegated end-to-end to PDFMathTranslate (`pdf2zh`).
+//! Rosetta keeps the existing pdfium rasterizer for source/translated preview.
 
-pub(crate) mod docling;
 pub(crate) mod errors;
 pub(crate) mod extract;
-pub(crate) mod generate;
+pub(crate) mod pdf2zh_invoke;
 pub(crate) mod rasterize;
 pub(crate) mod runtime;
 
-pub(crate) use extract::parse_pdf;
-pub(crate) use generate::render_translated_pdf;
 pub(crate) use rasterize::{count_pages, render_page_as_png};
 pub(crate) use runtime::{probe_status, PdfRuntimeStatus};
 
@@ -63,14 +54,6 @@ pub(crate) mod test_helpers {
                 "mac-x64"
             })
             .join("libpdfium.dylib")
-    }
-
-    pub(crate) fn font_path() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("resources")
-            .join("pdf-sidecar")
-            .join("fonts")
-            .join("SourceHanSansCN-Regular.otf")
     }
 
     pub(crate) fn fixture_path(name: &str) -> PathBuf {

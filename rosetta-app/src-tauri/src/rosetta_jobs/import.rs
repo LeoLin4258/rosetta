@@ -1,7 +1,6 @@
-use std::{fs, path::{Path, PathBuf}};
+use std::{fs, path::Path};
 
-use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 
 use crate::rosetta_jobs::{
     document::{
@@ -12,7 +11,7 @@ use crate::rosetta_jobs::{
     formats::{
         collect_supported_source_paths, document_format,
         parse_source,
-        pdf::{self, parse_pdf},
+        pdf,
         SourceFormat,
     },
     model::{
@@ -34,25 +33,9 @@ use crate::rosetta_jobs::{
     translation_files::{read_or_migrate_translation_files, translation_segments_path},
 };
 
-/// Event name emitted by the background PDF extraction task. Frontend
-/// subscribes via `tauri-apps/api/event::listen`.
-pub(crate) const PDF_EXTRACTION_COMPLETE_EVENT: &str = "rosetta-pdf-extraction-complete";
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct PdfExtractionEventPayload {
-    pub job_id: String,
-    /// "success" | "failure"
-    pub status: String,
-    pub error: Option<String>,
-}
-
 /// Fast path for PDF imports: synchronously creates the job directory + copies
-/// the source PDF + writes a skeleton `document.json` (no blocks yet), then
-/// spawns a background task that runs Docling extraction and emits
-/// [`PDF_EXTRACTION_COMPLETE_EVENT`] when done. The frontend treats the
-/// returned bundle as "ready to preview source PDF and show in sidebar" even
-/// though `extractionStatus == "pending"`.
+/// the source PDF + writes a skeleton `document.json` (no blocks). Phase 3
+/// delegates extraction + translation to pdf2zh when the user clicks translate.
 pub(crate) async fn import_pdf_skeleton(
     app: &AppHandle,
     source_path: &Path,
@@ -103,7 +86,7 @@ pub(crate) async fn import_pdf_skeleton(
             block_ids: vec![],
         }],
         blocks: vec![],
-        extraction_status: Some("pending".to_string()),
+        extraction_status: Some("done".to_string()),
     };
 
     let job = RosettaJobSummary {
@@ -116,7 +99,7 @@ pub(crate) async fn import_pdf_skeleton(
         source_kind: "file".to_string(),
         file_count: 1,
         source_files: document.files.clone(),
-        status: "extracting".to_string(),
+        status: "ready".to_string(),
         created_at: now.clone(),
         updated_at: now,
         exported_at: None,
@@ -137,118 +120,7 @@ pub(crate) async fn import_pdf_skeleton(
     };
     write_job_bundle_pdf(app, &bundle, source_path)?;
 
-    // Hand off Docling extraction to a background task; the returned bundle
-    // is sufficient for the frontend to render the source-PDF preview pane.
-    spawn_pdf_extraction(
-        app.clone(),
-        job_id.clone(),
-        document_id,
-        source_path.to_path_buf(),
-    );
-
     Ok(bundle)
-}
-
-/// Spawn the long-running Docling extraction off the import command thread.
-/// On completion (success or failure) emit an event so the frontend can
-/// refresh its in-memory bundle and unblock the translate button.
-fn spawn_pdf_extraction(
-    app: AppHandle,
-    job_id: String,
-    document_id: String,
-    source_path: PathBuf,
-) {
-    tauri::async_runtime::spawn(async move {
-        let outcome = run_pdf_extraction(&app, &job_id, &document_id, &source_path).await;
-        let payload = match outcome {
-            Ok(()) => PdfExtractionEventPayload {
-                job_id: job_id.clone(),
-                status: "success".to_string(),
-                error: None,
-            },
-            Err(error) => {
-                // Persist the error on the skeleton document so a later
-                // load_rosetta_job reflects the failed state even if the
-                // frontend missed the live event (e.g., user closed the app
-                // before extraction finished).
-                let _ = mark_extraction_failed(&app, &job_id, &error);
-                PdfExtractionEventPayload {
-                    job_id: job_id.clone(),
-                    status: "failure".to_string(),
-                    error: Some(error),
-                }
-            }
-        };
-        if let Err(emit_err) = app.emit(PDF_EXTRACTION_COMPLETE_EVENT, payload) {
-            eprintln!("[pdf] failed to emit extraction event: {emit_err}");
-        }
-    });
-}
-
-async fn run_pdf_extraction(
-    app: &AppHandle,
-    job_id: &str,
-    document_id: &str,
-    source_path: &Path,
-) -> Result<(), String> {
-    let (mut blocks, mut segments) = parse_pdf(app, document_id, source_path)
-        .await
-        .map_err(|error| error.user_message())?;
-    if segments.is_empty() {
-        return Err("PDF 没有可翻译的文本段落。".to_string());
-    }
-    apply_file_id(&mut blocks, &mut segments, "file-1");
-
-    // Merge into the on-disk skeleton bundle (rather than rebuilding from
-    // scratch) so any state the frontend touched in the meantime — language
-    // changes, etc. — is preserved.
-    let root = jobs_root(app)?;
-    let dir = checked_job_dir(&root, job_id)?;
-    let mut document: RosettaDocument = read_json(&dir.join("document.json"))?;
-    ensure_document_files(&mut document);
-    let block_ids: Vec<String> = blocks.iter().map(|b| b.id.clone()).collect();
-    if let Some(file) = document.files.first_mut() {
-        file.block_ids = block_ids;
-    }
-    document.blocks = blocks;
-    document.extraction_status = Some("done".to_string());
-
-    let mut index = read_index(&root)?;
-    let mut job = index
-        .jobs
-        .iter()
-        .find(|job| job.id == job_id)
-        .cloned()
-        .ok_or_else(|| "项目索引不存在。".to_string())?;
-    sync_document_file_statuses(&mut document, &segments);
-    sync_job_counts(&mut job, &segments);
-    sync_job_source_files(&mut job, &document);
-    job.status = "ready".to_string();
-    job.last_error = None;
-    job.updated_at = timestamp_ms_string();
-
-    write_json(&dir.join("document.json"), &document)?;
-    write_json(&dir.join("segments.json"), &segments)?;
-    replace_index_job(&mut index, job);
-    write_index(&root, &index)?;
-    Ok(())
-}
-
-fn mark_extraction_failed(app: &AppHandle, job_id: &str, error: &str) -> Result<(), String> {
-    let root = jobs_root(app)?;
-    let dir = checked_job_dir(&root, job_id)?;
-    let mut document: RosettaDocument = read_json(&dir.join("document.json"))?;
-    document.extraction_status = Some("failed".to_string());
-    write_json(&dir.join("document.json"), &document)?;
-
-    let mut index = read_index(&root)?;
-    if let Some(job) = index.jobs.iter_mut().find(|job| job.id == job_id) {
-        job.status = "failed".to_string();
-        job.last_error = Some(error.to_string());
-        job.updated_at = timestamp_ms_string();
-    }
-    write_index(&root, &index)?;
-    Ok(())
 }
 
 pub(crate) async fn import_document_from_path(
@@ -264,8 +136,8 @@ pub(crate) async fn import_document_from_path(
     let format = document_format(source_path)?;
     let format_name = format.as_str().to_string();
 
-    // Size cap differs by format: PDF gets its own 100 MB limit checked inside
-    // [`parse_pdf`]; text formats stay at 5 MB.
+    // Size cap differs by format: PDF gets its own 100 MB limit checked by
+    // the pdfium pre-flight; text formats stay at 5 MB.
     if format != SourceFormat::Pdf && metadata.len() > MAX_IMPORT_BYTES {
         return Err("文件超过 5 MB，当前原型暂不导入超大文件。".to_string());
     }
@@ -279,13 +151,12 @@ pub(crate) async fn import_document_from_path(
     let job_id = new_job_id(source_path);
     let document_id = format!("document-{job_id}");
 
-    // Branch: PDF needs binary parsing + AppHandle; text formats stay UTF-8.
+    // Branch: PDF is imported as a black-box source file; text formats stay UTF-8.
     let (blocks, segments, source_contents) = match format {
         SourceFormat::Pdf => {
-            let (blocks, segments) = parse_pdf(app, &document_id, source_path)
-                .await
+            pdf::extract::pre_flight(app, source_path)
                 .map_err(|error| error.user_message())?;
-            (blocks, segments, None)
+            (Vec::new(), Vec::new(), None)
         }
         _ => {
             let contents = fs::read_to_string(source_path)
@@ -302,7 +173,7 @@ pub(crate) async fn import_document_from_path(
     let mut segments = segments;
     apply_file_id(&mut blocks, &mut segments, "file-1");
 
-    if segments.is_empty() {
+    if format != SourceFormat::Pdf && segments.is_empty() {
         return Err("文件没有可翻译的文本段落。".to_string());
     }
     let block_ids = blocks.iter().map(|block| block.id.clone()).collect();

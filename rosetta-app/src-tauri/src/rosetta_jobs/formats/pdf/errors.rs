@@ -19,6 +19,8 @@ pub(crate) enum PdfError {
     TooLarge { reason: String },
     /// pdfium dylib is not staged in resources/pdf-sidecar yet.
     RuntimeMissing(String),
+    /// PDFMathTranslate failed before producing the expected output file.
+    Pdf2zhFailed(String),
 }
 
 impl PdfError {
@@ -32,6 +34,7 @@ impl PdfError {
             Self::ImageOnly => "这份 PDF 看起来是扫描件或纯图片，没有可提取的文字。Rosetta 当前版本暂不做 OCR。".to_string(),
             Self::TooLarge { reason } => format!("PDF 超过当前版本的处理上限：{reason}"),
             Self::RuntimeMissing(detail) => format!("PDF 翻译运行时未就绪：{detail}"),
+            Self::Pdf2zhFailed(detail) => format!("PDFMathTranslate 翻译失败：{detail}"),
         }
     }
 }

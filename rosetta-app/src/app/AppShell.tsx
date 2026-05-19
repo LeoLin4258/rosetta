@@ -44,49 +44,10 @@ function useOnboardingCompleted() {
   }, [clearJobHistory]);
 }
 
-/// Subscribe to the backend's "rosetta-pdf-extraction-complete" event. The
-/// PDF import flow returns a skeleton bundle immediately; the backend then
-/// runs Docling in a tokio task and emits this event when blocks/segments
-/// are persisted. We re-fetch the bundle to swap the in-memory skeleton for
-/// the populated one. See `rosetta_jobs::import::spawn_pdf_extraction`.
-function usePdfExtractionUpdates() {
-  const refreshJobBundle = useRosettaStore((s) => s.refreshJobBundle);
-
-  useEffect(() => {
-    let unmounted = false;
-    let unlisten: (() => void) | null = null;
-
-    listen<{ jobId: string; status: string; error?: string }>(
-      "rosetta-pdf-extraction-complete",
-      (event) => {
-        const { jobId, status, error } = event.payload;
-        if (status !== "success") {
-          // Failure state already persisted to document.json by
-          // `mark_extraction_failed` on the Rust side. A follow-up
-          // load_rosetta_job still helps so the failure shows in UI.
-          console.warn(`[pdf] extraction failed for ${jobId}: ${error ?? "<no error>"}`);
-        }
-        loadRosettaJob(jobId)
-          .then((bundle) => refreshJobBundle(bundle))
-          .catch((reason) => {
-            console.error(`[pdf] failed to refresh ${jobId} after extraction:`, reason);
-          });
-      },
-    )
-      .then((fn) => {
-        if (unmounted) { fn(); } else { unlisten = fn; }
-      })
-      .catch(console.error);
-
-    return () => { unmounted = true; unlisten?.(); };
-  }, [refreshJobBundle]);
-}
-
 function MenuEventHandler() {
   const { toggleSidebar } = useSidebar();
   useMenuEvents(toggleSidebar);
   useOnboardingCompleted();
-  usePdfExtractionUpdates();
   return null;
 }
 

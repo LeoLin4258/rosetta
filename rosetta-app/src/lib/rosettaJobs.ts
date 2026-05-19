@@ -201,8 +201,24 @@ export async function readRosettaPdfBytes(
 /// the freshly-written translated PDF; the same path lives under
 /// `<job_dir>/exports/translated.pdf` so subsequent `getRosettaPdfAssets`
 /// calls see it as `translatedPdf`.
-export function generateRosettaTranslatedPdf(jobId: string) {
-  return invoke<string>("generate_rosetta_translated_pdf", { jobId });
+export function generateRosettaTranslatedPdf(
+  jobId: string,
+  options?: {
+    rwkvBaseUrl?: string;
+    sourceLang?: string | null;
+    targetLang?: string;
+    timeoutMs?: number;
+    ignoreCache?: boolean;
+  },
+) {
+  return invoke<string>("generate_rosetta_translated_pdf", {
+    jobId,
+    rwkvBaseUrl: options?.rwkvBaseUrl,
+    sourceLang: options?.sourceLang,
+    targetLang: options?.targetLang,
+    timeoutMs: options?.timeoutMs,
+    ignoreCache: options?.ignoreCache,
+  });
 }
 
 /// Copy the cached translated PDF (`<job_dir>/exports/translated.pdf`) to a
