@@ -6,7 +6,7 @@ use tauri_plugin_dialog::DialogExt;
 
 mod document;
 mod export;
-mod formats;
+pub(crate) mod formats;
 mod import;
 pub(crate) mod model;
 pub(crate) mod path;
@@ -28,8 +28,8 @@ pub async fn pick_rosetta_import_path(app: AppHandle) -> Result<Option<String>, 
     let (tx, mut rx) = tauri::async_runtime::channel(1);
     app.dialog()
         .file()
-        .set_title("选择 TXT 或 Markdown 文件")
-        .add_filter("TXT / Markdown", &["txt", "md", "markdown"])
+        .set_title("选择 TXT、Markdown 或 PDF 文件")
+        .add_filter("TXT / Markdown / PDF", &["txt", "md", "markdown", "pdf"])
         .pick_file(move |path| {
             let _ = tx.blocking_send(path.map(|path| path.to_string()));
         });
@@ -89,6 +89,68 @@ pub fn import_rosetta_document_from_path(
     path: String,
 ) -> Result<RosettaJobBundle, String> {
     import::import_document_from_path(&app, Path::new(&path))
+}
+
+/// Smoke test: confirm the bundled pdfium dylib and CJK font can be located
+/// and that pdfium binds successfully. Phase 2 frontend uses this to surface
+/// "PDF support unavailable" early before the user tries to import a PDF.
+#[tauri::command]
+pub fn probe_pdf_runtime(app: AppHandle) -> formats::pdf::PdfRuntimeStatus {
+    formats::pdf::probe_status(&app)
+}
+
+/// Generate a translated PDF for a job by reading the cached source PDF and
+/// each block's translated text. Returns the absolute path of the rendered
+/// PDF so the frontend can show it side-by-side with the source.
+///
+/// Translation data lives in `<job_dir>/translations/<tr-file-id>.json`, NOT
+/// in `document.json` / `segments.json` — the latter only hold the source-side
+/// state. So before handing the document to the renderer we merge the
+/// translation segments back onto the source segments and apply them to the
+/// document's blocks (same flow `export.rs` uses for .md/.txt exports).
+#[tauri::command]
+pub fn generate_rosetta_translated_pdf(app: AppHandle, job_id: String) -> Result<String, String> {
+    let bundle = store::load_job_bundle(&app, &job_id)?;
+    if bundle.document.format != "pdf" {
+        return Err("当前文档不是 PDF，无法生成翻译后 PDF。".to_string());
+    }
+    let source_path = store::cached_pdf_source_path(&app, &job_id)?;
+    if !source_path.is_file() {
+        return Err("项目缓存里找不到源 PDF，请重新导入。".to_string());
+    }
+
+    // Pick the translation file for the (single) source file. PDF v1 always
+    // has exactly one source file per job — see import.rs.
+    let translation_file = bundle
+        .translation_files
+        .iter()
+        .next()
+        .cloned()
+        .ok_or_else(|| "尚未生成任何译文，请先完成翻译。".to_string())?;
+    let source_file_id = translation_file.source_file_id.clone();
+
+    let root = path::jobs_root(&app)?;
+    let dir = path::checked_job_dir(&root, &job_id)?;
+    let translation_segments =
+        translation_files::read_translation_segments(&dir, &translation_file.id)?;
+    let merged_segments = translation_files::translated_source_segments(
+        &bundle.segments,
+        &translation_segments,
+        &source_file_id,
+        &translation_file.target_lang,
+    );
+
+    let mut document = bundle.document.clone();
+    document::apply_segment_translations_to_document(&mut document, &merged_segments);
+
+    let output_path = store::translated_pdf_output_path(&app, &job_id)?;
+    if let Some(parent) = output_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("无法创建导出目录: {error}"))?;
+    }
+    formats::pdf::render_translated_pdf(&app, &document, &source_path, &output_path)
+        .map_err(|error| error.user_message())?;
+    Ok(output_path.to_string_lossy().to_string())
 }
 
 #[tauri::command]

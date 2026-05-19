@@ -15,7 +15,8 @@ pub(crate) fn document_format(path: &Path) -> Result<SourceFormat, String> {
     match extension.as_str() {
         "txt" => Ok(SourceFormat::Txt),
         "md" | "markdown" => Ok(SourceFormat::Markdown),
-        _ => Err("当前只支持导入 .txt、.md、.markdown 文件。".to_string()),
+        "pdf" => Ok(SourceFormat::Pdf),
+        _ => Err("当前只支持导入 .txt、.md、.markdown、.pdf 文件。".to_string()),
     }
 }
 
@@ -47,7 +48,15 @@ pub(crate) fn collect_supported_source_paths(
             continue;
         }
 
-        if file_type.is_file() && document_format(&path).is_ok() {
+        if file_type.is_file() {
+            // v1: folder import is TXT/Markdown only. PDFs use the single-file
+            // import flow because the parser needs AppHandle access and we
+            // don't yet support multi-file PDF projects.
+            match document_format(&path) {
+                Ok(SourceFormat::Pdf) => continue,
+                Ok(_) => {}
+                Err(_) => continue,
+            }
             ensure_project_relative_path(root, &path)?;
             output.push(path);
             if output.len() > MAX_PROJECT_FILES {
@@ -77,6 +86,7 @@ fn ensure_project_relative_path(root: &Path, path: &Path) -> Result<(), String> 
 }
 
 pub(crate) mod markdown;
+pub(crate) mod pdf;
 pub(crate) mod txt;
 
 use crate::rosetta_jobs::model::{RosettaBlock, Segment};
@@ -85,6 +95,7 @@ use crate::rosetta_jobs::model::{RosettaBlock, Segment};
 pub(crate) enum SourceFormat {
     Txt,
     Markdown,
+    Pdf,
 }
 
 impl SourceFormat {
@@ -92,6 +103,7 @@ impl SourceFormat {
         match self {
             SourceFormat::Txt => "txt",
             SourceFormat::Markdown => "markdown",
+            SourceFormat::Pdf => "pdf",
         }
     }
 }
@@ -109,6 +121,13 @@ pub(crate) fn parse_source(
     let (blocks, segments) = match format {
         SourceFormat::Txt => txt::parse_txt(document_id, contents),
         SourceFormat::Markdown => markdown::parse_markdown(document_id, contents),
+        SourceFormat::Pdf => {
+            // PDFs flow through `parse_pdf` in [`import::import_document_from_path`]
+            // instead of [`parse_source`] because they're binary and need an
+            // AppHandle to bind the pdfium runtime. Hitting this branch means
+            // someone called parse_source on a PDF format — that's a bug.
+            panic!("parse_source called with SourceFormat::Pdf; PDFs must go through formats::pdf::parse_pdf");
+        }
     };
 
     ParsedSource { blocks, segments }

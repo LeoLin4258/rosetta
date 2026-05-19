@@ -59,6 +59,55 @@ pub(crate) fn write_job_bundle(
     )
 }
 
+/// PDF-specific variant of [`write_job_bundle`]. The original file is binary
+/// so we can't go through [`SourceSnapshot`]; instead we copy the file as-is
+/// into `<job_dir>/source.pdf`. Generation later reads from this cached copy
+/// so the user can move or delete the original file without breaking the job.
+pub(crate) fn write_job_bundle_pdf(
+    app: &AppHandle,
+    bundle: &RosettaJobBundle,
+    source_path: &Path,
+) -> Result<(), String> {
+    let root = jobs_root(app)?;
+    let dir = checked_job_dir(&root, &bundle.job.id)?;
+    fs::create_dir_all(dir.join("exports"))
+        .map_err(|error| format!("无法创建项目目录: {error}"))?;
+
+    let cached_source = dir.join("source.pdf");
+    fs::copy(source_path, &cached_source)
+        .map_err(|error| format!("无法复制源 PDF 到项目缓存: {error}"))?;
+
+    write_json(&dir.join("document.json"), &bundle.document)?;
+    write_json(&dir.join("segments.json"), &bundle.segments)?;
+    write_json(
+        &dir.join(TRANSLATION_REVISIONS_FILENAME),
+        &bundle.translation_revisions,
+    )?;
+    write_translation_files(&dir, &bundle.translation_files)?;
+    upsert_index_job(&root, bundle.job.clone())
+}
+
+/// Resolve the cached PDF path for a job (where `write_job_bundle_pdf` wrote
+/// the original PDF). Generation reads from here; if the user has moved or
+/// deleted the original, this copy is still available.
+pub(crate) fn cached_pdf_source_path(app: &AppHandle, job_id: &str) -> Result<std::path::PathBuf, String> {
+    let root = jobs_root(app)?;
+    let dir = checked_job_dir(&root, job_id)?;
+    Ok(dir.join("source.pdf"))
+}
+
+/// Where translated PDFs land. v1 only ever writes one per job, but we put it
+/// under `exports/` to match the existing convention (markdown/txt exports
+/// already use that directory).
+pub(crate) fn translated_pdf_output_path(
+    app: &AppHandle,
+    job_id: &str,
+) -> Result<std::path::PathBuf, String> {
+    let root = jobs_root(app)?;
+    let dir = checked_job_dir(&root, job_id)?;
+    Ok(dir.join("exports").join("translated.pdf"))
+}
+
 pub(crate) fn write_job_bundle_sources(
     app: &AppHandle,
     bundle: &RosettaJobBundle,

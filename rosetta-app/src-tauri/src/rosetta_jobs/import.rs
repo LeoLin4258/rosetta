@@ -8,7 +8,7 @@ use crate::rosetta_jobs::{
         sync_document_default_language_from_files, sync_document_file_statuses, sync_job_counts,
         sync_job_source_files,
     },
-    formats::{collect_supported_source_paths, document_format, parse_source},
+    formats::{collect_supported_source_paths, document_format, parse_source, pdf::parse_pdf, SourceFormat},
     model::{
         default_file_translation_status, RosettaDocument, RosettaJobBundle,
         RosettaJobFileDeleteResult, RosettaJobSummary, RosettaSourceFile, Segment, SourceSnapshot,
@@ -22,8 +22,8 @@ use crate::rosetta_jobs::{
     segmenter::{apply_file_id, renumber_blocks_and_segments},
     store::{
         read_index, read_json, read_translation_revisions, replace_index_job, write_index,
-        write_job_bundle, write_job_bundle_sources, write_json, write_translation_files,
-        write_translation_revisions,
+        write_job_bundle, write_job_bundle_pdf, write_job_bundle_sources, write_json,
+        write_translation_files, write_translation_revisions,
     },
     translation_files::{read_or_migrate_translation_files, translation_segments_path},
 };
@@ -35,18 +35,16 @@ pub(crate) fn import_document_from_path(
     let metadata =
         fs::metadata(source_path).map_err(|error| format!("无法读取文件信息: {error}"))?;
     if !metadata.is_file() {
-        return Err("只能导入 TXT 或 Markdown 文件。".to_string());
-    }
-    if metadata.len() > MAX_IMPORT_BYTES {
-        return Err("文件超过 5 MB，当前原型暂不导入超大文件。".to_string());
+        return Err("只能导入文件。".to_string());
     }
 
     let format = document_format(source_path)?;
     let format_name = format.as_str().to_string();
-    let source_contents = fs::read_to_string(source_path)
-        .map_err(|error| format!("无法按 UTF-8 读取文件: {error}"))?;
-    if source_contents.trim().is_empty() {
-        return Err("文件没有可导入的文本内容。".to_string());
+
+    // Size cap differs by format: PDF gets its own 100 MB limit checked inside
+    // [`parse_pdf`]; text formats stay at 5 MB.
+    if format != SourceFormat::Pdf && metadata.len() > MAX_IMPORT_BYTES {
+        return Err("文件超过 5 MB，当前原型暂不导入超大文件。".to_string());
     }
 
     let now = timestamp_ms_string();
@@ -57,8 +55,27 @@ pub(crate) fn import_document_from_path(
         .to_string();
     let job_id = new_job_id(source_path);
     let document_id = format!("document-{job_id}");
-    let parsed = parse_source(format, &document_id, &source_contents);
-    let (mut blocks, mut segments) = (parsed.blocks, parsed.segments);
+
+    // Branch: PDF needs binary parsing + AppHandle; text formats stay UTF-8.
+    let (blocks, segments, source_contents) = match format {
+        SourceFormat::Pdf => {
+            let (blocks, segments) = parse_pdf(app, &document_id, source_path)
+                .map_err(|error| error.user_message())?;
+            (blocks, segments, None)
+        }
+        _ => {
+            let contents = fs::read_to_string(source_path)
+                .map_err(|error| format!("无法按 UTF-8 读取文件: {error}"))?;
+            if contents.trim().is_empty() {
+                return Err("文件没有可导入的文本内容。".to_string());
+            }
+            let parsed = parse_source(format, &document_id, &contents);
+            (parsed.blocks, parsed.segments, Some(contents))
+        }
+    };
+
+    let mut blocks = blocks;
+    let mut segments = segments;
     apply_file_id(&mut blocks, &mut segments, "file-1");
 
     if segments.is_empty() {
@@ -122,7 +139,10 @@ pub(crate) fn import_document_from_path(
         translation_files: Vec::new(),
         translation_revisions: Vec::new(),
     };
-    write_job_bundle(app, &bundle, &source_contents)?;
+    match format {
+        SourceFormat::Pdf => write_job_bundle_pdf(app, &bundle, source_path)?,
+        _ => write_job_bundle(app, &bundle, source_contents.as_deref().unwrap_or(""))?,
+    }
     Ok(bundle)
 }
 

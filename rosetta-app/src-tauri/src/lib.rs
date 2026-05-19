@@ -15,6 +15,7 @@ pub fn run() {
         .manage(rwkv_api::RwkvTranslationRunRegistry::default())
         .manage(managed_rwkv::Registry::default())
         .manage(managed_rwkv::InstallStateRegistry::default())
+        .manage(rosetta_jobs::formats::pdf::docling::DoclingSidecarRegistry::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
@@ -160,9 +161,11 @@ pub fn run() {
             rosetta_jobs::list_rosetta_jobs,
             rosetta_jobs::load_rosetta_job,
             rosetta_jobs::load_rosetta_translation_file,
+            rosetta_jobs::generate_rosetta_translated_pdf,
             rosetta_jobs::pick_rosetta_export_path,
             rosetta_jobs::pick_rosetta_import_directory,
             rosetta_jobs::pick_rosetta_import_path,
+            rosetta_jobs::probe_pdf_runtime,
             rosetta_jobs::rename_rosetta_job,
             rosetta_jobs::save_rosetta_segments,
             rosetta_jobs::save_rosetta_translation_segments,
