@@ -14,10 +14,12 @@ pub(crate) mod docling;
 pub(crate) mod errors;
 pub(crate) mod extract;
 pub(crate) mod generate;
+pub(crate) mod rasterize;
 pub(crate) mod runtime;
 
 pub(crate) use extract::parse_pdf;
 pub(crate) use generate::render_translated_pdf;
+pub(crate) use rasterize::{count_pages, render_page_as_png};
 pub(crate) use runtime::{probe_status, PdfRuntimeStatus};
 
 /// Shared test fixtures + a single process-wide pdfium binding for all

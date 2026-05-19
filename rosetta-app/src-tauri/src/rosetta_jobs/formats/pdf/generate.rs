@@ -76,6 +76,17 @@ pub(crate) fn render_translated_pdf(
     let mut dst_doc = pdfium
         .create_new_pdf()
         .map_err(|error| PdfError::Parse(format!("创建目标 PDF 失败: {error}")))?;
+    // Source Han Sans CN is OpenType/CFF (PostScript outlines in an OTF
+    // container). We tried `load_type1_from_bytes` (the CFF path in
+    // pdfium-render, which emits a single Type 0 / CIDFontType0 font) hoping
+    // pdfjs would handle the resulting subset cleanly. It didn't, AND macOS
+    // Preview / Quartz also rendered garbled glyphs for longer documents.
+    // `load_true_type_from_bytes` produces multiple CIDFontType2 subsets
+    // (one per page) but each subset is well-formed enough that Preview /
+    // Quartz / pdfium-on-readback all render it correctly. Since the in-app
+    // preview now rasterizes via pdfium (see [rasterize.rs]), pdfjs
+    // compatibility is no longer a constraint — only "real PDF readers must
+    // open the exported file" matters.
     let cjk_token = dst_doc
         .fonts_mut()
         .load_true_type_from_bytes(&font_bytes, true)
@@ -403,6 +414,7 @@ mod tests {
                 block_ids: blocks.iter().map(|b| b.id.clone()).collect(),
             }],
             blocks,
+            extraction_status: None,
         };
 
         // ---- 2. Render translated PDF into a tempfile.

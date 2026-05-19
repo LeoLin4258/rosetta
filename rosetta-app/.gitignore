@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# Staged by scripts/copy-pdfjs-assets.mjs (postinstall). Re-runs deterministically.
+public/pdfjs/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

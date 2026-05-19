@@ -9,7 +9,11 @@ export function defaultExportFilename(
   targetLang: string,
   kind: RosettaExportKind
 ) {
-  const extension = format === "markdown" ? "md" : "txt";
+  // PDF documents always export back to PDF (we copy the cached translated
+  // PDF directly). Bilingual side-by-side PDF isn't supported in v1 — see
+  // `handleExport` in WorkspacePage for the dispatch.
+  const extension =
+    format === "pdf" ? "pdf" : format === "markdown" ? "md" : "txt";
   const filename = relativePath.split(/[\\/]/).pop() ?? relativePath;
   const baseName = filename.replace(/\.(txt|md|markdown|pdf)$/i, "");
   const suffix = kind === "bilingual" ? `${targetLang}.bilingual` : targetLang;
@@ -18,6 +22,8 @@ export function defaultExportFilename(
 
 export function exportFormatForSource(
   format: RosettaSourceDocumentFormat
-): "txt" | "markdown" {
-  return format === "markdown" ? "markdown" : "txt";
+): "txt" | "markdown" | "pdf" {
+  if (format === "markdown") return "markdown";
+  if (format === "pdf") return "pdf";
+  return "txt";
 }

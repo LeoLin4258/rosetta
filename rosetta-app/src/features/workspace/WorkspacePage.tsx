@@ -4,6 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   createRosettaTranslationRevision,
   ensureRosettaTranslationFile,
+  exportRosettaTranslatedPdf,
   exportRosettaTranslationFile,
   importRosettaDocumentFromPath,
   importRosettaProjectFromDirectory,
@@ -457,12 +458,23 @@ export function WorkspacePage() {
     try {
       const targetPath = await pickRosettaExportPath(defaultName, exportFmt);
       if (!targetPath) return;
-      await exportRosettaTranslationFile(
-        activeJobId,
-        activeTranslationFileId,
-        kind,
-        targetPath
-      );
+      if (file.format === "pdf") {
+        // PDF v1 only ships single-language ("translation") export — the
+        // translated PDF on disk is exactly what we'd hand the user. There's
+        // no bilingual side-by-side renderer yet.
+        if (kind === "bilingual") {
+          setPageError("PDF 暂不支持双语对照导出。");
+          return;
+        }
+        await exportRosettaTranslatedPdf(activeJobId, targetPath);
+      } else {
+        await exportRosettaTranslationFile(
+          activeJobId,
+          activeTranslationFileId,
+          kind,
+          targetPath
+        );
+      }
     } catch (err) {
       setPageError(err instanceof Error ? err.message : "导出失败。");
     }
@@ -507,8 +519,13 @@ export function WorkspacePage() {
           )}
           <div className="min-h-0 flex-1 overflow-hidden">
             <DocumentPreview
+              jobId={activeJobId}
               document={activeDocument}
               hoveredBlockId={hoveredBlockId}
+              isTranslating={isTranslating}
+              liveProgress={
+                isTranslating ? { completed: completedCount, total: totalCount } : undefined
+              }
               onBlockHover={setHoveredBlockId}
               onBlockLeave={() => setHoveredBlockId(null)}
               selectionEnabled={!isTranslating}

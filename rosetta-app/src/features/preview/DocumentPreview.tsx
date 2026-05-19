@@ -19,11 +19,16 @@ import type {
   TranslationSegment,
 } from "../../types/rosetta";
 
+import { PdfDocumentPreview } from "./PdfDocumentPreview";
+
 type PreviewSide = "source" | "translation";
 
 export function DocumentPreview({
+  jobId = null,
   document,
   hoveredBlockId,
+  isTranslating = false,
+  liveProgress,
   layout = "bilingual",
   onBlockHover,
   onBlockLeave,
@@ -35,8 +40,20 @@ export function DocumentPreview({
   translationFile,
   translationSegments,
 }: {
+  /// Required for PDF preview (needed to resolve `<job_dir>/source.pdf` and
+  /// trigger translated-PDF generation). Other format paths don't use it; the
+  /// standalone source/translation preview pages can omit it and fall back to
+  /// the block-list rendering.
+  jobId?: string | null;
   document: RosettaDocument | null;
   hoveredBlockId?: string | null;
+  /// True while a translation run is actively writing segments. PDF preview
+  /// uses this to differentiate "翻译中" from "等待翻译"; other formats ignore.
+  isTranslating?: boolean;
+  /// Live segment counts from `activeTranslationRun`. PDF preview needs the
+  /// real-time progress for its right-pane placeholder; the persisted counts
+  /// on `translationFile` only update after a run finishes.
+  liveProgress?: { completed: number; total: number };
   layout?: "bilingual" | "source";
   onBlockHover?: (blockId: string) => void;
   onBlockLeave?: () => void;
@@ -48,6 +65,30 @@ export function DocumentPreview({
   translationFile: RosettaTranslationFile | null;
   translationSegments: TranslationSegment[];
 }) {
+  // PDF documents get a dedicated react-pdf-based preview. The temporary
+  // markdown-block fallback below is kept as the renderer for txt/md and as
+  // the "block list / edit" view that Phase 3 will add a toggle for.
+  if (document && jobId && document.format === "pdf" && layout === "bilingual") {
+    // During a live translation, the persisted `translationFile.completedSegments`
+    // only updates after the run finishes — relying on it makes the right-pane
+    // placeholder stay frozen at "0 / N" until completion. Switch to the live
+    // counts from `liveProgress` (sourced from `activeTranslationRun` in
+    // WorkspacePage) so the placeholder ticks up in real time.
+    const liveCompleted = liveProgress?.completed ?? translationFile?.completedSegments ?? 0;
+    const liveTotal =
+      liveProgress?.total ?? translationFile?.segmentCount ?? sourceSegments.length;
+    return (
+      <PdfDocumentPreview
+        jobId={jobId}
+        document={document}
+        translationFile={translationFile}
+        segmentCount={liveTotal}
+        completedSegments={liveCompleted}
+        failedSegments={translationFile?.failedSegments ?? 0}
+        isTranslating={isTranslating}
+      />
+    );
+  }
   const sourceRef = useRef<HTMLDivElement>(null);
   const translationRef = useRef<HTMLDivElement>(null);
   const scrollDriverRef = useRef<PreviewSide | null>(null);

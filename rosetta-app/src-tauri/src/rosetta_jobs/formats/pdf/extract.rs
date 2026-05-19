@@ -74,7 +74,7 @@ pub(crate) async fn parse_pdf(
 /// Pre-flight checks shared by every extraction backend. Catches the
 /// common "this isn't going to work" cases (too large, encrypted, too many
 /// pages) before we burn pdfium load time or sidecar HTTP roundtrips.
-fn pre_flight(app: &AppHandle, source_path: &Path) -> Result<(), PdfError> {
+pub(crate) fn pre_flight(app: &AppHandle, source_path: &Path) -> Result<(), PdfError> {
     let metadata = std::fs::metadata(source_path)
         .map_err(|error| PdfError::Read(format!("无法读取文件信息: {error}")))?;
     if metadata.len() > MAX_PDF_BYTES {

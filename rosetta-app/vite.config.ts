@@ -14,6 +14,15 @@ export default defineConfig(async () => ({
     },
   },
 
+  // pdfjs-dist ships its worker as an .mjs that Vite tries to pre-bundle on dev
+  // start, which breaks the standalone-worker loading react-pdf does. Excluding
+  // it from optimizeDeps + serving worker/cmaps from /public/pdfjs (staged by
+  // scripts/copy-pdfjs-assets.mjs) is the recipe react-pdf docs recommend for
+  // Vite. See also: scripts/copy-pdfjs-assets.mjs
+  optimizeDeps: {
+    exclude: ["pdfjs-dist"],
+  },
+
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
   // 1. prevent vite from obscuring rust errors

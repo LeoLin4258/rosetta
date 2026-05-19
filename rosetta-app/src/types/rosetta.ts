@@ -59,6 +59,12 @@ export type RosettaDocument = {
   targetLang: string;
   files: RosettaSourceFile[];
   blocks: RosettaBlock[];
+  /// Async extraction lifecycle marker added in Phase 2 PDF flow.
+  /// `"pending"`: skeleton imported, Docling still running.
+  /// `"done"`: blocks populated, ready to translate.
+  /// `"failed"`: Docling errored; see `RosettaJobSummary.lastError`.
+  /// `null` / undefined: legacy synchronous-import documents (treat as done).
+  extractionStatus?: "pending" | "done" | "failed" | null;
 };
 
 export type RosettaSourceFile = {

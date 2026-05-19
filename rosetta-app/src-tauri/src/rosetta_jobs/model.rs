@@ -95,6 +95,12 @@ pub struct RosettaDocument {
     #[serde(default)]
     pub(crate) files: Vec<RosettaSourceFile>,
     pub(crate) blocks: Vec<RosettaBlock>,
+    /// Async extraction lifecycle marker (added 2026-05-19 for Phase 2 PDF
+    /// background extraction). Values: `"pending"` (Docling still running),
+    /// `"done"` (blocks populated), `"failed"` (Docling errored). `None` is
+    /// treated as "done" so legacy text/markdown jobs migrate cleanly.
+    #[serde(default)]
+    pub(crate) extraction_status: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

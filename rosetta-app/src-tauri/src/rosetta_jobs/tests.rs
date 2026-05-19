@@ -59,6 +59,7 @@ fn export_translation_uses_original_for_untranslated_segments() {
             target_lang: "zh-CN".to_string(),
             files: Vec::new(),
             blocks: document,
+            extraction_status: None,
         },
         &segments,
         "translation",
@@ -82,6 +83,7 @@ fn export_markdown_preserves_heading_marker() {
             target_lang: "zh-CN".to_string(),
             files: Vec::new(),
             blocks: document,
+            extraction_status: None,
         },
         &segments,
         "translation",
@@ -255,6 +257,7 @@ fn export_translation_uses_current_segments_not_revision_history() {
             target_lang: "zh-CN".to_string(),
             files: Vec::new(),
             blocks,
+            extraction_status: None,
         },
         &segments,
         "translation",
@@ -443,6 +446,7 @@ fn test_document() -> RosettaDocument {
             translatable_block("block-2", "paragraph", "World.", 2, None),
             translatable_block("block-3", "paragraph", "Ignored.", 3, None),
         ],
+        extraction_status: None,
     }
 }
 
