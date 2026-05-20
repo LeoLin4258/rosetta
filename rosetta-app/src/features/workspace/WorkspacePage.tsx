@@ -63,6 +63,7 @@ export function WorkspacePage() {
 
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [pageError, setPageError] = useState<string | null>(null);
+  const [pdfError, setPdfError] = useState<string | null>(null);
   const [selectedBlockIds, setSelectedBlockIds] = useState<string[]>([]);
   const [hoveredBlockId, setHoveredBlockId] = useState<string | null>(null);
   const [pdfProgress, setPdfProgress] = useState<{ phase: string; percent: number | null } | null>(null);
@@ -243,6 +244,7 @@ export function WorkspacePage() {
   async function handleTranslate(targetLang: string, srcLang: string) {
     if (!activeJobId || !activeSourceFileId) return;
     setPageError(null);
+    setPdfError(null);
     setSelectedBlockIds([]);
 
     // Declared outside try so the catch block can always call finishTranslationRun.
@@ -353,7 +355,11 @@ export function WorkspacePage() {
     } catch (err) {
       const msg = errorMessage(err, "");
       if (!msg.includes("已取消")) {
-        setPageError(errorMessage(err, "翻译出错。"));
+        if (sourceFile?.format === "pdf") {
+          setPdfError(errorMessage(err, "翻译出错。"));
+        } else {
+          setPageError(errorMessage(err, "翻译出错。"));
+        }
       }
       if (runId) finishTranslationRun(runId);
     }
@@ -454,6 +460,7 @@ export function WorkspacePage() {
     if (!activeJobId || !activeSourceFileId) return;
     const retranslateTargetLang = activeTranslationFile?.targetLang ?? targetLang;
     setPageError(null);
+    setPdfError(null);
     setSelectedBlockIds([]);
 
     let runId: string | null = null;
@@ -469,6 +476,7 @@ export function WorkspacePage() {
         await ensurePdf2zhReadyForTranslation();
         const provider = buildProvider();
         runId = `run-pdf-all-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        cancelRef.current = () => { void cancelRosettaTranslatedPdf(); };
         startTranslationRun({
           id: runId,
           jobId: activeJobId,
@@ -477,13 +485,17 @@ export function WorkspacePage() {
           scope: "file",
           targetSegmentIds: ["pdf-document"],
         });
-        await generateRosettaTranslatedPdf(activeJobId, {
-          rwkvBaseUrl: provider.baseUrl,
-          sourceLang: sourceLang && sourceLang !== "auto" ? sourceLang : "en",
-          targetLang: retranslateTargetLang,
-          timeoutMs: rwkv.timeoutMs,
-          ignoreCache: true,
-        });
+        try {
+          await generateRosettaTranslatedPdf(activeJobId, {
+            rwkvBaseUrl: provider.baseUrl,
+            sourceLang: sourceLang && sourceLang !== "auto" ? sourceLang : "en",
+            targetLang: retranslateTargetLang,
+            timeoutMs: rwkv.timeoutMs,
+            ignoreCache: true,
+          });
+        } finally {
+          cancelRef.current = null;
+        }
         markTranslationRunCompleted(runId, ["pdf-document"]);
         finishTranslationRun(runId);
         runId = null;
@@ -572,7 +584,14 @@ export function WorkspacePage() {
       const freshBundle = await loadRosettaJob(activeJobId);
       refreshJobBundle(freshBundle);
     } catch (err) {
-      setPageError(errorMessage(err, "重新翻译失败。"));
+      const msg = errorMessage(err, "");
+      if (!msg.includes("已取消")) {
+        if (sourceFile?.format === "pdf") {
+          setPdfError(errorMessage(err, "重新翻译失败。"));
+        } else {
+          setPageError(errorMessage(err, "重新翻译失败。"));
+        }
+      }
       if (runId) finishTranslationRun(runId);
     }
   }
@@ -679,6 +698,9 @@ export function WorkspacePage() {
               sourceSegments={previewSegments}
               translationFile={activeTranslationFile}
               translationSegments={translationSegments}
+              pdfProgress={pdfProgress}
+              pdfError={pdfError}
+              onRegenerate={() => void handleRetranslateAll()}
             />
           </div>
         </>

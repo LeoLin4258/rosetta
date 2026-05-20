@@ -39,6 +39,9 @@ export function DocumentPreview({
   sourceSegments,
   translationFile,
   translationSegments,
+  pdfProgress,
+  pdfError,
+  onRegenerate,
 }: {
   /// Required for PDF preview (needed to resolve `<job_dir>/source.pdf` and
   /// trigger translated-PDF generation). Other format paths don't use it; the
@@ -64,6 +67,12 @@ export function DocumentPreview({
   sourceSegments: Segment[];
   translationFile: RosettaTranslationFile | null;
   translationSegments: TranslationSegment[];
+  /// PDF-specific: live phase+percent from pdf2zh progress events.
+  pdfProgress?: { phase: string; percent: number | null } | null;
+  /// PDF-specific: error message from the last failed PDF generation.
+  pdfError?: string | null;
+  /// PDF-specific: called when the user clicks "重新生成".
+  onRegenerate?: () => void;
 }) {
   // PDF documents get a dedicated react-pdf-based preview. The temporary
   // markdown-block fallback below is kept as the renderer for txt/md and as
@@ -86,6 +95,9 @@ export function DocumentPreview({
         completedSegments={liveCompleted}
         failedSegments={translationFile?.failedSegments ?? 0}
         isTranslating={isTranslating}
+        pdfProgress={pdfProgress}
+        pdfError={pdfError}
+        onRegenerate={onRegenerate}
       />
     );
   }
