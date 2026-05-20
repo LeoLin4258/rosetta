@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Fetch the pdfium native library + Source Han Sans CN font into
-# `src-tauri/resources/pdf-sidecar/` so the Tauri bundle step can ship them.
+# Fetch the pdfium native library into `src-tauri/resources/pdf-sidecar/`
+# so the Tauri bundle step can ship it.
 #
 # Typical usage right before `pnpm tauri build`:
 #
@@ -10,9 +10,9 @@
 #
 #   bash src-tauri/scripts/fetch-pdfium.sh --platform mac-arm64 --pdfium-tag chromium/7834
 #
-# Bash + curl + shasum + tar only. If the upstream hosts (GitHub / Adobe Fonts)
-# are unreachable, set HTTPS_PROXY in the environment before invoking — curl
-# will pick it up automatically.
+# Bash + curl + shasum + tar only. If the upstream host is unreachable, set
+# HTTPS_PROXY in the environment before invoking — curl will pick it up
+# automatically.
 
 set -euo pipefail
 
@@ -68,11 +68,6 @@ PDFIUM_SHA_mac_x64=""
 PDFIUM_SHA_win_x64=""
 PDFIUM_SHA_linux_x64=""
 
-# Source Han Sans CN Regular OTF (same glyphs as Noto Sans SC Regular; Adobe
-# branding, OFL-1.1 license). Pinned to the release/SubsetOTF tree.
-FONT_URL="https://github.com/adobe-fonts/source-han-sans/raw/release/SubsetOTF/CN/SourceHanSansCN-Regular.otf"
-FONT_SHA="e2bc8a2e7f37474b774fff8db758681ece40bb6947a90d571bce9dd60671a8e4"
-
 # --- target layout -----------------------------------------------------------
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -80,9 +75,8 @@ SRC_TAURI_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 RES_DIR="$SRC_TAURI_DIR/resources/pdf-sidecar"
 
 PDFIUM_DIR="$RES_DIR/pdfium/$PLATFORM"
-FONT_DIR="$RES_DIR/fonts"
 
-mkdir -p "$PDFIUM_DIR" "$FONT_DIR"
+mkdir -p "$PDFIUM_DIR"
 
 # --- helpers -----------------------------------------------------------------
 
@@ -171,11 +165,5 @@ fi
 # Record the pdfium release tag so the runtime can log it if needed.
 echo "$PDFIUM_TAG" > "$PDFIUM_DIR/VERSION"
 
-# --- font download -----------------------------------------------------------
-
-FONT_DST="$FONT_DIR/SourceHanSansCN-Regular.otf"
-download_with_sha "$FONT_URL" "$FONT_DST" "$FONT_SHA"
-echo "[fetch-pdfium] installed $FONT_DST" >&2
-
 echo "[fetch-pdfium] done. Staged:" >&2
-ls -lh "$PDFIUM_DIR/$lib_name" "$FONT_DST" >&2
+ls -lh "$PDFIUM_DIR/$lib_name" >&2

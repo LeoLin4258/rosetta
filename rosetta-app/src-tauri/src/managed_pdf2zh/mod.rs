@@ -22,7 +22,7 @@ pub fn get_pdf2zh_status(app: AppHandle) -> Result<status::Pdf2zhStatus, String>
 
 #[tauri::command]
 pub async fn install_pdf2zh_pack() -> Result<String, String> {
-    Err("pdf2zh pack 下载器尚未接入。当前可设置 ROSETTA_PDF2ZH_BIN 指向本地 pdf2zh 进行端到端验证。".to_string())
+    Err("pdf2zh pack 下载器尚未接入。当前可设置 ROSETTA_PDF2ZH_BIN 指向本地 pdf2zh，或运行 rosetta-app/src-tauri/scripts/stage-pdf2zh-pack-local.sh 暂存本地 pack。".to_string())
 }
 
 #[tauri::command]

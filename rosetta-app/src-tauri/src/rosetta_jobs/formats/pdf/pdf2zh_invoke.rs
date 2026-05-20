@@ -64,6 +64,7 @@ pub(crate) async fn invoke_pdf2zh(
     let temp_dir = output_dir.join("tmp");
     std::fs::create_dir_all(&temp_dir)
         .map_err(|error| PdfError::Read(format!("无法创建 pdf2zh 临时目录: {error}")))?;
+    let debug = pdf2zh_debug_enabled();
 
     emit_progress(app, &options.job_id, "parse", Some(5), "正在启动 PDFMathTranslate...");
     let shim_log_file = output_dir.join("rosetta-pdf2zh-shim.log");
@@ -73,6 +74,7 @@ pub(crate) async fn invoke_pdf2zh(
         options.target_lang.clone(),
         options.timeout_ms,
         shim_log_file.clone(),
+        debug,
     )
     .await
     .map_err(PdfError::Pdf2zhFailed)?;
@@ -81,7 +83,7 @@ pub(crate) async fn invoke_pdf2zh(
     std::fs::write(
         output_dir.join("rosetta-pdf2zh-command.log"),
         format!(
-            "bin={}\nsource={}\noutput_dir={}\ntemp_dir={}\nopenai_base_url={}\nservice=openai:rwkv\nsource_lang={}\ntarget_lang={}\nshim_log={}\n",
+            "bin={}\nsource={}\noutput_dir={}\ntemp_dir={}\nopenai_base_url={}\nservice=openai:rwkv\nsource_lang={}\ntarget_lang={}\ndebug={}\nshim_log={}\n",
             bin.display(),
             source_path.display(),
             output_dir.display(),
@@ -89,6 +91,7 @@ pub(crate) async fn invoke_pdf2zh(
             openai_base_url,
             options.source_lang,
             options.target_lang,
+            debug,
             shim_log_file.display(),
         ),
     )
@@ -254,4 +257,15 @@ fn pdf2zh_lang(lang: &str) -> &str {
         "en" => "en",
         other => other,
     }
+}
+
+fn pdf2zh_debug_enabled() -> bool {
+    std::env::var("ROSETTA_PDF2ZH_DEBUG")
+        .ok()
+        .is_some_and(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on" | "debug"
+            )
+        })
 }

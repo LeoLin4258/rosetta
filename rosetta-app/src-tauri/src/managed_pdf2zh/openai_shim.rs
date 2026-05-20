@@ -35,6 +35,7 @@ struct ShimState {
     rwkv: MobileBatchChatConfig,
     target_lang: String,
     log_file: PathBuf,
+    debug: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -75,6 +76,7 @@ pub async fn spawn_shim(
     target_lang: String,
     timeout_ms: u64,
     log_file: PathBuf,
+    debug: bool,
 ) -> Result<OpenAiShim, String> {
     let rwkv = MobileBatchChatConfig {
         base_url: rwkv_base_url,
@@ -90,6 +92,7 @@ pub async fn spawn_shim(
         .map_err(|error| format!("无法读取 OpenAI shim 端口: {error}"))?
         .port();
     append_log(
+        debug,
         &log_file,
         &format!(
             "spawn shim base_url={} source_lang={} target_lang={}",
@@ -100,6 +103,7 @@ pub async fn spawn_shim(
         rwkv,
         target_lang,
         log_file,
+        debug,
     });
     let app = Router::new()
         .route("/v1/chat/completions", post(chat_completions))
@@ -130,6 +134,7 @@ async fn chat_completions(
         .map(|message| message.content.as_str())
         .unwrap_or("");
     append_log(
+        state.debug,
         &state.log_file,
         &format!(
             "request messages={} raw_user_preview={} extracted_preview={}",
@@ -140,13 +145,14 @@ async fn chat_completions(
     );
     if is_pdf2zh_placeholder_only(&text) {
         append_log(
+            state.debug,
             &state.log_file,
             &format!("placeholder passthrough={}", preview(&text)),
         );
         return Ok(openai_response(text));
     }
     if text.trim().is_empty() {
-        append_log(&state.log_file, "empty source passthrough");
+        append_log(state.debug, &state.log_file, "empty source passthrough");
         return Ok(Json(ChatCompletionResponse {
             id: "chatcmpl-rosetta-pdf2zh".to_string(),
             object: "chat.completion",
@@ -175,6 +181,7 @@ async fn chat_completions(
 
     if !result.ok {
         append_log(
+            state.debug,
             &state.log_file,
             &format!("rwkv error status={:?} message={}", result.status_code, result.message),
         );
@@ -186,6 +193,7 @@ async fn chat_completions(
 
     let content = result.translations.into_iter().next().unwrap_or_default();
     append_log(
+        state.debug,
         &state.log_file,
         &format!("rwkv translation_preview={}", preview(&content)),
     );
@@ -259,7 +267,10 @@ fn is_pdf2zh_placeholder_only(text: &str) -> bool {
     saw_placeholder
 }
 
-fn append_log(path: &PathBuf, line: &str) {
+fn append_log(enabled: bool, path: &PathBuf, line: &str) {
+    if !enabled {
+        return;
+    }
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
