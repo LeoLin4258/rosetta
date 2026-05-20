@@ -16,7 +16,7 @@ PDF Phase 2 used Docling extraction plus an in-house pdfium write-back path. It 
 
 ## Current Limitation
 
-The downloadable pdf2zh pack installer is not implemented in this change. Development and dogfood runs should set `ROSETTA_PDF2ZH_BIN` to a local pdf2zh executable, or place the pack binary at the managed pack path reported by `get_pdf2zh_status`.
+The downloadable pdf2zh pack installer backend is now wired, but the app still does not ship an official pack URL or settings/onboarding UI for it. Development and dogfood runs can set `ROSETTA_PDF2ZH_BIN` to a local pdf2zh executable, place the pack binary at the managed pack path reported by `get_pdf2zh_status`, or invoke `install_pdf2zh_pack` with a `file://` / `https://` archive URL.
 
 Current local dogfood command:
 
@@ -61,6 +61,13 @@ This creates:
 
 The script currently installs `pdf2zh==1.7.9` and applies the local NumPy compatibility patch.
 
+The installer command now supports:
+
+- `install_pdf2zh_pack({ options: { packUrl, packSha256, packSizeBytes, repair, proxyUrl } })`
+- `ROSETTA_PDF2ZH_PACK_URL`, `ROSETTA_PDF2ZH_PACK_SHA256`, and `ROSETTA_PDF2ZH_PACK_SIZE_BYTES`
+- progress snapshots/events via `get_pdf2zh_install_progress` and `managed-pdf2zh://install-progress`
+- cancellation via `cancel_pdf2zh_install`
+
 ## Dogfood Findings
 
 - Importing PDF is fast and source preview appears immediately because import only performs pdfium pre-flight and caches `source.pdf`.
@@ -74,7 +81,8 @@ The script currently installs `pdf2zh==1.7.9` and applies the local NumPy compat
 
 ## Next Steps
 
-- Build the real macOS arm64 pdf2zh pack and replace the installer stubs.
+- Build the real macOS arm64 pdf2zh pack and pin its official download URL / SHA256 / size in the profile.
+- Add the frontend settings/onboarding path that calls the pdf2zh installer when a PDF translation is requested and no managed pack is installed.
 - Lock or patch the pdf2zh environment used by the pack.
 - Run a larger dogfood set: academic paper, simple office PDF, table-heavy PDF, scanned/image-only PDF.
 - Decide whether to keep using `pdf2zh 1.7.9` temporarily or move to the newer PDFMathTranslate/BabelDOC CLI expected by the original plan.

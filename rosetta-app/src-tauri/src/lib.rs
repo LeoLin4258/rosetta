@@ -16,6 +16,7 @@ pub fn run() {
         .manage(rwkv_api::RwkvTranslationRunRegistry::default())
         .manage(managed_rwkv::Registry::default())
         .manage(managed_rwkv::InstallStateRegistry::default())
+        .manage(managed_pdf2zh::InstallStateRegistry::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())

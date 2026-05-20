@@ -8,6 +8,10 @@ pub struct Pdf2zhProfile {
     pub enabled: bool,
     pub pack_directory_name: &'static str,
     pub bin_relative_path: &'static str,
+    pub pack_filename: &'static str,
+    pub pack_size_bytes: Option<u64>,
+    pub pack_sha256: Option<&'static str>,
+    pub pack_download_urls: &'static [&'static str],
 }
 
 pub const MACOS_ARM64_PDF2ZH: Pdf2zhProfile = Pdf2zhProfile {
@@ -17,6 +21,10 @@ pub const MACOS_ARM64_PDF2ZH: Pdf2zhProfile = Pdf2zhProfile {
     enabled: true,
     pack_directory_name: "macos-arm64",
     bin_relative_path: "bin/pdf2zh",
+    pack_filename: "rosetta-pdf2zh-macos-arm64.tar.gz",
+    pack_size_bytes: None,
+    pack_sha256: None,
+    pack_download_urls: &[],
 };
 
 const ALL_PROFILES: &[Pdf2zhProfile] = &[MACOS_ARM64_PDF2ZH];

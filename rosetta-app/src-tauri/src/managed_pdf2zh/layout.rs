@@ -6,8 +6,11 @@ use super::profile::Pdf2zhProfile;
 
 #[derive(Debug, Clone)]
 pub struct Pdf2zhLayout {
+    pub root_dir: PathBuf,
     pub pack_dir: PathBuf,
     pub logs_dir: PathBuf,
+    pub downloads_dir: PathBuf,
+    pub manifest_file: PathBuf,
 }
 
 impl Pdf2zhLayout {
@@ -24,6 +27,12 @@ impl Pdf2zhLayout {
         Self {
             pack_dir: root_dir.join("pack").join(profile.pack_directory_name),
             logs_dir: root_dir.join("logs"),
+            downloads_dir: root_dir.join("downloads"),
+            manifest_file: root_dir
+                .join("pack")
+                .join(profile.pack_directory_name)
+                .join("manifest.json"),
+            root_dir,
         }
     }
 
@@ -32,7 +41,10 @@ impl Pdf2zhLayout {
     }
 
     pub fn ensure_dirs(&self) -> Result<(), String> {
-        std::fs::create_dir_all(&self.logs_dir)
-            .map_err(|error| format!("无法创建 pdf2zh 日志目录: {error}"))
+        for dir in [&self.root_dir, &self.logs_dir, &self.downloads_dir] {
+            std::fs::create_dir_all(dir)
+                .map_err(|error| format!("无法创建 {}: {error}", dir.display()))?;
+        }
+        Ok(())
     }
 }
