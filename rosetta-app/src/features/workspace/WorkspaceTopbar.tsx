@@ -35,6 +35,8 @@ type WorkspaceTopbarProps = {
   sourceLang: string;
   targetLang: string;
   selectedBlockCount: number;
+  pdfSelectedPageCount?: number;
+  pdfPageCount?: number;
   onSourceLangChange: (lang: string) => void;
   onTargetLangChange: (lang: string) => void;
   onTranslate: (targetLang: string, sourceLang: string) => void;
@@ -63,6 +65,8 @@ export function WorkspaceTopbar({
   sourceLang,
   targetLang,
   selectedBlockCount,
+  pdfSelectedPageCount = 0,
+  pdfPageCount = 0,
   onSourceLangChange,
   onTargetLangChange,
   onTranslate,
@@ -86,18 +90,22 @@ export function WorkspaceTopbar({
         activeTranslationFile.completedSegments >= activeTranslationFile.segmentCount);
   const progressPercent =
     totalCount > 0 ? Math.round((translatedCount / totalCount) * 100) : 0;
+  const isPdf = job.format === "pdf";
+  const sameLanguage = sourceLang !== "auto" && sourceLang === targetLang;
+  const noPdfPagesSelected = isPdf && pdfSelectedPageCount === 0;
+  const translateDisabled = sameLanguage || noPdfPagesSelected;
+  const translateTitle = sameLanguage
+    ? "原文与译文语言不能相同"
+    : noPdfPagesSelected
+      ? "请选择页面"
+      : undefined;
+  const selectedPdfLabel =
+    isPdf && pdfPageCount > 0 && pdfSelectedPageCount === pdfPageCount
+      ? "全部"
+      : "所选页";
 
   return (
-    <div className="flex items-center justify-between border-b border-border/40 px-6 py-2.5">
-      {/* Left: doc name */}
-      <div className="flex min-w-0 items-center gap-2">
-        <span className="truncate text-sm font-medium">{job.filename}</span>
-        <span className="shrink-0 rounded bg-muted/50 px-1.5 py-0.5 text-xs text-muted-foreground/60">
-          {job.format}
-        </span>
-      </div>
-
-      {/* Right: actions */}
+    <div className="flex items-center justify-end border-b border-border/40 px-6 py-2.5">
       <div className="flex shrink-0 items-center gap-2">
         {isTranslating ? (
           <>
@@ -197,10 +205,10 @@ export function WorkspaceTopbar({
             ) : selectedBlockCount > 0 ? (
               <Button
                 size="sm"
-                disabled={sourceLang !== "auto" && sourceLang === targetLang}
+                disabled={translateDisabled}
                 onClick={onRetranslateSelected}
                 className="gap-1.5"
-                title={sourceLang !== "auto" && sourceLang === targetLang ? "原文与译文语言不能相同" : undefined}
+                title={translateTitle}
               >
                 <RefreshCw className="size-3.5" />
                 重翻选中 {selectedBlockCount} 段
@@ -208,11 +216,14 @@ export function WorkspaceTopbar({
             ) : allTranslated ? (
               confirmingRetranslateAll ? (
                 <div className="flex items-center gap-2">
-                  <span className="text-xs text-muted-foreground/60">确认重翻全部？</span>
+                  <span className="text-xs text-muted-foreground/60">
+                    {isPdf ? `确认重翻${selectedPdfLabel}？` : "确认重翻全部？"}
+                  </span>
                   <button
                     type="button"
                     onClick={() => {
-                      onRetranslateAll();
+                      if (isPdf) onTranslate(targetLang, sourceLang);
+                      else onRetranslateAll();
                       setConfirmingRetranslateAll(false);
                     }}
                     className="text-xs text-destructive/70 transition-colors hover:text-destructive"
@@ -230,23 +241,25 @@ export function WorkspaceTopbar({
               ) : (
                 <Button
                   size="sm"
-                  disabled={sourceLang !== "auto" && sourceLang === targetLang}
+                  disabled={translateDisabled}
                   onClick={() => setConfirmingRetranslateAll(true)}
                   className="gap-1.5"
-                  title={sourceLang !== "auto" && sourceLang === targetLang ? "原文与译文语言不能相同" : undefined}
+                  title={translateTitle}
                 >
-                  <RefreshCw className="size-3.5" /> 重翻全部
+                  <RefreshCw className="size-3.5" />
+                  {isPdf ? `重翻${selectedPdfLabel}` : "重翻全部"}
                 </Button>
               )
             ) : (
               <Button
                 size="sm"
-                disabled={sourceLang !== "auto" && sourceLang === targetLang}
+                disabled={translateDisabled}
                 onClick={() => onTranslate(targetLang, sourceLang)}
                 className="gap-1.5"
-                title={sourceLang !== "auto" && sourceLang === targetLang ? "原文与译文语言不能相同" : undefined}
+                title={translateTitle}
               >
-                <Play className="size-3.5" /> 翻译
+                <Play className="size-3.5" />
+                {isPdf ? `翻译${selectedPdfLabel}` : "翻译"}
               </Button>
             )}
           </>
