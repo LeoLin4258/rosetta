@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 
 import {
   cancelRosettaTranslatedPdf,
-  generateRosettaTranslatedPdf,
+  countRosettaPdfPages,
   createRosettaTranslationRevision,
   ensureRosettaTranslationFile,
   exportRosettaTranslatedPdf,
@@ -262,6 +262,8 @@ export function WorkspacePage() {
       if (sourceFile?.format === "pdf") {
         await ensurePdf2zhReadyForTranslation();
         const provider = buildProvider();
+        const pageCount = await countRosettaPdfPages(activeJobId, "source");
+        const pageSelection = `1-${pageCount}`;
         runId = `run-pdf-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         cancelRef.current = () => { void cancelRosettaTranslatedPdf(); };
         startTranslationRun({
@@ -270,20 +272,18 @@ export function WorkspacePage() {
           sourceFileId: activeSourceFileId,
           translationFileId: tfBundle.translationFile.id,
           scope: "file",
-          targetSegmentIds: ["pdf-document"],
+          targetSegmentIds: [`pdf-pages:${pageSelection}`],
         });
-        try {
-          await generateRosettaTranslatedPdf(activeJobId, {
-            rwkvBaseUrl: provider.baseUrl,
-            sourceLang: srcLang && srcLang !== "auto" ? srcLang : "en",
-            targetLang,
-            timeoutMs: rwkv.timeoutMs,
-            ignoreCache: false,
-          });
-        } finally {
-          cancelRef.current = null;
-        }
-        markTranslationRunCompleted(runId, ["pdf-document"]);
+        await translateRosettaPdfPages(activeJobId, {
+          pageSelection,
+          targetLang,
+          rwkvBaseUrl: provider.baseUrl,
+          sourceLang: srcLang && srcLang !== "auto" ? srcLang : "en",
+          timeoutMs: rwkv.timeoutMs,
+          force: false,
+        });
+        cancelRef.current = null;
+        markTranslationRunCompleted(runId, [`pdf-pages:${pageSelection}`]);
         finishTranslationRun(runId);
         runId = null;
         const freshBundle = await loadRosettaJob(activeJobId);
@@ -531,6 +531,8 @@ export function WorkspacePage() {
         setActiveTranslationFileBundle(tfBundle);
         await ensurePdf2zhReadyForTranslation();
         const provider = buildProvider();
+        const pageCount = await countRosettaPdfPages(activeJobId, "source");
+        const pageSelection = `1-${pageCount}`;
         runId = `run-pdf-all-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         cancelRef.current = () => { void cancelRosettaTranslatedPdf(); };
         startTranslationRun({
@@ -539,20 +541,18 @@ export function WorkspacePage() {
           sourceFileId: activeSourceFileId,
           translationFileId: tfBundle.translationFile.id,
           scope: "file",
-          targetSegmentIds: ["pdf-document"],
+          targetSegmentIds: [`pdf-pages:${pageSelection}`],
         });
-        try {
-          await generateRosettaTranslatedPdf(activeJobId, {
-            rwkvBaseUrl: provider.baseUrl,
-            sourceLang: sourceLang && sourceLang !== "auto" ? sourceLang : "en",
-            targetLang: retranslateTargetLang,
-            timeoutMs: rwkv.timeoutMs,
-            ignoreCache: true,
-          });
-        } finally {
-          cancelRef.current = null;
-        }
-        markTranslationRunCompleted(runId, ["pdf-document"]);
+        await translateRosettaPdfPages(activeJobId, {
+          pageSelection,
+          targetLang: retranslateTargetLang,
+          rwkvBaseUrl: provider.baseUrl,
+          sourceLang: sourceLang && sourceLang !== "auto" ? sourceLang : "en",
+          timeoutMs: rwkv.timeoutMs,
+          force: true,
+        });
+        cancelRef.current = null;
+        markTranslationRunCompleted(runId, [`pdf-pages:${pageSelection}`]);
         finishTranslationRun(runId);
         runId = null;
         const freshBundle = await loadRosettaJob(activeJobId);

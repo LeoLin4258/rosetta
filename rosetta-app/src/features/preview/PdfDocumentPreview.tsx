@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 
 import { Badge } from "@/components/ui/badge";
@@ -9,7 +9,6 @@ import { languageLabel } from "@/lib/languages";
 import {
   countRosettaPdfPages,
   getRosettaPdfPageStatus,
-  getRosettaPdfAssets,
   renderRosettaPdfTranslatedPageAsPng,
   type PdfPageTranslationState,
 } from "@/lib/rosettaJobs";
@@ -102,7 +101,18 @@ export function PdfDocumentPreview({
     return () => ro.disconnect();
   }, []);
 
-  // Probe both PDFs whenever the job changes.
+  const refreshPageState = useCallback(async () => {
+    try {
+      const state = await getRosettaPdfPageStatus(jobId, translationFile?.targetLang);
+      setPdfPageState(state);
+    } catch (error) {
+      console.error("[pdf] failed to load page translation state", error);
+    }
+  }, [jobId, translationFile?.targetLang]);
+
+  // Probe source pages whenever the job changes. The translated pane uses the
+  // same page count because page-level translation can render mixed states
+  // before a complete translated PDF exists.
   useEffect(() => {
     let cancelled = false;
     setSourcePageCount(null);
@@ -110,21 +120,13 @@ export function PdfDocumentPreview({
 
     (async () => {
       try {
-        const assets = await getRosettaPdfAssets(jobId);
-        if (cancelled) return;
         const srcPages = await countRosettaPdfPages(jobId, "source");
         if (cancelled) return;
         setSourcePageCount(srcPages);
+        setTranslatedPageCount(srcPages);
         setSelectedPages(Array.from({ length: srcPages }, (_, index) => index + 1));
         setPageRangeInput(formatPageSelection(Array.from({ length: srcPages }, (_, index) => index + 1)));
         void refreshPageState();
-        if (assets.translatedPdf) {
-          const tPages = await countRosettaPdfPages(jobId, "translated");
-          if (cancelled) return;
-          setTranslatedPageCount(tPages);
-        } else {
-          setTranslatedPageCount(0);
-        }
       } catch (error) {
         if (cancelled) return;
         console.error("[pdf] failed to probe PDF page counts for job", jobId, error);
@@ -134,7 +136,7 @@ export function PdfDocumentPreview({
     return () => {
       cancelled = true;
     };
-  }, [jobId]);
+  }, [jobId, refreshPageState]);
 
   useEffect(() => {
     if (!jobId) return;
@@ -156,7 +158,7 @@ export function PdfDocumentPreview({
       unlisten?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jobId]);
+  }, [jobId, refreshPageState]);
 
   useEffect(() => {
     return () => {
@@ -221,15 +223,6 @@ export function PdfDocumentPreview({
       return `等待翻译。共 ${segmentCount} 段，点击「翻译全部」开始。`;
     return `翻译部分完成 (${completedSegments} / ${segmentCount})，继续翻译以生成完整译文 PDF。`;
   })();
-
-  async function refreshPageState() {
-    try {
-      const state = await getRosettaPdfPageStatus(jobId, translationFile?.targetLang);
-      setPdfPageState(state);
-    } catch (error) {
-      console.error("[pdf] failed to load page translation state", error);
-    }
-  }
 
   function handlePageRangeChange(value: string) {
     setPageRangeInput(value);
