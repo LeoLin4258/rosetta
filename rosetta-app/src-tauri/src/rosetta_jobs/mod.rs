@@ -303,10 +303,10 @@ pub async fn generate_rosetta_translated_pdf(
     let pdf2zh_output_dir = dir.join("pdf2zh-output");
     if pdf2zh_output_dir.exists() {
         std::fs::remove_dir_all(&pdf2zh_output_dir)
-            .map_err(|error| format!("无法清理旧 PDFMathTranslate 输出: {error}"))?;
+            .map_err(|error| format!("无法清理旧 PDF 译文生成输出: {error}"))?;
     }
     std::fs::create_dir_all(&pdf2zh_output_dir)
-        .map_err(|error| format!("无法创建 PDFMathTranslate 输出目录: {error}"))?;
+        .map_err(|error| format!("无法创建 PDF 译文生成输出目录: {error}"))?;
 
     let target_lang = target_lang
         .or_else(|| {

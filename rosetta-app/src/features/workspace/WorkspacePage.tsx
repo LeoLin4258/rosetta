@@ -206,7 +206,7 @@ export function WorkspacePage() {
     if (!isPdf2zhReady(refreshed)) {
       throw new Error(
         refreshed?.message ??
-          "PDFMathTranslate 安装完成后仍未就绪，请检查 pdf2zh pack。"
+          "PDF 版面处理组件安装完成后仍未就绪，请在设置中检查状态。"
       );
     }
   }

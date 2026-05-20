@@ -57,7 +57,7 @@ impl Pdf2zhInstallProgress {
             source_url: None,
             speed_bytes_per_sec: 0,
             started_at: None,
-            message: "尚未开始安装 pdf2zh pack。".to_string(),
+            message: "尚未开始安装 PDF 版面处理组件。".to_string(),
             last_error: None,
         }
     }
@@ -160,7 +160,7 @@ pub async fn install_pack(
                     | Pdf2zhInstallPhase::Extracting
             )
         }) {
-            return Err("已有 pdf2zh 安装任务在进行中。".to_string());
+            return Err("已有 PDF 版面处理组件安装任务在进行中。".to_string());
         }
         guard.cancel = Some(cancel.clone());
         guard.progress = Some(Pdf2zhInstallProgress {
@@ -170,7 +170,7 @@ pub async fn install_pack(
             source_url: None,
             speed_bytes_per_sec: 0,
             started_at: Some(timestamp_ms_string()),
-            message: "正在准备 pdf2zh pack 安装…".to_string(),
+            message: "正在准备 PDF 版面处理组件安装…".to_string(),
             last_error: None,
         });
     }
@@ -206,7 +206,7 @@ async fn install_inner(
     layout.ensure_dirs()?;
 
     if layout.bin_path(profile).is_file() && !options.repair {
-        set_done(registry, "PDFMathTranslate 已就绪。".to_string()).await;
+        set_done(registry, "PDF 版面处理已就绪。".to_string()).await;
         emit_progress(app, registry).await;
         return Ok(Pdf2zhInstallResult {
             ready: true,
@@ -215,7 +215,7 @@ async fn install_inner(
             bytes_done: effective_size(profile, options).unwrap_or(0),
             bytes_total: effective_size(profile, options).unwrap_or(0),
             source_url: None,
-            message: "PDFMathTranslate 已就绪，跳过安装。".to_string(),
+            message: "PDF 版面处理已就绪，跳过安装。".to_string(),
             manifest_path: layout.manifest_file.display().to_string(),
         });
     }
@@ -233,14 +233,14 @@ async fn install_inner(
     if cancel.load(Ordering::SeqCst) {
         set_cancelled(registry).await;
         emit_progress(app, registry).await;
-        return Err("pdf2zh 安装已取消。".to_string());
+        return Err("PDF 版面处理组件安装已取消。".to_string());
     }
 
     update_progress(registry, |progress| {
         progress.phase = Pdf2zhInstallPhase::Downloading;
         progress.source_url = Some(source_url.clone());
         progress.bytes_total = expected_size.unwrap_or(0);
-        progress.message = format!("正在获取 pdf2zh pack: {source_url}");
+        progress.message = format!("正在获取 PDF 版面处理组件: {source_url}");
     })
     .await;
     emit_progress(app, registry).await;
@@ -270,7 +270,7 @@ async fn install_inner(
 
     update_progress(registry, |progress| {
         progress.phase = Pdf2zhInstallPhase::Verifying;
-        progress.message = "正在校验 pdf2zh pack…".to_string();
+        progress.message = "正在校验 PDF 版面处理组件…".to_string();
     })
     .await;
     emit_progress(app, registry).await;
@@ -278,7 +278,7 @@ async fn install_inner(
     let actual_sha = sha256_file(&archive_path, cancel).await?;
     if let Some(expected) = expected_sha.as_deref() {
         if actual_sha != expected {
-            let message = format!("pdf2zh pack SHA256 不匹配（预期 {expected}，实际 {actual_sha}）。");
+            let message = format!("PDF 版面处理组件校验失败（预期 {expected}，实际 {actual_sha}）。");
             set_failed(registry, message.clone()).await;
             emit_progress(app, registry).await;
             return Err(message);
@@ -286,10 +286,10 @@ async fn install_inner(
     }
     if let Some(expected) = expected_size {
         let actual_size = std::fs::metadata(&archive_path)
-            .map_err(|error| format!("无法读取 pack 文件大小: {error}"))?
+            .map_err(|error| format!("无法读取组件文件大小: {error}"))?
             .len();
         if actual_size != expected {
-            let message = format!("pdf2zh pack 大小不匹配（预期 {expected}，实际 {actual_size}）。");
+            let message = format!("PDF 版面处理组件大小不匹配（预期 {expected}，实际 {actual_size}）。");
             set_failed(registry, message.clone()).await;
             emit_progress(app, registry).await;
             return Err(message);
@@ -298,7 +298,7 @@ async fn install_inner(
 
     update_progress(registry, |progress| {
         progress.phase = Pdf2zhInstallPhase::Extracting;
-        progress.message = "正在解压 pdf2zh pack…".to_string();
+        progress.message = "正在解压 PDF 版面处理组件…".to_string();
     })
     .await;
     emit_progress(app, registry).await;
@@ -307,7 +307,7 @@ async fn install_inner(
     scrub_python_bytecode(&layout.pack_dir)?;
     write_manifest(layout, profile, &source_url, expected_size, Some(actual_sha))?;
 
-    set_done(registry, "PDFMathTranslate 已安装。".to_string()).await;
+    set_done(registry, "PDF 版面处理组件已安装。".to_string()).await;
     emit_progress(app, registry).await;
     Ok(Pdf2zhInstallResult {
         ready: true,
@@ -316,7 +316,7 @@ async fn install_inner(
         bytes_done: expected_size.unwrap_or(0),
         bytes_total: expected_size.unwrap_or(0),
         source_url: Some(source_url),
-        message: "PDFMathTranslate 已安装。".to_string(),
+        message: "PDF 版面处理组件已安装。".to_string(),
         manifest_path: layout.manifest_file.display().to_string(),
     })
 }
@@ -334,19 +334,19 @@ async fn download_http(
     if let Some(proxy) = proxy_url {
         builder = builder.proxy(
             reqwest::Proxy::all(proxy)
-                .map_err(|error| format!("pdf2zh pack 代理 URL 无效: {error}"))?,
+                .map_err(|error| format!("PDF 版面处理组件代理 URL 无效: {error}"))?,
         );
     }
     let client = builder
         .build()
-        .map_err(|error| format!("无法创建 pdf2zh 下载 HTTP client: {error}"))?;
+        .map_err(|error| format!("无法创建 PDF 版面处理组件下载 HTTP client: {error}"))?;
     let response = client
         .get(url)
         .send()
         .await
-        .map_err(|error| format!("下载 pdf2zh pack 失败: {error}"))?;
+        .map_err(|error| format!("下载 PDF 版面处理组件失败: {error}"))?;
     if !response.status().is_success() {
-        return Err(format!("下载 pdf2zh pack 返回 HTTP {}", response.status().as_u16()));
+        return Err(format!("下载 PDF 版面处理组件返回 HTTP {}", response.status().as_u16()));
     }
     stream_response_to_file(app, registry, response, target, expected_size, cancel).await
 }
@@ -376,7 +376,7 @@ async fn stream_response_to_file(
         if cancel.load(Ordering::SeqCst) {
             set_cancelled(registry).await;
             emit_progress(app, registry).await;
-            return Err("pdf2zh 安装已取消。".to_string());
+            return Err("PDF 版面处理组件安装已取消。".to_string());
         }
         let bytes = chunk.map_err(|error| format!("读取 pack 下载流失败: {error}"))?;
         file.write_all(&bytes)
@@ -394,9 +394,9 @@ async fn stream_response_to_file(
                 progress.speed_bytes_per_sec = speed;
                 progress.message = if let Some(total) = expected_size {
                     let percent = bytes_done.saturating_mul(100).checked_div(total).unwrap_or(0);
-                    format!("下载 pdf2zh pack 中 {percent}%")
+                    format!("下载 PDF 版面处理组件中 {percent}%")
                 } else {
-                    format!("下载 pdf2zh pack 中 ({bytes_done} bytes)")
+                    format!("下载 PDF 版面处理组件中 ({bytes_done} bytes)")
                 };
             })
             .await;
@@ -428,20 +428,20 @@ async fn copy_file_url(
     if cancel.load(Ordering::SeqCst) {
         set_cancelled(registry).await;
         emit_progress(app, registry).await;
-        return Err("pdf2zh 安装已取消。".to_string());
+        return Err("PDF 版面处理组件安装已取消。".to_string());
     }
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent).map_err(|error| format!("无法创建下载目录: {error}"))?;
     }
     std::fs::copy(source, target)
-        .map_err(|error| format!("复制本地 pdf2zh pack 失败: {error}"))?;
+        .map_err(|error| format!("复制本地 PDF 版面处理组件失败: {error}"))?;
     let bytes = std::fs::metadata(target)
-        .map_err(|error| format!("无法读取本地 pdf2zh pack: {error}"))?
+        .map_err(|error| format!("无法读取本地 PDF 版面处理组件: {error}"))?
         .len();
     update_progress(registry, |progress| {
         progress.bytes_done = bytes;
         progress.bytes_total = expected_size.unwrap_or(bytes);
-        progress.message = "已复制本地 pdf2zh pack。".to_string();
+        progress.message = "已复制本地 PDF 版面处理组件。".to_string();
     })
     .await;
     emit_progress(app, registry).await;
@@ -456,7 +456,7 @@ async fn sha256_file(path: &Path, cancel: &Arc<AtomicBool>) -> Result<String, St
     let mut buffer = vec![0u8; 256 * 1024];
     loop {
         if cancel.load(Ordering::SeqCst) {
-            return Err("pdf2zh 安装已取消。".to_string());
+            return Err("PDF 版面处理组件安装已取消。".to_string());
         }
         let read = file
             .read(&mut buffer)
@@ -477,7 +477,7 @@ async fn extract_pack(
     cancel: &Arc<AtomicBool>,
 ) -> Result<(), String> {
     if cancel.load(Ordering::SeqCst) {
-        return Err("pdf2zh 安装已取消。".to_string());
+        return Err("PDF 版面处理组件安装已取消。".to_string());
     }
     let staging = layout.root_dir.join("extract-staging");
     let _ = std::fs::remove_dir_all(&staging);
@@ -491,7 +491,7 @@ async fn extract_pack(
         .await
         .map_err(|error| format!("启动 tar 解压失败: {error}"))?;
     if !status.success() {
-        return Err(format!("tar 解压 pdf2zh pack 失败: {status}"));
+        return Err(format!("解压 PDF 版面处理组件失败: {status}"));
     }
 
     let candidate = if staging.join(profile.pack_directory_name).is_dir() {
@@ -502,17 +502,17 @@ async fn extract_pack(
     let bin = candidate.join(profile.bin_relative_path);
     if !bin.is_file() {
         return Err(format!(
-            "pdf2zh pack 结构不正确，缺少 {}",
+            "PDF 版面处理组件结构不正确，缺少 {}",
             profile.bin_relative_path
         ));
     }
 
     if layout.pack_dir.exists() {
         std::fs::remove_dir_all(&layout.pack_dir)
-            .map_err(|error| format!("无法清理旧 pdf2zh pack: {error}"))?;
+            .map_err(|error| format!("无法清理旧 PDF 版面处理组件: {error}"))?;
     }
     if let Some(parent) = layout.pack_dir.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| format!("无法创建 pack 目录: {error}"))?;
+        std::fs::create_dir_all(parent).map_err(|error| format!("无法创建组件目录: {error}"))?;
     }
     match std::fs::rename(&candidate, &layout.pack_dir) {
         Ok(()) => {}
@@ -621,7 +621,7 @@ fn effective_url(
         .first()
         .map(|url| url.to_string())
         .ok_or_else(|| {
-            "尚未配置官方 pdf2zh pack 下载地址。可先运行 stage-pdf2zh-pack-local.sh，或设置 ROSETTA_PDF2ZH_PACK_URL 指向 .tar.gz。".to_string()
+            "尚未配置 PDF 版面处理组件下载地址。可先运行本地 staging 脚本，或设置 ROSETTA_PDF2ZH_PACK_URL 指向 .tar.gz。".to_string()
         })
 }
 
@@ -658,7 +658,7 @@ async fn set_cancelled(registry: &Pdf2zhInstallRegistry) {
     update_progress(registry, |progress| {
         progress.phase = Pdf2zhInstallPhase::Cancelled;
         progress.speed_bytes_per_sec = 0;
-        progress.message = "pdf2zh 安装已取消。".to_string();
+        progress.message = "PDF 版面处理组件安装已取消。".to_string();
     })
     .await;
 }

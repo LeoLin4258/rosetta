@@ -254,7 +254,7 @@ export function PdfDocumentPreview({
     if (!isPdf2zhReady(refreshed)) {
       throw new Error(
         refreshed?.message ??
-          "PDFMathTranslate 安装完成后仍未就绪，请检查 pdf2zh pack。"
+          "PDF 版面处理组件安装完成后仍未就绪，请在设置中检查状态。"
       );
     }
   }
@@ -295,7 +295,7 @@ export function PdfDocumentPreview({
     if (generating) return "正在生成翻译后 PDF…";
     if (generateError) return `生成失败：${generateError}`;
     if (pdfAlreadyTranslated) return "正在加载译文 PDF…";
-    if (segmentCount === 0) return "等待翻译。PDF 将由 PDFMathTranslate 保留版面并生成译文 PDF。";
+    if (segmentCount === 0) return "等待翻译。Rosetta 将保留 PDF 版面并生成译文 PDF。";
     if (translationComplete) return "等待生成翻译后 PDF…";
     if (isTranslating) return `翻译中… (${completedSegments} / ${segmentCount})`;
     if (completedSegments === 0)

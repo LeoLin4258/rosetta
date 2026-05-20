@@ -59,7 +59,7 @@ impl StaticStatus {
             state: Pdf2zhState::Unsupported,
             install_plan: Pdf2zhInstallPlan {
                 ready: false,
-                message: "当前平台暂不支持 PDFMathTranslate sidecar（v1 仅支持 macOS Apple Silicon）。".to_string(),
+                message: "当前平台暂不支持自动处理 PDF 版面（v1 仅支持 macOS Apple Silicon）。".to_string(),
             },
         }
     }
@@ -76,7 +76,7 @@ impl StaticStatus {
         }
 
         let message = if self.install_plan.ready {
-            "PDFMathTranslate 已就绪。".to_string()
+            "PDF 版面处理已就绪。".to_string()
         } else {
             self.install_plan.message.clone()
         };
@@ -110,9 +110,9 @@ pub fn build_static_status(app: &AppHandle) -> Result<StaticStatus, String> {
     let install_plan = Pdf2zhInstallPlan {
         ready,
         message: if ready {
-            "PDFMathTranslate 可用。".to_string()
+            "PDF 版面处理可用。".to_string()
         } else {
-            "未找到 pdf2zh。请先设置 ROSETTA_PDF2ZH_BIN 指向本地 pdf2zh，或安装 Rosetta pdf2zh sidecar pack。".to_string()
+            "尚未安装 PDF 版面处理组件。请先在设置中安装，或点击 PDF 翻译时自动准备。".to_string()
         },
     };
     Ok(StaticStatus {

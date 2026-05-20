@@ -29,7 +29,7 @@ pub async fn install_pdf2zh_pack(
     options: Option<install::Pdf2zhInstallOptions>,
 ) -> Result<install::Pdf2zhInstallResult, String> {
     let profile = profile::current_profile()
-        .ok_or_else(|| "当前平台尚未支持托管 pdf2zh pack。".to_string())?;
+        .ok_or_else(|| "当前平台尚未支持自动安装 PDF 版面处理组件。".to_string())?;
     let layout = layout::Pdf2zhLayout::from_app(&app, profile)?;
     install::install_pack(
         &app,
@@ -47,9 +47,9 @@ pub async fn cancel_pdf2zh_install(
 ) -> Result<Pdf2zhCancelInstallResult, String> {
     let cancelled = install_registry.request_cancel().await;
     let message = if cancelled {
-        "已请求取消 pdf2zh 安装。"
+        "已请求取消 PDF 版面处理组件安装。"
     } else {
-        "当前没有正在进行的 pdf2zh 安装任务。"
+        "当前没有正在进行的 PDF 版面处理组件安装任务。"
     };
     Ok(Pdf2zhCancelInstallResult {
         cancelled,

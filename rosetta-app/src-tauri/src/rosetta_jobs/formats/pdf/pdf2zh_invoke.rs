@@ -54,7 +54,7 @@ pub(crate) async fn invoke_pdf2zh(
     }
     let bin = status
         .bin_path
-        .ok_or_else(|| PdfError::RuntimeMissing("找不到 pdf2zh 可执行文件。".to_string()))?;
+        .ok_or_else(|| PdfError::RuntimeMissing("找不到 PDF 版面处理组件。".to_string()))?;
     status
         .layout
         .ensure_dirs()
@@ -66,7 +66,7 @@ pub(crate) async fn invoke_pdf2zh(
         .map_err(|error| PdfError::Read(format!("无法创建 pdf2zh 临时目录: {error}")))?;
     let debug = pdf2zh_debug_enabled();
 
-    emit_progress(app, &options.job_id, "parse", Some(5), "正在启动 PDFMathTranslate...");
+    emit_progress(app, &options.job_id, "parse", Some(5), "正在准备 PDF 版面...");
     let shim_log_file = output_dir.join("rosetta-pdf2zh-shim.log");
     let shim = managed_pdf2zh::openai_shim::spawn_shim(
         options.rwkv_base_url.clone(),
@@ -170,17 +170,19 @@ pub(crate) async fn invoke_pdf2zh(
             .map(|lines| lines.join("\n"))
             .filter(|text| !text.trim().is_empty())
             .unwrap_or_else(|| "无 stderr/stdout 输出。".to_string());
+        let output_log = output_dir.join("rosetta-pdf2zh-output.log");
+        let _ = std::fs::write(&output_log, &tail);
         return Err(PdfError::Pdf2zhFailed(format!(
-            "pdf2zh 退出码：{}。输出：{}",
+            "PDF 版面处理没有完成（退出码：{}）。请重试；若持续失败，可查看日志：{}",
             status.code().map_or_else(|| "signal".to_string(), |code| code.to_string()),
-            tail
+            output_log.display()
         )));
     }
 
     emit_progress(app, &options.job_id, "render", Some(95), "正在整理译文 PDF...");
     let mono_pdf = find_pdf2zh_output(output_dir, source_path, "zh")
         .or_else(|| find_pdf2zh_output(output_dir, source_path, "mono"))
-        .ok_or_else(|| PdfError::Pdf2zhFailed("pdf2zh 未生成译文 PDF。".to_string()))?;
+        .ok_or_else(|| PdfError::Pdf2zhFailed("未生成译文 PDF。".to_string()))?;
     let dual_pdf = find_pdf2zh_output(output_dir, source_path, "dual");
     emit_progress(app, &options.job_id, "render", Some(100), "译文 PDF 已生成。");
     Ok(Pdf2zhOutput { mono_pdf, dual_pdf })

@@ -16,7 +16,7 @@ PDF Phase 2 used Docling extraction plus an in-house pdfium write-back path. It 
 
 ## Current Limitation
 
-The downloadable pdf2zh pack installer backend is now wired, but the app still does not ship an official pack URL or settings/onboarding UI for it. Development and dogfood runs can set `ROSETTA_PDF2ZH_BIN` to a local pdf2zh executable, place the pack binary at the managed pack path reported by `get_pdf2zh_status`, or invoke `install_pdf2zh_pack` with a `file://` / `https://` archive URL.
+The downloadable pdf2zh pack installer backend and settings UI are now wired, but the app still does not ship an official pack URL. Development and dogfood runs can set `ROSETTA_PDF2ZH_BIN` to a local pdf2zh executable, place the pack binary at the managed pack path reported by `get_pdf2zh_status`, or invoke `install_pdf2zh_pack` with a `file://` / `https://` archive URL.
 
 Current local dogfood command:
 
@@ -79,7 +79,7 @@ The installer command now supports:
 
 The workspace PDF translation entry points now preflight `get_pdf2zh_status` before invoking pdf2zh. If the managed pack is missing, Rosetta attempts `install_pdf2zh_pack` first and shows install progress in the translate button. This applies to initial PDF translation, "重翻全部", and the PDF preview "重新生成" action.
 
-The settings page now includes a PDF translation engine panel for PDFMathTranslate status, install/repair actions, progress, proxy configuration, and managed pack paths.
+The settings page now includes a PDF layout processing panel for status, install/repair actions, progress, proxy configuration, and managed component paths.
 
 ## Dogfood Findings
 
