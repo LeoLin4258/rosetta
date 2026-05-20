@@ -459,32 +459,46 @@ fn pdf_path_for_kind(
     }
 }
 
-/// Export the already-generated translated PDF for a job by copying it from
-/// `<job_dir>/exports/translated.pdf` to the user-chosen `target_path`.
-/// Re-rendering is unnecessary — the bytes on disk are exactly what we'd
-/// produce again, and a re-render of a 100-page doc would block the UI for
-/// ~10s when a plain copy takes milliseconds.
+/// Export a complete PDF by substituting any page-level translated PDFs into
+/// the original source PDF. Pages without translated artifacts are preserved
+/// from the source document.
 #[tauri::command]
 pub fn export_rosetta_translated_pdf(
     app: AppHandle,
     job_id: String,
     target_path: String,
 ) -> Result<model::RosettaExportResult, String> {
-    let source_path = store::translated_pdf_output_path(&app, &job_id)?;
-    if !source_path.is_file() {
-        return Err("尚未生成翻译后 PDF，请先翻译完成后再导出。".to_string());
-    }
+    let source_pdf = store::cached_pdf_source_path(&app, &job_id)?;
+    let page_count = formats::pdf::count_pages(&app, &source_pdf)
+        .map_err(|error| error.user_message())?;
+    let root = path::jobs_root(&app)?;
+    let dir = path::checked_job_dir(&root, &job_id)?;
+    let bundle = store::load_job_bundle(&app, &job_id)?;
+    let target_lang = bundle
+        .document
+        .files
+        .first()
+        .and_then(|file| file.target_lang.clone())
+        .unwrap_or_else(|| bundle.document.target_lang.clone());
+    let state =
+        formats::pdf::page_state::read_pdf_page_translation_state(&dir, page_count, &target_lang)?;
+    let assembled_path = store::translated_pdf_output_path(&app, &job_id)?;
+    formats::pdf::page_assemble::assemble_pdf_with_page_translations(
+        &source_pdf,
+        &dir,
+        &state,
+        &assembled_path,
+    )?;
     let target = std::path::PathBuf::from(&target_path);
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("无法创建导出目录: {error}"))?;
     }
-    let bytes_written = std::fs::copy(&source_path, &target)
+    let bytes_written = std::fs::copy(&assembled_path, &target)
         .map_err(|error| format!("复制翻译后 PDF 失败: {error}"))?;
 
     // Mirror the txt/md export bookkeeping (timestamp updates) so the UI can
     // show "上次导出于…". The job summary lives in index.json.
-    let root = path::jobs_root(&app)?;
     let mut index = store::read_index(&root)?;
     let now = path::timestamp_ms_string();
     let export_job = {
