@@ -90,8 +90,7 @@ export function AppSidebar({
   }, []);
 
   const recentJobs = [...jobs]
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-    .slice(0, 5);
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 
   async function addNewDocument() {
     try {
@@ -159,7 +158,7 @@ export function AppSidebar({
             </div>
           )}
           <SidebarGroup>
-            <SidebarGroupLabel>最近文档</SidebarGroupLabel>
+            <SidebarGroupLabel>文档</SidebarGroupLabel>
             <SidebarGroupContent>
               <SidebarMenu>
                 {recentJobs.map((job) => (

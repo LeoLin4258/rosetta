@@ -24,8 +24,7 @@ export function WorkspaceEmpty({ onImported, isDraggingOver }: WorkspaceEmptyPro
   const [importError, setImportError] = useState<string | null>(null);
 
   const recentJobs = [...jobs]
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-    .slice(0, 5);
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 
   async function chooseFile() {
     setIsImporting(true);
@@ -108,7 +107,7 @@ export function WorkspaceEmpty({ onImported, isDraggingOver }: WorkspaceEmptyPro
       {/* Recent docs */}
       {recentJobs.length > 0 && (
         <div className="w-full max-w-lg space-y-1.5">
-          <p className="text-xs text-muted-foreground/60">最近</p>
+          <p className="text-xs text-muted-foreground/60">文档</p>
           {recentJobs.map((job) => (
             <button
               key={job.id}
