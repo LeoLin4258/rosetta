@@ -61,6 +61,15 @@ This creates:
 
 The script currently installs `pdf2zh==1.7.9` and applies the local NumPy compatibility patch.
 
+To dogfood the managed installer path itself, archive the staged pack and start Rosetta with a local pack URL:
+
+```bash
+cd rosetta-app
+bash src-tauri/scripts/stage-pdf2zh-pack-local.sh
+bash src-tauri/scripts/archive-pdf2zh-pack-local.sh
+ROSETTA_PDF2ZH_PACK_URL="file:///tmp/rosetta-pdf2zh-macos-arm64.tar.gz" pnpm tauri dev
+```
+
 The installer command now supports:
 
 - `install_pdf2zh_pack({ options: { packUrl, packSha256, packSizeBytes, repair, proxyUrl } })`
