@@ -14,6 +14,7 @@ import {
   loadRosettaJob,
   loadRosettaTranslationFile,
   pickRosettaExportPath,
+  translateRosettaPdfPages,
 } from "@/lib/rosettaJobs";
 import { selectProvider } from "@/lib/providers";
 import { isManagedRuntimeReady } from "@/lib/useManagedRwkvRuntime";
@@ -365,6 +366,61 @@ export function WorkspacePage() {
     }
   }
 
+  async function handleTranslatePdfPages(pageSelection: string, force: boolean) {
+    if (!activeJobId || !activeSourceFileId) return null;
+    const pageTargetLang = activeTranslationFile?.targetLang ?? targetLang;
+    setPageError(null);
+    setPdfError(null);
+    setSelectedBlockIds([]);
+
+    let runId: string | null = null;
+
+    try {
+      const tfBundle = await ensureRosettaTranslationFile(
+        activeJobId,
+        activeSourceFileId,
+        pageTargetLang,
+      );
+      setActiveTranslationFileBundle(tfBundle);
+      await ensurePdf2zhReadyForTranslation();
+      const provider = buildProvider();
+
+      runId = `run-pdf-pages-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      cancelRef.current = () => { void cancelRosettaTranslatedPdf(); };
+      startTranslationRun({
+        id: runId,
+        jobId: activeJobId,
+        sourceFileId: activeSourceFileId,
+        translationFileId: tfBundle.translationFile.id,
+        scope: "file",
+        targetSegmentIds: [`pdf-pages:${pageSelection}`],
+      });
+
+      const state = await translateRosettaPdfPages(activeJobId, {
+        pageSelection,
+        targetLang: pageTargetLang,
+        rwkvBaseUrl: provider.baseUrl,
+        sourceLang: sourceLang && sourceLang !== "auto" ? sourceLang : "en",
+        timeoutMs: rwkv.timeoutMs,
+        force,
+      });
+
+      markTranslationRunCompleted(runId, [`pdf-pages:${pageSelection}`]);
+      finishTranslationRun(runId);
+      cancelRef.current = null;
+      runId = null;
+      return state;
+    } catch (err) {
+      const msg = errorMessage(err, "");
+      if (!msg.includes("已取消")) {
+        setPdfError(errorMessage(err, "PDF 按页翻译出错。"));
+      }
+      if (runId) finishTranslationRun(runId);
+      cancelRef.current = null;
+      return null;
+    }
+  }
+
   async function handleRetranslateSelected() {
     if (!activeJobId || !activeSourceFileId || selectedBlockIds.length === 0) return;
     const retranslateTargetLang = activeTranslationFile?.targetLang ?? targetLang;
@@ -701,6 +757,9 @@ export function WorkspacePage() {
               pdfProgress={pdfProgress}
               pdfError={pdfError}
               onRegenerate={() => void handleRetranslateAll()}
+              onTranslatePdfPages={(selection, force) =>
+                handleTranslatePdfPages(selection, force)
+              }
             />
           </div>
         </>
