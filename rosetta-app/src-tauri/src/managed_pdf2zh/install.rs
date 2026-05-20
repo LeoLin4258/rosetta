@@ -220,14 +220,16 @@ async fn install_inner(
         });
     }
 
-    let source_url = effective_url(profile, options)?;
+    let urls = effective_urls(profile, options)?;
     let expected_sha = effective_sha(profile, options);
     let expected_size = effective_size(profile, options);
     let archive_path = layout.downloads_dir.join(profile.pack_filename);
+    let part_path = layout.downloads_dir.join(format!("{}.part", profile.pack_filename));
 
     if options.repair {
         let _ = std::fs::remove_dir_all(&layout.pack_dir);
         let _ = std::fs::remove_file(&archive_path);
+        let _ = std::fs::remove_file(&part_path);
     }
 
     if cancel.load(Ordering::SeqCst) {
@@ -236,37 +238,69 @@ async fn install_inner(
         return Err("PDF 版面处理组件安装已取消。".to_string());
     }
 
-    update_progress(registry, |progress| {
-        progress.phase = Pdf2zhInstallPhase::Downloading;
-        progress.source_url = Some(source_url.clone());
-        progress.bytes_total = expected_size.unwrap_or(0);
-        progress.message = format!("正在获取 PDF 版面处理组件: {source_url}");
-    })
-    .await;
-    emit_progress(app, registry).await;
+    let mut source_url = String::new();
+    let url_count = urls.len();
+    for (i, url) in urls.into_iter().enumerate() {
+        let _ = tokio::fs::remove_file(&part_path).await;
+        update_progress(registry, |progress| {
+            progress.phase = Pdf2zhInstallPhase::Downloading;
+            progress.source_url = Some(url.clone());
+            progress.bytes_done = 0;
+            progress.bytes_total = expected_size.unwrap_or(0);
+            progress.message = if i == 0 {
+                format!("正在获取 PDF 版面处理组件: {url}")
+            } else {
+                format!("正在尝试备用地址下载 PDF 版面处理组件: {url}")
+            };
+        })
+        .await;
+        emit_progress(app, registry).await;
 
-    if source_url.starts_with("file://") {
-        copy_file_url(
-            app,
-            registry,
-            source_url.trim_start_matches("file://"),
-            &archive_path,
-            expected_size,
-            cancel,
-        )
-        .await?;
-    } else {
-        download_http(
-            app,
-            registry,
-            &source_url,
-            &archive_path,
-            expected_size,
-            options.effective_proxy_url(),
-            cancel,
-        )
-        .await?;
+        let result = if url.starts_with("file://") {
+            copy_file_url(
+                app,
+                registry,
+                url.trim_start_matches("file://"),
+                &part_path,
+                expected_size,
+                cancel,
+            )
+            .await
+        } else {
+            download_http(
+                app,
+                registry,
+                &url,
+                &part_path,
+                expected_size,
+                options.effective_proxy_url(),
+                cancel,
+            )
+            .await
+        };
+
+        match result {
+            Ok(()) => {
+                source_url = url;
+                break;
+            }
+            Err(e) if cancel.load(Ordering::SeqCst) => {
+                let _ = tokio::fs::remove_file(&part_path).await;
+                return Err(e);
+            }
+            Err(_) if i + 1 < url_count => {
+                let _ = tokio::fs::remove_file(&part_path).await;
+            }
+            Err(e) => {
+                let _ = tokio::fs::remove_file(&part_path).await;
+                return Err(e);
+            }
+        }
     }
+
+    tokio::fs::rename(&part_path, &archive_path)
+        .await
+        .map_err(|error| format!("无法重命名下载文件: {error}"))?;
 
     update_progress(registry, |progress| {
         progress.phase = Pdf2zhInstallPhase::Verifying;
@@ -275,9 +309,16 @@ async fn install_inner(
     .await;
     emit_progress(app, registry).await;
 
-    let actual_sha = sha256_file(&archive_path, cancel).await?;
+    let actual_sha = match sha256_file(&archive_path, cancel).await {
+        Ok(sha) => sha,
+        Err(e) => {
+            let _ = std::fs::remove_file(&archive_path);
+            return Err(e);
+        }
+    };
     if let Some(expected) = expected_sha.as_deref() {
         if actual_sha != expected {
+            let _ = std::fs::remove_file(&archive_path);
             let message = format!("PDF 版面处理组件校验失败（预期 {expected}，实际 {actual_sha}）。");
             set_failed(registry, message.clone()).await;
             emit_progress(app, registry).await;
@@ -289,6 +330,7 @@ async fn install_inner(
             .map_err(|error| format!("无法读取组件文件大小: {error}"))?
             .len();
         if actual_size != expected {
+            let _ = std::fs::remove_file(&archive_path);
             let message = format!("PDF 版面处理组件大小不匹配（预期 {expected}，实际 {actual_size}）。");
             set_failed(registry, message.clone()).await;
             emit_progress(app, registry).await;
@@ -598,31 +640,34 @@ fn write_manifest(
         .map_err(|error| format!("无法写入 pdf2zh manifest: {error}"))
 }
 
-fn effective_url(
+fn effective_urls(
     profile: &Pdf2zhProfile,
     options: &Pdf2zhInstallOptions,
-) -> Result<String, String> {
+) -> Result<Vec<String>, String> {
     if let Some(url) = options
         .pack_url
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        return Ok(url.to_string());
+        return Ok(vec![url.to_string()]);
     }
     if let Ok(url) = std::env::var("ROSETTA_PDF2ZH_PACK_URL") {
-        let url = url.trim();
+        let url = url.trim().to_string();
         if !url.is_empty() {
-            return Ok(url.to_string());
+            return Ok(vec![url]);
         }
     }
-    profile
+    if profile.pack_download_urls.is_empty() {
+        return Err(
+            "尚未配置 PDF 版面处理组件下载地址。可先运行本地 staging 脚本，或设置 ROSETTA_PDF2ZH_PACK_URL 指向 .tar.gz。".to_string(),
+        );
+    }
+    Ok(profile
         .pack_download_urls
-        .first()
+        .iter()
         .map(|url| url.to_string())
-        .ok_or_else(|| {
-            "尚未配置 PDF 版面处理组件下载地址。可先运行本地 staging 脚本，或设置 ROSETTA_PDF2ZH_PACK_URL 指向 .tar.gz。".to_string()
-        })
+        .collect())
 }
 
 fn effective_sha(profile: &Pdf2zhProfile, options: &Pdf2zhInstallOptions) -> Option<String> {

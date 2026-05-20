@@ -78,3 +78,17 @@ If a validation command cannot be run, state why in the final response.
 
 ## DO NOT
 - Do not run dev servers or production builds unless the user explicitly asks for runtime UI verification or release packaging.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues (`LeoLin4258/rosetta`). See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default mattpocock/skills label vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context repo; ADRs live in `docs/engineering/decisions/` (not `docs/adr/`). See `docs/agents/domain.md`.
