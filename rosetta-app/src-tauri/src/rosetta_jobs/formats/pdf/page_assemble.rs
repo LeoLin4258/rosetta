@@ -46,6 +46,38 @@ pub(crate) fn assemble_pdf_with_page_translations(
     Ok(())
 }
 
+pub(crate) fn extract_single_page_pdf(
+    source_path: &Path,
+    requested_page_number: u32,
+    target_path: &Path,
+) -> Result<(), String> {
+    let doc = Document::load(source_path)
+        .map_err(|error| format!("无法读取 PDF 页面缓存 {}: {error}", source_path.display()))?;
+    let pages = doc.get_pages();
+    let page_number = if pages.contains_key(&requested_page_number) {
+        requested_page_number
+    } else if pages.len() == 1 {
+        1
+    } else {
+        return Err(format!(
+            "PDF 输出中不存在第 {requested_page_number} 页，无法缓存页级译文。"
+        ));
+    };
+
+    let mut single = merge_single_pages(&[PageSource {
+        path: source_path.to_path_buf(),
+        page_number,
+    }])?;
+    if let Some(parent) = target_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("无法创建 PDF 页缓存目录: {error}"))?;
+    }
+    single
+        .save(target_path)
+        .map_err(|error| format!("无法写入 PDF 页缓存: {error}"))?;
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 struct PageSource {
     path: PathBuf,

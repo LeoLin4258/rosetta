@@ -374,8 +374,11 @@ pub async fn translate_rosetta_pdf_pages(
             Ok(output) => {
                 let relative_path = formats::pdf::page_state::pdf_page_relative_path(page_number);
                 let target = dir.join(&relative_path);
-                fs::copy(&output.mono_pdf, &target)
-                    .map_err(|error| format!("无法缓存第 {page_number} 页译文 PDF: {error}"))?;
+                formats::pdf::page_assemble::extract_single_page_pdf(
+                    &output.mono_pdf,
+                    page_number,
+                    &target,
+                )?;
                 formats::pdf::page_state::upsert_pdf_page(
                     &mut state,
                     page_number,

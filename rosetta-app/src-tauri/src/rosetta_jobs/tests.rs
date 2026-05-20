@@ -2,7 +2,9 @@ use std::{collections::HashMap, fs, path::PathBuf};
 
 use crate::rosetta_jobs::{
     export::*,
-    formats::pdf::page_assemble::assemble_pdf_with_page_translations,
+    formats::pdf::page_assemble::{
+        assemble_pdf_with_page_translations, extract_single_page_pdf,
+    },
     formats::pdf::page_state::*,
     formats::pdf::test_helpers::fixture_path,
     formats::{markdown::parse_markdown, txt::parse_txt},
@@ -449,6 +451,45 @@ fn pdf_page_export_substitutes_translated_page_and_keeps_full_length() {
         .get_pages()
         .len();
     assert_eq!(output_pages, source_page_count);
+    fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn pdf_page_cache_extracts_requested_page_from_full_pdf_output() {
+    let source = fixture_path("2305.13048v2.pdf");
+    let source_pages = lopdf::Document::load(&source)
+        .expect("load source pdf")
+        .get_pages()
+        .len();
+    assert!(source_pages >= 2);
+    let dir = unique_temp_dir("pdf-page-cache-extract");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let target = dir.join("page-0002.pdf");
+
+    extract_single_page_pdf(&source, 2, &target).expect("extract second page");
+
+    let output_pages = lopdf::Document::load(&target)
+        .expect("load extracted page")
+        .get_pages()
+        .len();
+    assert_eq!(output_pages, 1);
+    fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn pdf_page_cache_accepts_single_page_pdf_output_for_any_requested_page() {
+    let source = fixture_path("simple-one-page.pdf");
+    let dir = unique_temp_dir("pdf-page-cache-single-output");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let target = dir.join("page-0002.pdf");
+
+    extract_single_page_pdf(&source, 2, &target).expect("extract fallback page");
+
+    let output_pages = lopdf::Document::load(&target)
+        .expect("load extracted page")
+        .get_pages()
+        .len();
+    assert_eq!(output_pages, 1);
     fs::remove_dir_all(dir).ok();
 }
 
