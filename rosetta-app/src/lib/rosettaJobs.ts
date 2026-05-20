@@ -221,6 +221,10 @@ export function generateRosettaTranslatedPdf(
   });
 }
 
+export function cancelRosettaTranslatedPdf() {
+  return invoke<void>("cancel_rosetta_translated_pdf");
+}
+
 /// Copy the cached translated PDF (`<job_dir>/exports/translated.pdf`) to a
 /// user-chosen destination. Re-generation is unnecessary — the bytes on disk
 /// are exactly the v1 pipeline output. PDF v1 doesn't support bilingual

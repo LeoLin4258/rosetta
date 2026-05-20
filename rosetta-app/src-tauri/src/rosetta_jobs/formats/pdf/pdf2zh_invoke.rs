@@ -5,6 +5,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use tokio::sync::oneshot;
+
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -47,6 +49,7 @@ pub(crate) async fn invoke_pdf2zh(
     source_path: &Path,
     output_dir: &Path,
     options: Pdf2zhInvokeOptions,
+    cancel_rx: oneshot::Receiver<()>,
 ) -> Result<Pdf2zhOutput, PdfError> {
     let status = managed_pdf2zh::build_static_status(app).map_err(PdfError::RuntimeMissing)?;
     if !status.install_plan.ready {
@@ -153,10 +156,19 @@ pub(crate) async fn invoke_pdf2zh(
         })
     });
 
-    let status = child
-        .wait()
-        .await
-        .map_err(|error| PdfError::Pdf2zhFailed(format!("等待 pdf2zh 结束失败: {error}")))?;
+    let exit_status = tokio::select! {
+        result = child.wait() => {
+            result.map_err(|error| PdfError::Pdf2zhFailed(format!("等待 pdf2zh 结束失败: {error}")))?
+        }
+        _ = cancel_rx => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            if let Some(task) = stderr_task { task.abort(); }
+            if let Some(task) = stdout_task { task.abort(); }
+            drop(shim);
+            return Err(PdfError::Cancelled);
+        }
+    };
     if let Some(task) = stderr_task {
         let _ = task.await;
     }
@@ -164,6 +176,7 @@ pub(crate) async fn invoke_pdf2zh(
         let _ = task.await;
     }
     drop(shim);
+    let status = exit_status;
 
     if !status.success() {
         let tail = output_lines

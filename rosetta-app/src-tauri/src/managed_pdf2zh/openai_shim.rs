@@ -22,7 +22,8 @@ const BATCH_WINDOW_MS: u64 = 80;
 pub struct OpenAiShim {
     port: u16,
     pub batch_size: usize,
-    join_handle: JoinHandle<()>,
+    server_handle: JoinHandle<()>,
+    batch_handle: JoinHandle<()>,
 }
 
 impl OpenAiShim {
@@ -33,7 +34,8 @@ impl OpenAiShim {
 
 impl Drop for OpenAiShim {
     fn drop(&mut self) {
-        self.join_handle.abort();
+        self.server_handle.abort();
+        self.batch_handle.abort();
     }
 }
 
@@ -101,7 +103,7 @@ pub async fn spawn_shim(
         .max(1);
 
     let (batch_tx, batch_rx) = mpsc::channel(max_batch_size * 4);
-    tokio::spawn(batch_processor(
+    let batch_handle = tokio::spawn(batch_processor(
         batch_rx,
         rwkv.clone(),
         target_lang.clone(),
@@ -131,12 +133,12 @@ pub async fn spawn_shim(
     let app = Router::new()
         .route("/v1/chat/completions", post(chat_completions))
         .with_state(state);
-    let join_handle = tokio::spawn(async move {
+    let server_handle = tokio::spawn(async move {
         if let Err(error) = axum::serve(listener, app).await {
             eprintln!("[pdf2zh-shim] server exited: {error}");
         }
     });
-    Ok(OpenAiShim { port, batch_size: max_batch_size, join_handle })
+    Ok(OpenAiShim { port, batch_size: max_batch_size, server_handle, batch_handle })
 }
 
 async fn batch_processor(

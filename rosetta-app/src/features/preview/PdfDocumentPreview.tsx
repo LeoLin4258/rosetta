@@ -170,6 +170,18 @@ export function PdfDocumentPreview({
     };
   }, []);
 
+  // Reset generating display state when the translation run ends (cancelled or errored).
+  // Without this, the "正在翻译... X%" placeholder persists until the next percent=100 event
+  // which never arrives on abnormal termination.
+  const prevIsTranslatingRef = useRef(false);
+  useEffect(() => {
+    if (prevIsTranslatingRef.current && !isTranslating) {
+      setGenerating(false);
+      setPdf2zhProgress(null);
+    }
+    prevIsTranslatingRef.current = isTranslating;
+  }, [isTranslating]);
+
   useEffect(() => {
     let unmounted = false;
     let unlisten: (() => void) | null = null;

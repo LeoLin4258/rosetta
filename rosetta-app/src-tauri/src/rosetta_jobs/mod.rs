@@ -1,8 +1,8 @@
-use std::path::Path;
-use std::str::FromStr;
+use std::{path::Path, str::FromStr, sync::Mutex};
 
-use tauri::AppHandle;
+use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
+use tokio::sync::oneshot;
 
 mod document;
 mod export;
@@ -22,6 +22,20 @@ use model::{
     RosettaJobSummary, RosettaTranslationFileBundle, Segment, TranslationRevisionReason,
     TranslationSegment,
 };
+
+#[derive(Default)]
+pub struct PdfTranslationCancelState(pub Mutex<Option<oneshot::Sender<()>>>);
+
+#[tauri::command]
+pub fn cancel_rosetta_translated_pdf(
+    cancel_state: State<'_, PdfTranslationCancelState>,
+) {
+    if let Ok(mut guard) = cancel_state.0.lock() {
+        if let Some(tx) = guard.take() {
+            let _ = tx.send(());
+        }
+    }
+}
 
 #[tauri::command]
 pub async fn pick_rosetta_import_path(app: AppHandle) -> Result<Option<String>, String> {
@@ -277,6 +291,7 @@ pub fn export_rosetta_translated_pdf(
 #[tauri::command]
 pub async fn generate_rosetta_translated_pdf(
     app: AppHandle,
+    cancel_state: State<'_, PdfTranslationCancelState>,
     job_id: String,
     rwkv_base_url: Option<String>,
     source_lang: Option<String>,
@@ -331,7 +346,13 @@ pub async fn generate_rosetta_translated_pdf(
         .filter(|url| !url.trim().is_empty())
         .ok_or_else(|| "PDF 翻译需要一个本地 RWKV base URL。请先启动本地运行时。".to_string())?;
 
-    let output = formats::pdf::pdf2zh_invoke::invoke_pdf2zh(
+    let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
+    {
+        let mut guard = cancel_state.0.lock().map_err(|_| "取消状态锁定失败。".to_string())?;
+        *guard = Some(cancel_tx);
+    }
+
+    let invoke_result = formats::pdf::pdf2zh_invoke::invoke_pdf2zh(
         &app,
         &source_path,
         &pdf2zh_output_dir,
@@ -343,9 +364,16 @@ pub async fn generate_rosetta_translated_pdf(
             timeout_ms: timeout_ms.unwrap_or(120_000),
             ignore_cache: ignore_cache.unwrap_or(false),
         },
+        cancel_rx,
     )
-    .await
-    .map_err(|error| error.user_message())?;
+    .await;
+
+    {
+        let mut guard = cancel_state.0.lock().map_err(|_| "取消状态锁定失败。".to_string())?;
+        *guard = None;
+    }
+
+    let output = invoke_result.map_err(|error| error.user_message())?;
     std::fs::copy(&output.mono_pdf, &output_path)
         .map_err(|error| format!("无法缓存 pdf2zh 译文 PDF: {error}"))?;
     mark_pdf_translation_ready(&app, &job_id, &target_lang)?;

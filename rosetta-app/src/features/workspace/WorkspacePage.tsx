@@ -3,6 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 
 import {
+  cancelRosettaTranslatedPdf,
   generateRosettaTranslatedPdf,
   createRosettaTranslationRevision,
   ensureRosettaTranslationFile,
@@ -259,6 +260,7 @@ export function WorkspacePage() {
         await ensurePdf2zhReadyForTranslation();
         const provider = buildProvider();
         runId = `run-pdf-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        cancelRef.current = () => { void cancelRosettaTranslatedPdf(); };
         startTranslationRun({
           id: runId,
           jobId: activeJobId,
@@ -267,13 +269,17 @@ export function WorkspacePage() {
           scope: "file",
           targetSegmentIds: ["pdf-document"],
         });
-        await generateRosettaTranslatedPdf(activeJobId, {
-          rwkvBaseUrl: provider.baseUrl,
-          sourceLang: srcLang && srcLang !== "auto" ? srcLang : "en",
-          targetLang,
-          timeoutMs: rwkv.timeoutMs,
-          ignoreCache: false,
-        });
+        try {
+          await generateRosettaTranslatedPdf(activeJobId, {
+            rwkvBaseUrl: provider.baseUrl,
+            sourceLang: srcLang && srcLang !== "auto" ? srcLang : "en",
+            targetLang,
+            timeoutMs: rwkv.timeoutMs,
+            ignoreCache: false,
+          });
+        } finally {
+          cancelRef.current = null;
+        }
         markTranslationRunCompleted(runId, ["pdf-document"]);
         finishTranslationRun(runId);
         runId = null;
@@ -345,7 +351,10 @@ export function WorkspacePage() {
       const freshBundle = await loadRosettaJob(activeJobId);
       refreshJobBundle(freshBundle);
     } catch (err) {
-      setPageError(errorMessage(err, "翻译出错。"));
+      const msg = errorMessage(err, "");
+      if (!msg.includes("已取消")) {
+        setPageError(errorMessage(err, "翻译出错。"));
+      }
       if (runId) finishTranslationRun(runId);
     }
   }

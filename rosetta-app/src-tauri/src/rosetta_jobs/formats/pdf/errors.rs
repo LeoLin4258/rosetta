@@ -21,6 +21,8 @@ pub(crate) enum PdfError {
     RuntimeMissing(String),
     /// The PDF layout processor failed before producing the expected output file.
     Pdf2zhFailed(String),
+    /// Translation was cancelled by the user.
+    Cancelled,
 }
 
 impl PdfError {
@@ -35,6 +37,7 @@ impl PdfError {
             Self::TooLarge { reason } => format!("PDF 超过当前版本的处理上限：{reason}"),
             Self::RuntimeMissing(detail) => format!("PDF 翻译运行时未就绪：{detail}"),
             Self::Pdf2zhFailed(detail) => format!("PDF 译文生成失败：{detail}"),
+            Self::Cancelled => "PDF 翻译已取消。".to_string(),
         }
     }
 }

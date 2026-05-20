@@ -17,6 +17,7 @@ pub fn run() {
         .manage(managed_rwkv::Registry::default())
         .manage(managed_rwkv::InstallStateRegistry::default())
         .manage(managed_pdf2zh::InstallStateRegistry::default())
+        .manage(rosetta_jobs::PdfTranslationCancelState::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
@@ -168,6 +169,7 @@ pub fn run() {
             rosetta_jobs::load_rosetta_job,
             rosetta_jobs::load_rosetta_translation_file,
             rosetta_jobs::count_rosetta_pdf_pages,
+            rosetta_jobs::cancel_rosetta_translated_pdf,
             rosetta_jobs::generate_rosetta_translated_pdf,
             rosetta_jobs::get_rosetta_pdf_assets,
             rosetta_jobs::pick_rosetta_export_path,
