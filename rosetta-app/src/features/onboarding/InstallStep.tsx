@@ -4,12 +4,31 @@ import { AlertCircle, Download, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { ManagedRuntimeInstallProgress } from "@/types/rosetta";
 
+type InstallProgressLike = Pick<
+  ManagedRuntimeInstallProgress,
+  "bytesDone" | "bytesTotal" | "speedBytesPerSec" | "message" | "lastError"
+> & {
+  phase:
+    | ManagedRuntimeInstallProgress["phase"]
+    | "extracting";
+};
+
 type InstallStepProps = {
-  progress: ManagedRuntimeInstallProgress | null;
+  progress: InstallProgressLike | null;
   errorMessage: string | null;
   onCancel: () => void;
   onRetry: () => void;
-  onSkipToExternal: () => void;
+  onSkip: () => void;
+  title?: string;
+  errorTitle?: string;
+  retryLabel?: string;
+  cancelLabel?: string;
+  confirmCancelText?: string;
+  continueLabel?: string;
+  defaultCaption?: string;
+  downloadingCaption?: string;
+  skipLabel?: string;
+  skipHint?: string;
 };
 
 const ACTIVE_PHASES = new Set([
@@ -17,6 +36,7 @@ const ACTIVE_PHASES = new Set([
   "downloading",
   "verifying",
   "writing-manifest",
+  "extracting",
 ]);
 
 export function InstallStep({
@@ -24,7 +44,17 @@ export function InstallStep({
   errorMessage,
   onCancel,
   onRetry,
-  onSkipToExternal,
+  onSkip,
+  title = "正在下载翻译模型",
+  errorTitle = "下载没有完成",
+  retryLabel = "重新下载",
+  cancelLabel = "取消",
+  confirmCancelText = "确认取消下载？",
+  continueLabel = "继续下载",
+  defaultCaption = "约 1.3 GB · 下载完成后无需再联网",
+  downloadingCaption = "约 1.3 GB · 下载完成后无需再联网",
+  skipLabel = "使用自己的翻译 API →",
+  skipHint = "跳过后可在设置中配置 API",
 }: InstallStepProps) {
   const [confirmingCancel, setConfirmingCancel] = useState(false);
   const [confirmingSkip, setConfirmingSkip] = useState(false);
@@ -41,21 +71,21 @@ export function InstallStep({
             <AlertCircle className="size-7" strokeWidth={1.5} />
           </div>
           <div className="space-y-2">
-            <h2 className="text-xl font-semibold">下载没有完成</h2>
+            <h2 className="text-xl font-semibold">{errorTitle}</h2>
             <p className="max-w-md text-sm leading-relaxed text-muted-foreground">
               {errorMessage}
             </p>
           </div>
           <div className="flex flex-col items-center gap-3">
             <Button size="lg" onClick={onRetry} className="min-w-44">
-              <Download className="size-4" /> 重新下载
+              <Download className="size-4" /> {retryLabel}
             </Button>
             {confirmingSkip ? (
               <div className="flex items-center gap-3">
-                <span className="text-xs text-muted-foreground/50">跳过后可在设置中配置 API</span>
+                <span className="text-xs text-muted-foreground/50">{skipHint}</span>
                 <button
                   type="button"
-                  onClick={onSkipToExternal}
+                  onClick={onSkip}
                   className="text-xs text-primary/80 transition-colors hover:text-primary"
                 >
                   确认
@@ -74,7 +104,7 @@ export function InstallStep({
                 onClick={() => setConfirmingSkip(true)}
                 className="text-xs text-muted-foreground/40 transition-colors hover:text-muted-foreground/70"
               >
-                使用自己的翻译 API →
+                {skipLabel}
               </button>
             )}
           </div>
@@ -90,9 +120,9 @@ export function InstallStep({
           <Download className="size-7 animate-pulse" strokeWidth={1.5} />
         </div>
         <div className="space-y-2">
-          <h2 className="text-xl font-semibold">正在下载翻译引擎</h2>
+          <h2 className="text-xl font-semibold">{title}</h2>
           <p className="text-sm text-muted-foreground">
-            {phaseCaption(progress?.phase)}
+            {phaseCaption(progress?.phase, defaultCaption, downloadingCaption)}
           </p>
         </div>
 
@@ -112,7 +142,7 @@ export function InstallStep({
 
       {confirmingCancel ? (
         <div className="flex items-center gap-3">
-          <span className="text-xs text-muted-foreground/60">确认取消下载？</span>
+          <span className="text-xs text-muted-foreground/60">{confirmCancelText}</span>
           <button
             type="button"
             onClick={onCancel}
@@ -125,7 +155,7 @@ export function InstallStep({
             onClick={() => setConfirmingCancel(false)}
             className="text-xs text-muted-foreground/40 transition-colors hover:text-muted-foreground/70"
           >
-            继续下载
+            {continueLabel}
           </button>
         </div>
       ) : (
@@ -136,26 +166,32 @@ export function InstallStep({
           disabled={!isActive}
           className="gap-2"
         >
-          <X className="size-4" /> 取消
+          <X className="size-4" /> {cancelLabel}
         </Button>
       )}
     </div>
   );
 }
 
-function installPercent(progress: ManagedRuntimeInstallProgress | null): number {
+function installPercent(progress: InstallProgressLike | null): number {
   if (!progress || progress.bytesTotal === 0) return 0;
   return Math.min(100, Math.floor((progress.bytesDone * 100) / progress.bytesTotal));
 }
 
-function phaseCaption(phase: ManagedRuntimeInstallProgress["phase"] | undefined): string {
+function phaseCaption(
+  phase: InstallProgressLike["phase"] | undefined,
+  defaultCaption: string,
+  downloadingCaption: string
+): string {
   switch (phase) {
     case "preflight":
-      return "准备下载…";
+      return "准备中…";
     case "downloading":
-      return "约 1.3 GB · 下载完成后无需再联网";
+      return downloadingCaption;
     case "verifying":
       return "校验文件完整性…";
+    case "extracting":
+      return "正在安装到本机…";
     case "writing-manifest":
       return "写入安装清单…";
     case "done":
@@ -165,7 +201,7 @@ function phaseCaption(phase: ManagedRuntimeInstallProgress["phase"] | undefined)
     case "cancelled":
       return "已取消";
     default:
-      return "约 1.3 GB · 下载完成后无需再联网";
+      return defaultCaption;
   }
 }
 

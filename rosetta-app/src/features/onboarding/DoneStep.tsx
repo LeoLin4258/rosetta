@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 
 type DoneStepProps = {
   /** "local" = downloaded local engine. "external" = chose external API. */
-  variant: "local" | "external";
+  variant: "local" | "local-pdf-skipped" | "external";
   onContinue: () => void;
   isContinuing: boolean;
 };
@@ -30,9 +30,11 @@ export function DoneStep({ variant, onContinue, isContinuing }: DoneStepProps) {
   const heading = variant === "local" ? "本地翻译已就绪" : "好的";
   const subheading =
     variant === "local"
-      ? "模型已下载并校验。开始你的第一个文档翻译吧。"
-      : "你可以在 设置 → 外部翻译 API 中填入自己的端点。";
-  const cta = variant === "local" ? "翻译我的第一个文档" : "进入 Rosetta";
+      ? "翻译模型和 PDF 版面处理都已准备好。开始你的第一个文档翻译吧。"
+      : variant === "local-pdf-skipped"
+        ? "翻译模型已准备好。PDF 版面处理稍后可在设置中安装。"
+        : "你可以在 设置 → 外部翻译 API 中填入自己的端点。";
+  const cta = variant === "external" ? "进入 Rosetta" : "翻译我的第一个文档";
 
   return (
     <div className="flex h-full flex-col items-center justify-between gap-4 px-14 py-10">

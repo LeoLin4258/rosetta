@@ -81,6 +81,8 @@ The workspace PDF translation entry points now preflight `get_pdf2zh_status` bef
 
 The settings page now includes a PDF layout processing panel for status, install/repair actions, progress, proxy configuration, and managed component paths.
 
+First-run onboarding now prepares the PDF layout processing component after the local translation model. Users can skip only the PDF component from a small secondary action and install it later in Settings; skipping PDF setup does not skip the local translation model.
+
 ## Dogfood Findings
 
 - Importing PDF is fast and source preview appears immediately because import only performs pdfium pre-flight and caches `source.pdf`.
