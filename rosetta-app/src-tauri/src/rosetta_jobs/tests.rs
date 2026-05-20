@@ -2,6 +2,7 @@ use std::{collections::HashMap, fs, path::PathBuf};
 
 use crate::rosetta_jobs::{
     export::*,
+    formats::pdf::page_state::*,
     formats::{markdown::parse_markdown, txt::parse_txt},
     model::*,
     path::*,
@@ -339,6 +340,44 @@ fn path_safety_rejects_traversal_job_id() {
     assert!(is_safe_job_id("job-123_demo"));
     assert!(!is_safe_job_id("../job"));
     assert!(!is_safe_job_id("job/123"));
+}
+
+#[test]
+fn pdf_page_selection_accepts_ranges_and_dedupes() {
+    let pages = parse_pdf_page_selection("1-3, 3,5", 5).expect("valid selection");
+
+    assert_eq!(pages, vec![1, 2, 3, 5]);
+}
+
+#[test]
+fn pdf_page_selection_rejects_out_of_range_pages() {
+    let error = parse_pdf_page_selection("2,6", 5).expect_err("page 6 is invalid");
+
+    assert!(error.contains("第 6 页超出范围"));
+}
+
+#[test]
+fn pdf_page_status_restores_stale_translating_pages() {
+    let dir = unique_temp_dir("pdf-page-state");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let state = PdfPageTranslationState {
+        schema_version: SCHEMA_VERSION,
+        source_page_count: 2,
+        target_lang: "zh-CN".to_string(),
+        pages: vec![PdfPageTranslation {
+            page_number: 1,
+            status: "translating".to_string(),
+            translated_pdf_path: None,
+            error: None,
+            updated_at: "1".to_string(),
+        }],
+    };
+    write_pdf_page_translation_state(&dir, &state).expect("write state");
+
+    let restored = read_pdf_page_translation_state(&dir, 2, "zh-CN").expect("read state");
+
+    assert_eq!(restored.pages[0].status, "pending");
+    fs::remove_dir_all(dir).ok();
 }
 
 fn test_segment(status: &str, translated_text: Option<&str>) -> Segment {

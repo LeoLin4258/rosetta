@@ -6,6 +6,7 @@
 
 pub(crate) mod errors;
 pub(crate) mod extract;
+pub(crate) mod page_state;
 pub(crate) mod pdf2zh_invoke;
 pub(crate) mod rasterize;
 pub(crate) mod runtime;
