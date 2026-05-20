@@ -415,6 +415,8 @@ pub async fn translate_rosetta_pdf_pages(
         }
     }
 
+    sync_pdf_page_translation_summary(&app, &job_id, &target_lang, &state)?;
+
     Ok(state)
 }
 
@@ -659,6 +661,60 @@ fn mark_pdf_translation_ready(
         job.target_lang = target_lang.to_string();
         job.last_error = None;
         job.updated_at = path::timestamp_ms_string();
+    }
+    store::write_index(&root, &index)?;
+    Ok(())
+}
+
+fn sync_pdf_page_translation_summary(
+    app: &AppHandle,
+    job_id: &str,
+    target_lang: &str,
+    state: &formats::pdf::page_state::PdfPageTranslationState,
+) -> Result<(), String> {
+    let root = path::jobs_root(app)?;
+    let dir = path::checked_job_dir(&root, job_id)?;
+    let mut translation_files = store::read_translation_files(&dir)?;
+    let source_file_id = "file-1";
+    let id = path::translation_file_id(source_file_id, target_lang);
+    let (segment_count, completed_segments, failed_segments, status) =
+        formats::pdf::page_state::pdf_page_status_summary(state);
+    let now = path::timestamp_ms_string();
+
+    if let Some(file) = translation_files.iter_mut().find(|file| file.id == id) {
+        file.status = status.clone();
+        file.segment_count = segment_count;
+        file.completed_segments = completed_segments;
+        file.failed_segments = failed_segments;
+        file.updated_at = now.clone();
+    } else {
+        translation_files.push(model::RosettaTranslationFile {
+            id,
+            source_file_id: source_file_id.to_string(),
+            target_lang: target_lang.to_string(),
+            status: status.clone(),
+            segment_count,
+            completed_segments,
+            failed_segments,
+            updated_at: now.clone(),
+            exported_at: None,
+        });
+    }
+    store::write_translation_files(&dir, &translation_files)?;
+
+    let mut index = store::read_index(&root)?;
+    if let Some(job) = index.jobs.iter_mut().find(|job| job.id == job_id) {
+        job.status = if status == "translated" {
+            "completed".to_string()
+        } else {
+            status.clone()
+        };
+        job.segment_count = segment_count;
+        job.completed_segments = completed_segments;
+        job.failed_segments = failed_segments;
+        job.target_lang = target_lang.to_string();
+        job.last_error = None;
+        job.updated_at = now;
     }
     store::write_index(&root, &index)?;
     Ok(())

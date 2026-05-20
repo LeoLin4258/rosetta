@@ -409,6 +409,17 @@ export function WorkspacePage() {
       finishTranslationRun(runId);
       cancelRef.current = null;
       runId = null;
+      const freshBundle = await loadRosettaJob(activeJobId);
+      refreshJobBundle(freshBundle);
+      const refreshedTranslation = freshBundle.translationFiles.find(
+        (file) => file.id === tfBundle.translationFile.id,
+      );
+      if (refreshedTranslation) {
+        setActiveTranslationFileBundle({
+          translationFile: refreshedTranslation,
+          segments: [],
+        });
+      }
       return state;
     } catch (err) {
       const msg = errorMessage(err, "");

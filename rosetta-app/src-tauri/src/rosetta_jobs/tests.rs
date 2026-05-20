@@ -385,6 +385,39 @@ fn pdf_page_status_restores_stale_translating_pages() {
 }
 
 #[test]
+fn pdf_page_status_summary_marks_all_pages_translated() {
+    let state = PdfPageTranslationState {
+        schema_version: SCHEMA_VERSION,
+        source_page_count: 2,
+        target_lang: "zh-CN".to_string(),
+        pages: vec![
+            PdfPageTranslation {
+                page_number: 1,
+                status: "translated".to_string(),
+                translated_pdf_path: Some("pdf-pages/page-0001.pdf".to_string()),
+                error: None,
+                updated_at: "1".to_string(),
+            },
+            PdfPageTranslation {
+                page_number: 2,
+                status: "translated".to_string(),
+                translated_pdf_path: Some("pdf-pages/page-0002.pdf".to_string()),
+                error: None,
+                updated_at: "1".to_string(),
+            },
+        ],
+    };
+
+    let (segment_count, completed_segments, failed_segments, status) =
+        pdf_page_status_summary(&state);
+
+    assert_eq!(segment_count, 2);
+    assert_eq!(completed_segments, 2);
+    assert_eq!(failed_segments, 0);
+    assert_eq!(status, "translated");
+}
+
+#[test]
 fn pdf_page_artifact_path_is_stable() {
     assert_eq!(pdf_page_filename(1), "page-0001.pdf");
     assert_eq!(pdf_page_filename(42), "page-0042.pdf");
