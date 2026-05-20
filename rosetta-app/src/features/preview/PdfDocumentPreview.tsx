@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 
-import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import {
   countRosettaPdfPages,
@@ -35,8 +34,6 @@ type PdfDocumentPreviewProps = {
   /// Error message from the last failed PDF generation, owned by WorkspacePage.
   pdfError?: string | null;
   selectedPages: number[];
-  forceRetranslate: boolean;
-  onForceRetranslateChange: (force: boolean) => void;
   onPageCountChange: (count: number) => void;
   onSelectedPagesChange: (pages: number[]) => void;
 };
@@ -59,8 +56,6 @@ export function PdfDocumentPreview({
   pdfProgress,
   pdfError,
   selectedPages,
-  forceRetranslate,
-  onForceRetranslateChange,
   onPageCountChange,
   onSelectedPagesChange,
 }: PdfDocumentPreviewProps) {
@@ -219,42 +214,6 @@ export function PdfDocumentPreview({
 
   return (
     <Card className="flex h-full min-h-0 flex-col gap-0 overflow-hidden py-0">
-      <div className="flex flex-wrap items-center gap-3 border-b bg-background px-4 py-2 text-xs">
-        <span className="font-medium text-foreground">页面</span>
-        <span className="text-muted-foreground">
-          已选 {selectedPages.length} / {sourcePageCount ?? 0} 页
-        </span>
-        <Button
-          size="sm"
-          variant="ghost"
-          className="h-7 px-2 text-xs"
-          onClick={() => {
-            if (!sourcePageCount) return;
-            onSelectedPagesChange(Array.from({ length: sourcePageCount }, (_, index) => index + 1));
-          }}
-          disabled={isTranslating}
-        >
-          全选
-        </Button>
-        <Button
-          size="sm"
-          variant="ghost"
-          className="h-7 px-2 text-xs"
-          onClick={() => onSelectedPagesChange([])}
-          disabled={isTranslating}
-        >
-          取消选择
-        </Button>
-        <label className="flex items-center gap-2 text-muted-foreground">
-          <input
-            type="checkbox"
-            checked={forceRetranslate}
-            onChange={(event) => onForceRetranslateChange(event.target.checked)}
-            disabled={isTranslating}
-          />
-          强制重翻
-        </label>
-      </div>
       <div ref={paneContainerRef} className="grid min-h-0 flex-1 grid-cols-2">
         <div className="min-h-0 border-r">
           <PdfPane

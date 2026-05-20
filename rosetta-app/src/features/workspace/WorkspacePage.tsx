@@ -725,6 +725,14 @@ export function WorkspacePage() {
             selectedBlockCount={selectedBlockIds.length}
             pdfSelectedPageCount={pdfSelectedPages.length}
             pdfPageCount={pdfPageCount}
+            pdfForceRetranslate={pdfForceRetranslate}
+            onPdfForceRetranslateChange={setPdfForceRetranslate}
+            onSelectAllPages={() =>
+              handlePdfSelectedPagesChange(
+                Array.from({ length: pdfPageCount }, (_, i) => i + 1),
+              )
+            }
+            onDeselectAllPages={() => handlePdfSelectedPagesChange([])}
             onSourceLangChange={handleSourceLangChange}
             onTargetLangChange={handleTargetLangChange}
             onTranslate={(lang, src) => void handleTranslate(lang, src)}
@@ -759,8 +767,6 @@ export function WorkspacePage() {
               pdfProgress={pdfProgress}
               pdfError={pdfError}
               pdfSelectedPages={pdfSelectedPages}
-              pdfForceRetranslate={pdfForceRetranslate}
-              onPdfForceRetranslateChange={setPdfForceRetranslate}
               onPdfPageCountChange={handlePdfPageCountChange}
               onPdfSelectedPagesChange={handlePdfSelectedPagesChange}
             />

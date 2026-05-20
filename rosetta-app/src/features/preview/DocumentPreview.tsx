@@ -42,8 +42,6 @@ export function DocumentPreview({
   pdfProgress,
   pdfError,
   pdfSelectedPages = [],
-  pdfForceRetranslate = false,
-  onPdfForceRetranslateChange,
   onPdfPageCountChange,
   onPdfSelectedPagesChange,
 }: {
@@ -76,8 +74,6 @@ export function DocumentPreview({
   /// PDF-specific: error message from the last failed PDF generation.
   pdfError?: string | null;
   pdfSelectedPages?: number[];
-  pdfForceRetranslate?: boolean;
-  onPdfForceRetranslateChange?: (force: boolean) => void;
   onPdfPageCountChange?: (count: number) => void;
   onPdfSelectedPagesChange?: (pages: number[]) => void;
 }) {
@@ -105,8 +101,6 @@ export function DocumentPreview({
         pdfProgress={pdfProgress}
         pdfError={pdfError}
         selectedPages={pdfSelectedPages}
-        forceRetranslate={pdfForceRetranslate}
-        onForceRetranslateChange={onPdfForceRetranslateChange ?? (() => {})}
         onPageCountChange={onPdfPageCountChange ?? (() => {})}
         onSelectedPagesChange={onPdfSelectedPagesChange ?? (() => {})}
       />

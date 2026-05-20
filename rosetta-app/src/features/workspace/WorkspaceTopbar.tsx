@@ -37,6 +37,10 @@ type WorkspaceTopbarProps = {
   selectedBlockCount: number;
   pdfSelectedPageCount?: number;
   pdfPageCount?: number;
+  pdfForceRetranslate?: boolean;
+  onPdfForceRetranslateChange?: (force: boolean) => void;
+  onSelectAllPages?: () => void;
+  onDeselectAllPages?: () => void;
   onSourceLangChange: (lang: string) => void;
   onTargetLangChange: (lang: string) => void;
   onTranslate: (targetLang: string, sourceLang: string) => void;
@@ -67,6 +71,10 @@ export function WorkspaceTopbar({
   selectedBlockCount,
   pdfSelectedPageCount = 0,
   pdfPageCount = 0,
+  pdfForceRetranslate = false,
+  onPdfForceRetranslateChange,
+  onSelectAllPages,
+  onDeselectAllPages,
   onSourceLangChange,
   onTargetLangChange,
   onTranslate,
@@ -105,7 +113,44 @@ export function WorkspaceTopbar({
       : "所选页";
 
   return (
-    <div className="flex items-center justify-end border-b border-border/40 px-6 py-2.5">
+    <div className="flex items-center justify-between border-b border-border/40 px-6 py-2.5">
+      {isPdf ? (
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium text-foreground">页面</span>
+          <span className="text-xs text-muted-foreground">
+            已选 {pdfSelectedPageCount} / {pdfPageCount} 页
+          </span>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 px-2 text-xs"
+            onClick={onSelectAllPages}
+            disabled={isTranslating}
+          >
+            全选
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 px-2 text-xs"
+            onClick={onDeselectAllPages}
+            disabled={isTranslating}
+          >
+            取消选择
+          </Button>
+          <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
+            <input
+              type="checkbox"
+              checked={pdfForceRetranslate}
+              onChange={(e) => onPdfForceRetranslateChange?.(e.target.checked)}
+              disabled={isTranslating}
+            />
+            强制重翻
+          </label>
+        </div>
+      ) : (
+        <div />
+      )}
       <div className="flex shrink-0 items-center gap-2">
         {isTranslating ? (
           <>
