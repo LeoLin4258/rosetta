@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 export type Pdf2zhStatus = {
   state: "unsupported" | "not-installed" | "installed";
@@ -79,4 +80,13 @@ export function cancelPdf2zhInstall() {
 
 export function getPdf2zhInstallProgress() {
   return invoke<Pdf2zhInstallProgress>("get_pdf2zh_install_progress");
+}
+
+export function subscribePdf2zhInstallProgress(
+  handler: (progress: Pdf2zhInstallProgress) => void
+): Promise<UnlistenFn> {
+  return listen<Pdf2zhInstallProgress>(
+    "managed-pdf2zh://install-progress",
+    (event) => handler(event.payload)
+  );
 }

@@ -23,6 +23,11 @@ import { defaultExportFilename, exportFormatForSource } from "@/lib/rosettaExpor
 import { useRosettaStore } from "@/store/useRosettaStore";
 import type { RosettaJobBundle } from "@/types/rosetta";
 import { DocumentPreview } from "@/features/preview/DocumentPreview";
+import {
+  isPdf2zhReady,
+  useManagedPdf2zhRuntime,
+} from "@/lib/useManagedPdf2zhRuntime";
+import type { Pdf2zhInstallProgress } from "@/lib/pdf2zhRuntime";
 
 import { WorkspaceEmpty } from "./WorkspaceEmpty";
 import { WorkspaceTopbar } from "./WorkspaceTopbar";
@@ -60,6 +65,7 @@ export function WorkspacePage() {
   const [hoveredBlockId, setHoveredBlockId] = useState<string | null>(null);
 
   const cancelRef = useRef<(() => void) | null>(null);
+  const pdf2zhRuntime = useManagedPdf2zhRuntime();
 
   // Per-job language selections, with fallback to document default / global default
   const jobLangs = activeJobId ? langByJobId[activeJobId] : undefined;
@@ -85,6 +91,7 @@ export function WorkspacePage() {
 
   const completedCount = activeTranslationRun?.completedSegmentIds.length ?? 0;
   const totalCount = activeTranslationRun?.targetSegmentIds.length ?? 0;
+  const pdfEngineProgressMessage = pdfInstallProgressMessage(pdf2zhRuntime.progress);
 
   // Reset block selection when switching documents
   useEffect(() => {
@@ -186,6 +193,24 @@ export function WorkspacePage() {
     return [promise, resolve];
   }
 
+  async function ensurePdf2zhReadyForTranslation() {
+    const current = await pdf2zhRuntime.refreshStatus();
+    if (isPdf2zhReady(current)) return;
+
+    if (current?.state === "unsupported") {
+      throw new Error(current.message);
+    }
+
+    await pdf2zhRuntime.install({ repair: false });
+    const refreshed = await pdf2zhRuntime.refreshStatus();
+    if (!isPdf2zhReady(refreshed)) {
+      throw new Error(
+        refreshed?.message ??
+          "PDFMathTranslate 安装完成后仍未就绪，请检查 pdf2zh pack。"
+      );
+    }
+  }
+
   async function handleTranslate(targetLang: string, srcLang: string) {
     if (!activeJobId || !activeSourceFileId) return;
     setPageError(null);
@@ -203,6 +228,7 @@ export function WorkspacePage() {
       setActiveTranslationFileBundle(tfBundle);
 
       if (sourceFile?.format === "pdf") {
+        await ensurePdf2zhReadyForTranslation();
         const provider = buildProvider();
         runId = `run-pdf-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         startTranslationRun({
@@ -403,6 +429,7 @@ export function WorkspacePage() {
           retranslateTargetLang
         );
         setActiveTranslationFileBundle(tfBundle);
+        await ensurePdf2zhReadyForTranslation();
         const provider = buildProvider();
         runId = `run-pdf-all-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         startTranslationRun({
@@ -576,6 +603,8 @@ export function WorkspacePage() {
             activeTranslationFile={activeTranslationFile}
             isTranslating={isTranslating}
             isRuntimeStarting={managedRuntimeStatus?.state === "starting"}
+            isPdfEngineInstalling={pdf2zhRuntime.isInstalling}
+            pdfEngineProgressMessage={pdfEngineProgressMessage}
             translatedCount={completedCount}
             totalCount={totalCount}
             sourceLang={sourceLang}
@@ -629,4 +658,19 @@ function errorMessage(error: unknown, fallback: string) {
   if (error instanceof Error) return error.message;
   if (typeof error === "string" && error.trim()) return error;
   return fallback;
+}
+
+function pdfInstallProgressMessage(progress: Pdf2zhInstallProgress | null) {
+  if (!progress) return null;
+  if (progress.phase === "downloading") {
+    const percent =
+      progress.bytesTotal > 0
+        ? Math.round((progress.bytesDone / progress.bytesTotal) * 100)
+        : null;
+    return percent == null ? "正在下载 PDF 引擎…" : `正在下载 PDF 引擎 ${percent}%`;
+  }
+  if (progress.phase === "verifying") return "正在校验 PDF 引擎…";
+  if (progress.phase === "extracting") return "正在解压 PDF 引擎…";
+  if (progress.phase === "preflight") return "正在准备 PDF 引擎…";
+  return progress.message || null;
 }

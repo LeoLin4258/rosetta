@@ -27,6 +27,8 @@ type WorkspaceTopbarProps = {
   activeTranslationFile: RosettaTranslationFile | null;
   isTranslating: boolean;
   isRuntimeStarting: boolean;
+  isPdfEngineInstalling?: boolean;
+  pdfEngineProgressMessage?: string | null;
   translatedCount: number;
   totalCount: number;
   sourceLang: string;
@@ -46,6 +48,8 @@ export function WorkspaceTopbar({
   activeTranslationFile,
   isTranslating,
   isRuntimeStarting,
+  isPdfEngineInstalling = false,
+  pdfEngineProgressMessage = null,
   translatedCount,
   totalCount,
   sourceLang,
@@ -165,7 +169,12 @@ export function WorkspaceTopbar({
               </SelectContent>
             </Select>
 
-            {isRuntimeStarting ? (
+            {isPdfEngineInstalling ? (
+              <Button size="sm" disabled className="gap-1.5">
+                <Loader2 className="size-3.5 animate-spin" />
+                {pdfEngineProgressMessage ?? "正在准备 PDF 引擎…"}
+              </Button>
+            ) : isRuntimeStarting ? (
               <Button size="sm" disabled className="gap-1.5">
                 <Loader2 className="size-3.5 animate-spin" />
                 正在启动模型…

@@ -12,6 +12,10 @@ import {
   getRosettaPdfAssets,
 } from "@/lib/rosettaJobs";
 import { isManagedRuntimeReady } from "@/lib/useManagedRwkvRuntime";
+import {
+  isPdf2zhReady,
+  useManagedPdf2zhRuntime,
+} from "@/lib/useManagedPdf2zhRuntime";
 import { useRosettaStore } from "@/store/useRosettaStore";
 import type {
   RosettaDocument,
@@ -83,6 +87,7 @@ export function PdfDocumentPreview({
   const paneContainerRef = useRef<HTMLDivElement | null>(null);
   const rwkv = useRosettaStore((state) => state.rwkv);
   const managedRuntimeStatus = useRosettaStore((state) => state.managedRuntime.status);
+  const pdf2zhRuntime = useManagedPdf2zhRuntime();
 
   // Measure the pane container width so rasterization matches display. We
   // re-measure on resize so panel-resize/window-resize re-rasterize at the
@@ -211,6 +216,7 @@ export function PdfDocumentPreview({
     setGenerateError(null);
     setGenerating(true);
     try {
+      await ensurePdf2zhReadyForGeneration();
       const provider = selectProvider({
         config: rwkv,
         managedRuntimeReady: isManagedRuntimeReady(managedRuntimeStatus),
@@ -234,6 +240,22 @@ export function PdfDocumentPreview({
       );
     } finally {
       setGenerating(false);
+    }
+  }
+
+  async function ensurePdf2zhReadyForGeneration() {
+    const current = await pdf2zhRuntime.refreshStatus();
+    if (isPdf2zhReady(current)) return;
+    if (current?.state === "unsupported") {
+      throw new Error(current.message);
+    }
+    await pdf2zhRuntime.install({ repair: false });
+    const refreshed = await pdf2zhRuntime.refreshStatus();
+    if (!isPdf2zhReady(refreshed)) {
+      throw new Error(
+        refreshed?.message ??
+          "PDFMathTranslate 安装完成后仍未就绪，请检查 pdf2zh pack。"
+      );
     }
   }
 

@@ -60,6 +60,11 @@ elif new in text:
     print(f"[pdf2zh-pack] patch already present in {target}")
 else:
     raise SystemExit(f"::error::could not find expected NumPy call in {target}")
+
+for cache_dir in root.rglob("__pycache__"):
+    for child in cache_dir.iterdir():
+        child.unlink()
+    cache_dir.rmdir()
 PY
 
 cat > "$BIN_DIR/pdf2zh" <<'SH'
@@ -67,6 +72,7 @@ cat > "$BIN_DIR/pdf2zh" <<'SH'
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PACK_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+export PYTHONDONTWRITEBYTECODE=1
 exec "$PACK_ROOT/python/bin/python" -m pdf2zh.pdf2zh "$@"
 SH
 chmod 0755 "$BIN_DIR/pdf2zh"

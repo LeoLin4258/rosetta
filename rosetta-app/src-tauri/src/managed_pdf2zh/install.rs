@@ -304,6 +304,7 @@ async fn install_inner(
     emit_progress(app, registry).await;
 
     extract_pack(&archive_path, layout, profile, cancel).await?;
+    scrub_python_bytecode(&layout.pack_dir)?;
     write_manifest(layout, profile, &source_url, expected_size, Some(actual_sha))?;
 
     set_done(registry, "PDFMathTranslate 已安装。".to_string()).await;
@@ -540,6 +541,36 @@ fn copy_dir_all(source: &Path, target: &Path) -> Result<(), String> {
             if let Ok(metadata) = std::fs::metadata(&source_path) {
                 let _ = std::fs::set_permissions(&dst, metadata.permissions());
             }
+        }
+    }
+    Ok(())
+}
+
+fn scrub_python_bytecode(root: &Path) -> Result<(), String> {
+    if !root.exists() {
+        return Ok(());
+    }
+    scrub_python_bytecode_inner(root)?;
+    Ok(())
+}
+
+fn scrub_python_bytecode_inner(dir: &Path) -> Result<(), String> {
+    for entry in std::fs::read_dir(dir).map_err(|error| format!("无法扫描目录: {error}"))? {
+        let entry = entry.map_err(|error| format!("无法读取目录项: {error}"))?;
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .map_err(|error| format!("无法读取目录项类型: {error}"))?;
+        if file_type.is_dir() {
+            if entry.file_name() == "__pycache__" {
+                std::fs::remove_dir_all(&path)
+                    .map_err(|error| format!("无法删除 Python bytecode 缓存 {}: {error}", path.display()))?;
+            } else {
+                scrub_python_bytecode_inner(&path)?;
+            }
+        } else if file_type.is_file() && path.extension().is_some_and(|ext| ext == "pyc") {
+            std::fs::remove_file(&path)
+                .map_err(|error| format!("无法删除 Python bytecode {}: {error}", path.display()))?;
         }
     }
     Ok(())
