@@ -125,6 +125,14 @@ pub(crate) fn upsert_pdf_page(
     state.pages.sort_by_key(|page| page.page_number);
 }
 
+pub(crate) fn pdf_page_filename(page_number: u32) -> String {
+    format!("page-{page_number:04}.pdf")
+}
+
+pub(crate) fn pdf_page_relative_path(page_number: u32) -> String {
+    format!("pdf-pages/{}", pdf_page_filename(page_number))
+}
+
 pub(crate) fn empty_state(source_page_count: u32, target_lang: &str) -> PdfPageTranslationState {
     PdfPageTranslationState {
         schema_version: SCHEMA_VERSION,

@@ -380,6 +380,13 @@ fn pdf_page_status_restores_stale_translating_pages() {
     fs::remove_dir_all(dir).ok();
 }
 
+#[test]
+fn pdf_page_artifact_path_is_stable() {
+    assert_eq!(pdf_page_filename(1), "page-0001.pdf");
+    assert_eq!(pdf_page_filename(42), "page-0042.pdf");
+    assert_eq!(pdf_page_relative_path(42), "pdf-pages/page-0042.pdf");
+}
+
 fn test_segment(status: &str, translated_text: Option<&str>) -> Segment {
     Segment {
         id: "segment-1".to_string(),
