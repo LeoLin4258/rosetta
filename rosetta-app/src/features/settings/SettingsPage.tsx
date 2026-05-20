@@ -38,6 +38,7 @@ import { probeRwkvTranslationApi } from "../../lib/rwkvApi";
 import { cn } from "../../lib/utils";
 import { useRosettaStore } from "../../store/useRosettaStore";
 import { LocalRwkvPanel } from "./LocalRwkvPanel";
+import { Pdf2zhPanel } from "./Pdf2zhPanel";
 import type {
   AppThemeMode,
   RwkvConnectionConfig,
@@ -351,6 +352,8 @@ export function SettingsPage() {
           </section>
 
           <LocalRwkvPanel />
+
+          <Pdf2zhPanel />
 
           <section className="flex flex-col gap-3" id="translation-service">
             <Collapsible open={externalApiOpen} onOpenChange={setExternalApiOpen}>

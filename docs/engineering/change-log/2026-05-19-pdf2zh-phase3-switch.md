@@ -79,6 +79,8 @@ The installer command now supports:
 
 The workspace PDF translation entry points now preflight `get_pdf2zh_status` before invoking pdf2zh. If the managed pack is missing, Rosetta attempts `install_pdf2zh_pack` first and shows install progress in the translate button. This applies to initial PDF translation, "重翻全部", and the PDF preview "重新生成" action.
 
+The settings page now includes a PDF translation engine panel for PDFMathTranslate status, install/repair actions, progress, proxy configuration, and managed pack paths.
+
 ## Dogfood Findings
 
 - Importing PDF is fast and source preview appears immediately because import only performs pdfium pre-flight and caches `source.pdf`.
