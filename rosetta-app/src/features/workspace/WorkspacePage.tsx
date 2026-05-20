@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { listen } from "@tauri-apps/api/event";
 
 import {
   generateRosettaTranslatedPdf,
@@ -63,6 +64,7 @@ export function WorkspacePage() {
   const [pageError, setPageError] = useState<string | null>(null);
   const [selectedBlockIds, setSelectedBlockIds] = useState<string[]>([]);
   const [hoveredBlockId, setHoveredBlockId] = useState<string | null>(null);
+  const [pdfProgress, setPdfProgress] = useState<{ phase: string; percent: number | null } | null>(null);
 
   const cancelRef = useRef<(() => void) | null>(null);
   const pdf2zhRuntime = useManagedPdf2zhRuntime();
@@ -97,6 +99,32 @@ export function WorkspacePage() {
   useEffect(() => {
     setSelectedBlockIds([]);
   }, [activeDocument?.id]);
+
+  // Subscribe to pdf2zh phase/percent progress while a PDF translation is running
+  const isPdfJob = sourceFile?.format === "pdf";
+  useEffect(() => {
+    if (!isTranslating || !isPdfJob || !activeJobId) {
+      setPdfProgress(null);
+      return;
+    }
+    let unlisten: (() => void) | null = null;
+    let unmounted = false;
+    listen<{ jobId: string; phase: string; percent: number | null }>(
+      "rosetta-pdf2zh-progress",
+      (event) => {
+        if (event.payload.jobId !== activeJobId) return;
+        setPdfProgress({ phase: event.payload.phase, percent: event.payload.percent });
+      },
+    ).then((fn) => {
+      if (unmounted) fn();
+      else unlisten = fn;
+    }).catch(() => {});
+    return () => {
+      unmounted = true;
+      unlisten?.();
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isTranslating, isPdfJob, activeJobId]);
 
   // After a document is loaded (or switched), restore translation segments if
   // there's a known active translation file but no segments in memory yet.
@@ -607,6 +635,7 @@ export function WorkspacePage() {
             pdfEngineProgressMessage={pdfEngineProgressMessage}
             translatedCount={completedCount}
             totalCount={totalCount}
+            pdfProgress={pdfProgress}
             sourceLang={sourceLang}
             targetLang={targetLang}
             selectedBlockCount={selectedBlockIds.length}

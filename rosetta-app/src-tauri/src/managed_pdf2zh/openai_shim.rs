@@ -1,20 +1,27 @@
-use std::{
-    path::PathBuf,
-    sync::Arc,
-};
+use std::{path::PathBuf, sync::Arc};
 
 use axum::{extract::State, http::StatusCode, routing::post, Json, Router};
 use serde::{Deserialize, Serialize};
-use tokio::{net::TcpListener, task::JoinHandle};
+use tokio::{
+    net::TcpListener,
+    sync::{mpsc, oneshot},
+    task::JoinHandle,
+    time::{timeout_at, Duration, Instant},
+};
 
 use crate::rwkv_providers::{
     mobile_batch_chat::{self, MobileBatchChatConfig},
     ProviderTranslateBatch,
 };
 
+const DEFAULT_MAX_BATCH_SIZE: usize = 4;
+
+const BATCH_WINDOW_MS: u64 = 80;
+
 #[derive(Debug)]
 pub struct OpenAiShim {
     port: u16,
+    pub batch_size: usize,
     join_handle: JoinHandle<()>,
 }
 
@@ -30,10 +37,13 @@ impl Drop for OpenAiShim {
     }
 }
 
-#[derive(Debug, Clone)]
+struct PendingTranslation {
+    text: String,
+    result_tx: oneshot::Sender<Result<String, String>>,
+}
+
 struct ShimState {
-    rwkv: MobileBatchChatConfig,
-    target_lang: String,
+    batch_tx: mpsc::Sender<PendingTranslation>,
     log_file: PathBuf,
     debug: bool,
 }
@@ -84,6 +94,20 @@ pub async fn spawn_shim(
     };
     mobile_batch_chat::set_chat_roles_for_pair(&rwkv, &source_lang, &target_lang, None).await?;
 
+    let max_batch_size = mobile_batch_chat::query_supported_batch_sizes(&rwkv)
+        .await
+        .map(|sizes| mobile_batch_chat::pick_batch_size(&sizes, 0))
+        .unwrap_or(DEFAULT_MAX_BATCH_SIZE)
+        .max(1);
+
+    let (batch_tx, batch_rx) = mpsc::channel(max_batch_size * 4);
+    tokio::spawn(batch_processor(
+        batch_rx,
+        rwkv.clone(),
+        target_lang.clone(),
+        max_batch_size,
+    ));
+
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .map_err(|error| format!("无法启动 OpenAI shim: {error}"))?;
@@ -95,13 +119,12 @@ pub async fn spawn_shim(
         debug,
         &log_file,
         &format!(
-            "spawn shim base_url={} source_lang={} target_lang={}",
-            rwkv.base_url, source_lang, target_lang
+            "spawn shim base_url={} source_lang={} target_lang={} max_batch_size={}",
+            rwkv.base_url, source_lang, target_lang, max_batch_size
         ),
     );
     let state = Arc::new(ShimState {
-        rwkv,
-        target_lang,
+        batch_tx,
         log_file,
         debug,
     });
@@ -113,7 +136,62 @@ pub async fn spawn_shim(
             eprintln!("[pdf2zh-shim] server exited: {error}");
         }
     });
-    Ok(OpenAiShim { port, join_handle })
+    Ok(OpenAiShim { port, batch_size: max_batch_size, join_handle })
+}
+
+async fn batch_processor(
+    mut rx: mpsc::Receiver<PendingTranslation>,
+    rwkv: MobileBatchChatConfig,
+    target_lang: String,
+    max_batch_size: usize,
+) {
+    loop {
+        let Some(first) = rx.recv().await else {
+            break;
+        };
+        let mut batch = vec![first];
+
+        let deadline = Instant::now() + Duration::from_millis(BATCH_WINDOW_MS);
+        while batch.len() < max_batch_size {
+            match timeout_at(deadline, rx.recv()).await {
+                Ok(Some(item)) => batch.push(item),
+                _ => break,
+            }
+        }
+
+        eprintln!("[pdf2zh-batch] assembled {} item(s) in batch", batch.len());
+        let source_texts: Vec<String> = batch.iter().map(|p| p.text.clone()).collect();
+        let result = mobile_batch_chat::translate_batch(
+            &rwkv,
+            ProviderTranslateBatch {
+                source_texts: &source_texts,
+                target_lang: &target_lang,
+                timeout_ms: rwkv.timeout_ms,
+                cancel: None,
+            },
+        )
+        .await;
+
+        eprintln!("[pdf2zh-batch] result: ok={}, translations={}", result.ok, result.translations.len());
+        if result.ok && result.translations.len() == batch.len() {
+            for (pending, translation) in batch.into_iter().zip(result.translations) {
+                let _ = pending.result_tx.send(Ok(translation));
+            }
+        } else {
+            let error_msg = if result.ok {
+                format!(
+                    "翻译结果数量不匹配（期望 {}，实际 {}）",
+                    batch.len(),
+                    result.translations.len()
+                )
+            } else {
+                result.message.clone()
+            };
+            for pending in batch {
+                let _ = pending.result_tx.send(Err(error_msg.clone()));
+            }
+        }
+    }
 }
 
 async fn chat_completions(
@@ -167,35 +245,33 @@ async fn chat_completions(
             }],
         }));
     }
-    let source_texts = vec![text];
-    let result = mobile_batch_chat::translate_batch(
-        &state.rwkv,
-        ProviderTranslateBatch {
-            source_texts: &source_texts,
-            target_lang: &state.target_lang,
-            timeout_ms: state.rwkv.timeout_ms,
-            cancel: None,
-        },
-    )
-    .await;
 
-    if !result.ok {
-        append_log(
-            state.debug,
-            &state.log_file,
-            &format!("rwkv error status={:?} message={}", result.status_code, result.message),
-        );
-        return Err((
-            StatusCode::BAD_GATEWAY,
-            format!("RWKV 翻译失败: {}", result.message),
-        ));
-    }
+    let (result_tx, result_rx) = oneshot::channel();
+    state
+        .batch_tx
+        .send(PendingTranslation { text, result_tx })
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "翻译批处理队列已关闭。".to_string(),
+            )
+        })?;
 
-    let content = result.translations.into_iter().next().unwrap_or_default();
+    let content = result_rx
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "批处理结果接收失败。".to_string(),
+            )
+        })?
+        .map_err(|error| (StatusCode::BAD_GATEWAY, format!("RWKV 翻译失败: {error}")))?;
+
     append_log(
         state.debug,
         &state.log_file,
-        &format!("rwkv translation_preview={}", preview(&content)),
+        &format!("translation_preview={}", preview(&content)),
     );
     Ok(openai_response(content))
 }

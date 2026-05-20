@@ -80,10 +80,11 @@ pub(crate) async fn invoke_pdf2zh(
     .map_err(PdfError::Pdf2zhFailed)?;
 
     let openai_base_url = shim.base_url();
+    let thread_count = shim.batch_size;
     std::fs::write(
         output_dir.join("rosetta-pdf2zh-command.log"),
         format!(
-            "bin={}\nsource={}\noutput_dir={}\ntemp_dir={}\nopenai_base_url={}\nservice=openai:rwkv\nsource_lang={}\ntarget_lang={}\ndebug={}\nshim_log={}\n",
+            "bin={}\nsource={}\noutput_dir={}\ntemp_dir={}\nopenai_base_url={}\nservice=openai:rwkv\nsource_lang={}\ntarget_lang={}\nthreads={}\ndebug={}\nshim_log={}\n",
             bin.display(),
             source_path.display(),
             output_dir.display(),
@@ -91,6 +92,7 @@ pub(crate) async fn invoke_pdf2zh(
             openai_base_url,
             options.source_lang,
             options.target_lang,
+            thread_count,
             debug,
             shim_log_file.display(),
         ),
@@ -106,7 +108,7 @@ pub(crate) async fn invoke_pdf2zh(
         .arg("-s")
         .arg("openai:rwkv")
         .arg("-t")
-        .arg("1")
+        .arg(thread_count.to_string())
         .current_dir(output_dir)
         .env("OPENAI_BASE_URL", &openai_base_url)
         .env("OPENAI_API_KEY", "rosetta-local")

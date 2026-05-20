@@ -31,6 +31,7 @@ type WorkspaceTopbarProps = {
   pdfEngineProgressMessage?: string | null;
   translatedCount: number;
   totalCount: number;
+  pdfProgress?: { phase: string; percent: number | null } | null;
   sourceLang: string;
   targetLang: string;
   selectedBlockCount: number;
@@ -43,6 +44,12 @@ type WorkspaceTopbarProps = {
   onRetranslateAll: () => void;
 };
 
+const PDF_PHASE_LABELS: Record<string, string> = {
+  parse: "解析版面",
+  translate: "翻译中",
+  render: "生成 PDF",
+};
+
 export function WorkspaceTopbar({
   job,
   activeTranslationFile,
@@ -52,6 +59,7 @@ export function WorkspaceTopbar({
   pdfEngineProgressMessage = null,
   translatedCount,
   totalCount,
+  pdfProgress = null,
   sourceLang,
   targetLang,
   selectedBlockCount,
@@ -94,7 +102,14 @@ export function WorkspaceTopbar({
         {isTranslating ? (
           <>
             <span className="text-xs tabular-nums text-muted-foreground/60">
-              {translatedCount} / {totalCount} · {progressPercent}%
+              {pdfProgress != null ? (
+                <>
+                  {PDF_PHASE_LABELS[pdfProgress.phase] ?? pdfProgress.phase}
+                  {pdfProgress.percent != null ? ` · ${pdfProgress.percent}%` : ""}
+                </>
+              ) : (
+                <>{translatedCount} / {totalCount} · {progressPercent}%</>
+              )}
             </span>
             {confirmingCancel ? (
               <div className="flex items-center gap-2">
