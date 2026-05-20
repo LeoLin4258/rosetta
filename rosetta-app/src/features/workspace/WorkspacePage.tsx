@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 
 import {
   cancelRosettaTranslatedPdf,
-  generateRosettaTranslatedPdf,
+  countRosettaPdfPages,
   createRosettaTranslationRevision,
   ensureRosettaTranslationFile,
   exportRosettaTranslatedPdf,
@@ -14,6 +14,7 @@ import {
   loadRosettaJob,
   loadRosettaTranslationFile,
   pickRosettaExportPath,
+  translateRosettaPdfPages,
 } from "@/lib/rosettaJobs";
 import { selectProvider } from "@/lib/providers";
 import { isManagedRuntimeReady } from "@/lib/useManagedRwkvRuntime";
@@ -261,6 +262,8 @@ export function WorkspacePage() {
       if (sourceFile?.format === "pdf") {
         await ensurePdf2zhReadyForTranslation();
         const provider = buildProvider();
+        const pageCount = await countRosettaPdfPages(activeJobId, "source");
+        const pageSelection = `1-${pageCount}`;
         runId = `run-pdf-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         cancelRef.current = () => { void cancelRosettaTranslatedPdf(); };
         startTranslationRun({
@@ -269,20 +272,18 @@ export function WorkspacePage() {
           sourceFileId: activeSourceFileId,
           translationFileId: tfBundle.translationFile.id,
           scope: "file",
-          targetSegmentIds: ["pdf-document"],
+          targetSegmentIds: [`pdf-pages:${pageSelection}`],
         });
-        try {
-          await generateRosettaTranslatedPdf(activeJobId, {
-            rwkvBaseUrl: provider.baseUrl,
-            sourceLang: srcLang && srcLang !== "auto" ? srcLang : "en",
-            targetLang,
-            timeoutMs: rwkv.timeoutMs,
-            ignoreCache: false,
-          });
-        } finally {
-          cancelRef.current = null;
-        }
-        markTranslationRunCompleted(runId, ["pdf-document"]);
+        await translateRosettaPdfPages(activeJobId, {
+          pageSelection,
+          targetLang,
+          rwkvBaseUrl: provider.baseUrl,
+          sourceLang: srcLang && srcLang !== "auto" ? srcLang : "en",
+          timeoutMs: rwkv.timeoutMs,
+          force: false,
+        });
+        cancelRef.current = null;
+        markTranslationRunCompleted(runId, [`pdf-pages:${pageSelection}`]);
         finishTranslationRun(runId);
         runId = null;
         const freshBundle = await loadRosettaJob(activeJobId);
@@ -362,6 +363,72 @@ export function WorkspacePage() {
         }
       }
       if (runId) finishTranslationRun(runId);
+    }
+  }
+
+  async function handleTranslatePdfPages(pageSelection: string, force: boolean) {
+    if (!activeJobId || !activeSourceFileId) return null;
+    const pageTargetLang = activeTranslationFile?.targetLang ?? targetLang;
+    setPageError(null);
+    setPdfError(null);
+    setSelectedBlockIds([]);
+
+    let runId: string | null = null;
+
+    try {
+      const tfBundle = await ensureRosettaTranslationFile(
+        activeJobId,
+        activeSourceFileId,
+        pageTargetLang,
+      );
+      setActiveTranslationFileBundle(tfBundle);
+      await ensurePdf2zhReadyForTranslation();
+      const provider = buildProvider();
+
+      runId = `run-pdf-pages-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      cancelRef.current = () => { void cancelRosettaTranslatedPdf(); };
+      startTranslationRun({
+        id: runId,
+        jobId: activeJobId,
+        sourceFileId: activeSourceFileId,
+        translationFileId: tfBundle.translationFile.id,
+        scope: "file",
+        targetSegmentIds: [`pdf-pages:${pageSelection}`],
+      });
+
+      const state = await translateRosettaPdfPages(activeJobId, {
+        pageSelection,
+        targetLang: pageTargetLang,
+        rwkvBaseUrl: provider.baseUrl,
+        sourceLang: sourceLang && sourceLang !== "auto" ? sourceLang : "en",
+        timeoutMs: rwkv.timeoutMs,
+        force,
+      });
+
+      markTranslationRunCompleted(runId, [`pdf-pages:${pageSelection}`]);
+      finishTranslationRun(runId);
+      cancelRef.current = null;
+      runId = null;
+      const freshBundle = await loadRosettaJob(activeJobId);
+      refreshJobBundle(freshBundle);
+      const refreshedTranslation = freshBundle.translationFiles.find(
+        (file) => file.id === tfBundle.translationFile.id,
+      );
+      if (refreshedTranslation) {
+        setActiveTranslationFileBundle({
+          translationFile: refreshedTranslation,
+          segments: [],
+        });
+      }
+      return state;
+    } catch (err) {
+      const msg = errorMessage(err, "");
+      if (!msg.includes("已取消")) {
+        setPdfError(errorMessage(err, "PDF 按页翻译出错。"));
+      }
+      if (runId) finishTranslationRun(runId);
+      cancelRef.current = null;
+      return null;
     }
   }
 
@@ -475,6 +542,8 @@ export function WorkspacePage() {
         setActiveTranslationFileBundle(tfBundle);
         await ensurePdf2zhReadyForTranslation();
         const provider = buildProvider();
+        const pageCount = await countRosettaPdfPages(activeJobId, "source");
+        const pageSelection = `1-${pageCount}`;
         runId = `run-pdf-all-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         cancelRef.current = () => { void cancelRosettaTranslatedPdf(); };
         startTranslationRun({
@@ -483,20 +552,18 @@ export function WorkspacePage() {
           sourceFileId: activeSourceFileId,
           translationFileId: tfBundle.translationFile.id,
           scope: "file",
-          targetSegmentIds: ["pdf-document"],
+          targetSegmentIds: [`pdf-pages:${pageSelection}`],
         });
-        try {
-          await generateRosettaTranslatedPdf(activeJobId, {
-            rwkvBaseUrl: provider.baseUrl,
-            sourceLang: sourceLang && sourceLang !== "auto" ? sourceLang : "en",
-            targetLang: retranslateTargetLang,
-            timeoutMs: rwkv.timeoutMs,
-            ignoreCache: true,
-          });
-        } finally {
-          cancelRef.current = null;
-        }
-        markTranslationRunCompleted(runId, ["pdf-document"]);
+        await translateRosettaPdfPages(activeJobId, {
+          pageSelection,
+          targetLang: retranslateTargetLang,
+          rwkvBaseUrl: provider.baseUrl,
+          sourceLang: sourceLang && sourceLang !== "auto" ? sourceLang : "en",
+          timeoutMs: rwkv.timeoutMs,
+          force: true,
+        });
+        cancelRef.current = null;
+        markTranslationRunCompleted(runId, [`pdf-pages:${pageSelection}`]);
         finishTranslationRun(runId);
         runId = null;
         const freshBundle = await loadRosettaJob(activeJobId);
@@ -701,6 +768,9 @@ export function WorkspacePage() {
               pdfProgress={pdfProgress}
               pdfError={pdfError}
               onRegenerate={() => void handleRetranslateAll()}
+              onTranslatePdfPages={(selection, force) =>
+                handleTranslatePdfPages(selection, force)
+              }
             />
           </div>
         </>

@@ -76,8 +76,8 @@ export function WorkspaceTopbar({
 
   const hasTranslation =
     activeTranslationFile &&
-    (activeTranslationFile.completedSegments > 0 ||
-      (job.format === "pdf" && activeTranslationFile.status === "translated"));
+    (job.format === "pdf" ||
+      activeTranslationFile.completedSegments > 0);
   const allTranslated =
     !!activeTranslationFile &&
     (job.format === "pdf"

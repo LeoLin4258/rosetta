@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { MutableRefObject } from "react";
+import type React from "react";
 
 import { renderRosettaPdfPageAsPng } from "@/lib/rosettaJobs";
 
@@ -41,6 +42,10 @@ type PdfPaneProps = {
   /// container so the parent can mirror scrollTop between panes.
   scrollRef?: MutableRefObject<HTMLDivElement | null>;
   onScroll?: () => void;
+  pageControls?: (pageIndex: number) => React.ReactNode;
+  pageStatus?: (pageIndex: number) => React.ReactNode;
+  canRenderPage?: (pageIndex: number) => boolean;
+  renderPage?: (pageIndex: number, targetWidth: number) => Promise<Uint8Array>;
 };
 
 export function PdfPane({
@@ -52,6 +57,10 @@ export function PdfPane({
   placeholder,
   scrollRef,
   onScroll,
+  pageControls,
+  pageStatus,
+  canRenderPage,
+  renderPage,
 }: PdfPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -95,13 +104,27 @@ export function PdfPane({
       className="flex h-full min-h-0 flex-col items-stretch gap-3 overflow-auto bg-muted/30 px-4 py-4"
     >
       {pages.map((pageIndex) => (
-        <PdfPageImage
+        <div
           key={`${jobId}-${kind}-${cacheKey ?? "v0"}-${pageIndex}`}
-          jobId={jobId}
-          kind={kind}
-          pageIndex={pageIndex}
-          targetWidth={targetWidth}
-        />
+          className="flex min-w-0 items-start gap-3"
+        >
+          {pageControls ? (
+            <div className="sticky top-2 z-10 flex w-8 shrink-0 justify-center pt-2">
+              {pageControls(pageIndex)}
+            </div>
+          ) : null}
+          <div className="min-w-0 flex-1">
+            <PdfPageImage
+              jobId={jobId}
+              kind={kind}
+              pageIndex={pageIndex}
+              targetWidth={targetWidth}
+              canRender={canRenderPage ? canRenderPage(pageIndex) : true}
+              renderPage={renderPage}
+              status={pageStatus?.(pageIndex)}
+            />
+          </div>
+        </div>
       ))}
     </div>
   );
@@ -116,11 +139,17 @@ function PdfPageImage({
   kind,
   pageIndex,
   targetWidth,
+  canRender,
+  renderPage,
+  status,
 }: {
   jobId: string;
   kind: "source" | "translated";
   pageIndex: number;
   targetWidth: number;
+  canRender: boolean;
+  renderPage?: (pageIndex: number, targetWidth: number) => Promise<Uint8Array>;
+  status?: React.ReactNode;
 }) {
   const [src, setSrc] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -133,12 +162,10 @@ function PdfPageImage({
 
     (async () => {
       try {
-        const bytes = await renderRosettaPdfPageAsPng(
-          jobId,
-          kind,
-          pageIndex,
-          targetWidth,
-        );
+        if (!canRender) return;
+        const bytes = renderPage
+          ? await renderPage(pageIndex, targetWidth)
+          : await renderRosettaPdfPageAsPng(jobId, kind, pageIndex, targetWidth);
         if (cancelled) return;
         // Slice to a private buffer so revoking our URL never disturbs the
         // caller's view of the Uint8Array.
@@ -158,7 +185,19 @@ function PdfPageImage({
       cancelled = true;
       if (createdUrl) URL.revokeObjectURL(createdUrl);
     };
-  }, [jobId, kind, pageIndex, targetWidth]);
+  }, [canRender, jobId, kind, pageIndex, renderPage, targetWidth]);
+
+  if (!canRender) {
+    const placeholderHeight = Math.max(targetWidth, 200) * 1.41;
+    return (
+      <div
+        className="flex items-center justify-center rounded border border-border bg-background px-4 text-center text-xs text-muted-foreground"
+        style={{ minHeight: `${placeholderHeight}px` }}
+      >
+        {status ?? `第 ${pageIndex + 1} 页尚未翻译`}
+      </div>
+    );
+  }
 
   if (error) {
     return (
@@ -178,7 +217,7 @@ function PdfPageImage({
         className="flex items-center justify-center rounded border border-border bg-background text-xs text-muted-foreground"
         style={{ minHeight: `${placeholderHeight}px` }}
       >
-        加载第 {pageIndex + 1} 页…
+        {status ?? `加载第 ${pageIndex + 1} 页…`}
       </div>
     );
   }

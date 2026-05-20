@@ -2,6 +2,11 @@ use std::{collections::HashMap, fs, path::PathBuf};
 
 use crate::rosetta_jobs::{
     export::*,
+    formats::pdf::page_assemble::{
+        assemble_pdf_with_page_translations, extract_single_page_pdf,
+    },
+    formats::pdf::page_state::*,
+    formats::pdf::test_helpers::fixture_path,
     formats::{markdown::parse_markdown, txt::parse_txt},
     model::*,
     path::*,
@@ -339,6 +344,186 @@ fn path_safety_rejects_traversal_job_id() {
     assert!(is_safe_job_id("job-123_demo"));
     assert!(!is_safe_job_id("../job"));
     assert!(!is_safe_job_id("job/123"));
+}
+
+#[test]
+fn pdf_page_selection_accepts_ranges_and_dedupes() {
+    let pages = parse_pdf_page_selection("1-3, 3,5", 5).expect("valid selection");
+
+    assert_eq!(pages, vec![1, 2, 3, 5]);
+}
+
+#[test]
+fn pdf_page_selection_rejects_out_of_range_pages() {
+    let error = parse_pdf_page_selection("2,6", 5).expect_err("page 6 is invalid");
+
+    assert!(error.contains("第 6 页超出范围"));
+}
+
+#[test]
+fn pdf_page_status_restores_stale_translating_pages() {
+    let dir = unique_temp_dir("pdf-page-state");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let state = PdfPageTranslationState {
+        schema_version: SCHEMA_VERSION,
+        source_page_count: 2,
+        target_lang: "zh-CN".to_string(),
+        pages: vec![PdfPageTranslation {
+            page_number: 1,
+            status: "translating".to_string(),
+            translated_pdf_path: None,
+            error: None,
+            updated_at: "1".to_string(),
+        }],
+    };
+    write_pdf_page_translation_state(&dir, &state).expect("write state");
+
+    let restored = read_pdf_page_translation_state(&dir, 2, "zh-CN").expect("read state");
+
+    assert_eq!(restored.pages[0].status, "pending");
+    fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn pdf_page_status_summary_marks_all_pages_translated() {
+    let state = PdfPageTranslationState {
+        schema_version: SCHEMA_VERSION,
+        source_page_count: 2,
+        target_lang: "zh-CN".to_string(),
+        pages: vec![
+            PdfPageTranslation {
+                page_number: 1,
+                status: "translated".to_string(),
+                translated_pdf_path: Some("pdf-pages/page-0001.pdf".to_string()),
+                error: None,
+                updated_at: "1".to_string(),
+            },
+            PdfPageTranslation {
+                page_number: 2,
+                status: "translated".to_string(),
+                translated_pdf_path: Some("pdf-pages/page-0002.pdf".to_string()),
+                error: None,
+                updated_at: "1".to_string(),
+            },
+        ],
+    };
+
+    let (segment_count, completed_segments, failed_segments, status) =
+        pdf_page_status_summary(&state);
+
+    assert_eq!(segment_count, 2);
+    assert_eq!(completed_segments, 2);
+    assert_eq!(failed_segments, 0);
+    assert_eq!(status, "translated");
+}
+
+#[test]
+fn pdf_page_artifact_path_is_stable() {
+    assert_eq!(pdf_page_filename(1), "page-0001.pdf");
+    assert_eq!(pdf_page_filename(42), "page-0042.pdf");
+    assert_eq!(pdf_page_relative_path(42), "pdf-pages/page-0042.pdf");
+}
+
+#[test]
+fn pdf_page_export_preserves_source_page_count_without_translations() {
+    let source = fixture_path("002-trivial-libre-office-writer.pdf");
+    let source_page_count = lopdf::Document::load(&source)
+        .expect("load source pdf")
+        .get_pages()
+        .len();
+    let dir = unique_temp_dir("pdf-page-export-source");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let target = dir.join("export.pdf");
+    let state = PdfPageTranslationState {
+        schema_version: SCHEMA_VERSION,
+        source_page_count: source_page_count as u32,
+        target_lang: "zh-CN".to_string(),
+        pages: Vec::new(),
+    };
+
+    assemble_pdf_with_page_translations(&source, &dir, &state, &target).expect("assemble pdf");
+
+    let output_pages = lopdf::Document::load(&target)
+        .expect("load output pdf")
+        .get_pages()
+        .len();
+    assert_eq!(output_pages, source_page_count);
+    fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn pdf_page_export_substitutes_translated_page_and_keeps_full_length() {
+    let source = fixture_path("002-trivial-libre-office-writer.pdf");
+    let translated = fixture_path("simple-one-page.pdf");
+    let source_page_count = lopdf::Document::load(&source)
+        .expect("load source pdf")
+        .get_pages()
+        .len();
+    let dir = unique_temp_dir("pdf-page-export-substitute");
+    let pages_dir = dir.join("pdf-pages");
+    fs::create_dir_all(&pages_dir).expect("create page cache dir");
+    fs::copy(&translated, pages_dir.join("page-0001.pdf")).expect("copy translated page");
+    let target = dir.join("export.pdf");
+    let state = PdfPageTranslationState {
+        schema_version: SCHEMA_VERSION,
+        source_page_count: source_page_count as u32,
+        target_lang: "zh-CN".to_string(),
+        pages: vec![PdfPageTranslation {
+            page_number: 1,
+            status: "translated".to_string(),
+            translated_pdf_path: Some("pdf-pages/page-0001.pdf".to_string()),
+            error: None,
+            updated_at: "1".to_string(),
+        }],
+    };
+
+    assemble_pdf_with_page_translations(&source, &dir, &state, &target).expect("assemble pdf");
+
+    let output_pages = lopdf::Document::load(&target)
+        .expect("load output pdf")
+        .get_pages()
+        .len();
+    assert_eq!(output_pages, source_page_count);
+    fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn pdf_page_cache_extracts_requested_page_from_full_pdf_output() {
+    let source = fixture_path("2305.13048v2.pdf");
+    let source_pages = lopdf::Document::load(&source)
+        .expect("load source pdf")
+        .get_pages()
+        .len();
+    assert!(source_pages >= 2);
+    let dir = unique_temp_dir("pdf-page-cache-extract");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let target = dir.join("page-0002.pdf");
+
+    extract_single_page_pdf(&source, 2, &target).expect("extract second page");
+
+    let output_pages = lopdf::Document::load(&target)
+        .expect("load extracted page")
+        .get_pages()
+        .len();
+    assert_eq!(output_pages, 1);
+    fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn pdf_page_cache_accepts_single_page_pdf_output_for_any_requested_page() {
+    let source = fixture_path("simple-one-page.pdf");
+    let dir = unique_temp_dir("pdf-page-cache-single-output");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let target = dir.join("page-0002.pdf");
+
+    extract_single_page_pdf(&source, 2, &target).expect("extract fallback page");
+
+    let output_pages = lopdf::Document::load(&target)
+        .expect("load extracted page")
+        .get_pages()
+        .len();
+    assert_eq!(output_pages, 1);
+    fs::remove_dir_all(dir).ok();
 }
 
 fn test_segment(status: &str, translated_text: Option<&str>) -> Segment {

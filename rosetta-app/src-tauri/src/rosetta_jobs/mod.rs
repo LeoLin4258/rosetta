@@ -1,6 +1,7 @@
-use std::{path::Path, str::FromStr, sync::Mutex};
+use std::{fs, path::Path, str::FromStr, sync::Mutex};
 
-use tauri::{AppHandle, State};
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_dialog::DialogExt;
 use tokio::sync::oneshot;
 
@@ -226,6 +227,231 @@ pub fn render_rosetta_pdf_page_as_png(
     Ok(tauri::ipc::Response::new(bytes))
 }
 
+const PDF_PAGE_PROGRESS_EVENT: &str = "rosetta-pdf-page-progress";
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PdfPageProgressPayload {
+    job_id: String,
+    page_number: u32,
+    status: String,
+}
+
+#[tauri::command]
+pub fn get_rosetta_pdf_page_status(
+    app: AppHandle,
+    job_id: String,
+    target_lang: Option<String>,
+) -> Result<formats::pdf::page_state::PdfPageTranslationState, String> {
+    let source_path = store::cached_pdf_source_path(&app, &job_id)?;
+    let page_count = formats::pdf::count_pages(&app, &source_path)
+        .map_err(|error| error.user_message())?;
+    let root = path::jobs_root(&app)?;
+    let dir = path::checked_job_dir(&root, &job_id)?;
+    let bundle = store::load_job_bundle(&app, &job_id)?;
+    let target_lang = target_lang
+        .or_else(|| {
+            bundle
+                .document
+                .files
+                .first()
+                .and_then(|file| file.target_lang.clone())
+        })
+        .unwrap_or_else(|| bundle.document.target_lang.clone());
+
+    formats::pdf::page_state::read_pdf_page_translation_state(&dir, page_count, &target_lang)
+}
+
+#[tauri::command]
+pub async fn translate_rosetta_pdf_pages(
+    app: AppHandle,
+    cancel_state: State<'_, PdfTranslationCancelState>,
+    job_id: String,
+    page_selection: String,
+    target_lang: String,
+    rwkv_base_url: String,
+    source_lang: Option<String>,
+    timeout_ms: Option<u64>,
+    force: Option<bool>,
+) -> Result<formats::pdf::page_state::PdfPageTranslationState, String> {
+    let bundle = store::load_job_bundle(&app, &job_id)?;
+    if bundle.document.format != "pdf" {
+        return Err("当前文档不是 PDF，无法按页翻译。".to_string());
+    }
+
+    let source_path = store::cached_pdf_source_path(&app, &job_id)?;
+    let page_count = formats::pdf::count_pages(&app, &source_path)
+        .map_err(|error| error.user_message())?;
+    let pages = formats::pdf::page_state::parse_pdf_page_selection(&page_selection, page_count)?;
+    let root = path::jobs_root(&app)?;
+    let dir = path::checked_job_dir(&root, &job_id)?;
+    let pages_dir = dir.join("pdf-pages");
+    fs::create_dir_all(&pages_dir)
+        .map_err(|error| format!("无法创建 PDF 页缓存目录: {error}"))?;
+    let mut state =
+        formats::pdf::page_state::read_pdf_page_translation_state(&dir, page_count, &target_lang)?;
+    let source_lang = source_lang
+        .filter(|lang| lang != "auto")
+        .or_else(|| {
+            bundle
+                .document
+                .files
+                .first()
+                .and_then(|file| file.source_lang.clone())
+        })
+        .unwrap_or_else(|| "en".to_string());
+    let rwkv_base_url = rwkv_base_url.trim().to_string();
+    if rwkv_base_url.is_empty() {
+        return Err("PDF 翻译需要一个本地 RWKV base URL。请先启动本地运行时。".to_string());
+    }
+    let force = force.unwrap_or(false);
+
+    for page_number in pages {
+        let already_translated = state.pages.iter().any(|page| {
+            page.page_number == page_number
+                && page.status == "translated"
+                && page.translated_pdf_path.is_some()
+        });
+        if already_translated && !force {
+            continue;
+        }
+
+        formats::pdf::page_state::upsert_pdf_page(
+            &mut state,
+            page_number,
+            "translating",
+            None,
+            None,
+        );
+        formats::pdf::page_state::write_pdf_page_translation_state(&dir, &state)?;
+        emit_pdf_page_progress(&app, &job_id, page_number, "translating");
+
+        let output_dir = dir
+            .join("pdf2zh-output")
+            .join(formats::pdf::page_state::pdf_page_filename(page_number));
+        if output_dir.exists() {
+            fs::remove_dir_all(&output_dir)
+                .map_err(|error| format!("无法清理旧 PDF 页输出: {error}"))?;
+        }
+        fs::create_dir_all(&output_dir)
+            .map_err(|error| format!("无法创建 PDF 页输出目录: {error}"))?;
+
+        let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
+        {
+            let mut guard = cancel_state
+                .0
+                .lock()
+                .map_err(|_| "取消状态锁定失败。".to_string())?;
+            *guard = Some(cancel_tx);
+        }
+
+        let invoke_result = formats::pdf::pdf2zh_invoke::invoke_pdf2zh(
+            &app,
+            &source_path,
+            &output_dir,
+            formats::pdf::pdf2zh_invoke::Pdf2zhInvokeOptions {
+                job_id: job_id.clone(),
+                rwkv_base_url: rwkv_base_url.clone(),
+                source_lang: source_lang.clone(),
+                target_lang: target_lang.clone(),
+                timeout_ms: timeout_ms.unwrap_or(120_000),
+                ignore_cache: false,
+                pages: Some(vec![page_number]),
+            },
+            cancel_rx,
+        )
+        .await;
+
+        {
+            let mut guard = cancel_state
+                .0
+                .lock()
+                .map_err(|_| "取消状态锁定失败。".to_string())?;
+            *guard = None;
+        }
+
+        match invoke_result {
+            Ok(output) => {
+                let relative_path = formats::pdf::page_state::pdf_page_relative_path(page_number);
+                let target = dir.join(&relative_path);
+                formats::pdf::page_assemble::extract_single_page_pdf(
+                    &output.mono_pdf,
+                    page_number,
+                    &target,
+                )?;
+                formats::pdf::page_state::upsert_pdf_page(
+                    &mut state,
+                    page_number,
+                    "translated",
+                    Some(relative_path),
+                    None,
+                );
+                formats::pdf::page_state::write_pdf_page_translation_state(&dir, &state)?;
+                emit_pdf_page_progress(&app, &job_id, page_number, "translated");
+            }
+            Err(formats::pdf::errors::PdfError::Cancelled) => {
+                formats::pdf::page_state::upsert_pdf_page(
+                    &mut state,
+                    page_number,
+                    "pending",
+                    None,
+                    None,
+                );
+                formats::pdf::page_state::write_pdf_page_translation_state(&dir, &state)?;
+                emit_pdf_page_progress(&app, &job_id, page_number, "pending");
+                return Err("已取消 PDF 翻译。".to_string());
+            }
+            Err(error) => {
+                formats::pdf::page_state::upsert_pdf_page(
+                    &mut state,
+                    page_number,
+                    "failed",
+                    None,
+                    Some(error.user_message()),
+                );
+                formats::pdf::page_state::write_pdf_page_translation_state(&dir, &state)?;
+                emit_pdf_page_progress(&app, &job_id, page_number, "failed");
+            }
+        }
+    }
+
+    sync_pdf_page_translation_summary(&app, &job_id, &target_lang, &state)?;
+
+    Ok(state)
+}
+
+#[tauri::command]
+pub fn render_rosetta_pdf_translated_page_as_png(
+    app: AppHandle,
+    job_id: String,
+    page_number: u32,
+    target_width: u32,
+) -> Result<tauri::ipc::Response, String> {
+    if page_number == 0 {
+        return Err("页码必须从 1 开始。".to_string());
+    }
+    let root = path::jobs_root(&app)?;
+    let dir = path::checked_job_dir(&root, &job_id)?;
+    let page_path = dir.join(formats::pdf::page_state::pdf_page_relative_path(page_number));
+    if !page_path.is_file() {
+        return Err(format!("第 {page_number} 页还没有译文 PDF。"));
+    }
+    let bytes = formats::pdf::render_page_as_png(&app, &page_path, 0, target_width)
+        .map_err(|error| error.user_message())?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+fn emit_pdf_page_progress(app: &AppHandle, job_id: &str, page_number: u32, status: &str) {
+    let _ = app.emit(
+        PDF_PAGE_PROGRESS_EVENT,
+        PdfPageProgressPayload {
+            job_id: job_id.to_string(),
+            page_number,
+            status: status.to_string(),
+        },
+    );
+}
+
 fn pdf_path_for_kind(
     app: &AppHandle,
     job_id: &str,
@@ -238,32 +464,46 @@ fn pdf_path_for_kind(
     }
 }
 
-/// Export the already-generated translated PDF for a job by copying it from
-/// `<job_dir>/exports/translated.pdf` to the user-chosen `target_path`.
-/// Re-rendering is unnecessary — the bytes on disk are exactly what we'd
-/// produce again, and a re-render of a 100-page doc would block the UI for
-/// ~10s when a plain copy takes milliseconds.
+/// Export a complete PDF by substituting any page-level translated PDFs into
+/// the original source PDF. Pages without translated artifacts are preserved
+/// from the source document.
 #[tauri::command]
 pub fn export_rosetta_translated_pdf(
     app: AppHandle,
     job_id: String,
     target_path: String,
 ) -> Result<model::RosettaExportResult, String> {
-    let source_path = store::translated_pdf_output_path(&app, &job_id)?;
-    if !source_path.is_file() {
-        return Err("尚未生成翻译后 PDF，请先翻译完成后再导出。".to_string());
-    }
+    let source_pdf = store::cached_pdf_source_path(&app, &job_id)?;
+    let page_count = formats::pdf::count_pages(&app, &source_pdf)
+        .map_err(|error| error.user_message())?;
+    let root = path::jobs_root(&app)?;
+    let dir = path::checked_job_dir(&root, &job_id)?;
+    let bundle = store::load_job_bundle(&app, &job_id)?;
+    let target_lang = bundle
+        .document
+        .files
+        .first()
+        .and_then(|file| file.target_lang.clone())
+        .unwrap_or_else(|| bundle.document.target_lang.clone());
+    let state =
+        formats::pdf::page_state::read_pdf_page_translation_state(&dir, page_count, &target_lang)?;
+    let assembled_path = store::translated_pdf_output_path(&app, &job_id)?;
+    formats::pdf::page_assemble::assemble_pdf_with_page_translations(
+        &source_pdf,
+        &dir,
+        &state,
+        &assembled_path,
+    )?;
     let target = std::path::PathBuf::from(&target_path);
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("无法创建导出目录: {error}"))?;
     }
-    let bytes_written = std::fs::copy(&source_path, &target)
+    let bytes_written = std::fs::copy(&assembled_path, &target)
         .map_err(|error| format!("复制翻译后 PDF 失败: {error}"))?;
 
     // Mirror the txt/md export bookkeeping (timestamp updates) so the UI can
     // show "上次导出于…". The job summary lives in index.json.
-    let root = path::jobs_root(&app)?;
     let mut index = store::read_index(&root)?;
     let now = path::timestamp_ms_string();
     let export_job = {
@@ -363,6 +603,7 @@ pub async fn generate_rosetta_translated_pdf(
             target_lang: target_lang.clone(),
             timeout_ms: timeout_ms.unwrap_or(120_000),
             ignore_cache: ignore_cache.unwrap_or(false),
+            pages: None,
         },
         cancel_rx,
     )
@@ -420,6 +661,60 @@ fn mark_pdf_translation_ready(
         job.target_lang = target_lang.to_string();
         job.last_error = None;
         job.updated_at = path::timestamp_ms_string();
+    }
+    store::write_index(&root, &index)?;
+    Ok(())
+}
+
+fn sync_pdf_page_translation_summary(
+    app: &AppHandle,
+    job_id: &str,
+    target_lang: &str,
+    state: &formats::pdf::page_state::PdfPageTranslationState,
+) -> Result<(), String> {
+    let root = path::jobs_root(app)?;
+    let dir = path::checked_job_dir(&root, job_id)?;
+    let mut translation_files = store::read_translation_files(&dir)?;
+    let source_file_id = "file-1";
+    let id = path::translation_file_id(source_file_id, target_lang);
+    let (segment_count, completed_segments, failed_segments, status) =
+        formats::pdf::page_state::pdf_page_status_summary(state);
+    let now = path::timestamp_ms_string();
+
+    if let Some(file) = translation_files.iter_mut().find(|file| file.id == id) {
+        file.status = status.clone();
+        file.segment_count = segment_count;
+        file.completed_segments = completed_segments;
+        file.failed_segments = failed_segments;
+        file.updated_at = now.clone();
+    } else {
+        translation_files.push(model::RosettaTranslationFile {
+            id,
+            source_file_id: source_file_id.to_string(),
+            target_lang: target_lang.to_string(),
+            status: status.clone(),
+            segment_count,
+            completed_segments,
+            failed_segments,
+            updated_at: now.clone(),
+            exported_at: None,
+        });
+    }
+    store::write_translation_files(&dir, &translation_files)?;
+
+    let mut index = store::read_index(&root)?;
+    if let Some(job) = index.jobs.iter_mut().find(|job| job.id == job_id) {
+        job.status = if status == "translated" {
+            "completed".to_string()
+        } else {
+            status.clone()
+        };
+        job.segment_count = segment_count;
+        job.completed_segments = completed_segments;
+        job.failed_segments = failed_segments;
+        job.target_lang = target_lang.to_string();
+        job.last_error = None;
+        job.updated_at = now;
     }
     store::write_index(&root, &index)?;
     Ok(())

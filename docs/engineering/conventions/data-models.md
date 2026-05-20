@@ -123,11 +123,15 @@ AppData/Rosetta/jobs/
   index.json
   <jobId>/
     source.txt 或 source.md
+    source.pdf
     sources/<relative-path>  # 文件夹项目
     document.json
     segments.json
     translation_files.json
     translations/<translationFileId>.json
+    pdf_page_translations.json
+    pdf-pages/
+      page-0001.pdf
     translation_revisions.json
     exports/
 ```
@@ -146,6 +150,9 @@ AppData/Rosetta/jobs/
 - PDF 页码、页内顺序等来源信息先放入 `RosettaBlock.style.pdf`，例如 `{ page: 1, orderOnPage: 12 }`。高保真还原需要的 bbox、字体、列检测结果等布局信息也应先放在 `style.pdf` 中探索；不要在没有 ADR 的情况下把这些字段提升到核心模型顶层。
 - PDF importer 遇到 image-only、加密或无法解析的文件时必须返回清晰错误，不能创建空任务。
 - 系统文件选择和导出路径选择必须通过非阻塞 Tauri dialog command 完成，不能在 command 中调用 `blocking_pick_file` 或 `blocking_save_file`，避免 Windows 原生对话框打开时卡住应用窗口。
+- 当前视觉 PDF 翻译路径把 PDF 作为版面保持型文档处理：导入阶段缓存 `source.pdf`，翻译阶段使用 `pdf2zh --pages` 生成页级译文 PDF，并把页状态保存到 `pdf_page_translations.json`。这条路径不把 PDF 文本回填为普通 Rosetta text segments。
+- `pdf_page_translations.json` 是 PDF 页级译文状态文件，记录源 PDF 页数、目标语言、每页状态和页级译文 PDF 相对路径。应用加载时遗留的 `queued` / `translating` 页必须恢复为可重试状态。
+- PDF 页级译文文件保存在 `pdf-pages/page-000N.pdf`。这些文件是 Rosetta 内部缓存，不是用户导出文件。
 
 导出约定：
 
@@ -155,6 +162,7 @@ AppData/Rosetta/jobs/
 - Markdown 导出只承诺保留基础 marker，不承诺完整 CommonMark AST 级别还原。
 - 任务工作台的导出最小单位是当前选中的译文文件，而不是整个项目。项目是文件集合与共享设置容器，不能让用户在当前文件视图里误触发整项目导出。
 - 当前译文文件必须完成翻译后才能导出；`done`、`edited` 和 `skipped` 视为已处理，`pending`、`translating`、`failed` 或空译文不能导出。
+- PDF 导出例外：视觉 PDF 导出始终生成完整 PDF，已翻译页使用 `pdf-pages/` 中的页级译文 PDF，未翻译页或失败页保留源 PDF 对应页面。因此 PDF 不要求所有页面完成后才能导出。
 - 当前译文文件导出到用户选择的具体文件路径，输出文件名默认来自源文件名和目标语言，例如 `chapter.zh-CN.md` 或 `chapter.zh-CN.bilingual.md`。
 - 多文件项目的批量导出如果后续恢复，应作为单独的项目级入口，并明确提示会导出项目内所有文件。删除项目只删除 Rosetta job cache，不删除用户原始文件或已导出目录。
 

@@ -11,6 +11,21 @@ import type {
   TranslationRevisionReason,
 } from "../types/rosetta";
 
+export type PdfPageTranslation = {
+  pageNumber: number;
+  status: "pending" | "queued" | "translating" | "translated" | "failed";
+  translatedPdfPath?: string | null;
+  error?: string | null;
+  updatedAt: string;
+};
+
+export type PdfPageTranslationState = {
+  schemaVersion: number;
+  sourcePageCount: number;
+  targetLang: string;
+  pages: PdfPageTranslation[];
+};
+
 export function importRosettaDocumentFromPath(path: string) {
   return invoke<RosettaJobBundle>("import_rosetta_document_from_path", { path });
 }
@@ -225,6 +240,38 @@ export function cancelRosettaTranslatedPdf() {
   return invoke<void>("cancel_rosetta_translated_pdf");
 }
 
+export function getRosettaPdfPageStatus(
+  jobId: string,
+  targetLang?: string | null,
+) {
+  return invoke<PdfPageTranslationState>("get_rosetta_pdf_page_status", {
+    jobId,
+    targetLang,
+  });
+}
+
+export function translateRosettaPdfPages(
+  jobId: string,
+  options: {
+    pageSelection: string;
+    targetLang: string;
+    rwkvBaseUrl: string;
+    sourceLang?: string | null;
+    timeoutMs?: number;
+    force?: boolean;
+  },
+) {
+  return invoke<PdfPageTranslationState>("translate_rosetta_pdf_pages", {
+    jobId,
+    pageSelection: options.pageSelection,
+    targetLang: options.targetLang,
+    rwkvBaseUrl: options.rwkvBaseUrl,
+    sourceLang: options.sourceLang,
+    timeoutMs: options.timeoutMs,
+    force: options.force,
+  });
+}
+
 /// Copy the cached translated PDF (`<job_dir>/exports/translated.pdf`) to a
 /// user-chosen destination. Re-generation is unnecessary — the bytes on disk
 /// are exactly the v1 pipeline output. PDF v1 doesn't support bilingual
@@ -265,5 +312,21 @@ export async function renderRosettaPdfPageAsPng(
     pageIndex,
     targetWidth,
   });
+  return new Uint8Array(buffer);
+}
+
+export async function renderRosettaPdfTranslatedPageAsPng(
+  jobId: string,
+  pageNumber: number,
+  targetWidth: number,
+): Promise<Uint8Array> {
+  const buffer = await invoke<ArrayBuffer>(
+    "render_rosetta_pdf_translated_page_as_png",
+    {
+      jobId,
+      pageNumber,
+      targetWidth,
+    },
+  );
   return new Uint8Array(buffer);
 }

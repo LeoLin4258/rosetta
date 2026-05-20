@@ -35,6 +35,7 @@ pub(crate) struct Pdf2zhInvokeOptions {
     pub target_lang: String,
     pub timeout_ms: u64,
     pub ignore_cache: bool,
+    pub pages: Option<Vec<u32>>,
 }
 
 #[derive(Debug, Clone)]
@@ -121,6 +122,14 @@ pub(crate) async fn invoke_pdf2zh(
         .env("TMP", &temp_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if let Some(pages) = &options.pages {
+        let pages_arg = pages
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        command.arg("--pages").arg(pages_arg);
+    }
     let _ = options.ignore_cache;
 
     emit_progress(app, &options.job_id, "translate", Some(0), "正在翻译 PDF...");
