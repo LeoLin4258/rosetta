@@ -20,7 +20,6 @@ import type {
 } from "../../types/rosetta";
 
 import { PdfDocumentPreview } from "./PdfDocumentPreview";
-import type { PdfPageTranslationState } from "@/lib/rosettaJobs";
 
 type PreviewSide = "source" | "translation";
 
@@ -42,8 +41,9 @@ export function DocumentPreview({
   translationSegments,
   pdfProgress,
   pdfError,
-  onRegenerate,
-  onTranslatePdfPages,
+  pdfSelectedPages = [],
+  onPdfPageCountChange,
+  onPdfSelectedPagesChange,
 }: {
   /// Required for PDF preview (needed to resolve `<job_dir>/source.pdf` and
   /// trigger translated-PDF generation). Other format paths don't use it; the
@@ -73,13 +73,9 @@ export function DocumentPreview({
   pdfProgress?: { phase: string; percent: number | null } | null;
   /// PDF-specific: error message from the last failed PDF generation.
   pdfError?: string | null;
-  /// PDF-specific: called when the user clicks "重新生成".
-  onRegenerate?: () => void;
-  /// PDF-specific: called when the user translates an explicit page selection.
-  onTranslatePdfPages?: (
-    pageSelection: string,
-    force: boolean,
-  ) => Promise<PdfPageTranslationState | null | void>;
+  pdfSelectedPages?: number[];
+  onPdfPageCountChange?: (count: number) => void;
+  onPdfSelectedPagesChange?: (pages: number[]) => void;
 }) {
   // PDF documents get a dedicated react-pdf-based preview. The temporary
   // markdown-block fallback below is kept as the renderer for txt/md and as
@@ -104,8 +100,9 @@ export function DocumentPreview({
         isTranslating={isTranslating}
         pdfProgress={pdfProgress}
         pdfError={pdfError}
-        onRegenerate={onRegenerate}
-        onTranslatePages={onTranslatePdfPages}
+        selectedPages={pdfSelectedPages}
+        onPageCountChange={onPdfPageCountChange ?? (() => {})}
+        onSelectedPagesChange={onPdfSelectedPagesChange ?? (() => {})}
       />
     );
   }

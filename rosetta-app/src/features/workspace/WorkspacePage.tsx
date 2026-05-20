@@ -66,6 +66,9 @@ export function WorkspacePage() {
   const [pageError, setPageError] = useState<string | null>(null);
   const [pdfError, setPdfError] = useState<string | null>(null);
   const [selectedBlockIds, setSelectedBlockIds] = useState<string[]>([]);
+  const [pdfPageCount, setPdfPageCount] = useState(0);
+  const [pdfSelectedPages, setPdfSelectedPages] = useState<number[]>([]);
+  const [pdfForceRetranslate, setPdfForceRetranslate] = useState(false);
   const [hoveredBlockId, setHoveredBlockId] = useState<string | null>(null);
   const [pdfProgress, setPdfProgress] = useState<{ phase: string; percent: number | null } | null>(null);
 
@@ -101,7 +104,18 @@ export function WorkspacePage() {
   // Reset block selection when switching documents
   useEffect(() => {
     setSelectedBlockIds([]);
+    setPdfPageCount(0);
+    setPdfSelectedPages([]);
+    setPdfForceRetranslate(false);
   }, [activeDocument?.id]);
+
+  const handlePdfPageCountChange = useCallback((count: number) => {
+    setPdfPageCount(count);
+  }, []);
+
+  const handlePdfSelectedPagesChange = useCallback((pages: number[]) => {
+    setPdfSelectedPages(pages);
+  }, []);
 
   // Subscribe to pdf2zh phase/percent progress while a PDF translation is running
   const isPdfJob = sourceFile?.format === "pdf";
@@ -260,43 +274,13 @@ export function WorkspacePage() {
       setActiveTranslationFileBundle(tfBundle);
 
       if (sourceFile?.format === "pdf") {
-        await ensurePdf2zhReadyForTranslation();
-        const provider = buildProvider();
-        const pageCount = await countRosettaPdfPages(activeJobId, "source");
-        const pageSelection = `1-${pageCount}`;
-        runId = `run-pdf-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        cancelRef.current = () => { void cancelRosettaTranslatedPdf(); };
-        startTranslationRun({
-          id: runId,
-          jobId: activeJobId,
-          sourceFileId: activeSourceFileId,
-          translationFileId: tfBundle.translationFile.id,
-          scope: "file",
-          targetSegmentIds: [`pdf-pages:${pageSelection}`],
-        });
-        await translateRosettaPdfPages(activeJobId, {
-          pageSelection,
-          targetLang,
-          rwkvBaseUrl: provider.baseUrl,
-          sourceLang: srcLang && srcLang !== "auto" ? srcLang : "en",
-          timeoutMs: rwkv.timeoutMs,
-          force: false,
-        });
-        cancelRef.current = null;
-        markTranslationRunCompleted(runId, [`pdf-pages:${pageSelection}`]);
-        finishTranslationRun(runId);
-        runId = null;
-        const freshBundle = await loadRosettaJob(activeJobId);
-        refreshJobBundle(freshBundle);
-        const refreshedTranslation = freshBundle.translationFiles.find(
-          (file) => file.id === tfBundle.translationFile.id,
-        );
-        if (refreshedTranslation) {
-          setActiveTranslationFileBundle({
-            translationFile: refreshedTranslation,
-            segments: [],
-          });
+        if (pdfSelectedPages.length === 0) {
+          setPdfError("请选择要翻译的页面。");
+          return;
         }
+        const pageSelection = formatPageSelection(pdfSelectedPages);
+        const force = pdfForceRetranslate || activeTranslationFile?.status === "translated";
+        await handleTranslatePdfPages(pageSelection, force, targetLang, srcLang);
         return;
       }
 
@@ -366,9 +350,14 @@ export function WorkspacePage() {
     }
   }
 
-  async function handleTranslatePdfPages(pageSelection: string, force: boolean) {
+  async function handleTranslatePdfPages(
+    pageSelection: string,
+    force: boolean,
+    targetLangOverride = targetLang,
+    sourceLangOverride = sourceLang,
+  ) {
     if (!activeJobId || !activeSourceFileId) return null;
-    const pageTargetLang = activeTranslationFile?.targetLang ?? targetLang;
+    const pageTargetLang = targetLangOverride;
     setPageError(null);
     setPdfError(null);
     setSelectedBlockIds([]);
@@ -400,7 +389,7 @@ export function WorkspacePage() {
         pageSelection,
         targetLang: pageTargetLang,
         rwkvBaseUrl: provider.baseUrl,
-        sourceLang: sourceLang && sourceLang !== "auto" ? sourceLang : "en",
+        sourceLang: sourceLangOverride && sourceLangOverride !== "auto" ? sourceLangOverride : "en",
         timeoutMs: rwkv.timeoutMs,
         force,
       });
@@ -734,6 +723,16 @@ export function WorkspacePage() {
             sourceLang={sourceLang}
             targetLang={targetLang}
             selectedBlockCount={selectedBlockIds.length}
+            pdfSelectedPageCount={pdfSelectedPages.length}
+            pdfPageCount={pdfPageCount}
+            pdfForceRetranslate={pdfForceRetranslate}
+            onPdfForceRetranslateChange={setPdfForceRetranslate}
+            onSelectAllPages={() =>
+              handlePdfSelectedPagesChange(
+                Array.from({ length: pdfPageCount }, (_, i) => i + 1),
+              )
+            }
+            onDeselectAllPages={() => handlePdfSelectedPagesChange([])}
             onSourceLangChange={handleSourceLangChange}
             onTargetLangChange={handleTargetLangChange}
             onTranslate={(lang, src) => void handleTranslate(lang, src)}
@@ -767,10 +766,9 @@ export function WorkspacePage() {
               translationSegments={translationSegments}
               pdfProgress={pdfProgress}
               pdfError={pdfError}
-              onRegenerate={() => void handleRetranslateAll()}
-              onTranslatePdfPages={(selection, force) =>
-                handleTranslatePdfPages(selection, force)
-              }
+              pdfSelectedPages={pdfSelectedPages}
+              onPdfPageCountChange={handlePdfPageCountChange}
+              onPdfSelectedPagesChange={handlePdfSelectedPagesChange}
             />
           </div>
         </>
@@ -788,6 +786,25 @@ function errorMessage(error: unknown, fallback: string) {
   if (error instanceof Error) return error.message;
   if (typeof error === "string" && error.trim()) return error;
   return fallback;
+}
+
+function formatPageSelection(pages: number[]) {
+  const sorted = [...new Set(pages)].sort((a, b) => a - b);
+  if (sorted.length === 0) return "";
+  const ranges: string[] = [];
+  let start = sorted[0];
+  let previous = sorted[0];
+  for (const page of sorted.slice(1)) {
+    if (page === previous + 1) {
+      previous = page;
+      continue;
+    }
+    ranges.push(start === previous ? `${start}` : `${start}-${previous}`);
+    start = page;
+    previous = page;
+  }
+  ranges.push(start === previous ? `${start}` : `${start}-${previous}`);
+  return ranges.join(",");
 }
 
 function pdfInstallProgressMessage(progress: Pdf2zhInstallProgress | null) {

@@ -1,11 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { languageLabel } from "@/lib/languages";
 import {
   countRosettaPdfPages,
   getRosettaPdfPageStatus,
@@ -37,12 +33,9 @@ type PdfDocumentPreviewProps = {
   pdfProgress?: { phase: string; percent: number | null } | null;
   /// Error message from the last failed PDF generation, owned by WorkspacePage.
   pdfError?: string | null;
-  /// Called when the user clicks "重新生成".
-  onRegenerate?: () => void;
-  onTranslatePages?: (
-    pageSelection: string,
-    force: boolean,
-  ) => Promise<PdfPageTranslationState | null | void>;
+  selectedPages: number[];
+  onPageCountChange: (count: number) => void;
+  onSelectedPagesChange: (pages: number[]) => void;
 };
 
 /// Default rasterize width per pane. Backed by pdfium on the Rust side at
@@ -62,8 +55,9 @@ export function PdfDocumentPreview({
   isTranslating,
   pdfProgress,
   pdfError,
-  onRegenerate,
-  onTranslatePages,
+  selectedPages,
+  onPageCountChange,
+  onSelectedPagesChange,
 }: PdfDocumentPreviewProps) {
   const sourceScrollRef = useRef<HTMLDivElement | null>(null);
   const translationScrollRef = useRef<HTMLDivElement | null>(null);
@@ -71,16 +65,11 @@ export function PdfDocumentPreview({
   const scrollDriverTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [sourcePageCount, setSourcePageCount] = useState<number | null>(null);
-  const [translatedPageCount, setTranslatedPageCount] = useState<number | null>(null);
   const [paneWidth, setPaneWidth] = useState<number>(DEFAULT_RASTER_WIDTH);
   // Bumping forces PdfPane to re-fetch all pages — used after regeneration so
   // the user immediately sees the new translated PDF.
   const [translatedCacheKey, setTranslatedCacheKey] = useState(0);
-  const [pageRangeInput, setPageRangeInput] = useState("");
-  const [selectedPages, setSelectedPages] = useState<number[]>([]);
-  const [forceRetranslate, setForceRetranslate] = useState(false);
   const [pdfPageState, setPdfPageState] = useState<PdfPageTranslationState | null>(null);
-  const [pageSelectionError, setPageSelectionError] = useState<string | null>(null);
   const paneContainerRef = useRef<HTMLDivElement | null>(null);
 
   // Measure the pane container width so rasterization matches display.
@@ -116,16 +105,14 @@ export function PdfDocumentPreview({
   useEffect(() => {
     let cancelled = false;
     setSourcePageCount(null);
-    setTranslatedPageCount(null);
 
     (async () => {
       try {
         const srcPages = await countRosettaPdfPages(jobId, "source");
         if (cancelled) return;
         setSourcePageCount(srcPages);
-        setTranslatedPageCount(srcPages);
-        setSelectedPages(Array.from({ length: srcPages }, (_, index) => index + 1));
-        setPageRangeInput(formatPageSelection(Array.from({ length: srcPages }, (_, index) => index + 1)));
+        onPageCountChange(srcPages);
+        onSelectedPagesChange(Array.from({ length: srcPages }, (_, index) => index + 1));
         void refreshPageState();
       } catch (error) {
         if (cancelled) return;
@@ -136,7 +123,7 @@ export function PdfDocumentPreview({
     return () => {
       cancelled = true;
     };
-  }, [jobId, refreshPageState]);
+  }, [jobId, onPageCountChange, onSelectedPagesChange, refreshPageState]);
 
   useEffect(() => {
     if (!jobId) return;
@@ -165,18 +152,6 @@ export function PdfDocumentPreview({
       if (scrollDriverTimeoutRef.current) clearTimeout(scrollDriverTimeoutRef.current);
     };
   }, []);
-
-  // Re-probe translated page count whenever the translation file is updated
-  // (e.g. after WorkspacePage calls loadRosettaJob following a successful run).
-  useEffect(() => {
-    if (translationFile?.status !== "translated") return;
-    void countRosettaPdfPages(jobId, "translated")
-      .then((pages) => {
-        setTranslatedPageCount(pages);
-        setTranslatedCacheKey((key) => key + 1);
-      })
-      .catch(() => {});
-  }, [jobId, translationFile?.status, translationFile?.updatedAt]);
 
   function syncScroll(side: PreviewSide) {
     if (scrollDriverRef.current !== null && scrollDriverRef.current !== side) return;
@@ -224,34 +199,12 @@ export function PdfDocumentPreview({
     return `翻译部分完成 (${completedSegments} / ${segmentCount})，继续翻译以生成完整译文 PDF。`;
   })();
 
-  function handlePageRangeChange(value: string) {
-    setPageRangeInput(value);
-    if (!sourcePageCount) return;
-    const parsed = parsePageSelection(value, sourcePageCount);
-    if (typeof parsed === "string") {
-      setPageSelectionError(parsed);
-      return;
-    }
-    setPageSelectionError(null);
-    setSelectedPages(parsed);
-  }
-
   function togglePage(pageNumber: number, checked: boolean) {
     const next = checked
       ? [...selectedPages, pageNumber]
       : selectedPages.filter((page) => page !== pageNumber);
     const normalized = [...new Set(next)].sort((a, b) => a - b);
-    setSelectedPages(normalized);
-    setPageRangeInput(formatPageSelection(normalized));
-    setPageSelectionError(null);
-  }
-
-  async function handleTranslateSelectedPages() {
-    if (!onTranslatePages || selectedPages.length === 0 || pageSelectionError) return;
-    const selection = formatPageSelection(selectedPages);
-    const nextState = await onTranslatePages(selection, forceRetranslate);
-    if (nextState) setPdfPageState(nextState);
-    setTranslatedCacheKey((key) => key + 1);
+    onSelectedPagesChange(normalized);
   }
 
   function pageStatus(pageIndex: number) {
@@ -261,70 +214,6 @@ export function PdfDocumentPreview({
 
   return (
     <Card className="flex h-full min-h-0 flex-col gap-0 overflow-hidden py-0">
-      <div className="grid grid-cols-2 border-b bg-muted/40 text-sm text-muted-foreground">
-        <div className="border-r px-4 py-3">
-          <span>原文 PDF</span>
-          <span className="ml-2 text-xs">
-            {document.filename}
-          </span>
-        </div>
-        <div className="flex items-center justify-between gap-3 px-4 py-3">
-          <div className="flex items-center gap-2">
-            <span>译文 PDF</span>
-            {translationFile ? (
-              <Badge variant="outline">{languageLabel(translationFile.targetLang)}</Badge>
-            ) : null}
-          </div>
-          {translationComplete || pdfAlreadyTranslated ? (
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={onRegenerate}
-              disabled={isTranslating}
-            >
-              {isTranslating ? "生成中…" : "重新生成"}
-            </Button>
-          ) : null}
-        </div>
-      </div>
-      <div className="flex flex-wrap items-center gap-3 border-b bg-background px-4 py-2 text-xs">
-        <span className="font-medium text-foreground">页面</span>
-        <Input
-          value={pageRangeInput}
-          onChange={(event) => handlePageRangeChange(event.target.value)}
-          className="h-8 w-40 text-xs"
-          placeholder="1-3,5"
-          disabled={isTranslating}
-        />
-        <label className="flex items-center gap-2 text-muted-foreground">
-          <input
-            type="checkbox"
-            checked={forceRetranslate}
-            onChange={(event) => setForceRetranslate(event.target.checked)}
-            disabled={isTranslating}
-          />
-          强制重翻
-        </label>
-        <Button
-          size="sm"
-          onClick={() => void handleTranslateSelectedPages()}
-          disabled={
-            isTranslating ||
-            !onTranslatePages ||
-            selectedPages.length === 0 ||
-            !!pageSelectionError
-          }
-        >
-          翻译所选页
-        </Button>
-        {pageSelectionError ? (
-          <span className="text-destructive">{pageSelectionError}</span>
-        ) : (
-          <span className="text-muted-foreground">
-            已选 {selectedPages.length} 页
-          </span>
-        )}
-      </div>
       <div ref={paneContainerRef} className="grid min-h-0 flex-1 grid-cols-2">
         <div className="min-h-0 border-r">
           <PdfPane
@@ -354,7 +243,7 @@ export function PdfDocumentPreview({
             jobId={jobId}
             kind="translated"
             cacheKey={translatedCacheKey}
-            pageCount={translatedPageCount}
+            pageCount={sourcePageCount}
             targetWidth={paneWidth}
             placeholder={translationPlaceholder}
             scrollRef={translationScrollRef}
@@ -369,44 +258,6 @@ export function PdfDocumentPreview({
       </div>
     </Card>
   );
-}
-
-function parsePageSelection(input: string, maxPage: number) {
-  const trimmed = input.trim();
-  if (!trimmed) return "请输入页码。";
-  const pages = new Set<number>();
-  for (const rawPart of trimmed.split(",")) {
-    const part = rawPart.trim();
-    if (!part) return "页码范围里有空项。";
-    const [startText, endText] = part.split("-");
-    const start = Number(startText);
-    const end = endText == null ? start : Number(endText);
-    if (!Number.isInteger(start) || !Number.isInteger(end)) return "页码必须是数字。";
-    if (start < 1 || end < 1) return "页码必须从 1 开始。";
-    if (start > end) return "起始页不能大于结束页。";
-    if (end > maxPage) return `页码不能超过 ${maxPage}。`;
-    for (let page = start; page <= end; page += 1) pages.add(page);
-  }
-  return [...pages].sort((a, b) => a - b);
-}
-
-function formatPageSelection(pages: number[]) {
-  const sorted = [...new Set(pages)].sort((a, b) => a - b);
-  if (sorted.length === 0) return "";
-  const ranges: string[] = [];
-  let start = sorted[0];
-  let previous = sorted[0];
-  for (const page of sorted.slice(1)) {
-    if (page === previous + 1) {
-      previous = page;
-      continue;
-    }
-    ranges.push(start === previous ? `${start}` : `${start}-${previous}`);
-    start = page;
-    previous = page;
-  }
-  ranges.push(start === previous ? `${start}` : `${start}-${previous}`);
-  return ranges.join(",");
 }
 
 function translatedPageLabel(
