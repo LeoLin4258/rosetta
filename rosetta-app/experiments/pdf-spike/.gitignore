@@ -1,6 +1,0 @@
-target/
-vendor/
-output/
-Cargo.lock
-*.pdf
-!fixtures/*.pdf
