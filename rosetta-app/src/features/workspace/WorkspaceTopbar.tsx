@@ -17,7 +17,6 @@ const TARGET_LANGS = [
 ];
 
 const SOURCE_LANGS = [
-  { value: "auto", label: "自动检测" },
   { value: "zh-CN", label: "简体中文" },
   { value: "en", label: "英文" },
 ];
@@ -26,6 +25,7 @@ type WorkspaceTopbarProps = {
   job: RosettaJobSummary;
   activeTranslationFile: RosettaTranslationFile | null;
   isTranslating: boolean;
+  isTranslationBusyElsewhere?: boolean;
   isRuntimeStarting: boolean;
   isPdfEngineInstalling?: boolean;
   pdfEngineProgressMessage?: string | null;
@@ -60,6 +60,7 @@ export function WorkspaceTopbar({
   job,
   activeTranslationFile,
   isTranslating,
+  isTranslationBusyElsewhere = false,
   isRuntimeStarting,
   isPdfEngineInstalling = false,
   pdfEngineProgressMessage = null,
@@ -99,11 +100,14 @@ export function WorkspaceTopbar({
   const progressPercent =
     totalCount > 0 ? Math.round((translatedCount / totalCount) * 100) : 0;
   const isPdf = job.format === "pdf";
-  const sameLanguage = sourceLang !== "auto" && sourceLang === targetLang;
+  const sameLanguage = sourceLang === targetLang;
   const noPdfPagesSelected = isPdf && pdfSelectedPageCount === 0;
-  const translateDisabled = sameLanguage || noPdfPagesSelected;
+  const translateDisabled =
+    sameLanguage || noPdfPagesSelected || isTranslationBusyElsewhere;
   const translateTitle = sameLanguage
     ? "原文与译文语言不能相同"
+    : isTranslationBusyElsewhere
+      ? "另一个文件正在翻译"
     : noPdfPagesSelected
       ? "请选择页面"
       : undefined;

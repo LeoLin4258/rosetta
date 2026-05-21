@@ -36,6 +36,11 @@ import { WorkspaceEmpty } from "./WorkspaceEmpty";
 import { WorkspaceTopbar } from "./WorkspaceTopbar";
 
 const BATCH_SIZE = 16;
+const DEFAULT_SOURCE_LANG = "en";
+
+function normalizeSourceLang(lang?: string | null) {
+  return lang && lang !== "auto" ? lang : DEFAULT_SOURCE_LANG;
+}
 
 export function WorkspacePage() {
   const activeJobId = useRosettaStore((s) => s.activeJobId);
@@ -77,7 +82,9 @@ export function WorkspacePage() {
 
   // Per-job language selections, with fallback to document default / global default
   const jobLangs = activeJobId ? langByJobId[activeJobId] : undefined;
-  const sourceLang = jobLangs?.sourceLang ?? activeDocument?.sourceLang ?? "auto";
+  const sourceLang = normalizeSourceLang(
+    jobLangs?.sourceLang ?? activeDocument?.sourceLang
+  );
   const targetLang = jobLangs?.targetLang ?? defaultTargetLang;
 
   function handleSourceLangChange(lang: string) {
@@ -95,10 +102,18 @@ export function WorkspacePage() {
     activeDocument?.files.find((f) => f.id === activeSourceFileId) ??
     activeDocument?.files[0] ??
     null;
-  const isTranslating = !!activeTranslationRun;
+  const activeFileTranslationRun =
+    activeTranslationRun &&
+    activeTranslationRun.jobId === activeJobId &&
+    activeTranslationRun.sourceFileId === activeSourceFileId
+      ? activeTranslationRun
+      : null;
+  const isTranslating = !!activeFileTranslationRun;
+  const isTranslationBusyElsewhere =
+    !!activeTranslationRun && !activeFileTranslationRun;
 
-  const completedCount = activeTranslationRun?.completedSegmentIds.length ?? 0;
-  const totalCount = activeTranslationRun?.targetSegmentIds.length ?? 0;
+  const completedCount = activeFileTranslationRun?.completedSegmentIds.length ?? 0;
+  const totalCount = activeFileTranslationRun?.targetSegmentIds.length ?? 0;
   const pdfEngineProgressMessage = pdfInstallProgressMessage(pdf2zhRuntime.progress);
 
   // Reset block selection when switching documents
@@ -120,7 +135,7 @@ export function WorkspacePage() {
   // Subscribe to pdf2zh phase/percent progress while a PDF translation is running
   const isPdfJob = sourceFile?.format === "pdf";
   useEffect(() => {
-    if (!isTranslating || !isPdfJob || !activeJobId) {
+    if (!isTranslating || !isPdfJob || !activeJobId || !activeSourceFileId) {
       setPdfProgress(null);
       return;
     }
@@ -129,7 +144,12 @@ export function WorkspacePage() {
     listen<{ jobId: string; phase: string; percent: number | null }>(
       "rosetta-pdf2zh-progress",
       (event) => {
-        if (event.payload.jobId !== activeJobId) return;
+        if (
+          event.payload.jobId !== activeJobId ||
+          activeFileTranslationRun?.sourceFileId !== activeSourceFileId
+        ) {
+          return;
+        }
         setPdfProgress({ phase: event.payload.phase, percent: event.payload.percent });
       },
     ).then((fn) => {
@@ -141,7 +161,7 @@ export function WorkspacePage() {
       unlisten?.();
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isTranslating, isPdfJob, activeJobId]);
+  }, [isTranslating, isPdfJob, activeJobId, activeSourceFileId, activeFileTranslationRun?.sourceFileId]);
 
   // After a document is loaded (or switched), restore translation segments if
   // there's a known active translation file but no segments in memory yet.
@@ -238,6 +258,19 @@ export function WorkspacePage() {
     return [promise, resolve];
   }
 
+  function isViewingTranslationFile(
+    jobId: string,
+    sourceFileId: string,
+    translationFileId: string
+  ) {
+    const state = useRosettaStore.getState();
+    return (
+      state.activeJobId === jobId &&
+      state.activeSourceFileId === sourceFileId &&
+      state.activeTranslationFileId === translationFileId
+    );
+  }
+
   async function ensurePdf2zhReadyForTranslation() {
     const current = await pdf2zhRuntime.refreshStatus();
     if (isPdf2zhReady(current)) return;
@@ -316,15 +349,24 @@ export function WorkspacePage() {
           internalToken: rwkv.internalToken,
           bodyPassword: rwkv.bodyPassword,
           timeoutMs: rwkv.timeoutMs,
-          sourceLang: srcLang && srcLang !== "auto" ? srcLang : undefined,
+          sourceLang: srcLang,
           targetLang,
         },
         targets,
         translationFile: tfBundle.translationFile,
         onBatchCompleted: (ids) => markTranslationRunCompleted(runId!, ids),
         onBatchFailed: (ids) => markTranslationRunFailed(runId!, ids),
-        onTranslationFileSaved: (saved) =>
-          updateActiveTranslationSegments(saved.segments),
+        onTranslationFileSaved: (saved) => {
+          if (
+            isViewingTranslationFile(
+              activeJobId,
+              activeSourceFileId,
+              tfBundle.translationFile.id
+            )
+          ) {
+            updateActiveTranslationSegments(saved.segments);
+          }
+        },
       });
 
       finishTranslationRun(runId!);
@@ -389,7 +431,7 @@ export function WorkspacePage() {
         pageSelection,
         targetLang: pageTargetLang,
         rwkvBaseUrl: provider.baseUrl,
-        sourceLang: sourceLangOverride && sourceLangOverride !== "auto" ? sourceLangOverride : "en",
+        sourceLang: normalizeSourceLang(sourceLangOverride),
         timeoutMs: rwkv.timeoutMs,
         force,
       });
@@ -489,15 +531,24 @@ export function WorkspacePage() {
           internalToken: rwkv.internalToken,
           bodyPassword: rwkv.bodyPassword,
           timeoutMs: rwkv.timeoutMs,
-          sourceLang: sourceLang || undefined,
+          sourceLang,
           targetLang: retranslateTargetLang,
         },
         targets,
         translationFile: tfBundle.translationFile,
         onBatchCompleted: (ids) => markTranslationRunCompleted(runId!, ids),
         onBatchFailed: (ids) => markTranslationRunFailed(runId!, ids),
-        onTranslationFileSaved: (saved) =>
-          updateActiveTranslationSegments(saved.segments),
+        onTranslationFileSaved: (saved) => {
+          if (
+            isViewingTranslationFile(
+              activeJobId,
+              activeSourceFileId,
+              tfBundle.translationFile.id
+            )
+          ) {
+            updateActiveTranslationSegments(saved.segments);
+          }
+        },
       });
 
       finishTranslationRun(runId!);
@@ -547,7 +598,7 @@ export function WorkspacePage() {
           pageSelection,
           targetLang: retranslateTargetLang,
           rwkvBaseUrl: provider.baseUrl,
-          sourceLang: sourceLang && sourceLang !== "auto" ? sourceLang : "en",
+          sourceLang,
           timeoutMs: rwkv.timeoutMs,
           force: true,
         });
@@ -619,15 +670,24 @@ export function WorkspacePage() {
           internalToken: rwkv.internalToken,
           bodyPassword: rwkv.bodyPassword,
           timeoutMs: rwkv.timeoutMs,
-          sourceLang: sourceLang && sourceLang !== "auto" ? sourceLang : undefined,
+          sourceLang,
           targetLang: retranslateTargetLang,
         },
         targets,
         translationFile: tfBundle.translationFile,
         onBatchCompleted: (ids) => markTranslationRunCompleted(runId!, ids),
         onBatchFailed: (ids) => markTranslationRunFailed(runId!, ids),
-        onTranslationFileSaved: (saved) =>
-          updateActiveTranslationSegments(saved.segments),
+        onTranslationFileSaved: (saved) => {
+          if (
+            isViewingTranslationFile(
+              activeJobId,
+              activeSourceFileId,
+              tfBundle.translationFile.id
+            )
+          ) {
+            updateActiveTranslationSegments(saved.segments);
+          }
+        },
       });
 
       finishTranslationRun(runId!);
@@ -714,6 +774,7 @@ export function WorkspacePage() {
             job={activeJob}
             activeTranslationFile={activeTranslationFile}
             isTranslating={isTranslating}
+            isTranslationBusyElsewhere={isTranslationBusyElsewhere}
             isRuntimeStarting={managedRuntimeStatus?.state === "starting"}
             isPdfEngineInstalling={pdf2zhRuntime.isInstalling}
             pdfEngineProgressMessage={pdfEngineProgressMessage}

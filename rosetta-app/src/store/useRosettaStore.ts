@@ -132,6 +132,23 @@ type RosettaState = {
   failPreviewSegmentTranslation: (segmentIds: string[], error?: string) => Segment[];
 };
 
+function normalizePersistedLangByJobId(
+  langByJobId: RosettaState["langByJobId"] | undefined
+) {
+  if (!langByJobId) {
+    return undefined;
+  }
+  return Object.fromEntries(
+    Object.entries(langByJobId).map(([jobId, langs]) => [
+      jobId,
+      {
+        sourceLang: langs.sourceLang === "auto" ? "en" : langs.sourceLang,
+        targetLang: langs.targetLang,
+      },
+    ])
+  ) as RosettaState["langByJobId"];
+}
+
 function syncJobWithSegments(
   job: RosettaJobSummary,
   segments: Segment[],
@@ -776,7 +793,8 @@ export const useRosettaStore = create<RosettaState>()(
           defaultTargetLang:
             persistedState?.defaultTargetLang ?? current.defaultTargetLang,
           langByJobId:
-            persistedState?.langByJobId ?? current.langByJobId,
+            normalizePersistedLangByJobId(persistedState?.langByJobId) ??
+            current.langByJobId,
         };
       },
       partialize: (state) => ({
