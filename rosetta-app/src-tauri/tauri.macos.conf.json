@@ -60,6 +60,9 @@
       "resources/pdf-sidecar/pdfium/*/*"
     ],
     "macOS": {
+      "signingIdentity": "Developer ID Application: Shenzhen Yuanshi Intelligence Co., Ltd. (3FTQ9PH6TL)",
+      "hardenedRuntime": true,
+      "entitlements": "Entitlements.plist",
       "minimumSystemVersion": "13.0"
     }
   }

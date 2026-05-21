@@ -1,0 +1,163 @@
+# macOS Release Procedure
+
+This document describes the local macOS release path for Rosetta.
+
+## Current Status
+
+Rosetta can produce a macOS Apple Silicon DMG that is:
+
+- signed with Developer ID Application;
+- submitted to Apple notarization;
+- stapled with the notarization ticket;
+- accepted by Gatekeeper via `spctl`.
+
+The current release script is intentionally local-first. It uses credentials in the developer's macOS Keychain and does not store Apple API key material in the repository.
+
+## Prerequisites
+
+Run on macOS arm64 with:
+
+- Xcode command line tools;
+- Node, pnpm, Rust, and the Tauri CLI dependencies already working;
+- the Developer ID Application certificate installed in the login keychain;
+- notarization credentials stored with `notarytool`.
+
+The expected signing identity is:
+
+```txt
+Developer ID Application: Shenzhen Yuanshi Intelligence Co., Ltd. (3FTQ9PH6TL)
+```
+
+The expected notary profile is:
+
+```txt
+rosetta-notary
+```
+
+To confirm the local machine is ready:
+
+```bash
+security find-identity -v -p codesigning | grep "Developer ID Application"
+xcrun notarytool history --keychain-profile rosetta-notary
+```
+
+## Build Command
+
+From the repository root:
+
+```bash
+bash rosetta-app/src-tauri/scripts/release-macos.sh
+```
+
+From `rosetta-app/`:
+
+```bash
+bash src-tauri/scripts/release-macos.sh
+```
+
+The script reads the app version from `rosetta-app/package.json` and writes:
+
+```txt
+dist/release/Rosetta-<version>-macos-arm64.dmg
+```
+
+## Why The Script Does Not Let Tauri Sign Directly
+
+On this workstation, `pnpm tauri build` reached the signing phase but failed with:
+
+```txt
+resource fork, Finder information, or similar detritus not allowed
+```
+
+The generated bundle inherited macOS/FileProvider metadata such as Finder information. `codesign` rejects that metadata when signing an app bundle.
+
+The release script avoids this by:
+
+1. running `pnpm tauri build --bundles app --no-sign`;
+2. copying the app bundle with `ditto --norsrc` to remove resource forks and Finder metadata;
+3. signing Mach-O files and the app bundle manually;
+4. notarizing and stapling the `.app`;
+5. creating, signing, notarizing, and stapling the final DMG.
+
+## Verification Performed By The Script
+
+The script verifies the app and DMG with:
+
+```bash
+codesign --verify --deep --strict --verbose=4 <Rosetta.app>
+spctl --assess --type execute --verbose=4 <Rosetta.app>
+codesign --verify --verbose=4 <Rosetta.dmg>
+spctl --assess --type open --context context:primary-signature --verbose=4 <Rosetta.dmg>
+```
+
+A successful final DMG check should include:
+
+```txt
+accepted
+source=Notarized Developer ID
+```
+
+## First Successful Manual Release
+
+The first successful manual notarized artifact was produced on 2026-05-21:
+
+```txt
+dist/release/Rosetta-0.1.0-beta.1-macos-arm64.dmg
+```
+
+Both the app zip and DMG submissions returned `Accepted` from Apple notarization, and the final DMG passed `spctl`.
+
+## First Successful Scripted Release
+
+The first end-to-end scripted release also passed on 2026-05-21:
+
+```bash
+bash rosetta-app/src-tauri/scripts/release-macos.sh
+```
+
+Apple notarization returned `Accepted` for both submissions:
+
+```txt
+App submission: 6d60d21f-ea4e-4624-bf8b-89d85f78c517
+DMG submission: f0d3a280-8136-47e2-bf7c-9fe037b65d22
+```
+
+The final artifact was:
+
+```txt
+dist/release/Rosetta-0.1.0-beta.1-macos-arm64.dmg
+```
+
+Gatekeeper accepted it as:
+
+```txt
+accepted
+source=Notarized Developer ID
+```
+
+## Troubleshooting
+
+### `resource fork, Finder information, or similar detritus not allowed`
+
+Do not keep retrying direct Tauri signing. Use the release script, which copies the app with `ditto --norsrc` before signing.
+
+### `source=Unnotarized Developer ID`
+
+The app is signed but not notarized or not stapled. Re-run the release script and check the `notarytool submit` output.
+
+### `notarytool` authentication failure
+
+Refresh the local Keychain profile:
+
+```bash
+xcrun notarytool store-credentials rosetta-notary \
+  --key /path/to/AuthKey_<KEY_ID>.p8 \
+  --key-id <KEY_ID> \
+  --issuer <ISSUER_ID>
+```
+
+Do not commit the `.p8` file or print its contents in logs.
+
+### Tauri updater artifacts
+
+This script creates the public DMG. It does not yet generate or upload Tauri updater artifacts or `latest.json`. Treat updater publishing as a separate release step until the release workflow is automated.
