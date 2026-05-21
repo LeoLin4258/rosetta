@@ -107,12 +107,24 @@ create_sign_notarize_dmg() {
   local app_version="$1"
   local dmg_path="$DIST_DIR/$APP_NAME-$app_version-macos-arm64.dmg"
   local tmp_dmg="$STAGE_ROOT/$APP_NAME.dmg"
+  local dmg_source="$STAGE_ROOT/dmg-source"
 
   mkdir -p "$DIST_DIR"
   rm -f "$dmg_path" "$tmp_dmg"
+  rm -rf "$dmg_source"
+  mkdir -p "$dmg_source"
+
+  log "staging DMG contents with Applications shortcut"
+  ditto --norsrc "$SIGNED_APP" "$dmg_source/$APP_NAME.app"
+  ln -s /Applications "$dmg_source/Applications"
 
   log "creating DMG"
-  hdiutil create -volname "$APP_NAME" -srcfolder "$SIGNED_APP" -ov -format UDZO "$tmp_dmg"
+  hdiutil create \
+    -volname "$APP_NAME" \
+    -srcfolder "$dmg_source" \
+    -ov \
+    -format UDZO \
+    "$tmp_dmg"
 
   log "signing DMG"
   codesign --force --timestamp --sign "$SIGNING_IDENTITY" "$tmp_dmg"
@@ -157,6 +169,12 @@ main() {
   cd "$APP_DIR"
   local app_version
   app_version="$(version)"
+
+  local stale_dmg_dir="$TAURI_DIR/target/release/bundle/dmg"
+  if [[ -d "$stale_dmg_dir" ]]; then
+    log "removing stale unsigned DMGs under $stale_dmg_dir to prevent accidental distribution"
+    rm -rf "$stale_dmg_dir"
+  fi
 
   log "building unsigned macOS app bundle"
   pnpm tauri build --bundles app --no-sign

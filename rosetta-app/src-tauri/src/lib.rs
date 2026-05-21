@@ -194,6 +194,29 @@ pub fn run() {
             rwkv_api::translate_rwkv_mobile_batch_chat_texts,
             rwkv_api::translate_rwkv_texts_with_api
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            // macOS: clicking the dock icon while all windows are closed
+            // fires Reopen. Without handling it, the app sits in the dock
+            // with the running-dot but no way to surface the window short
+            // of right-click → Quit. Re-show whichever window we previously
+            // chose at startup (main or onboarding).
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { has_visible_windows, .. } = event {
+                if has_visible_windows {
+                    return;
+                }
+                let target = app_handle
+                    .get_webview_window("main")
+                    .or_else(|| app_handle.get_webview_window("onboarding"));
+                if let Some(window) = target {
+                    let _ = window.show();
+                    let _ = window.unminimize();
+                    let _ = window.set_focus();
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app_handle, event);
+        });
 }

@@ -5,6 +5,11 @@
 # dogfood testing), this script builds into a clean temporary directory and
 # produces a distributable archive with SHA256 checksum.
 #
+# The pack ships a relocatable CPython (python-build-standalone "install_only"
+# variant), NOT a `python -m venv` of the developer's system Python — a venv
+# leaves absolute symlinks to /Library/Frameworks/.../python3.13 that break on
+# end-user machines without that exact install.
+#
 # Usage from rosetta-app/:
 #
 #   bash src-tauri/scripts/build-pdf2zh-pack-macos-arm64.sh
@@ -22,12 +27,17 @@
 # Override knobs:
 #
 #   PDF2ZH_VERSION=1.7.9   pdf2zh package version to install
-#   PYTHON=python3         Python binary to use for the venv
+#   PBS_RELEASE=20260510   python-build-standalone release tag
+#   PBS_PYTHON_VERSION=3.13.13   CPython version inside that PBS release
+#   PBS_TARBALL_URL=...    full override of the PBS download URL
 
 set -euo pipefail
 
 PDF2ZH_VERSION="${PDF2ZH_VERSION:-1.7.9}"
-PYTHON_BIN="${PYTHON:-python3}"
+PBS_RELEASE="${PBS_RELEASE:-20260510}"
+PBS_PYTHON_VERSION="${PBS_PYTHON_VERSION:-3.13.13}"
+PBS_DEFAULT_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_RELEASE}/cpython-${PBS_PYTHON_VERSION}+${PBS_RELEASE}-aarch64-apple-darwin-install_only.tar.gz"
+PBS_TARBALL_URL="${PBS_TARBALL_URL:-$PBS_DEFAULT_URL}"
 
 if [[ "$(uname -s)-$(uname -m)" != "Darwin-arm64" ]]; then
   echo "::error::pdf2zh release pack build requires macOS arm64" >&2
@@ -44,20 +54,37 @@ BUILD_ROOT="$(mktemp -d)"
 trap 'rm -rf "$BUILD_ROOT"' EXIT
 
 PACK_DIR="$BUILD_ROOT/macos-arm64"
-VENV_DIR="$PACK_DIR/python"
+PYTHON_DIR="$PACK_DIR/python"
 BIN_DIR="$PACK_DIR/bin"
+PBS_TARBALL="$BUILD_ROOT/pbs.tar.gz"
 
 echo "[pdf2zh-release] building pdf2zh==$PDF2ZH_VERSION" >&2
-echo "[pdf2zh-release] build root: $BUILD_ROOT" >&2
+echo "[pdf2zh-release] PBS python:  $PBS_PYTHON_VERSION (release $PBS_RELEASE)" >&2
+echo "[pdf2zh-release] build root:  $BUILD_ROOT" >&2
 
-mkdir -p "$BIN_DIR"
+mkdir -p "$PACK_DIR" "$BIN_DIR"
 
-"$PYTHON_BIN" -m venv "$VENV_DIR"
-"$VENV_DIR/bin/python" -m pip install --upgrade pip --quiet
-"$VENV_DIR/bin/python" -m pip install "pdf2zh==$PDF2ZH_VERSION" --quiet
+echo "[pdf2zh-release] downloading python-build-standalone" >&2
+echo "  $PBS_TARBALL_URL" >&2
+curl -fsSL --retry 3 -o "$PBS_TARBALL" "$PBS_TARBALL_URL"
+
+echo "[pdf2zh-release] extracting CPython into pack" >&2
+tar -xzf "$PBS_TARBALL" -C "$PACK_DIR"
+
+if [[ ! -x "$PYTHON_DIR/bin/python" ]]; then
+  echo "::error::PBS tarball did not produce expected python/bin/python under $PACK_DIR" >&2
+  exit 1
+fi
+
+PBS_REPORTED_VERSION="$("$PYTHON_DIR/bin/python" -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')"
+echo "[pdf2zh-release] PBS python ready: $PBS_REPORTED_VERSION" >&2
+
+echo "[pdf2zh-release] installing pdf2zh==$PDF2ZH_VERSION into pack python" >&2
+"$PYTHON_DIR/bin/python" -m pip install --upgrade pip --quiet
+"$PYTHON_DIR/bin/python" -m pip install "pdf2zh==$PDF2ZH_VERSION" --quiet
 
 echo "[pdf2zh-release] applying NumPy 2 compatibility patch" >&2
-"$VENV_DIR/bin/python" - <<'PY'
+"$PYTHON_DIR/bin/python" - <<'PY'
 from pathlib import Path
 import pdf2zh
 
@@ -88,14 +115,28 @@ exec "$PACK_ROOT/python/bin/python" -m pdf2zh.pdf2zh "$@"
 SH
 chmod 0755 "$BIN_DIR/pdf2zh"
 
-echo "[pdf2zh-release] smoke test:" >&2
+echo "[pdf2zh-release] in-place smoke test:" >&2
 "$BIN_DIR/pdf2zh" --version >&2
+
+echo "[pdf2zh-release] relocation smoke test (rename pack root, re-run shim):" >&2
+RELOCATED_DIR="$BUILD_ROOT/macos-arm64-relocated"
+mv "$PACK_DIR" "$RELOCATED_DIR"
+"$RELOCATED_DIR/bin/pdf2zh" --version >&2
+mv "$RELOCATED_DIR" "$PACK_DIR"
 
 echo "[pdf2zh-release] verifying no stale bytecode:" >&2
 STALE="$(find "$PACK_DIR" \( -name '__pycache__' -o -name '*.pyc' \) 2>/dev/null | head -5)"
 if [[ -n "$STALE" ]]; then
   echo "::error::stale Python bytecode found after scrub:" >&2
   echo "$STALE" >&2
+  exit 1
+fi
+
+echo "[pdf2zh-release] verifying no absolute symlinks leak developer paths:" >&2
+LEAKED="$(find "$PACK_DIR" -type l -lname '/*' 2>/dev/null | head -5)"
+if [[ -n "$LEAKED" ]]; then
+  echo "::error::absolute symlinks present in pack (would break on user machines):" >&2
+  echo "$LEAKED" >&2
   exit 1
 fi
 
@@ -115,6 +156,7 @@ cat > "$DIST_DIR/manifest.json" <<EOF
   "profile_id": "macos-arm64-pdf2zh",
   "pack_filename": "$ARCHIVE_NAME",
   "pdf2zh_version": "$PDF2ZH_VERSION",
+  "python_runtime": "python-build-standalone $PBS_PYTHON_VERSION (release $PBS_RELEASE)",
   "sha256": "$SHA256",
   "size_bytes": $SIZE_BYTES,
   "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
