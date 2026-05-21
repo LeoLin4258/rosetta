@@ -162,11 +162,7 @@ pub fn pick_batch_for_length(ceiling: usize, max_chars: usize) -> usize {
 ///
 /// The closure `text_len` lets callers extract char-count from any item type;
 /// tests use `String` directly, the run loop uses `Segment::source_text`.
-pub fn plan_batches<'a, T, F>(
-    targets: &'a [T],
-    ceiling: usize,
-    text_len: F,
-) -> Vec<Vec<&'a T>>
+pub fn plan_batches<'a, T, F>(targets: &'a [T], ceiling: usize, text_len: F) -> Vec<Vec<&'a T>>
 where
     F: Fn(&T) -> usize,
 {
@@ -233,9 +229,7 @@ async fn set_chat_roles(
     let status = resp.status().as_u16();
     if !(200..300).contains(&status) {
         let body = resp.text().await.unwrap_or_default();
-        return Err(format!(
-            "{SET_ROLES_PATH} 返回 HTTP {status}: {body}"
-        ));
+        return Err(format!("{SET_ROLES_PATH} 返回 HTTP {status}: {body}"));
     }
     // Drain to release the connection back to the pool.
     let _ = resp.bytes().await;
@@ -331,7 +325,10 @@ pub async fn translate_batch(
             status_code: Some(chat_status),
             translations,
             raw_response_preview: String::new(),
-            message: format!("RWKV /v1/batch/chat 已翻译 {} 条。", batch.source_texts.len()),
+            message: format!(
+                "RWKV /v1/batch/chat 已翻译 {} 条。",
+                batch.source_texts.len()
+            ),
             latency_ms: started_at.elapsed().as_millis(),
         },
         Err(error) => error_result_with_status(
@@ -489,7 +486,9 @@ async fn send_request_with_cancel(
     let handle = tokio::spawn(future);
     loop {
         if cancel.load(Ordering::SeqCst) {
-            eprintln!("[rwkv-cancel] send_request_with_cancel: cancel observed, aborting in-flight POST");
+            eprintln!(
+                "[rwkv-cancel] send_request_with_cancel: cancel observed, aborting in-flight POST"
+            );
             handle.abort();
             return Err("RWKV 翻译请求已取消。".to_string());
         }
@@ -518,7 +517,9 @@ async fn read_text_with_cancel(
     let handle = tokio::spawn(response.text());
     loop {
         if cancel.load(Ordering::SeqCst) {
-            eprintln!("[rwkv-cancel] read_text_with_cancel: cancel observed, aborting response body read");
+            eprintln!(
+                "[rwkv-cancel] read_text_with_cancel: cancel observed, aborting response body read"
+            );
             handle.abort();
             return Err("RWKV 翻译请求已取消。".to_string());
         }
@@ -600,8 +601,7 @@ mod tests {
         // Source text could legitimately contain "Chinese:" as a substring;
         // we anchor on `\nChinese:` (newline + role + colon) so substrings
         // inside the echoed source don't trip the splitter.
-        let content =
-            "He said Chinese: that's interesting.\n\nChinese: 他说中文：那很有意思。";
+        let content = "He said Chinese: that's interesting.\n\nChinese: 他说中文：那很有意思。";
         let stripped = strip_response_prefix(content, "Chinese");
         assert_eq!(stripped, "他说中文：那很有意思。");
     }
@@ -655,8 +655,7 @@ mod tests {
 
     #[test]
     fn parse_translations_rejects_non_json() {
-        let error = parse_translations("not json", 1, "Chinese")
-            .expect_err("non-json should fail");
+        let error = parse_translations("not json", 1, "Chinese").expect_err("non-json should fail");
         assert!(error.contains("JSON parse failed"));
     }
 
@@ -743,10 +742,14 @@ mod tests {
     #[test]
     fn supported_batch_sizes_response_parses_phase_0_shape() {
         // Locks in the wire format observed on M4 mini + 1.5B G1c nf4.
-        let body = r#"{"model":"rwkv-translate","supported_batch_sizes":[1,2,3,4,5,6,7,8,9,10,11,12]}"#;
+        let body =
+            r#"{"model":"rwkv-translate","supported_batch_sizes":[1,2,3,4,5,6,7,8,9,10,11,12]}"#;
         let parsed: SupportedBatchSizesResponse =
             serde_json::from_str(body).expect("phase 0 response shape should parse");
-        assert_eq!(parsed.supported_batch_sizes, (1u32..=12).collect::<Vec<_>>());
+        assert_eq!(
+            parsed.supported_batch_sizes,
+            (1u32..=12).collect::<Vec<_>>()
+        );
     }
 
     // ---- Phase 6.B: length bucket policy + greedy batch planner ----
@@ -781,7 +784,10 @@ mod tests {
         let targets: Vec<String> = (0..15).map(|_| "short text".to_string()).collect();
         let batches = plan_batches(&targets, 12, |s| s.chars().count());
         // 12 short + 3 leftover.
-        assert_eq!(batches.iter().map(|b| b.len()).collect::<Vec<_>>(), vec![12, 3]);
+        assert_eq!(
+            batches.iter().map(|b| b.len()).collect::<Vec<_>>(),
+            vec![12, 3]
+        );
     }
 
     #[test]
@@ -809,11 +815,7 @@ mod tests {
     #[test]
     fn plan_batches_isolates_huge_segments_to_their_own_batch() {
         // > 2500 chars forces batch=1.
-        let targets: Vec<String> = vec![
-            "short".to_string(),
-            "x".repeat(3000),
-            "short".to_string(),
-        ];
+        let targets: Vec<String> = vec!["short".to_string(), "x".repeat(3000), "short".to_string()];
         let batches = plan_batches(&targets, 12, |s| s.chars().count());
         // First batch: short (would have allowed 12). When the 3000-char seg
         // arrives, cap drops to 1 → flush. Huge alone. Then short alone (it

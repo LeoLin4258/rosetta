@@ -75,9 +75,7 @@ pub async fn get_managed_rwkv_runtime_status(
 }
 
 #[tauri::command]
-pub fn get_managed_rwkv_install_plan(
-    app: AppHandle,
-) -> Result<ManagedRuntimeInstallPlan, String> {
+pub fn get_managed_rwkv_install_plan(app: AppHandle) -> Result<ManagedRuntimeInstallPlan, String> {
     let static_status = build_static_status(&app)?;
     Ok(static_status.install_plan)
 }
@@ -130,7 +128,10 @@ pub async fn start_managed_rwkv_runtime(
     registry: State<'_, Registry>,
 ) -> Result<ManagedRuntimeStartResult, String> {
     let static_status = build_static_status(&app)?;
-    if matches!(static_status.initial_state, ManagedRuntimeState::Unsupported) {
+    if matches!(
+        static_status.initial_state,
+        ManagedRuntimeState::Unsupported
+    ) {
         return Err("当前平台不支持本地 RWKV 运行时。".to_string());
     }
     if !static_status.install_plan.ready {
@@ -153,9 +154,21 @@ pub async fn start_managed_rwkv_runtime(
 
 #[tauri::command]
 pub async fn stop_managed_rwkv_runtime(
+    app: AppHandle,
     registry: State<'_, Registry>,
-) -> Result<&'static str, String> {
-    stop_sidecar(&registry).await
+) -> Result<String, String> {
+    let static_status = build_static_status(&app)?;
+    let sidecar = static_status.sidecar_path.as_deref();
+    let tokenizer = static_status.tokenizer_path.as_deref();
+    let model = static_status.layout.model_file.as_path();
+    stop_sidecar(
+        &registry,
+        Some(static_status.profile),
+        sidecar,
+        tokenizer,
+        Some(model),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -164,7 +177,10 @@ pub async fn probe_managed_rwkv_runtime(
     registry: State<'_, Registry>,
 ) -> Result<ManagedRuntimeProbeResult, String> {
     let static_status = build_static_status(&app)?;
-    if matches!(static_status.initial_state, ManagedRuntimeState::Unsupported) {
+    if matches!(
+        static_status.initial_state,
+        ManagedRuntimeState::Unsupported
+    ) {
         return Err("当前平台不支持本地 RWKV 运行时。".to_string());
     }
     Ok(probe_sidecar(&registry, static_status.profile).await)

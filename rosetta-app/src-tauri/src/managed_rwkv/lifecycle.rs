@@ -6,11 +6,12 @@
 //! sidecar's `/health` endpoint.
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
-use tokio::process::{Child, Command};
+use tokio::process::{Child, Command as TokioCommand};
 use tokio::sync::Mutex;
 
 use super::profile::RuntimeProfile;
@@ -21,6 +22,7 @@ const HEALTH_INITIAL_DELAY: Duration = Duration::from_millis(150);
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(45);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const LOG_TAIL_BYTES: u64 = 8 * 1024;
+const STALE_SIDECAR_TERM_WAIT: Duration = Duration::from_millis(800);
 
 /// Registry-shared lifecycle state. Wrapped in a `Mutex` so start/stop/probe
 /// can serialize, since spawning has a brief `await` while we wait for the
@@ -126,17 +128,26 @@ pub async fn start_sidecar(
     let base_url = format!("http://{}:{port}", profile.bind_host);
 
     let args = build_command_args(profile, &sidecar_path, &tokenizer_path, &model_path, port);
+    if let Err(error) =
+        cleanup_stale_sidecars(profile, &sidecar_path, &tokenizer_path, &model_path).await
+    {
+        guard.last_error = Some(error.clone());
+        guard.state = Some(ManagedRuntimeState::Failed);
+        return Err(error);
+    }
     let log = open_log_file(&log_file).map_err(|error| {
         let msg = format!("无法打开运行时日志: {error}");
         guard.last_error = Some(msg.clone());
         msg
     })?;
 
-    let stdout = log.try_clone().map_err(|error| format!("clone log handle: {error}"))?;
+    let stdout = log
+        .try_clone()
+        .map_err(|error| format!("clone log handle: {error}"))?;
     let stderr = log;
 
     guard.state = Some(ManagedRuntimeState::Starting);
-    let mut command = Command::new(&sidecar_path);
+    let mut command = TokioCommand::new(&sidecar_path);
     command
         .args(&args[1..]) // [0] is sidecar path itself, kept for `command` echo
         .stdout(std::process::Stdio::from(stdout))
@@ -181,10 +192,7 @@ pub async fn start_sidecar(
     }
 
     guard.state = Some(ManagedRuntimeState::Ready);
-    let started_at = guard
-        .started_at_iso
-        .clone()
-        .unwrap_or_else(iso_now);
+    let started_at = guard.started_at_iso.clone().unwrap_or_else(iso_now);
 
     Ok(ManagedRuntimeStartResult {
         pid,
@@ -198,11 +206,27 @@ pub async fn start_sidecar(
 
 pub async fn stop_sidecar(
     registry: &ManagedRwkvRuntimeRegistry,
-) -> Result<&'static str, String> {
+    profile: Option<&RuntimeProfile>,
+    sidecar_path: Option<&Path>,
+    tokenizer_path: Option<&Path>,
+    model_path: Option<&Path>,
+) -> Result<String, String> {
     let mut guard = registry.inner.lock().await;
     let Some(mut child) = guard.child.take() else {
         guard.state = Some(ManagedRuntimeState::Stopped);
-        return Ok("本地 RWKV 运行时未在运行。");
+        drop(guard);
+        let cleaned = cleanup_stale_sidecars_if_signature_available(
+            profile,
+            sidecar_path,
+            tokenizer_path,
+            model_path,
+        )
+        .await?;
+        return Ok(if cleaned > 0 {
+            format!("已停止 {cleaned} 个遗留的本地 RWKV sidecar。")
+        } else {
+            "本地 RWKV 运行时未在运行。".to_string()
+        });
     };
 
     // Try graceful kill (SIGKILL via tokio for now — rwkv_server has no
@@ -216,7 +240,20 @@ pub async fn stop_sidecar(
     guard.started_at_iso = None;
     guard.state = Some(ManagedRuntimeState::Stopped);
     guard.last_error = None;
-    Ok("本地 RWKV 运行时已停止。")
+    drop(guard);
+
+    let cleaned = cleanup_stale_sidecars_if_signature_available(
+        profile,
+        sidecar_path,
+        tokenizer_path,
+        model_path,
+    )
+    .await?;
+    Ok(if cleaned > 0 {
+        format!("本地 RWKV 运行时已停止，并清理 {cleaned} 个遗留 sidecar。")
+    } else {
+        "本地 RWKV 运行时已停止。".to_string()
+    })
 }
 
 pub async fn probe_sidecar(
@@ -401,9 +438,148 @@ fn reap_exited_child(inner: &mut RuntimeInner) {
             inner.last_error = Some(format!("Sidecar 进程已退出 (status={status})."));
             inner.state = Some(ManagedRuntimeState::Failed);
         }
-        Ok(None) => {}        // still running
-        Err(_) => {}          // couldn't poll; leave as-is, next call retries
+        Ok(None) => {} // still running
+        Err(_) => {}   // couldn't poll; leave as-is, next call retries
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SidecarProcess {
+    pid: u32,
+    command: String,
+}
+
+async fn cleanup_stale_sidecars(
+    profile: &RuntimeProfile,
+    sidecar_path: &Path,
+    tokenizer_path: &Path,
+    model_path: &Path,
+) -> Result<usize, String> {
+    let processes = list_sidecar_processes()?;
+    let stale = processes
+        .into_iter()
+        .filter(|process| {
+            is_matching_managed_sidecar(process, profile, sidecar_path, tokenizer_path, model_path)
+        })
+        .collect::<Vec<_>>();
+
+    if stale.is_empty() {
+        return Ok(0);
+    }
+
+    for process in &stale {
+        terminate_process(process.pid, "TERM")?;
+    }
+
+    tokio::time::sleep(STALE_SIDECAR_TERM_WAIT).await;
+
+    let remaining = list_sidecar_processes()?
+        .into_iter()
+        .filter(|process| stale.iter().any(|stale| stale.pid == process.pid))
+        .filter(|process| {
+            is_matching_managed_sidecar(process, profile, sidecar_path, tokenizer_path, model_path)
+        })
+        .collect::<Vec<_>>();
+
+    for process in &remaining {
+        terminate_process(process.pid, "KILL")?;
+    }
+
+    eprintln!(
+        "[managed-rwkv] cleaned {} stale sidecar process(es)",
+        stale.len()
+    );
+    Ok(stale.len())
+}
+
+async fn cleanup_stale_sidecars_if_signature_available(
+    profile: Option<&RuntimeProfile>,
+    sidecar_path: Option<&Path>,
+    tokenizer_path: Option<&Path>,
+    model_path: Option<&Path>,
+) -> Result<usize, String> {
+    let (Some(profile), Some(sidecar_path), Some(tokenizer_path), Some(model_path)) =
+        (profile, sidecar_path, tokenizer_path, model_path)
+    else {
+        return Ok(0);
+    };
+    cleanup_stale_sidecars(profile, sidecar_path, tokenizer_path, model_path).await
+}
+
+fn list_sidecar_processes() -> Result<Vec<SidecarProcess>, String> {
+    let output = Command::new("ps")
+        .args(["-ww", "-axo", "pid=,command="])
+        .output()
+        .map_err(|error| format!("无法列出本机进程: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "ps 返回失败状态: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(stdout.lines().filter_map(parse_ps_line).collect())
+}
+
+fn parse_ps_line(line: &str) -> Option<SidecarProcess> {
+    let trimmed = line.trim_start();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let split_at = trimmed.find(char::is_whitespace)?;
+    let (pid_text, command) = trimmed.split_at(split_at);
+    let pid = pid_text.parse::<u32>().ok()?;
+    let command = command.trim_start();
+    if command.is_empty() {
+        return None;
+    }
+    Some(SidecarProcess {
+        pid,
+        command: command.to_string(),
+    })
+}
+
+fn is_matching_managed_sidecar(
+    process: &SidecarProcess,
+    profile: &RuntimeProfile,
+    sidecar_path: &Path,
+    tokenizer_path: &Path,
+    model_path: &Path,
+) -> bool {
+    if process.pid == std::process::id() {
+        return false;
+    }
+
+    let command = process.command.as_str();
+    command.contains(&sidecar_path.display().to_string())
+        && command.contains("--model")
+        && command.contains(&model_path.display().to_string())
+        && command.contains("--tokenizer")
+        && command.contains(&tokenizer_path.display().to_string())
+        && command.contains("--backend")
+        && command.contains(profile.backend)
+        && command.contains("--model-name")
+        && command.contains(profile.model_name_arg)
+}
+
+fn terminate_process(pid: u32, signal: &str) -> Result<(), String> {
+    let output = Command::new("kill")
+        .args([format!("-{signal}"), pid.to_string()])
+        .output()
+        .map_err(|error| format!("无法停止旧 sidecar 进程 {pid}: {error}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.contains("No such process") {
+        return Ok(());
+    }
+    Err(format!(
+        "停止旧 sidecar 进程 {pid} 失败: kill -{signal} 返回 {} ({})",
+        output.status,
+        stderr.trim()
+    ))
 }
 
 fn iso_now() -> String {
@@ -478,6 +654,69 @@ mod tests {
         assert_eq!(args[port_idx + 1], "8765");
         let model_idx = args.iter().position(|a| a == "--model").unwrap();
         assert_eq!(args[model_idx + 1], "/data/model.prefab");
+    }
+
+    #[test]
+    fn parse_ps_line_extracts_pid_and_full_command() {
+        let line = "  12345 /Applications/Rosetta.app/Contents/MacOS/rwkv-server --model /Users/me/Library/Application Support/com.rosetta.desktop/model.prefab";
+        let process = parse_ps_line(line).expect("process line should parse");
+        assert_eq!(process.pid, 12345);
+        assert!(process.command.contains("rwkv-server --model"));
+        assert!(process.command.contains("Application Support"));
+    }
+
+    #[test]
+    fn parse_ps_line_rejects_empty_or_pidless_lines() {
+        assert_eq!(parse_ps_line(""), None);
+        assert_eq!(parse_ps_line("   "), None);
+        assert_eq!(parse_ps_line("not-a-pid command"), None);
+    }
+
+    #[test]
+    fn matching_sidecar_requires_managed_runtime_signature() {
+        let sidecar = PathBuf::from("/Applications/Rosetta.app/Contents/MacOS/rwkv-server");
+        let tokenizer = PathBuf::from(
+            "/Applications/Rosetta.app/Contents/Resources/resources/rwkv-sidecar/b_rwkv_vocab_v20230424.txt",
+        );
+        let model = PathBuf::from(
+            "/Users/me/Library/Application Support/com.rosetta.desktop/managed-rwkv/models/rwkv-translate-1.5b-nf4/model.prefab",
+        );
+        let process = SidecarProcess {
+            pid: 4242,
+            command: format!(
+                "{} --model {} --tokenizer {} --backend web-rwkv --host 127.0.0.1 --port 64092 --model-name rwkv-translate",
+                sidecar.display(),
+                model.display(),
+                tokenizer.display()
+            ),
+        };
+
+        assert!(is_matching_managed_sidecar(
+            &process,
+            &MACOS_ARM64_WEBRWKV,
+            &sidecar,
+            &tokenizer,
+            &model
+        ));
+    }
+
+    #[test]
+    fn matching_sidecar_rejects_other_rwkv_processes() {
+        let sidecar = PathBuf::from("/Applications/Rosetta.app/Contents/MacOS/rwkv-server");
+        let tokenizer = PathBuf::from("/Applications/Rosetta.app/Contents/Resources/resources/rwkv-sidecar/b_rwkv_vocab_v20230424.txt");
+        let model = PathBuf::from("/Users/me/Library/Application Support/com.rosetta.desktop/managed-rwkv/models/rwkv-translate-1.5b-nf4/model.prefab");
+        let other = SidecarProcess {
+            pid: 4243,
+            command: "/opt/rwkv-server --model /tmp/other.prefab --tokenizer /tmp/vocab.txt --backend web-rwkv --model-name rwkv-translate".to_string(),
+        };
+
+        assert!(!is_matching_managed_sidecar(
+            &other,
+            &MACOS_ARM64_WEBRWKV,
+            &sidecar,
+            &tokenizer,
+            &model
+        ));
     }
 
     #[test]
