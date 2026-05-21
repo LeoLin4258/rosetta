@@ -128,18 +128,19 @@ pub fn pick_batch_size(supported: &[u32], hint: usize) -> usize {
 /// `pick_batch_size` still wins.
 ///
 /// Heuristic (Phase 6.B):
-/// - `≤ 300` chars → use ceiling (short segments, low compute per slot)
-/// - `301..=1200` → ceiling / 2 (medium segments)
-/// - `1201..=2500` → ceiling / 4 (long, watch latency / VRAM)
+/// - `≤ 800` chars → use ceiling (short/medium segments still scale well)
+/// - `801..=1600` → ceiling / 2 (longer paragraphs)
+/// - `1601..=2500` → ceiling / 3 (long, but batch=4 beat batch=3 on M4)
 /// - `> 2500` → 1 (sequential; Phase 6.C may pre-split these)
 ///
-/// Numbers are heuristics, not bench-validated against every M-series chip.
-/// They are deliberately easy to tune without changing the call site shape.
+/// These thresholds are bench-informed from M4 mini + WebRWKV on 2026-05-21.
+/// They remain heuristics, but avoid the old over-conservative 301-char cutoff
+/// that left useful batch capacity idle for common paragraph-sized segments.
 pub fn pick_batch_for_length(ceiling: usize, max_chars: usize) -> usize {
     let limit = match max_chars {
-        0..=300 => ceiling,
-        301..=1200 => ceiling.div_ceil(2),
-        1201..=2500 => ceiling.div_ceil(4),
+        0..=800 => ceiling,
+        801..=1600 => ceiling.div_ceil(2),
+        1601..=2500 => ceiling.div_ceil(3),
         _ => 1,
     };
     limit.max(1).min(ceiling.max(1))
@@ -754,11 +755,11 @@ mod tests {
     fn pick_batch_for_length_bucket_transitions_on_ceiling_12() {
         // Same ceiling the Phase 0 sidecar reports (max of [1..12]).
         assert_eq!(pick_batch_for_length(12, 0), 12);
-        assert_eq!(pick_batch_for_length(12, 300), 12); // boundary inclusive
-        assert_eq!(pick_batch_for_length(12, 301), 6); // medium
-        assert_eq!(pick_batch_for_length(12, 1200), 6); // medium upper boundary
-        assert_eq!(pick_batch_for_length(12, 1201), 3); // long
-        assert_eq!(pick_batch_for_length(12, 2500), 3); // long upper boundary
+        assert_eq!(pick_batch_for_length(12, 800), 12); // full-batch boundary
+        assert_eq!(pick_batch_for_length(12, 801), 6); // medium
+        assert_eq!(pick_batch_for_length(12, 1600), 6); // medium upper boundary
+        assert_eq!(pick_batch_for_length(12, 1601), 4); // long
+        assert_eq!(pick_batch_for_length(12, 2500), 4); // long upper boundary
         assert_eq!(pick_batch_for_length(12, 2501), 1); // huge — sequential
         assert_eq!(pick_batch_for_length(12, 10_000), 1);
     }
@@ -768,10 +769,11 @@ mod tests {
         // Tiny ceilings shouldn't accidentally yield 0 from div_ceil math.
         assert_eq!(pick_batch_for_length(1, 50), 1);
         assert_eq!(pick_batch_for_length(1, 5000), 1);
-        // div_ceil(2) of 3 = 2 not 1.5 — make sure short/medium for ceiling=3
-        // doesn't get rounded into invalid territory.
-        assert_eq!(pick_batch_for_length(3, 500), 2);
-        assert_eq!(pick_batch_for_length(3, 1500), 1);
+        // Full-batch short/medium segments should respect small ceilings, and
+        // div_ceil math should never round long buckets to zero.
+        assert_eq!(pick_batch_for_length(3, 500), 3);
+        assert_eq!(pick_batch_for_length(3, 1500), 2);
+        assert_eq!(pick_batch_for_length(3, 2000), 1);
     }
 
     #[test]
@@ -784,17 +786,17 @@ mod tests {
 
     #[test]
     fn plan_batches_shrinks_when_a_long_segment_appears() {
-        // 8 short, then 1 long (1500 chars → bucket 3), then 8 short.
+        // 8 short, then 1 long (1500 chars → bucket 6), then 8 short.
         let mut targets: Vec<String> = (0..8).map(|i| format!("seg-{i}")).collect();
         targets.push("x".repeat(1500));
         targets.extend((9..17).map(|i| format!("seg-{i}")));
         let batches = plan_batches(&targets, 12, |s| s.chars().count());
         // First flush at boundary: when the 1500-char segment arrives, the
-        // cap drops to 3 → batch of 8 short flushes, then the long segment
-        // starts a fresh batch capped at 3, picking up the next 2 short ones,
+        // cap drops to 6 → batch of 8 short flushes, then the long segment
+        // starts a fresh batch capped at 6, picking up the next 5 short ones,
         // then the remaining short segments form batches of 12.
         let sizes: Vec<usize> = batches.iter().map(|b| b.len()).collect();
-        assert_eq!(sizes, vec![8, 3, 6]);
+        assert_eq!(sizes, vec![8, 6, 3]);
         // Total preserved and order preserved.
         let total: usize = sizes.iter().sum();
         assert_eq!(total, targets.len());
