@@ -282,11 +282,11 @@ export function SettingsPage() {
 
           <section className="flex flex-col gap-3" id="app-update">
             <SettingsSectionHeader
-              description="手动检查内部测试版更新。"
+              description="手动检查 Rosetta 更新。"
               icon={<Rocket />}
               title="应用更新"
             >
-              <Badge variant="outline">Windows Beta</Badge>
+              <Badge variant="outline">macOS Apple Silicon</Badge>
             </SettingsSectionHeader>
 
             <Card>
@@ -295,8 +295,8 @@ export function SettingsPage() {
                   <div>
                     <CardTitle>Rosetta {appVersion}</CardTitle>
                     <CardDescription>
-                      更新包会通过 GitHub Release 分发，并使用 Tauri updater
-                      签名校验。
+                      更新包通过 Rosetta 的 Supabase 发布通道分发，并使用 Tauri
+                      updater 签名校验。
                     </CardDescription>
                   </div>
                   <UpdateStatusBadge status={updateStatus} />

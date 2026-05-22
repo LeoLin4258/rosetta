@@ -11,6 +11,8 @@ Rosetta can produce a macOS Apple Silicon DMG that is:
 - stapled with the notarization ticket;
 - accepted by Gatekeeper via `spctl`.
 
+The release script also creates a Tauri updater artifact from the signed and stapled app bundle. This updater artifact is separate from the public DMG and is the only artifact that the Supabase updater publish script uploads.
+
 The current release script is intentionally local-first. It uses credentials in the developer's macOS Keychain and does not store Apple API key material in the repository.
 
 ## Prerequisites
@@ -59,6 +61,8 @@ The script reads the app version from `rosetta-app/package.json` and writes:
 
 ```txt
 dist/release/Rosetta-<version>-macos-arm64.dmg
+dist/release/Rosetta-<version>-macos-arm64.app.tar.gz
+dist/release/Rosetta-<version>-macos-arm64.app.tar.gz.sig
 ```
 
 ## Why The Script Does Not Let Tauri Sign Directly
@@ -77,7 +81,8 @@ The release script avoids this by:
 2. copying the app bundle with `ditto --norsrc` to remove resource forks and Finder metadata;
 3. signing Mach-O files and the app bundle manually;
 4. notarizing and stapling the `.app`;
-5. creating, signing, notarizing, and stapling the final DMG.
+5. creating and signing the updater `.app.tar.gz` from that signed and stapled app;
+6. creating, signing, notarizing, and stapling the final DMG.
 
 ## Verification Performed By The Script
 
@@ -88,6 +93,13 @@ codesign --verify --deep --strict --verbose=4 <Rosetta.app>
 spctl --assess --type execute --verbose=4 <Rosetta.app>
 codesign --verify --verbose=4 <Rosetta.dmg>
 spctl --assess --type open --context context:primary-signature --verbose=4 <Rosetta.dmg>
+```
+
+After the stapled app passes Gatekeeper, the updater artifact is created from that exact staged app bundle:
+
+```txt
+dist/release/Rosetta-<version>-macos-arm64.app.tar.gz
+dist/release/Rosetta-<version>-macos-arm64.app.tar.gz.sig
 ```
 
 A successful final DMG check should include:
@@ -135,6 +147,45 @@ accepted
 source=Notarized Developer ID
 ```
 
+## First Successful Supabase Updater Release
+
+The first release that includes a signed updater artifact uploaded to Supabase was produced on 2026-05-22 for version `0.1.0-beta.2`.
+
+Apple notarization returned `Accepted` for both submissions:
+
+```txt
+App submission: e1a7d2cc-7a72-49b0-a765-38bbbd7d461e
+DMG submission: 560f5841-f7ab-4dbd-9211-be172917ed94
+```
+
+Artifacts written to `dist/release/`:
+
+```txt
+Rosetta-0.1.0-beta.2-macos-arm64.dmg           (25 MB)
+Rosetta-0.1.0-beta.2-macos-arm64.app.tar.gz    (22 MB)
+Rosetta-0.1.0-beta.2-macos-arm64.app.tar.gz.sig (440 B)
+```
+
+Gatekeeper accepted both as:
+
+```txt
+accepted
+source=Notarized Developer ID
+```
+
+The updater artifact and metadata were published to Supabase. The endpoint was confirmed to return the correct Tauri updater JSON for older current versions and `204 No Content` for the current or newer version:
+
+```bash
+# returns 200 + JSON when a newer version is published
+curl -s 'https://bdujdewqopcgwijhfbcz.supabase.co/functions/v1/rosetta-update?target=darwin&arch=aarch64&current_version=0.0.0'
+
+# returns 204 when already on the latest version
+curl -s -o /dev/null -w "%{http_code}" \
+  'https://bdujdewqopcgwijhfbcz.supabase.co/functions/v1/rosetta-update?target=darwin&arch=aarch64&current_version=0.1.0-beta.2'
+```
+
+The in-app updater smoke test (install → check → download → relaunch → verify Gatekeeper) is pending. It requires a device with a version lower than `0.1.0-beta.2` installed, and will be completed on the next release.
+
 ## Troubleshooting
 
 ### `resource fork, Finder information, or similar detritus not allowed`
@@ -160,4 +211,69 @@ Do not commit the `.p8` file or print its contents in logs.
 
 ### Tauri updater artifacts
 
-This script creates the public DMG. It does not yet generate or upload Tauri updater artifacts or `latest.json`. Treat updater publishing as a separate release step until the release workflow is automated.
+The public DMG and Tauri updater artifact are separate release outputs:
+
+- the DMG is for manual installation;
+- the Tauri updater artifact is delivered through Supabase for in-app updates.
+
+`release-macos.sh` writes the public DMG plus the signed updater artifact to `dist/release/`:
+
+```txt
+dist/release/Rosetta-<version>-macos-arm64.dmg
+dist/release/Rosetta-<version>-macos-arm64.app.tar.gz
+dist/release/Rosetta-<version>-macos-arm64.app.tar.gz.sig
+```
+
+`publish-macos-updater.sh` only publishes the `dist/release/Rosetta-<version>-macos-arm64.app.tar.gz` updater artifact and its `.sig`. It does not publish the unsigned Tauri target bundle under `rosetta-app/src-tauri/target/release/bundle/`, and it does not publish the public DMG.
+
+The app checks this Supabase Edge Function endpoint for updates:
+
+```txt
+https://bdujdewqopcgwijhfbcz.supabase.co/functions/v1/rosetta-update?target={{target}}&arch={{arch}}&current_version={{current_version}}
+```
+
+The first updater release only supports:
+
+```txt
+darwin-aarch64
+```
+
+Before publishing an updater release, set the local secrets:
+
+```bash
+export SUPABASE_SERVICE_ROLE_KEY="$(security find-generic-password -a rosetta -s supabase-service-role-key -w)"
+export TAURI_SIGNING_PRIVATE_KEY_PATH="$HOME/.tauri/rosetta/updater.key"
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(security find-generic-password -a rosetta -s tauri-updater-key-password -w)"
+```
+
+Only set `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` when the updater private key requires it. If a CI or local environment stores the updater private key as a string instead of a file path, set `TAURI_SIGNING_PRIVATE_KEY` instead of `TAURI_SIGNING_PRIVATE_KEY_PATH`.
+
+From the repository root, build the signed and notarized public DMG and signed updater artifact first:
+
+```bash
+bash rosetta-app/src-tauri/scripts/release-macos.sh
+```
+
+Then publish the updater artifact:
+
+```bash
+bash rosetta-app/src-tauri/scripts/publish-macos-updater.sh
+```
+
+The publish script uploads the updater artifact to the private `rosetta-releases` bucket and writes an unpublished `app_releases` row. After testing the unpublished release, use the `PATCH` command printed by the script to publish it.
+
+To hide a bad release, set the version and mark it unpublished:
+
+```bash
+export ROSETTA_RELEASE_VERSION="$(node -p "require('./rosetta-app/package.json').version")"
+
+curl -X PATCH \
+  "https://bdujdewqopcgwijhfbcz.supabase.co/rest/v1/app_releases?app=eq.rosetta&version=eq.${ROSETTA_RELEASE_VERSION}&target=eq.darwin&arch=eq.aarch64" \
+  -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
+  -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
+  -H "Content-Type: application/json" \
+  -H "Prefer: return=representation" \
+  --data '{"is_published":false}'
+```
+
+Do not upload user documents, translations, job caches, prompts, or runtime logs to Supabase. Supabase release storage is only for updater artifacts and release metadata.

@@ -68,9 +68,9 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVGNEIyODAxNTZBNDYwRTQKUldUa1lLUldBU2hMNy9jbStlRkoxVE1XTFNDK0dFTnpmeFptOWxSd1lEb3dObk1Fd01uZ2ZJcm0K",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVBMDU1RTc1NzU4Qzk0OTMKUldTVGxJeDFkVjRGV2g5aVhKN1BvMHRJeXlCc1lLUDZPaEJxeDhPbXF2RW5vZkRORU8wMGVuZ2EK",
       "endpoints": [
-        "https://github.com/LeoLin4258/rosetta/releases/latest/download/latest.json"
+        "https://bdujdewqopcgwijhfbcz.supabase.co/functions/v1/rosetta-update?target={{target}}&arch={{arch}}&current_version={{current_version}}"
       ],
       "windows": {
         "installMode": "passive"

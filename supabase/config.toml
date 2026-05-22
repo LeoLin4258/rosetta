@@ -1,0 +1,4 @@
+project_id = "bdujdewqopcgwijhfbcz"
+
+[functions.rosetta-update]
+verify_jwt = false
