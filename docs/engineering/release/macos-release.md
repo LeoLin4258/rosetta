@@ -160,4 +160,59 @@ Do not commit the `.p8` file or print its contents in logs.
 
 ### Tauri updater artifacts
 
-This script creates the public DMG. It does not yet generate or upload Tauri updater artifacts or `latest.json`. Treat updater publishing as a separate release step until the release workflow is automated.
+The public DMG and Tauri updater artifact are separate release outputs:
+
+- the DMG is for manual installation;
+- the Tauri updater artifact is delivered through Supabase for in-app updates.
+
+The app checks this Supabase Edge Function endpoint for updates:
+
+```txt
+https://bdujdewqopcgwijhfbcz.supabase.co/functions/v1/rosetta-update?target={{target}}&arch={{arch}}&current_version={{current_version}}
+```
+
+The first updater release only supports:
+
+```txt
+darwin-aarch64
+```
+
+Before publishing an updater release, set the local secrets:
+
+```bash
+export SUPABASE_SERVICE_ROLE_KEY="$(security find-generic-password -a rosetta -s supabase-service-role-key -w)"
+export TAURI_SIGNING_PRIVATE_KEY="$HOME/.tauri/rosetta/updater.key"
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(security find-generic-password -a rosetta -s tauri-updater-key-password -w)"
+```
+
+Only set `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` when the updater private key requires it.
+
+From the repository root, build the signed and notarized public DMG first:
+
+```bash
+bash rosetta-app/src-tauri/scripts/release-macos.sh
+```
+
+Then publish the updater artifact:
+
+```bash
+bash rosetta-app/src-tauri/scripts/publish-macos-updater.sh
+```
+
+The publish script uploads the updater artifact to the private `rosetta-releases` bucket and writes an unpublished `app_releases` row. After testing the unpublished release, use the `PATCH` command printed by the script to publish it.
+
+To hide a bad release, set the version and mark it unpublished:
+
+```bash
+export ROSETTA_RELEASE_VERSION="$(node -p "require('./rosetta-app/package.json').version")"
+
+curl -X PATCH \
+  "https://bdujdewqopcgwijhfbcz.supabase.co/rest/v1/app_releases?version=eq.${ROSETTA_RELEASE_VERSION}&target=eq.darwin-aarch64" \
+  -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
+  -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
+  -H "Content-Type: application/json" \
+  -H "Prefer: return=representation" \
+  --data '{"published":false}'
+```
+
+Do not upload user documents, translations, job caches, prompts, or runtime logs to Supabase. Supabase release storage is only for updater artifacts and release metadata.
