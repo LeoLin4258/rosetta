@@ -207,12 +207,12 @@ To hide a bad release, set the version and mark it unpublished:
 export ROSETTA_RELEASE_VERSION="$(node -p "require('./rosetta-app/package.json').version")"
 
 curl -X PATCH \
-  "https://bdujdewqopcgwijhfbcz.supabase.co/rest/v1/app_releases?version=eq.${ROSETTA_RELEASE_VERSION}&target=eq.darwin-aarch64" \
+  "https://bdujdewqopcgwijhfbcz.supabase.co/rest/v1/app_releases?app=eq.rosetta&version=eq.${ROSETTA_RELEASE_VERSION}&target=eq.darwin&arch=eq.aarch64" \
   -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
   -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
   -H "Content-Type: application/json" \
   -H "Prefer: return=representation" \
-  --data '{"published":false}'
+  --data '{"is_published":false}'
 ```
 
 Do not upload user documents, translations, job caches, prompts, or runtime logs to Supabase. Supabase release storage is only for updater artifacts and release metadata.
