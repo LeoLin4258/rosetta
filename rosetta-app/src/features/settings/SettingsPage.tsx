@@ -114,7 +114,7 @@ export function SettingsPage() {
       setApiProbeResult(probeResult);
     } catch (error) {
       setApiError(
-        error instanceof Error ? error.message : "无法测试 RWKV API。"
+        error instanceof Error ? error.message : "无法连接到翻译服务。"
       );
     } finally {
       setIsProbingApi(false);
@@ -241,7 +241,7 @@ export function SettingsPage() {
         <header className="flex flex-col gap-2">
           <h1 className="text-2xl font-semibold tracking-normal">设置</h1>
           <p className="max-w-xl text-sm text-muted-foreground">
-            管理 Rosetta 的翻译服务、显示方式和本地模型选项。
+            调整翻译、外观与本地引擎的相关选项。
           </p>
         </header>
 
@@ -294,10 +294,6 @@ export function SettingsPage() {
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <CardTitle>Rosetta {appVersion}</CardTitle>
-                    <CardDescription>
-                      更新包通过 Rosetta 的 Supabase 发布通道分发，并使用 Tauri
-                      updater 签名校验。
-                    </CardDescription>
                   </div>
                   <UpdateStatusBadge status={updateStatus} />
                 </div>
@@ -359,9 +355,9 @@ export function SettingsPage() {
             <Collapsible open={externalApiOpen} onOpenChange={setExternalApiOpen}>
               <div className="flex items-start justify-between gap-4">
                 <SettingsSectionHeader
-                  description="本地翻译未就绪时可回落到远程或自部署接口。"
+                  description="本地翻译不可用时，可在此接入远程翻译服务。"
                   icon={<Cloud />}
-                  title="外部翻译 API"
+                  title="远程翻译服务"
                 >
                   <StatusBadge status={apiStatus} />
                 </SettingsSectionHeader>
@@ -714,7 +710,7 @@ function UpdateStatusMessage({
 
   return (
     <p className="text-sm text-muted-foreground">
-      内部测试阶段不会自动弹窗更新，需要在这里手动检查。
+      点击"检查更新"即可查看是否有新版本可用。
     </p>
   );
 }
@@ -748,7 +744,7 @@ function ApiProbeResult({
           <Timer />
           {result.latencyMs}ms
         </span>
-        <span>HTTP {result.statusCode ?? "none"}</span>
+        {result.statusCode != null && <span>HTTP {result.statusCode}</span>}
       </div>
 
       {result.translations.length > 0 ? (

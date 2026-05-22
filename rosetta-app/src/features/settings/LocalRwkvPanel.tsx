@@ -160,7 +160,7 @@ export function LocalRwkvPanel({ className }: { className?: string }) {
                     <div className="flex flex-col gap-2">
                       <div className="flex items-center gap-1.5 text-xs text-muted-foreground/60">
                         <TerminalSquare className="size-3.5" />
-                        运行时日志摘要
+                        运行日志
                       </div>
                       <LogsSummaryBlock logs={logs} />
                     </div>
@@ -216,7 +216,7 @@ function resolveStatus(
         dot: "bg-emerald-500",
         label: "本地翻译运行中",
         sub: status?.process.baseUrl
-          ? `监听 ${status.process.baseUrl}，仅本机可访问。`
+          ? `本地翻译服务正在运行，数据不会离开你的设备。`
           : undefined,
       };
     case "starting":
@@ -233,13 +233,13 @@ function resolveStatus(
     case "failed":
       return {
         dot: "bg-destructive",
-        label: "运行遇到问题，请在详细信息中修复",
+        label: "启动失败，可展开「详细信息」查看原因",
       };
     case "unsupported":
       return {
         dot: "bg-muted-foreground/40",
         label: "当前设备不支持本地翻译",
-        sub: "本地引擎仅在 macOS Apple Silicon（M1/M2/M3/M4）上运行。如需翻译，请在下方配置外部 API。",
+        sub: "本地翻译功能仅支持 Mac（M1/M2/M3/M4 芯片）。如需翻译，可在下方连接远程翻译服务。",
       };
     case "not-installed":
       return {
@@ -285,7 +285,7 @@ function RuntimeControls({
           <X className="size-4" /> 取消下载
         </Button>
         <span className="text-xs text-muted-foreground">
-          可随时取消，下次将从断点续传。
+          可随时取消，下次会从中断处继续。
         </span>
       </div>
     );
@@ -294,7 +294,7 @@ function RuntimeControls({
   if (state === "ready") {
     return (
       <Button variant="outline" size="sm" onClick={onStop} disabled={isStopping}>
-        <Square className="size-4" /> 停止运行时
+        <Square className="size-4" /> 停止翻译服务
       </Button>
     );
   }
