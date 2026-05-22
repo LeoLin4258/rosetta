@@ -11,6 +11,8 @@ Rosetta can produce a macOS Apple Silicon DMG that is:
 - stapled with the notarization ticket;
 - accepted by Gatekeeper via `spctl`.
 
+The release script also creates a Tauri updater artifact from the signed and stapled app bundle. This updater artifact is separate from the public DMG and is the only artifact that the Supabase updater publish script uploads.
+
 The current release script is intentionally local-first. It uses credentials in the developer's macOS Keychain and does not store Apple API key material in the repository.
 
 ## Prerequisites
@@ -59,6 +61,8 @@ The script reads the app version from `rosetta-app/package.json` and writes:
 
 ```txt
 dist/release/Rosetta-<version>-macos-arm64.dmg
+dist/release/Rosetta-<version>-macos-arm64.app.tar.gz
+dist/release/Rosetta-<version>-macos-arm64.app.tar.gz.sig
 ```
 
 ## Why The Script Does Not Let Tauri Sign Directly
@@ -77,7 +81,8 @@ The release script avoids this by:
 2. copying the app bundle with `ditto --norsrc` to remove resource forks and Finder metadata;
 3. signing Mach-O files and the app bundle manually;
 4. notarizing and stapling the `.app`;
-5. creating, signing, notarizing, and stapling the final DMG.
+5. creating and signing the updater `.app.tar.gz` from that signed and stapled app;
+6. creating, signing, notarizing, and stapling the final DMG.
 
 ## Verification Performed By The Script
 
@@ -88,6 +93,13 @@ codesign --verify --deep --strict --verbose=4 <Rosetta.app>
 spctl --assess --type execute --verbose=4 <Rosetta.app>
 codesign --verify --verbose=4 <Rosetta.dmg>
 spctl --assess --type open --context context:primary-signature --verbose=4 <Rosetta.dmg>
+```
+
+After the stapled app passes Gatekeeper, the updater artifact is created from that exact staged app bundle:
+
+```txt
+dist/release/Rosetta-<version>-macos-arm64.app.tar.gz
+dist/release/Rosetta-<version>-macos-arm64.app.tar.gz.sig
 ```
 
 A successful final DMG check should include:
@@ -165,6 +177,16 @@ The public DMG and Tauri updater artifact are separate release outputs:
 - the DMG is for manual installation;
 - the Tauri updater artifact is delivered through Supabase for in-app updates.
 
+`release-macos.sh` writes the public DMG plus the signed updater artifact to `dist/release/`:
+
+```txt
+dist/release/Rosetta-<version>-macos-arm64.dmg
+dist/release/Rosetta-<version>-macos-arm64.app.tar.gz
+dist/release/Rosetta-<version>-macos-arm64.app.tar.gz.sig
+```
+
+`publish-macos-updater.sh` only publishes the `dist/release/Rosetta-<version>-macos-arm64.app.tar.gz` updater artifact and its `.sig`. It does not publish the unsigned Tauri target bundle under `rosetta-app/src-tauri/target/release/bundle/`, and it does not publish the public DMG.
+
 The app checks this Supabase Edge Function endpoint for updates:
 
 ```txt
@@ -181,13 +203,13 @@ Before publishing an updater release, set the local secrets:
 
 ```bash
 export SUPABASE_SERVICE_ROLE_KEY="$(security find-generic-password -a rosetta -s supabase-service-role-key -w)"
-export TAURI_SIGNING_PRIVATE_KEY="$HOME/.tauri/rosetta/updater.key"
+export TAURI_SIGNING_PRIVATE_KEY_PATH="$HOME/.tauri/rosetta/updater.key"
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(security find-generic-password -a rosetta -s tauri-updater-key-password -w)"
 ```
 
-Only set `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` when the updater private key requires it.
+Only set `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` when the updater private key requires it. If a CI or local environment stores the updater private key as a string instead of a file path, set `TAURI_SIGNING_PRIVATE_KEY` instead of `TAURI_SIGNING_PRIVATE_KEY_PATH`.
 
-From the repository root, build the signed and notarized public DMG first:
+From the repository root, build the signed and notarized public DMG and signed updater artifact first:
 
 ```bash
 bash rosetta-app/src-tauri/scripts/release-macos.sh

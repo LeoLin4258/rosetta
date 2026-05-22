@@ -34,7 +34,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 function parseSemver(input: string): [number, number, number, string] | null {
-  const match = input.match(/^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/);
+  const match = input.match(/^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/);
   if (!match) {
     return null;
   }

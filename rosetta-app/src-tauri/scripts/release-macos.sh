@@ -29,6 +29,8 @@ DIST_DIR="$REPO_ROOT/dist/release"
 STAGE_ROOT="$(mktemp -d)"
 SIGNED_APP="$STAGE_ROOT/$APP_NAME.app"
 APP_ZIP="$STAGE_ROOT/$APP_NAME.zip"
+UPDATER_ARTIFACT_PATH=""
+UPDATER_SIGNATURE_PATH=""
 
 cleanup() {
   rm -rf "$STAGE_ROOT"
@@ -146,10 +148,45 @@ create_sign_notarize_dmg() {
   ls -lh "$dmg_path"
 }
 
+create_sign_updater_artifact() {
+  local app_version="$1"
+  local artifact_path="$DIST_DIR/$APP_NAME-$app_version-macos-arm64.app.tar.gz"
+  local sig_path="$artifact_path.sig"
+  local signature
+  local signer_args=(tauri signer sign)
+
+  if [[ -n "${TAURI_SIGNING_PRIVATE_KEY_PATH:-}" ]]; then
+    signer_args+=(-f "$TAURI_SIGNING_PRIVATE_KEY_PATH")
+  elif [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
+    log "missing updater signing key: set TAURI_SIGNING_PRIVATE_KEY_PATH=/path/to/updater.key or TAURI_SIGNING_PRIVATE_KEY"
+    exit 2
+  fi
+
+  mkdir -p "$DIST_DIR"
+  rm -f "$artifact_path" "$sig_path"
+
+  log "creating updater artifact from signed stapled app"
+  COPYFILE_DISABLE=1 tar -czf "$artifact_path" -C "$STAGE_ROOT" "$APP_NAME.app"
+
+  log "signing updater artifact"
+  signature="$(pnpm --silent "${signer_args[@]}" "$artifact_path")"
+  if [[ -z "$signature" ]]; then
+    log "Tauri signer returned an empty updater signature"
+    exit 1
+  fi
+  printf '%s\n' "$signature" > "$sig_path"
+
+  UPDATER_ARTIFACT_PATH="$artifact_path"
+  UPDATER_SIGNATURE_PATH="$sig_path"
+
+  ls -lh "$artifact_path" "$sig_path"
+}
+
 main() {
   require_command node
   require_command pnpm
   require_command file
+  require_command tar
   require_command hdiutil
   require_command codesign
   require_command spctl
@@ -208,9 +245,13 @@ main() {
   log "verifying stapled app with Gatekeeper"
   spctl --assess --type execute --verbose=4 "$SIGNED_APP"
 
+  create_sign_updater_artifact "$app_version"
   create_sign_notarize_dmg "$app_version"
 
   log "release complete"
+  log "DMG: $DIST_DIR/$APP_NAME-$app_version-macos-arm64.dmg"
+  log "Updater artifact: $UPDATER_ARTIFACT_PATH"
+  log "Updater signature: $UPDATER_SIGNATURE_PATH"
 }
 
 main "$@"

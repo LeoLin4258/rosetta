@@ -17,6 +17,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TAURI_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 APP_DIR="$(cd "$TAURI_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$APP_DIR/.." && pwd)"
+DIST_DIR="$REPO_ROOT/dist/release"
 
 log() {
   printf '[publish-macos-updater] %s\n' "$*" >&2
@@ -57,16 +58,21 @@ cargo_version() {
 
 find_artifact() {
   local app_version="$1"
-  local bundle_dir="$TAURI_DIR/target/release/bundle"
+  local exact_artifact="$DIST_DIR/Rosetta-$app_version-macos-arm64.app.tar.gz"
   local versioned_artifact
 
-  if [[ ! -d "$bundle_dir" ]]; then
+  if [[ ! -d "$DIST_DIR" ]]; then
+    return 0
+  fi
+
+  if [[ -f "$exact_artifact" ]]; then
+    printf '%s\n' "$exact_artifact"
     return 0
   fi
 
   versioned_artifact="$(
-    find "$bundle_dir" -type f \
-      \( -name "*.app.tar.gz" -o -name "*.tar.gz" \) \
+    find "$DIST_DIR" -maxdepth 1 -type f \
+      -name "*.app.tar.gz" \
       ! -name "*.sig" \
       | awk -v version="$app_version" 'index($0, version) > 0' \
       | sort \
@@ -75,19 +81,51 @@ find_artifact() {
 
   if [[ -n "$versioned_artifact" ]]; then
     printf '%s\n' "$versioned_artifact"
-    return 0
+  fi
+}
+
+validate_release_scope() {
+  if [[ "$APP_NAME" != "rosetta" || "$TARGET" != "darwin" || "$ARCH" != "aarch64" || "$SUPABASE_BUCKET" != "rosetta-releases" ]]; then
+    log "first updater channel only supports APP_NAME=rosetta TARGET=darwin ARCH=aarch64 SUPABASE_BUCKET=rosetta-releases"
+    log "received APP_NAME=$APP_NAME TARGET=$TARGET ARCH=$ARCH SUPABASE_BUCKET=$SUPABASE_BUCKET"
+    exit 2
+  fi
+}
+
+validate_artifact_scope() {
+  local artifact="$1"
+  local app_version="$2"
+  local artifact_dir artifact_path dist_path artifact_name
+
+  if [[ ! -d "$DIST_DIR" ]]; then
+    log "updater artifact must come from $DIST_DIR"
+    log "run rosetta-app/src-tauri/scripts/release-macos.sh to create the signed dist/release artifact"
+    exit 2
   fi
 
-  find "$bundle_dir" -path "*/macos/*.app.tar.gz" -type f \
-    ! -name "*.sig" \
-    | sort \
-    | head -n 1
+  artifact_dir="$(cd "$(dirname "$artifact")" && pwd -P)"
+  artifact_path="$artifact_dir/$(basename "$artifact")"
+  dist_path="$(cd "$DIST_DIR" && pwd -P)"
+  artifact_name="$(basename "$artifact")"
+
+  if [[ "$artifact_path" != "$dist_path/"* ]]; then
+    log "updater artifact must come from $DIST_DIR"
+    log "run rosetta-app/src-tauri/scripts/release-macos.sh to create the signed dist/release artifact"
+    exit 2
+  fi
+
+  if [[ "$artifact_name" != "Rosetta-$app_version-macos-arm64.app.tar.gz" && "$artifact_name" != *"$app_version"*.app.tar.gz ]]; then
+    log "updater artifact must be versioned for $app_version and end with .app.tar.gz"
+    log "expected $DIST_DIR/Rosetta-$app_version-macos-arm64.app.tar.gz"
+    exit 2
+  fi
 }
 
 main() {
   require_command node
   require_command cargo
   require_command curl
+  validate_release_scope
   require_env SUPABASE_SERVICE_ROLE_KEY
 
   local app_version tauri_version rust_version
@@ -104,10 +142,11 @@ main() {
   artifact="${UPDATER_ARTIFACT:-$(find_artifact "$app_version")}"
 
   if [[ -z "$artifact" || ! -f "$artifact" ]]; then
-    log "could not find updater artifact for version $app_version under $TAURI_DIR/target/release/bundle"
-    log "set UPDATER_ARTIFACT=/absolute/path/to/artifact to publish a specific file"
+    log "could not find signed updater artifact for version $app_version under $DIST_DIR"
+    log "run rosetta-app/src-tauri/scripts/release-macos.sh to create Rosetta-$app_version-macos-arm64.app.tar.gz"
     exit 2
   fi
+  validate_artifact_scope "$artifact" "$app_version"
 
   local sig_file="$artifact.sig"
   if [[ ! -f "$sig_file" ]]; then
@@ -130,12 +169,14 @@ main() {
   log "uploading $artifact_name ($artifact_size bytes) to $SUPABASE_BUCKET/$storage_path"
   curl --fail-with-body \
     --request POST \
-    --header "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
-    --header "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
     --header "Content-Type: application/octet-stream" \
     --header "x-upsert: true" \
     --data-binary "@$artifact" \
-    "$SUPABASE_PROJECT_URL/storage/v1/object/$SUPABASE_BUCKET/$storage_path" >/dev/null
+    --config - \
+    "$SUPABASE_PROJECT_URL/storage/v1/object/$SUPABASE_BUCKET/$storage_path" >/dev/null <<CURL_CONFIG
+header = "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}"
+header = "apikey: ${SUPABASE_SERVICE_ROLE_KEY}"
+CURL_CONFIG
 
   local payload
   payload="$(
@@ -154,12 +195,14 @@ main() {
   log "upserting release metadata with is_published=$PUBLISH"
   curl --fail-with-body \
     --request POST \
-    --header "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
-    --header "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
     --header "Content-Type: application/json" \
     --header "Prefer: resolution=merge-duplicates" \
     --data "$payload" \
-    "$SUPABASE_PROJECT_URL/rest/v1/app_releases?on_conflict=app,version,target,arch" >/dev/null
+    --config - \
+    "$SUPABASE_PROJECT_URL/rest/v1/app_releases?on_conflict=app,version,target,arch" >/dev/null <<CURL_CONFIG
+header = "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}"
+header = "apikey: ${SUPABASE_SERVICE_ROLE_KEY}"
+CURL_CONFIG
 
   log "uploaded updater artifact:"
   printf '  version: %s\n' "$app_version"
