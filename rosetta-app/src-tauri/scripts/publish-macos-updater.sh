@@ -58,14 +58,28 @@ cargo_version() {
 find_artifact() {
   local app_version="$1"
   local bundle_dir="$TAURI_DIR/target/release/bundle"
+  local versioned_artifact
 
   if [[ ! -d "$bundle_dir" ]]; then
     return 0
   fi
 
-  find "$bundle_dir" -type f \
-    \( -name "*.app.tar.gz" -o -name "*.app.tar.gz.sig" -o -name "*.tar.gz" -o -name "*.tar.gz.sig" \) \
-    | awk -v version="$app_version" '$0 !~ /\.sig$/ && index($0, version) > 0' \
+  versioned_artifact="$(
+    find "$bundle_dir" -type f \
+      \( -name "*.app.tar.gz" -o -name "*.tar.gz" \) \
+      ! -name "*.sig" \
+      | awk -v version="$app_version" 'index($0, version) > 0' \
+      | sort \
+      | head -n 1
+  )"
+
+  if [[ -n "$versioned_artifact" ]]; then
+    printf '%s\n' "$versioned_artifact"
+    return 0
+  fi
+
+  find "$bundle_dir" -path "*/macos/*.app.tar.gz" -type f \
+    ! -name "*.sig" \
     | sort \
     | head -n 1
 }
