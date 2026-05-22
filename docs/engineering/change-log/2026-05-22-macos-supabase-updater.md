@@ -1,5 +1,9 @@
 # 2026-05-22 macOS Supabase Updater Release Procedure
 
+## Date
+
+2026-05-22
+
 ## Scope
 
 Document the macOS release procedure for publishing Rosetta's Tauri updater artifact through Supabase, without changing release scripts, Supabase functions, migrations, or application code.
