@@ -2,3 +2,6 @@ project_id = "bdujdewqopcgwijhfbcz"
 
 [functions.rosetta-update]
 verify_jwt = false
+
+[functions.rosetta-latest-dmg]
+verify_jwt = false

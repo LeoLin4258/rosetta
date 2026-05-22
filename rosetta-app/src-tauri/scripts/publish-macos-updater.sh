@@ -154,11 +154,22 @@ main() {
     exit 2
   fi
 
+  local dmg_file="$DIST_DIR/Rosetta-$app_version-macos-arm64.dmg"
+  if [[ ! -f "$dmg_file" ]]; then
+    log "missing DMG file: $dmg_file"
+    log "run rosetta-app/src-tauri/scripts/release-macos.sh to create the signed DMG"
+    exit 2
+  fi
+
   local signature notes storage_path artifact_name artifact_size
+  local dmg_name dmg_size dmg_storage_path
   signature="$(tr -d '\n' < "$sig_file")"
   artifact_name="$(basename "$artifact")"
   artifact_size="$(wc -c < "$artifact" | tr -d ' ')"
   storage_path="macos/aarch64/$app_version/$artifact_name"
+  dmg_name="$(basename "$dmg_file")"
+  dmg_size="$(wc -c < "$dmg_file" | tr -d ' ')"
+  dmg_storage_path="macos/aarch64/$app_version/$dmg_name"
 
   if [[ -n "$NOTES_FILE" ]]; then
     notes="$(cat "$NOTES_FILE")"
@@ -178,15 +189,28 @@ header = "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}"
 header = "apikey: ${SUPABASE_SERVICE_ROLE_KEY}"
 CURL_CONFIG
 
+  log "uploading $dmg_name ($dmg_size bytes) to $SUPABASE_BUCKET/$dmg_storage_path"
+  curl --fail-with-body \
+    --request POST \
+    --header "Content-Type: application/octet-stream" \
+    --header "x-upsert: true" \
+    --data-binary "@$dmg_file" \
+    --config - \
+    "$SUPABASE_PROJECT_URL/storage/v1/object/$SUPABASE_BUCKET/$dmg_storage_path" >/dev/null <<CURL_CONFIG
+header = "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}"
+header = "apikey: ${SUPABASE_SERVICE_ROLE_KEY}"
+CURL_CONFIG
+
   local payload
   payload="$(
-    printf '{"app":%s,"version":%s,"target":%s,"arch":%s,"storage_bucket":%s,"storage_path":%s,"signature":%s,"notes":%s,"is_published":%s}' \
+    printf '{"app":%s,"version":%s,"target":%s,"arch":%s,"storage_bucket":%s,"storage_path":%s,"dmg_storage_path":%s,"signature":%s,"notes":%s,"is_published":%s}' \
       "$(json_escape "$APP_NAME")" \
       "$(json_escape "$app_version")" \
       "$(json_escape "$TARGET")" \
       "$(json_escape "$ARCH")" \
       "$(json_escape "$SUPABASE_BUCKET")" \
       "$(json_escape "$storage_path")" \
+      "$(json_escape "$dmg_storage_path")" \
       "$(json_escape "$signature")" \
       "$(json_escape "$notes")" \
       "$(if [[ "$PUBLISH" == "true" ]]; then printf true; else printf false; fi)"
@@ -204,10 +228,11 @@ header = "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}"
 header = "apikey: ${SUPABASE_SERVICE_ROLE_KEY}"
 CURL_CONFIG
 
-  log "uploaded updater artifact:"
+  log "uploaded release artifacts:"
   printf '  version: %s\n' "$app_version"
   printf '  platform: %s-%s\n' "$TARGET" "$ARCH"
-  printf '  storage: %s/%s\n' "$SUPABASE_BUCKET" "$storage_path"
+  printf '  updater: %s/%s\n' "$SUPABASE_BUCKET" "$storage_path"
+  printf '  dmg:     %s/%s\n' "$SUPABASE_BUCKET" "$dmg_storage_path"
   printf '  published: %s\n' "$PUBLISH"
 
   if [[ "$PUBLISH" != "true" ]]; then

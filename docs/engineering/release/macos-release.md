@@ -276,4 +276,40 @@ curl -X PATCH \
   --data '{"is_published":false}'
 ```
 
-Do not upload user documents, translations, job caches, prompts, or runtime logs to Supabase. Supabase release storage is only for updater artifacts and release metadata.
+Do not upload user documents, translations, job caches, prompts, or runtime logs to Supabase. Supabase release storage is only for updater artifacts, DMG installers, and release metadata.
+
+## Official Website Download API
+
+The `rosetta-latest-dmg` Edge Function provides the download entry point for the official website.
+
+**Endpoint:**
+
+```txt
+GET https://bdujdewqopcgwijhfbcz.supabase.co/functions/v1/rosetta-latest-dmg
+```
+
+No authentication required. Returns the latest published `darwin-aarch64` release that has a DMG uploaded.
+
+**Response (200):**
+
+```json
+{
+  "version": "0.1.0-beta.2",
+  "pub_date": "2026-05-22T05:38:30.631422+00:00",
+  "url": "<signed_download_url_valid_for_1_hour>"
+}
+```
+
+**Response (404):** No published release available.
+
+**Website integration example:**
+
+```js
+const res = await fetch(
+  "https://bdujdewqopcgwijhfbcz.supabase.co/functions/v1/rosetta-latest-dmg"
+);
+const { version, url } = await res.json();
+// display version, redirect user to url on click
+```
+
+The signed URL expires after 1 hour. Fetch it fresh on each page load or button click.
