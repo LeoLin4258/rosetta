@@ -877,7 +877,7 @@ cargo check
 
 Expected: passes.
 
-- [ ] **Step 3: Verify deployed unsupported update check**
+- [x] **Step 3: Verify deployed unsupported update check**
 
 Run:
 
@@ -887,9 +887,9 @@ curl -i 'https://bdujdewqopcgwijhfbcz.supabase.co/functions/v1/rosetta-update?ta
 
 Expected: response status is `204 No Content`.
 
-Actual on 2026-05-22: HTTP/2 404 NOT_FOUND; Supabase function rosetta-update is not deployed/reachable yet. This remains pending until the Supabase Edge Function is deployed.
+Actual on 2026-05-22: `204 No Content`. Passed after Edge Function deployed via Supabase web console.
 
-- [ ] **Step 4: Verify deployed no-update response for current macOS version**
+- [x] **Step 4: Verify deployed no-update response for current macOS version**
 
 Run before publishing any newer row:
 
@@ -899,7 +899,7 @@ curl -i 'https://bdujdewqopcgwijhfbcz.supabase.co/functions/v1/rosetta-update?ta
 
 Expected: response status is `204 No Content`.
 
-Actual on 2026-05-22: HTTP/2 404 NOT_FOUND; Supabase function rosetta-update is not deployed/reachable yet. This remains pending until the Supabase Edge Function is deployed.
+Actual on 2026-05-22: `204 No Content`. Passed.
 
 - [x] **Step 5: Inspect git status**
 

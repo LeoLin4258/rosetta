@@ -147,6 +147,45 @@ accepted
 source=Notarized Developer ID
 ```
 
+## First Successful Supabase Updater Release
+
+The first release that includes a signed updater artifact uploaded to Supabase was produced on 2026-05-22 for version `0.1.0-beta.2`.
+
+Apple notarization returned `Accepted` for both submissions:
+
+```txt
+App submission: e1a7d2cc-7a72-49b0-a765-38bbbd7d461e
+DMG submission: 560f5841-f7ab-4dbd-9211-be172917ed94
+```
+
+Artifacts written to `dist/release/`:
+
+```txt
+Rosetta-0.1.0-beta.2-macos-arm64.dmg           (25 MB)
+Rosetta-0.1.0-beta.2-macos-arm64.app.tar.gz    (22 MB)
+Rosetta-0.1.0-beta.2-macos-arm64.app.tar.gz.sig (440 B)
+```
+
+Gatekeeper accepted both as:
+
+```txt
+accepted
+source=Notarized Developer ID
+```
+
+The updater artifact and metadata were published to Supabase. The endpoint was confirmed to return the correct Tauri updater JSON for older current versions and `204 No Content` for the current or newer version:
+
+```bash
+# returns 200 + JSON when a newer version is published
+curl -s 'https://bdujdewqopcgwijhfbcz.supabase.co/functions/v1/rosetta-update?target=darwin&arch=aarch64&current_version=0.0.0'
+
+# returns 204 when already on the latest version
+curl -s -o /dev/null -w "%{http_code}" \
+  'https://bdujdewqopcgwijhfbcz.supabase.co/functions/v1/rosetta-update?target=darwin&arch=aarch64&current_version=0.1.0-beta.2'
+```
+
+The in-app updater smoke test (install → check → download → relaunch → verify Gatekeeper) is pending. It requires a device with a version lower than `0.1.0-beta.2` installed, and will be completed on the next release.
+
 ## Troubleshooting
 
 ### `resource fork, Finder information, or similar detritus not allowed`
