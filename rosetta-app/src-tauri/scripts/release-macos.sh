@@ -152,7 +152,6 @@ create_sign_updater_artifact() {
   local app_version="$1"
   local artifact_path="$DIST_DIR/$APP_NAME-$app_version-macos-arm64.app.tar.gz"
   local sig_path="$artifact_path.sig"
-  local signature
   local signer_args=(tauri signer sign)
 
   if [[ -n "${TAURI_SIGNING_PRIVATE_KEY_PATH:-}" ]]; then
@@ -169,12 +168,12 @@ create_sign_updater_artifact() {
   COPYFILE_DISABLE=1 tar -czf "$artifact_path" -C "$STAGE_ROOT" "$APP_NAME.app"
 
   log "signing updater artifact"
-  signature="$(pnpm --silent "${signer_args[@]}" "$artifact_path")"
-  if [[ -z "$signature" ]]; then
-    log "Tauri signer returned an empty updater signature"
+  # tauri signer sign writes the .sig file itself; discard verbose stdout.
+  pnpm --silent "${signer_args[@]}" "$artifact_path" >/dev/null
+  if [[ ! -s "$sig_path" ]]; then
+    log "Tauri signer did not produce a signature file at $sig_path"
     exit 1
   fi
-  printf '%s\n' "$signature" > "$sig_path"
 
   UPDATER_ARTIFACT_PATH="$artifact_path"
   UPDATER_SIGNATURE_PATH="$sig_path"
