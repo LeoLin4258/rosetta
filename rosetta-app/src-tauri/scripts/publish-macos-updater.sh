@@ -125,8 +125,12 @@ main() {
 
   local payload
   payload="$(
-    printf '{"app":"rosetta","version":%s,"target":"darwin","arch":"aarch64","storage_bucket":"rosetta-releases","storage_path":%s,"signature":%s,"notes":%s,"is_published":%s}' \
+    printf '{"app":%s,"version":%s,"target":%s,"arch":%s,"storage_bucket":%s,"storage_path":%s,"signature":%s,"notes":%s,"is_published":%s}' \
+      "$(json_escape "$APP_NAME")" \
       "$(json_escape "$app_version")" \
+      "$(json_escape "$TARGET")" \
+      "$(json_escape "$ARCH")" \
+      "$(json_escape "$SUPABASE_BUCKET")" \
       "$(json_escape "$storage_path")" \
       "$(json_escape "$signature")" \
       "$(json_escape "$notes")" \
@@ -160,7 +164,7 @@ curl --fail-with-body \\
   --header "apikey: \$SUPABASE_SERVICE_ROLE_KEY" \\
   --header "Content-Type: application/json" \\
   --data '{"is_published":true}' \\
-  "$SUPABASE_PROJECT_URL/rest/v1/app_releases?app=eq.rosetta&version=eq.$app_version&target=eq.darwin&arch=eq.aarch64"
+  "$SUPABASE_PROJECT_URL/rest/v1/app_releases?app=eq.$APP_NAME&version=eq.$app_version&target=eq.$TARGET&arch=eq.$ARCH"
 EOF
   fi
 }
