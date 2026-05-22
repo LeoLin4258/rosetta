@@ -855,7 +855,7 @@ git commit -m "Document Supabase updater release flow"
 **Files:**
 - Verify all files changed in Tasks 1-6.
 
-- [ ] **Step 1: Run frontend typecheck**
+- [x] **Step 1: Run frontend typecheck**
 
 Run:
 
@@ -866,7 +866,7 @@ pnpm typecheck
 
 Expected: passes.
 
-- [ ] **Step 2: Run Rust check**
+- [x] **Step 2: Run Rust check**
 
 Run:
 
@@ -877,7 +877,7 @@ cargo check
 
 Expected: passes.
 
-- [ ] **Step 3: Verify deployed unsupported update check**
+- [x] **Step 3: Verify deployed unsupported update check**
 
 Run:
 
@@ -887,7 +887,7 @@ curl -i 'https://bdujdewqopcgwijhfbcz.supabase.co/functions/v1/rosetta-update?ta
 
 Expected: response status is `204 No Content`.
 
-- [ ] **Step 4: Verify deployed no-update response for current macOS version**
+- [x] **Step 4: Verify deployed no-update response for current macOS version**
 
 Run before publishing any newer row:
 
@@ -897,7 +897,7 @@ curl -i 'https://bdujdewqopcgwijhfbcz.supabase.co/functions/v1/rosetta-update?ta
 
 Expected: response status is `204 No Content`.
 
-- [ ] **Step 5: Inspect git status**
+- [x] **Step 5: Inspect git status**
 
 Run:
 
