@@ -1,5 +1,86 @@
 # macOS Release Procedure
 
+## 发版 Checklist（快速参考）
+
+每次发版按顺序执行：
+
+**1. 改版本号（三个文件必须一致）**
+
+```bash
+# 将三处 0.1.0-beta.X 改为新版本号
+rosetta-app/package.json
+rosetta-app/src-tauri/tauri.conf.json
+rosetta-app/src-tauri/Cargo.toml
+```
+
+**2. 提交版本号变更**
+
+```bash
+git add rosetta-app/package.json rosetta-app/src-tauri/tauri.conf.json rosetta-app/src-tauri/Cargo.toml
+git commit -m "Bump version to <new-version>"
+```
+
+**3. 设置密钥（每次终端会话需要设置一次）**
+
+```bash
+export TAURI_SIGNING_PRIVATE_KEY_PATH=~/.tauri/rosetta/updater.key
+export SUPABASE_SERVICE_ROLE_KEY=<从 Supabase Project Settings → API 复制 service_role key>
+```
+
+**4. 构建 + 公证 + 签名**
+
+```bash
+cd /path/to/rosetta
+bash rosetta-app/src-tauri/scripts/release-macos.sh
+```
+
+约需 5–10 分钟（含 Apple 公证等待）。完成后产出：
+
+```
+dist/release/Rosetta-<version>-macos-arm64.dmg
+dist/release/Rosetta-<version>-macos-arm64.app.tar.gz
+dist/release/Rosetta-<version>-macos-arm64.app.tar.gz.sig
+```
+
+**5. 上传到 Supabase（未发布状态）**
+
+```bash
+bash rosetta-app/src-tauri/scripts/publish-macos-updater.sh
+```
+
+上传 DMG + updater artifact，写入未发布的 metadata 行。
+
+**6. 测试更新流程**
+
+用已安装旧版本的设备，在 Settings 里点检查更新，走一遍完整更新流程。
+
+**7. 正式发布**
+
+测试通过后，运行脚本末尾打印的 `PATCH` 命令（或直接复制粘贴）：
+
+```bash
+curl --fail-with-body \
+  --request PATCH \
+  --header "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+  --header "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+  --header "Content-Type: application/json" \
+  --data '{"is_published":true}' \
+  "https://bdujdewqopcgwijhfbcz.supabase.co/rest/v1/app_releases?app=eq.rosetta&version=eq.<version>&target=eq.darwin&arch=eq.aarch64"
+```
+
+**8. 验证**
+
+```bash
+# 应返回新版本的 JSON
+curl -s 'https://bdujdewqopcgwijhfbcz.supabase.co/functions/v1/rosetta-update?target=darwin&arch=aarch64&current_version=0.0.0'
+
+# 应返回 204（已是最新版）
+curl -s -o /dev/null -w "%{http_code}" \
+  'https://bdujdewqopcgwijhfbcz.supabase.co/functions/v1/rosetta-update?target=darwin&arch=aarch64&current_version=<new-version>'
+```
+
+---
+
 This document describes the local macOS release path for Rosetta.
 
 ## Current Status

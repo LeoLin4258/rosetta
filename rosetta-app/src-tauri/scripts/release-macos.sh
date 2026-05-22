@@ -37,8 +37,22 @@ cleanup() {
 }
 trap cleanup EXIT
 
+BOLD='\033[1m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+CYAN='\033[0;36m'
+RESET='\033[0m'
+
 log() {
-  printf '[macos-release] %s\n' "$*" >&2
+  printf "  %s\n" "$*" >&2
+}
+
+step() {
+  printf "\n${BOLD}${CYAN}▶ %s${RESET}\n" "$*" >&2
+}
+
+ok() {
+  printf "  ${GREEN}✓ %s${RESET}\n" "$*" >&2
 }
 
 require_command() {
@@ -69,7 +83,7 @@ sign_file() {
 sign_macho_files() {
   local main_executable="$SIGNED_APP/Contents/MacOS/rosetta-app"
 
-  log "signing Mach-O files inside $SIGNED_APP"
+  step "Signing Mach-O binaries"
   while IFS= read -r -d '' path; do
     if ! file "$path" | grep -Eq 'Mach-O|dynamically linked shared library'; then
       continue
@@ -94,15 +108,15 @@ sign_macho_files() {
 }
 
 notarize_and_staple_app() {
-  log "zipping app for notarization"
+  step "Notarizing app (this takes a few minutes)"
   ditto -c -k --keepParent "$SIGNED_APP" "$APP_ZIP"
-
-  log "submitting app notarization"
   xcrun notarytool submit "$APP_ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
+  ok "Notarization accepted"
 
-  log "stapling app ticket"
+  step "Stapling notarization ticket"
   xcrun stapler staple "$SIGNED_APP"
   xcrun stapler validate "$SIGNED_APP"
+  ok "Ticket stapled"
 }
 
 create_sign_notarize_dmg() {
@@ -116,36 +130,31 @@ create_sign_notarize_dmg() {
   rm -rf "$dmg_source"
   mkdir -p "$dmg_source"
 
-  log "staging DMG contents with Applications shortcut"
+  step "Creating DMG"
   ditto --norsrc "$SIGNED_APP" "$dmg_source/$APP_NAME.app"
   ln -s /Applications "$dmg_source/Applications"
-
-  log "creating DMG"
   hdiutil create \
     -volname "$APP_NAME" \
     -srcfolder "$dmg_source" \
     -ov \
     -format UDZO \
-    "$tmp_dmg"
+    "$tmp_dmg" >/dev/null
+  ok "DMG created"
 
-  log "signing DMG"
+  step "Signing & notarizing DMG (this takes a few minutes)"
   codesign --force --timestamp --sign "$SIGNING_IDENTITY" "$tmp_dmg"
-  codesign --verify --verbose=4 "$tmp_dmg"
-
-  log "submitting DMG notarization"
   xcrun notarytool submit "$tmp_dmg" --keychain-profile "$NOTARY_PROFILE" --wait
+  ok "Notarization accepted"
 
-  log "stapling DMG ticket"
+  step "Stapling DMG ticket"
   xcrun stapler staple "$tmp_dmg"
   xcrun stapler validate "$tmp_dmg"
-
-  log "copying final DMG to $dmg_path"
   ditto --norsrc "$tmp_dmg" "$dmg_path"
+  ok "Ticket stapled"
 
-  log "verifying final DMG with Gatekeeper"
+  step "Verifying DMG with Gatekeeper"
   spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg_path"
-
-  ls -lh "$dmg_path"
+  ok "Gatekeeper accepted"
 }
 
 create_sign_updater_artifact() {
@@ -164,21 +173,18 @@ create_sign_updater_artifact() {
   mkdir -p "$DIST_DIR"
   rm -f "$artifact_path" "$sig_path"
 
-  log "creating updater artifact from signed stapled app"
+  step "Creating & signing updater artifact"
   COPYFILE_DISABLE=1 tar -czf "$artifact_path" -C "$STAGE_ROOT" "$APP_NAME.app"
-
-  log "signing updater artifact"
   # tauri signer sign writes the .sig file itself; discard verbose stdout.
   pnpm --silent "${signer_args[@]}" "$artifact_path" >/dev/null
   if [[ ! -s "$sig_path" ]]; then
-    log "Tauri signer did not produce a signature file at $sig_path"
+    printf "  \033[0;31m✗ Tauri signer did not produce a signature file at %s\033[0m\n" "$sig_path" >&2
     exit 1
   fi
+  ok "Updater artifact signed"
 
   UPDATER_ARTIFACT_PATH="$artifact_path"
   UPDATER_SIGNATURE_PATH="$sig_path"
-
-  ls -lh "$artifact_path" "$sig_path"
 }
 
 main() {
@@ -193,12 +199,12 @@ main() {
   require_command ditto
 
   if [[ "$(uname -s)-$(uname -m)" != "Darwin-arm64" ]]; then
-    log "macOS release build requires macOS arm64"
+    printf "  \033[0;31m✗ macOS release build requires macOS arm64\033[0m\n" >&2
     exit 2
   fi
 
   if [[ ! -f "$ENTITLEMENTS" ]]; then
-    log "missing entitlements file: $ENTITLEMENTS"
+    printf "  \033[0;31m✗ missing entitlements file: %s\033[0m\n" "$ENTITLEMENTS" >&2
     exit 2
   fi
 
@@ -206,26 +212,31 @@ main() {
   local app_version
   app_version="$(version)"
 
+  printf "\n${BOLD}═══════════════════════════════════════${RESET}\n" >&2
+  printf "${BOLD}  Rosetta macOS Release  —  v%s${RESET}\n" "$app_version" >&2
+  printf "${BOLD}═══════════════════════════════════════${RESET}\n" >&2
+
   local stale_dmg_dir="$TAURI_DIR/target/release/bundle/dmg"
   if [[ -d "$stale_dmg_dir" ]]; then
-    log "removing stale unsigned DMGs under $stale_dmg_dir to prevent accidental distribution"
     rm -rf "$stale_dmg_dir"
   fi
 
-  log "building unsigned macOS app bundle"
+  step "Building app bundle (pnpm tauri build)"
   pnpm tauri build --bundles app --no-sign
 
   if [[ ! -d "$BUILT_APP" ]]; then
-    log "expected app bundle not found: $BUILT_APP"
+    printf "  \033[0;31m✗ expected app bundle not found: %s\033[0m\n" "$BUILT_APP" >&2
     exit 1
   fi
+  ok "App bundle built"
 
-  log "copying app bundle without resource forks or Finder metadata"
+  step "Preparing clean copy (removing resource forks)"
   ditto --norsrc "$BUILT_APP" "$SIGNED_APP"
 
   sign_macho_files
+  ok "Mach-O binaries signed"
 
-  log "signing app bundle"
+  step "Signing app bundle"
   codesign --remove-signature "$SIGNED_APP" >/dev/null 2>&1 || true
   codesign \
     --force \
@@ -235,22 +246,29 @@ main() {
     --entitlements "$ENTITLEMENTS" \
     --sign "$SIGNING_IDENTITY" \
     "$SIGNED_APP"
-
-  log "verifying app signature"
-  codesign --verify --deep --strict --verbose=4 "$SIGNED_APP"
+  codesign --verify --deep --strict "$SIGNED_APP"
+  ok "App bundle signed and verified"
 
   notarize_and_staple_app
 
-  log "verifying stapled app with Gatekeeper"
+  step "Verifying stapled app with Gatekeeper"
   spctl --assess --type execute --verbose=4 "$SIGNED_APP"
+  ok "Gatekeeper accepted"
 
   create_sign_updater_artifact "$app_version"
   create_sign_notarize_dmg "$app_version"
 
-  log "release complete"
-  log "DMG: $DIST_DIR/$APP_NAME-$app_version-macos-arm64.dmg"
-  log "Updater artifact: $UPDATER_ARTIFACT_PATH"
-  log "Updater signature: $UPDATER_SIGNATURE_PATH"
+  local dmg_size updater_size
+  dmg_size="$(du -sh "$DIST_DIR/$APP_NAME-$app_version-macos-arm64.dmg" | cut -f1)"
+  updater_size="$(du -sh "$UPDATER_ARTIFACT_PATH" | cut -f1)"
+
+  printf "\n${BOLD}${GREEN}✓ Release complete${RESET}\n" >&2
+  printf "${BOLD}───────────────────────────────────────${RESET}\n" >&2
+  printf "  ${YELLOW}Version${RESET}   v%s\n" "$app_version" >&2
+  printf "  ${YELLOW}DMG${RESET}       %s  (%s)\n" "$(basename "$DIST_DIR/$APP_NAME-$app_version-macos-arm64.dmg")" "$dmg_size" >&2
+  printf "  ${YELLOW}Updater${RESET}   %s  (%s)\n" "$(basename "$UPDATER_ARTIFACT_PATH")" "$updater_size" >&2
+  printf "${BOLD}───────────────────────────────────────${RESET}\n" >&2
+  printf "\nNext: run ${BOLD}publish-macos-updater.sh${RESET} to upload to Supabase.\n" >&2
 }
 
 main "$@"
