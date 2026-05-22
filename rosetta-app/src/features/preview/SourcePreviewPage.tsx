@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import { getCurrentWindow, type Theme } from "@tauri-apps/api/window";
+import { Loader2 } from "lucide-react";
 
 import { DocumentPreview } from "./DocumentPreview";
 import { cn } from "@/lib/utils";
@@ -113,7 +114,8 @@ export function SourcePreviewPage() {
 
       <main className="min-h-0 flex-1 bg-[#f3f1e9] p-4 dark:bg-stone-900">
         {isLoading ? (
-          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+          <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="size-4 animate-spin" />
             正在加载原文预览...
           </div>
         ) : error ? (

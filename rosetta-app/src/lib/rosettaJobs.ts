@@ -26,6 +26,10 @@ export type PdfPageTranslationState = {
   pages: PdfPageTranslation[];
 };
 
+export function createWelcomeDocument() {
+  return invoke<RosettaJobBundle>("create_welcome_document");
+}
+
 export function importRosettaDocumentFromPath(path: string) {
   return invoke<RosettaJobBundle>("import_rosetta_document_from_path", { path });
 }

@@ -186,11 +186,15 @@ function StatusRow({
   status: ManagedRuntimeStatus | null;
   isInstallActive: boolean;
 }) {
-  const { dot, label, sub } = resolveStatus(state, status, isInstallActive);
+  const { dot, label, sub, spinning } = resolveStatus(state, status, isInstallActive);
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-center gap-2.5">
-        <div className={cn("size-2 shrink-0 rounded-full", dot)} />
+        {spinning ? (
+          <LoaderCircle className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
+        ) : (
+          <div className={cn("size-2 shrink-0 rounded-full", dot)} />
+        )}
         <span className="text-sm font-medium">{label}</span>
       </div>
       {sub && <p className="pl-4 text-xs text-muted-foreground">{sub}</p>}
@@ -202,12 +206,13 @@ function resolveStatus(
   state: ManagedRuntimeState | null,
   status: ManagedRuntimeStatus | null,
   isInstallActive: boolean
-): { dot: string; label: string; sub?: string } {
+): { dot: string; label: string; sub?: string; spinning?: boolean } {
   if (isInstallActive) {
     return {
-      dot: "bg-blue-500 animate-pulse",
+      dot: "bg-blue-500",
       label: "正在下载安装翻译模型…",
       sub: "首次下载约 1.3 GB，完成后无需再联网。",
+      spinning: true,
     };
   }
   switch (state) {
@@ -221,8 +226,9 @@ function resolveStatus(
       };
     case "starting":
       return {
-        dot: "bg-blue-500 animate-pulse",
+        dot: "bg-blue-500",
         label: "正在加载模型，请稍候…",
+        spinning: true,
       };
     case "installed":
     case "stopped":
@@ -251,6 +257,7 @@ function resolveStatus(
       return {
         dot: "bg-muted-foreground/30",
         label: "正在检测本地翻译状态…",
+        spinning: true,
       };
   }
 }

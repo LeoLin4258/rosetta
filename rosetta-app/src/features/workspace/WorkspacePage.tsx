@@ -800,6 +800,7 @@ export function WorkspacePage() {
             onCancelTranslation={handleCancelTranslation}
             onExport={(kind) => void handleExport(kind)}
             onRetranslateSelected={() => void handleRetranslateSelected()}
+            onClearSelection={() => setSelectedBlockIds([])}
             onRetranslateAll={() => void handleRetranslateAll()}
           />
           {pageError && (

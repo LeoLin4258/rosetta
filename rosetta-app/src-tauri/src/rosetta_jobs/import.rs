@@ -26,8 +26,8 @@ use crate::rosetta_jobs::{
     revisions::{archive_segment_translation, create_revision_snapshot},
     segmenter::{apply_file_id, renumber_blocks_and_segments},
     store::{
-        read_index, read_json, read_translation_revisions, replace_index_job, write_index,
-        write_job_bundle, write_job_bundle_pdf, write_job_bundle_sources, write_json,
+        load_job_bundle, read_index, read_json, read_translation_revisions, replace_index_job,
+        write_index, write_job_bundle, write_job_bundle_pdf, write_job_bundle_sources, write_json,
         write_translation_files, write_translation_revisions,
     },
     translation_files::{read_or_migrate_translation_files, translation_segments_path},
@@ -710,4 +710,122 @@ pub(crate) fn delete_job_file(
         }),
         message: "文件已删除。".to_string(),
     })
+}
+
+const WELCOME_JOB_ID: &str = "job-welcome";
+
+const WELCOME_CONTENT: &str = r#"![Rosetta](/icon.png)
+
+# 欢迎使用 Rosetta
+
+Rosetta 是一款专为文档翻译设计的桌面应用，支持 Markdown、TXT 和 PDF 格式，让你的内容跨越语言边界。
+
+## 如何开始
+
+- **拖拽文件**到窗口，或点击「打开文件」导入文档
+- 在顶部工具栏选择**目标语言**，然后点击「翻译」
+- 翻译完成后，通过「导出」保存翻译结果
+
+## 主要功能
+
+### 多格式支持
+支持导入 `.md`、`.txt` 和 `.pdf` 文件，自动识别文档结构，逐段翻译。
+
+### 段落级精准翻译
+每个段落独立翻译，可以选中任意段落**单独重翻**，精细调整翻译结果。
+
+### 双语对照
+翻译时左侧显示原文，右侧实时展示译文，便于对照校对。
+
+### 本地 AI 模型
+内置 RWKV 模型，支持本地离线运行，无需联网，保护文档隐私。也可以连接外部 API 使用云端模型。
+
+### 导出灵活
+支持导出**纯译文**或**双语对照**两种格式，满足不同使用场景。
+
+---
+
+现在就拖入一份文档，开始你的第一次翻译吧！
+"#;
+
+pub(crate) fn create_welcome_document(app: &AppHandle) -> Result<RosettaJobBundle, String> {
+    let root = jobs_root(app)?;
+    let job_dir = checked_job_dir(&root, WELCOME_JOB_ID)?;
+
+    if job_dir.exists() {
+        return load_job_bundle(app, WELCOME_JOB_ID);
+    }
+
+    let filename = "欢迎使用 Rosetta.md".to_string();
+    let format = SourceFormat::Markdown;
+    let format_name = format.as_str().to_string();
+    let now = timestamp_ms_string();
+    let document_id = format!("document-{WELCOME_JOB_ID}");
+
+    let parsed = parse_source(format, &document_id, WELCOME_CONTENT);
+    let mut blocks = parsed.blocks;
+    let mut segments = parsed.segments;
+    apply_file_id(&mut blocks, &mut segments, "file-1");
+
+    let block_ids = blocks.iter().map(|block| block.id.clone()).collect();
+
+    let mut document = RosettaDocument {
+        schema_version: SCHEMA_VERSION,
+        id: document_id,
+        filename: filename.clone(),
+        format: format_name.clone(),
+        source_lang: Some("zh-CN".to_string()),
+        target_lang: "en".to_string(),
+        files: vec![RosettaSourceFile {
+            id: "file-1".to_string(),
+            filename: filename.clone(),
+            relative_path: filename.clone(),
+            format: format_name.clone(),
+            source_lang: Some("zh-CN".to_string()),
+            target_lang: Some("en".to_string()),
+            translation_status: default_file_translation_status(),
+            segment_count: 0,
+            completed_segments: 0,
+            failed_segments: 0,
+            translating_segments: 0,
+            block_ids,
+        }],
+        blocks,
+        extraction_status: Some("done".to_string()),
+    };
+    let source_files = document.files.clone();
+    let mut job = RosettaJobSummary {
+        schema_version: SCHEMA_VERSION,
+        id: WELCOME_JOB_ID.to_string(),
+        filename: filename.clone(),
+        format: format_name.clone(),
+        source_path: None,
+        source_filename: filename.clone(),
+        source_kind: "file".to_string(),
+        file_count: 1,
+        source_files,
+        status: "ready".to_string(),
+        created_at: now.clone(),
+        updated_at: now,
+        exported_at: None,
+        last_error: None,
+        target_lang: "en".to_string(),
+        segment_count: 0,
+        completed_segments: 0,
+        failed_segments: 0,
+    };
+    sync_document_file_statuses(&mut document, &segments);
+    sync_job_counts(&mut job, &segments);
+    sync_job_source_files(&mut job, &document);
+
+    let bundle = RosettaJobBundle {
+        schema_version: SCHEMA_VERSION,
+        job,
+        document,
+        segments,
+        translation_files: Vec::new(),
+        translation_revisions: Vec::new(),
+    };
+    write_job_bundle(app, &bundle, WELCOME_CONTENT)?;
+    Ok(bundle)
 }

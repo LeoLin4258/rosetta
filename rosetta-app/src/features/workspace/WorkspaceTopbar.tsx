@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Download, Loader2, Play, RefreshCw, Square } from "lucide-react";
+import { Download, Loader2, Play, RefreshCw, Square, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -47,6 +47,7 @@ type WorkspaceTopbarProps = {
   onCancelTranslation: () => void;
   onExport: (kind: "translation" | "bilingual") => void;
   onRetranslateSelected: () => void;
+  onClearSelection: () => void;
   onRetranslateAll: () => void;
 };
 
@@ -82,6 +83,7 @@ export function WorkspaceTopbar({
   onCancelTranslation,
   onExport,
   onRetranslateSelected,
+  onClearSelection,
   onRetranslateAll,
 }: WorkspaceTopbarProps) {
   const [confirmingCancel, setConfirmingCancel] = useState(false);
@@ -158,6 +160,7 @@ export function WorkspaceTopbar({
       <div className="flex shrink-0 items-center gap-2">
         {isTranslating ? (
           <>
+            <Loader2 className="size-3.5 animate-spin text-muted-foreground/50" />
             <span className="text-xs tabular-nums text-muted-foreground/60">
               {pdfProgress != null ? (
                 <>
@@ -252,16 +255,26 @@ export function WorkspaceTopbar({
                 正在启动模型…
               </Button>
             ) : selectedBlockCount > 0 ? (
-              <Button
-                size="sm"
-                disabled={translateDisabled}
-                onClick={onRetranslateSelected}
-                className="gap-1.5"
-                title={translateTitle}
-              >
-                <RefreshCw className="size-3.5" />
-                重翻选中 {selectedBlockCount} 段
-              </Button>
+              <div className="flex items-center gap-1">
+                <Button
+                  size="sm"
+                  disabled={translateDisabled}
+                  onClick={onRetranslateSelected}
+                  className="gap-1.5"
+                  title={translateTitle}
+                >
+                  <RefreshCw className="size-3.5" />
+                  重翻选中 {selectedBlockCount} 段
+                </Button>
+                <button
+                  type="button"
+                  onClick={onClearSelection}
+                  className="flex size-5 items-center justify-center rounded text-muted-foreground/50 transition-colors hover:text-muted-foreground"
+                  title="取消选中"
+                >
+                  <X className="size-3.5" />
+                </button>
+              </div>
             ) : allTranslated ? (
               confirmingRetranslateAll ? (
                 <div className="flex items-center gap-2">

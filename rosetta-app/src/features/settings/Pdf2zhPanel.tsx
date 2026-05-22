@@ -163,11 +163,15 @@ function StatusRow({
   isRefreshing: boolean;
   isInstallActive: boolean;
 }) {
-  const { dot, label, sub } = resolveStatus(state, status, isRefreshing, isInstallActive);
+  const { dot, label, sub, spinning } = resolveStatus(state, status, isRefreshing, isInstallActive);
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-center gap-2.5">
-        <div className={cn("size-2 shrink-0 rounded-full", dot)} />
+        {spinning ? (
+          <LoaderCircle className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
+        ) : (
+          <div className={cn("size-2 shrink-0 rounded-full", dot)} />
+        )}
         <span className="text-sm font-medium">{label}</span>
       </div>
       {sub && <p className="pl-4 text-xs text-muted-foreground">{sub}</p>}
@@ -180,18 +184,20 @@ function resolveStatus(
   status: Pdf2zhStatus | null,
   isRefreshing: boolean,
   isInstallActive: boolean
-): { dot: string; label: string; sub?: string } {
+): { dot: string; label: string; sub?: string; spinning?: boolean } {
   if (isInstallActive) {
     return {
-      dot: "bg-blue-500 animate-pulse",
+      dot: "bg-blue-500",
       label: "正在准备 PDF 版面处理组件…",
       sub: "完成后，PDF 文档会自动保留排版并生成译文 PDF。",
+      spinning: true,
     };
   }
   if (isRefreshing || state === null) {
     return {
-      dot: "bg-muted-foreground/30 animate-pulse",
+      dot: "bg-muted-foreground/30",
       label: "正在检测 PDF 版面处理组件…",
+      spinning: true,
     };
   }
   if (state === "installed") {

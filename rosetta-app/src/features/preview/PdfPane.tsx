@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { MutableRefObject } from "react";
 import type React from "react";
+import { Loader2 } from "lucide-react";
 
 import { renderRosettaPdfPageAsPng } from "@/lib/rosettaJobs";
 
@@ -38,6 +39,8 @@ type PdfPaneProps = {
   pageCount: number | null;
   /// Placeholder text when `pageCount` is null or 0 (no PDF available yet).
   placeholder?: string;
+  /// Show a spinner next to the placeholder text.
+  placeholderLoading?: boolean;
   /// Optional ref the caller wires up for scroll-sync. We forward our scroll
   /// container so the parent can mirror scrollTop between panes.
   scrollRef?: MutableRefObject<HTMLDivElement | null>;
@@ -55,6 +58,7 @@ export function PdfPane({
   targetWidth,
   pageCount,
   placeholder,
+  placeholderLoading,
   scrollRef,
   onScroll,
   pageControls,
@@ -92,6 +96,7 @@ export function PdfPane({
         ref={containerRef}
         className="flex h-full min-h-0 flex-col items-center justify-center gap-2 overflow-auto bg-background px-8 text-center text-sm text-muted-foreground"
       >
+        {placeholderLoading && <Loader2 className="size-5 animate-spin" />}
         {placeholder ?? "等待 PDF…"}
       </div>
     );

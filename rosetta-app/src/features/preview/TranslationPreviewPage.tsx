@@ -383,7 +383,8 @@ export function TranslationPreviewPage() {
 
       <main className="min-h-0 flex-1 p-4 bg-[#f3f1e9] dark:bg-stone-900">
         {isLoading ? (
-          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+          <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
+            <LoaderCircle className="size-4 animate-spin" />
             正在加载译文预览...
           </div>
         ) : error ? (

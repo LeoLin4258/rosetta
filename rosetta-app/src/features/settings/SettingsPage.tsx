@@ -7,6 +7,7 @@ import {
   ChevronDown,
   Cloud,
   Download,
+  LoaderCircle,
   Palette,
   RefreshCw,
   Rocket,
@@ -600,7 +601,12 @@ function UpdateStatusBadge({ status }: { status: UpdateStatus }) {
     status === "downloading" ||
     status === "installing"
   ) {
-    return <Badge variant="outline">处理中</Badge>;
+    return (
+      <Badge variant="outline">
+        <LoaderCircle className="animate-spin" data-icon="inline-start" />
+        处理中
+      </Badge>
+    );
   }
 
   if (status === "ready-to-restart") {
@@ -675,7 +681,8 @@ function UpdateStatusMessage({
 
   if (status === "downloading") {
     return (
-      <p className="text-sm text-muted-foreground">
+      <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
+        <LoaderCircle className="size-3.5 shrink-0 animate-spin" />
         正在下载更新
         {progress.total
           ? `：${formatBytes(progress.downloaded)} / ${formatBytes(
@@ -683,14 +690,15 @@ function UpdateStatusMessage({
           )}`
           : progress.downloaded > 0
             ? `：${formatBytes(progress.downloaded)}`
-            : "。"}
+            : ""}
       </p>
     );
   }
 
   if (status === "installing") {
     return (
-      <p className="text-sm text-muted-foreground">
+      <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
+        <LoaderCircle className="size-3.5 shrink-0 animate-spin" />
         正在安装更新，请不要关闭 Rosetta。
       </p>
     );
@@ -705,7 +713,12 @@ function UpdateStatusMessage({
   }
 
   if (status === "checking") {
-    return <p className="text-sm text-muted-foreground">正在检查更新。</p>;
+    return (
+      <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
+        <LoaderCircle className="size-3.5 shrink-0 animate-spin" />
+        正在检查更新…
+      </p>
+    );
   }
 
   return (

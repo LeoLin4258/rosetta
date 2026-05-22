@@ -199,6 +199,11 @@ export function PdfDocumentPreview({
     return `翻译部分完成 (${completedSegments} / ${segmentCount})，继续翻译以生成完整译文 PDF。`;
   })();
 
+  const translationPlaceholderLoading =
+    extractionStatus === "pending" ||
+    isTranslating ||
+    pdfAlreadyTranslated;
+
   function togglePage(pageNumber: number, checked: boolean) {
     const next = checked
       ? [...selectedPages, pageNumber]
@@ -246,6 +251,7 @@ export function PdfDocumentPreview({
             pageCount={sourcePageCount}
             targetWidth={paneWidth}
             placeholder={translationPlaceholder}
+            placeholderLoading={translationPlaceholderLoading}
             scrollRef={translationScrollRef}
             onScroll={() => syncScroll("translation")}
             canRenderPage={(pageIndex) => pageStatus(pageIndex)?.status === "translated"}

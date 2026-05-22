@@ -114,6 +114,11 @@ pub async fn import_rosetta_document_from_path(
     }
 }
 
+#[tauri::command]
+pub fn create_welcome_document(app: AppHandle) -> Result<RosettaJobBundle, String> {
+    import::create_welcome_document(&app)
+}
+
 /// Smoke test: confirm the bundled pdfium dylib and CJK font can be located
 /// and that pdfium binds successfully. Phase 2 frontend uses this to surface
 /// "PDF support unavailable" early before the user tries to import a PDF.
