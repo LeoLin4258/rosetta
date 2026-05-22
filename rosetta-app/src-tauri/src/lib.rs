@@ -139,6 +139,18 @@ pub fn run() {
             let payload = event.id.as_ref().to_string();
             app.emit("rosetta-menu-event", payload).ok();
         })
+        .on_window_event(|window, event| {
+            // macOS: hide instead of destroy so the window can be restored
+            // from the dock. Without this, close destroys the window handle,
+            // Reopen can't find "main", and falls back to showing onboarding.
+            #[cfg(target_os = "macos")]
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             managed_rwkv::cancel_managed_rwkv_install,
             managed_rwkv::get_managed_rwkv_install_plan,
