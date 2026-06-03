@@ -275,20 +275,33 @@ function Pdf2zhBadge({
 }) {
   if (isInstallActive) {
     return (
-      <Badge variant="secondary" className="gap-1">
+      <Badge
+        variant="outline"
+        className="gap-1 border-transparent bg-amber-500/15 text-amber-800 dark:text-amber-300"
+      >
         <LoaderCircle className="size-3 animate-spin" /> 安装中
       </Badge>
     );
   }
   if (state === "installed") {
     return (
-      <Badge variant="secondary" className="gap-1 text-emerald-600 dark:text-emerald-400">
+      <Badge
+        variant="outline"
+        className="gap-1 border-transparent bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+      >
         <CheckCircle2 className="size-3" /> 已就绪
       </Badge>
     );
   }
   if (state === "not-installed") {
-    return <Badge variant="outline">未安装</Badge>;
+    return (
+      <Badge
+        variant="outline"
+        className="border-transparent bg-sky-500/15 text-sky-700 dark:text-sky-300"
+      >
+        未安装
+      </Badge>
+    );
   }
   return null;
 }

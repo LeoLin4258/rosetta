@@ -24,6 +24,11 @@ import {
 } from "@/lib/rosettaJobs";
 import { defaultExportFilename, exportFormatForSource } from "@/lib/rosettaExport";
 import { isRwkvConfigReady } from "@/lib/languages";
+import { selectProvider } from "@/lib/providers";
+import {
+  isManagedRuntimeReady,
+  useManagedRwkvRuntime,
+} from "@/lib/useManagedRwkvRuntime";
 import {
   translationProgressPercent,
 } from "@/lib/translationSegments";
@@ -49,6 +54,8 @@ export function TranslationPreviewPage() {
   const { jobId, translationFileId } = useParams();
   const themeMode = useRosettaStore((state) => state.themeMode);
   const rwkv = useRosettaStore((state) => state.rwkv);
+  const managedRuntime = useManagedRwkvRuntime();
+  const managedRuntimeStatus = managedRuntime.status;
   const [systemPrefersDark, setSystemPrefersDark] = useState(true);
   const [jobBundle, setJobBundle] = useState<RosettaJobBundle | null>(null);
   const [translationBundle, setTranslationBundle] =
@@ -85,7 +92,10 @@ export function TranslationPreviewPage() {
     translationFile.segmentCount > 0 &&
     translationFile.completedSegments >= translationFile.segmentCount &&
     translationFile.failedSegments === 0;
-  const rwkvConfigReady = isRwkvConfigReady(rwkv);
+  const rwkvConfigReady = isRwkvConfigReady(
+    rwkv,
+    isManagedRuntimeReady(managedRuntimeStatus)
+  );
   const canRetranslate =
     jobId != null &&
     jobBundle != null &&
@@ -277,12 +287,23 @@ export function TranslationPreviewPage() {
         cancelPromise: cancelled,
         jobId,
         onTranslationFileSaved: setTranslationBundle,
+        provider: selectProvider({
+          config: rwkv,
+          override:
+            rwkv.providerPreference === "local"
+              ? "rwkv-mobile-batch-chat"
+              : "rwkv-lightning-contents",
+          managedRuntimeReady: isManagedRuntimeReady(managedRuntimeStatus),
+          managedRuntimeBaseUrl:
+            managedRuntimeStatus?.process.baseUrl ?? undefined,
+        }),
         request: {
           baseUrl: rwkv.baseUrl,
           endpoint: rwkv.endpoint,
           internalToken: rwkv.internalToken,
           bodyPassword: rwkv.bodyPassword,
           timeoutMs: rwkv.timeoutMs,
+          providerPreference: rwkv.providerPreference,
           sourceLang: sourceFile.sourceLang ?? jobBundle.document.sourceLang,
           targetLang: translationFile.targetLang,
         },

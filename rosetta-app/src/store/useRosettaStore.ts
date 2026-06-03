@@ -225,6 +225,7 @@ export const useRosettaStore = create<RosettaState>()(
         bodyPassword: "",
         timeoutMs: 120_000,
         mode: "balanced",
+        providerPreference: "local",
       },
       jobs: [],
       activeJobId: null,
@@ -757,6 +758,13 @@ export const useRosettaStore = create<RosettaState>()(
       name: "rosetta-app-settings",
       merge: (persisted, current) => {
         const persistedState = persisted as Partial<RosettaState> | undefined;
+        const persistedRwkv = persistedState?.rwkv;
+        const persistedHasProviderPreference =
+          !!persistedRwkv &&
+          Object.prototype.hasOwnProperty.call(
+            persistedRwkv,
+            "providerPreference"
+          );
 
         return {
           ...current,
@@ -784,7 +792,12 @@ export const useRosettaStore = create<RosettaState>()(
             current.activeTranslationFileIdBySourceKey,
           rwkv: {
             ...current.rwkv,
-            ...persistedState?.rwkv,
+            ...persistedRwkv,
+            providerPreference: persistedHasProviderPreference
+              ? persistedRwkv.providerPreference
+              : persistedRwkv
+                ? "remote-api"
+                : current.rwkv.providerPreference,
           },
           downloadProxy: {
             ...current.downloadProxy,

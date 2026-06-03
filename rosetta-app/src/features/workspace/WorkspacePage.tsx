@@ -245,6 +245,10 @@ export function WorkspacePage() {
   function buildProvider() {
     return selectProvider({
       config: rwkv,
+      override:
+        rwkv.providerPreference === "local"
+          ? "rwkv-mobile-batch-chat"
+          : "rwkv-lightning-contents",
       managedRuntimeReady: isManagedRuntimeReady(managedRuntimeStatus),
       managedRuntimeBaseUrl: managedRuntimeStatus?.process.baseUrl ?? undefined,
     });
@@ -349,6 +353,7 @@ export function WorkspacePage() {
           internalToken: rwkv.internalToken,
           bodyPassword: rwkv.bodyPassword,
           timeoutMs: rwkv.timeoutMs,
+          providerPreference: rwkv.providerPreference,
           sourceLang: srcLang,
           targetLang,
         },
@@ -531,6 +536,7 @@ export function WorkspacePage() {
           internalToken: rwkv.internalToken,
           bodyPassword: rwkv.bodyPassword,
           timeoutMs: rwkv.timeoutMs,
+          providerPreference: rwkv.providerPreference,
           sourceLang,
           targetLang: retranslateTargetLang,
         },
@@ -670,6 +676,7 @@ export function WorkspacePage() {
           internalToken: rwkv.internalToken,
           bodyPassword: rwkv.bodyPassword,
           timeoutMs: rwkv.timeoutMs,
+          providerPreference: rwkv.providerPreference,
           sourceLang,
           targetLang: retranslateTargetLang,
         },

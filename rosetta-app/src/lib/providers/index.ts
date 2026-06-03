@@ -2,6 +2,7 @@ import type {
   RwkvConnectionConfig,
   RwkvProviderHandle,
   RwkvProviderId,
+  RwkvProviderPreference,
 } from "@/types/rosetta";
 
 const DEFAULT_MANAGED_RUNTIME_BASE_URL = "http://127.0.0.1:8765";
@@ -14,12 +15,16 @@ export type SelectProviderInput = {
    */
   config: Pick<
     RwkvConnectionConfig,
-    "baseUrl" | "endpoint" | "internalToken" | "bodyPassword" | "timeoutMs"
+    | "baseUrl"
+    | "endpoint"
+    | "internalToken"
+    | "bodyPassword"
+    | "timeoutMs"
+    | "providerPreference"
   >;
   /**
-   * Explicit override that bypasses runtime-status auto-detection. Wired from
-   * a future Settings toggle ("use local RWKV" / "use external API"). When
-   * unset, falls back to the managed-runtime heuristic below.
+   * Explicit override that bypasses the saved Settings preference. Mostly used
+   * by call sites that already mapped a user-facing choice to a provider id.
    */
   override?: RwkvProviderId;
   /**
@@ -42,14 +47,11 @@ export type SelectProviderInput = {
  * Pick the provider handle that the translation runner should dispatch to.
  *
  * Order of precedence:
- *   1. `override` — explicit user/system intent always wins.
- *   2. `managedRuntimeReady` + `managedRuntimeBaseUrl` — local sidecar is up.
- *   3. fall back to `rwkv-lightning-contents` with external API config.
- *
- * Currently the managed-runtime branch only fires when callers explicitly set
- * `managedRuntimeReady` — the runtime status slice that feeds this is wired
- * in Phase 5. Until then this function returns the lightning-contents handle
- * for every existing call site, preserving production behavior verbatim.
+ * Order of precedence:
+ *   1. `override` — explicit call-site intent always wins.
+ *   2. `config.providerPreference` — user-selected Settings value.
+ *   3. `managedRuntimeReady` — compatibility fallback for older persisted data.
+ *   4. remote API.
  */
 export function selectProvider({
   config,
@@ -57,7 +59,11 @@ export function selectProvider({
   managedRuntimeReady,
   managedRuntimeBaseUrl,
 }: SelectProviderInput): RwkvProviderHandle {
-  const providerId = resolveProviderId(override, managedRuntimeReady);
+  const providerId = resolveProviderId(
+    override,
+    config.providerPreference,
+    managedRuntimeReady
+  );
   if (providerId === "rwkv-mobile-batch-chat") {
     return {
       id: "rwkv-mobile-batch-chat",
@@ -77,10 +83,17 @@ export function selectProvider({
 
 function resolveProviderId(
   override: RwkvProviderId | undefined,
+  preference: RwkvProviderPreference | undefined,
   managedRuntimeReady: boolean | undefined
 ): RwkvProviderId {
   if (override) {
     return override;
+  }
+  if (preference === "local") {
+    return "rwkv-mobile-batch-chat";
+  }
+  if (preference === "remote-api") {
+    return "rwkv-lightning-contents";
   }
   if (managedRuntimeReady) {
     return "rwkv-mobile-batch-chat";

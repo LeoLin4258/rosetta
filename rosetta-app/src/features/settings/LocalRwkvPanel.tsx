@@ -405,21 +405,30 @@ function RuntimeBadge({
 }) {
   if (isInstallActive) {
     return (
-      <Badge variant="secondary" className="gap-1">
+      <Badge
+        variant="outline"
+        className="gap-1 border-transparent bg-amber-500/15 text-amber-800 dark:text-amber-300"
+      >
         <LoaderCircle className="size-3 animate-spin" /> 安装中
       </Badge>
     );
   }
   if (state === "ready") {
     return (
-      <Badge variant="secondary" className="gap-1 text-emerald-600 dark:text-emerald-400">
+      <Badge
+        variant="outline"
+        className="gap-1 border-transparent bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+      >
         <CheckCircle2 className="size-3" /> 运行中
       </Badge>
     );
   }
   if (state === "starting") {
     return (
-      <Badge variant="secondary" className="gap-1">
+      <Badge
+        variant="outline"
+        className="gap-1 border-transparent bg-sky-500/15 text-sky-700 dark:text-sky-300"
+      >
         <LoaderCircle className="size-3 animate-spin" /> 启动中
       </Badge>
     );

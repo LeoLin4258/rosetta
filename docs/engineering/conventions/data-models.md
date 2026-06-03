@@ -188,16 +188,16 @@ AppData/Rosetta/jobs/
 
 ## RWKV API Config
 
-`RwkvConnectionConfig` 表示当前翻译后端连接设置。托管本地 runtime 暂停期间，它应面向一个已存在的 RWKV 翻译 API，而不是 Rosetta 管理的 runtime 状态。
+`RwkvConnectionConfig` 表示当前翻译后端连接设置，包括用户选择使用 Rosetta 管理的本地模型还是远程 API。
 
 约定：
 
+- `providerPreference` 是用户手动选择的翻译后端，当前支持 `local` 和 `remote-api`。翻译调度必须尊重该选择，不应仅因为本地 runtime 已 ready 就自动改用本地模型，也不应因为远程 API 已配置就自动改用远程。
 - `baseUrl` 和 `endpoint` 共同组成请求地址。
 - API token、body password 等凭据只能保存在用户本机设置中，不能写入仓库、文档、测试或 fixture。
 - 远程或云端 API 必须是用户显式配置的 opt-in 后端。
-- 翻译 pipeline 不能依赖 `start_rwkv_runtime` 或 managed runtime readiness。
+- 选择 `local` 时，翻译 pipeline 使用 Rosetta 管理的本地 RWKV runtime；选择 `remote-api` 时，使用远程 API 配置。设置页必须清楚展示当前选择和该后端是否可用。
 - 翻译请求使用当前任务的语言方向生成 prompt，格式为 `<SourceLabel>: ...\n\n<TargetLabel>:`。当前请求体使用 `contents[]` batch、`stream: true` 和模型后端指定的采样参数；响应解析需兼容普通 JSON 与 SSE `data:` chunk。当前 RWKV 工程师确认的主路径仍是 English -> Chinese，其他语言方向属于 UI 和数据模型已支持、模型效果待验证的扩展能力。
-- 如果未来恢复 Rosetta 托管本地 runtime，应新增 runtime choice ADR，再决定是否扩展该配置模型。
 
 ## Compatibility
 

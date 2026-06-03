@@ -109,6 +109,7 @@ export async function runTranslationBatches({
         internalToken: request.internalToken,
         bodyPassword: request.bodyPassword,
         timeoutMs: request.timeoutMs,
+        providerPreference: request.providerPreference,
       },
     });
 

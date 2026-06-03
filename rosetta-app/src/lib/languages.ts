@@ -11,7 +11,13 @@ export function languageLabel(value: string): string {
   return LANGUAGE_OPTIONS.find((opt) => opt.value === value)?.label ?? value;
 }
 
-export function isRwkvConfigReady(config: RwkvConnectionConfig) {
+export function isRwkvConfigReady(
+  config: RwkvConnectionConfig,
+  managedRuntimeReady = false
+) {
+  if (config.providerPreference === "local") {
+    return managedRuntimeReady && config.timeoutMs > 0;
+  }
   return (
     config.baseUrl.trim().length > 0 &&
     config.endpoint.trim().length > 0 &&

@@ -235,7 +235,10 @@ export type RwkvConnectionConfig = {
   bodyPassword: string;
   timeoutMs: number;
   mode: TranslationMode;
+  providerPreference: RwkvProviderPreference;
 };
+
+export type RwkvProviderPreference = "local" | "remote-api";
 
 export type RwkvProviderId =
   | "rwkv-lightning-contents"

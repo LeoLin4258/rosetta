@@ -903,6 +903,13 @@ fn parse_streaming_translations(
 }
 
 fn api_url(base_url: &str, endpoint: &str) -> String {
+    let base_url = base_url.trim();
+    let base_url = if base_url.contains("://") {
+        base_url.to_string()
+    } else {
+        format!("http://{base_url}")
+    };
+
     format!(
         "{}/{}",
         base_url.trim_end_matches('/'),
@@ -1737,6 +1744,14 @@ mod tests {
         assert_eq!(
             api_url("https://example.com/", "/v1/chat/completions"),
             "https://example.com/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn api_url_defaults_bare_host_to_http() {
+        assert_eq!(
+            api_url("192.168.0.125:8002", "/v1/chat/completions"),
+            "http://192.168.0.125:8002/v1/chat/completions"
         );
     }
 

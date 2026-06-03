@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { FileTextIcon, PlusIcon, SettingsIcon, Trash2Icon } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
@@ -47,6 +47,7 @@ export function AppSidebar({
   ...props
 }: AppSidebarProps) {
   const navigate = useNavigate();
+  const location = useLocation();
   const jobs = useRosettaStore((s) => s.jobs);
   const activeJobId = useRosettaStore((s) => s.activeJobId);
   const setJobList = useRosettaStore((s) => s.setJobList);
@@ -91,6 +92,7 @@ export function AppSidebar({
 
   const recentJobs = [...jobs]
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const isSettingsRoute = location.pathname.startsWith("/settings");
 
   async function addNewDocument() {
     try {
@@ -165,13 +167,13 @@ export function AppSidebar({
                   <SidebarMenuItem key={job.id}>
                     <SidebarMenuButton
                       className="pr-8"
-                      isActive={activeJobId === job.id}
+                      isActive={!isSettingsRoute && activeJobId === job.id}
                       onClick={() => void openJob(job)}
                       tooltip={job.filename}
                     >
                       <FileTextIcon />
                       <span className="flex-1 truncate">{job.filename}</span>
-                      <span className="shrink-0 text-xs text-muted-foreground/40">
+                      <span className="shrink-0 text-xs text-muted-foreground/45 group-data-active/menu-button:text-sidebar-accent-foreground/65">
                         {formatRelativeTime(job.updatedAt)}
                       </span>
                     </SidebarMenuButton>
@@ -206,7 +208,7 @@ export function AppSidebar({
         <SidebarFooter>
           <SidebarMenu>
             <SidebarMenuItem>
-              <SidebarMenuButton asChild tooltip="设置">
+              <SidebarMenuButton asChild isActive={isSettingsRoute} tooltip="设置">
                 <button type="button" onClick={() => navigate("/settings")}>
                   <SettingsIcon />
                   <span>设置</span>
