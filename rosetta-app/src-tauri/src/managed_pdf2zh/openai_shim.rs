@@ -16,6 +16,21 @@ use crate::rwkv_providers::{
 
 const DEFAULT_MAX_BATCH_SIZE: usize = 4;
 
+#[derive(Debug, Clone)]
+pub struct LightningApiConfig {
+    pub base_url: String,
+    pub endpoint: String,
+    pub internal_token: String,
+    pub body_password: String,
+    pub timeout_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+pub enum ShimProviderConfig {
+    MobileBatch(MobileBatchChatConfig),
+    Lightning(LightningApiConfig),
+}
+
 const BATCH_WINDOW_MS: u64 = 80;
 
 #[derive(Debug)]
@@ -83,32 +98,44 @@ struct ChatMessageResponse {
 }
 
 pub async fn spawn_shim(
-    rwkv_base_url: String,
+    provider: ShimProviderConfig,
     source_lang: String,
     target_lang: String,
-    timeout_ms: u64,
     log_file: PathBuf,
     debug: bool,
 ) -> Result<OpenAiShim, String> {
-    let rwkv = MobileBatchChatConfig {
-        base_url: rwkv_base_url,
-        timeout_ms,
+    let (max_batch_size, batch_handle) = match provider {
+        ShimProviderConfig::MobileBatch(rwkv) => {
+            mobile_batch_chat::set_chat_roles_for_pair(&rwkv, &source_lang, &target_lang, None)
+                .await?;
+            let max_batch_size = mobile_batch_chat::query_supported_batch_sizes(&rwkv)
+                .await
+                .map(|sizes| mobile_batch_chat::pick_batch_size(&sizes, 0))
+                .unwrap_or(DEFAULT_MAX_BATCH_SIZE)
+                .max(1);
+            let (batch_tx, batch_rx) = mpsc::channel(max_batch_size * 4);
+            let handle = tokio::spawn(mobile_batch_processor(
+                batch_rx,
+                rwkv,
+                target_lang.clone(),
+                max_batch_size,
+            ));
+            (max_batch_size, (batch_tx, handle))
+        }
+        ShimProviderConfig::Lightning(lightning) => {
+            let max_batch_size = DEFAULT_MAX_BATCH_SIZE;
+            let (batch_tx, batch_rx) = mpsc::channel(max_batch_size * 4);
+            let handle = tokio::spawn(lightning_batch_processor(
+                batch_rx,
+                lightning,
+                source_lang.clone(),
+                target_lang.clone(),
+                max_batch_size,
+            ));
+            (max_batch_size, (batch_tx, handle))
+        }
     };
-    mobile_batch_chat::set_chat_roles_for_pair(&rwkv, &source_lang, &target_lang, None).await?;
-
-    let max_batch_size = mobile_batch_chat::query_supported_batch_sizes(&rwkv)
-        .await
-        .map(|sizes| mobile_batch_chat::pick_batch_size(&sizes, 0))
-        .unwrap_or(DEFAULT_MAX_BATCH_SIZE)
-        .max(1);
-
-    let (batch_tx, batch_rx) = mpsc::channel(max_batch_size * 4);
-    let batch_handle = tokio::spawn(batch_processor(
-        batch_rx,
-        rwkv.clone(),
-        target_lang.clone(),
-        max_batch_size,
-    ));
+    let (batch_tx, batch_handle) = (batch_handle.0, batch_handle.1);
 
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -121,8 +148,8 @@ pub async fn spawn_shim(
         debug,
         &log_file,
         &format!(
-            "spawn shim base_url={} source_lang={} target_lang={} max_batch_size={}",
-            rwkv.base_url, source_lang, target_lang, max_batch_size
+            "spawn shim source_lang={} target_lang={} max_batch_size={}",
+            source_lang, target_lang, max_batch_size
         ),
     );
     let state = Arc::new(ShimState {
@@ -141,7 +168,7 @@ pub async fn spawn_shim(
     Ok(OpenAiShim { port, batch_size: max_batch_size, server_handle, batch_handle })
 }
 
-async fn batch_processor(
+async fn mobile_batch_processor(
     mut rx: mpsc::Receiver<PendingTranslation>,
     rwkv: MobileBatchChatConfig,
     target_lang: String,
@@ -191,6 +218,65 @@ async fn batch_processor(
             };
             for pending in batch {
                 let _ = pending.result_tx.send(Err(error_msg.clone()));
+            }
+        }
+    }
+}
+
+async fn lightning_batch_processor(
+    mut rx: mpsc::Receiver<PendingTranslation>,
+    config: LightningApiConfig,
+    source_lang: String,
+    target_lang: String,
+    max_batch_size: usize,
+) {
+    loop {
+        let Some(first) = rx.recv().await else {
+            break;
+        };
+        let mut batch = vec![first];
+
+        let deadline = Instant::now() + Duration::from_millis(BATCH_WINDOW_MS);
+        while batch.len() < max_batch_size {
+            match timeout_at(deadline, rx.recv()).await {
+                Ok(Some(item)) => batch.push(item),
+                _ => break,
+            }
+        }
+
+        eprintln!("[pdf2zh-lightning] assembled {} item(s) in batch", batch.len());
+        let source_texts: Vec<String> = batch.iter().map(|p| p.text.clone()).collect();
+        match crate::rwkv_api::translate_batch_via_lightning(
+            &config.base_url,
+            &config.endpoint,
+            &config.internal_token,
+            &config.body_password,
+            config.timeout_ms,
+            &source_lang,
+            &target_lang,
+            &source_texts,
+        )
+        .await
+        {
+            Ok(translations) if translations.len() == batch.len() => {
+                for (pending, translation) in batch.into_iter().zip(translations) {
+                    let _ = pending.result_tx.send(Ok(translation));
+                }
+            }
+            Ok(translations) => {
+                let error_msg = format!(
+                    "翻译结果数量不匹配（期望 {}，实际 {}）",
+                    batch.len(),
+                    translations.len()
+                );
+                for pending in batch {
+                    let _ = pending.result_tx.send(Err(error_msg.clone()));
+                }
+            }
+            Err(message) => {
+                for pending in batch {
+                    let _ = pending.result_tx.send(Err(message.clone()));
+                }
             }
         }
     }

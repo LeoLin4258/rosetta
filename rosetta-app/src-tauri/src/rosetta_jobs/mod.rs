@@ -23,6 +23,8 @@ use model::{
     RosettaJobSummary, RosettaTranslationFileBundle, Segment, TranslationRevisionReason,
     TranslationSegment,
 };
+use crate::managed_pdf2zh::openai_shim::{LightningApiConfig, ShimProviderConfig};
+use crate::rwkv_providers::mobile_batch_chat::MobileBatchChatConfig;
 
 #[derive(Default)]
 pub struct PdfTranslationCancelState(pub Mutex<Option<oneshot::Sender<()>>>);
@@ -275,6 +277,9 @@ pub async fn translate_rosetta_pdf_pages(
     page_selection: String,
     target_lang: String,
     rwkv_base_url: String,
+    provider_endpoint: Option<String>,
+    provider_internal_token: Option<String>,
+    provider_body_password: Option<String>,
     source_lang: Option<String>,
     timeout_ms: Option<u64>,
     force: Option<bool>,
@@ -307,8 +312,28 @@ pub async fn translate_rosetta_pdf_pages(
         .unwrap_or_else(|| "en".to_string());
     let rwkv_base_url = rwkv_base_url.trim().to_string();
     if rwkv_base_url.is_empty() {
-        return Err("PDF 翻译需要一个本地 RWKV base URL。请先启动本地运行时。".to_string());
+        return Err("PDF 翻译需要配置 API 地址。请先启动本地运行时或配置远程 API。".to_string());
     }
+    let timeout = timeout_ms.unwrap_or(120_000);
+    let provider_endpoint = provider_endpoint
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("")
+        .to_string();
+    let provider = if provider_endpoint.is_empty() {
+        ShimProviderConfig::MobileBatch(MobileBatchChatConfig {
+            base_url: rwkv_base_url,
+            timeout_ms: timeout,
+        })
+    } else {
+        ShimProviderConfig::Lightning(LightningApiConfig {
+            base_url: rwkv_base_url,
+            endpoint: provider_endpoint,
+            internal_token: provider_internal_token.unwrap_or_default(),
+            body_password: provider_body_password.unwrap_or_default(),
+            timeout_ms: timeout,
+        })
+    };
     let force = force.unwrap_or(false);
 
     for page_number in pages {
@@ -356,10 +381,10 @@ pub async fn translate_rosetta_pdf_pages(
             &output_dir,
             formats::pdf::pdf2zh_invoke::Pdf2zhInvokeOptions {
                 job_id: job_id.clone(),
-                rwkv_base_url: rwkv_base_url.clone(),
+                provider: provider.clone(),
                 source_lang: source_lang.clone(),
                 target_lang: target_lang.clone(),
-                timeout_ms: timeout_ms.unwrap_or(120_000),
+                timeout_ms: timeout,
                 ignore_cache: false,
                 pages: Some(vec![page_number]),
             },
@@ -539,6 +564,9 @@ pub async fn generate_rosetta_translated_pdf(
     cancel_state: State<'_, PdfTranslationCancelState>,
     job_id: String,
     rwkv_base_url: Option<String>,
+    provider_endpoint: Option<String>,
+    provider_internal_token: Option<String>,
+    provider_body_password: Option<String>,
     source_lang: Option<String>,
     target_lang: Option<String>,
     timeout_ms: Option<u64>,
@@ -587,9 +615,30 @@ pub async fn generate_rosetta_translated_pdf(
                 .and_then(|file| file.source_lang.clone())
         })
         .unwrap_or_else(|| "en".to_string());
-    let rwkv_base_url = rwkv_base_url
-        .filter(|url| !url.trim().is_empty())
-        .ok_or_else(|| "PDF 翻译需要一个本地 RWKV base URL。请先启动本地运行时。".to_string())?;
+    let base_url = rwkv_base_url
+        .map(|u| u.trim().to_string())
+        .filter(|u| !u.is_empty())
+        .ok_or_else(|| "PDF 翻译需要配置 API 地址。请先启动本地运行时或配置远程 API。".to_string())?;
+    let timeout = timeout_ms.unwrap_or(120_000);
+    let ep = provider_endpoint
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("")
+        .to_string();
+    let provider = if ep.is_empty() {
+        ShimProviderConfig::MobileBatch(MobileBatchChatConfig {
+            base_url,
+            timeout_ms: timeout,
+        })
+    } else {
+        ShimProviderConfig::Lightning(LightningApiConfig {
+            base_url,
+            endpoint: ep,
+            internal_token: provider_internal_token.unwrap_or_default(),
+            body_password: provider_body_password.unwrap_or_default(),
+            timeout_ms: timeout,
+        })
+    };
 
     let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
     {
@@ -603,10 +652,10 @@ pub async fn generate_rosetta_translated_pdf(
         &pdf2zh_output_dir,
         formats::pdf::pdf2zh_invoke::Pdf2zhInvokeOptions {
             job_id: job_id.clone(),
-            rwkv_base_url,
+            provider,
             source_lang,
             target_lang: target_lang.clone(),
-            timeout_ms: timeout_ms.unwrap_or(120_000),
+            timeout_ms: timeout,
             ignore_cache: ignore_cache.unwrap_or(false),
             pages: None,
         },

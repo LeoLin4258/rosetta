@@ -1620,6 +1620,36 @@ fn provider_result_into_translate(
     }
 }
 
+/// Translate a batch of texts via the Lightning (rwkv-lightning-contents) API.
+/// Used by the PDF translation OpenAI shim when the remote API provider is active.
+pub async fn translate_batch_via_lightning(
+    base_url: &str,
+    endpoint: &str,
+    internal_token: &str,
+    body_password: &str,
+    timeout_ms: u64,
+    source_lang: &str,
+    target_lang: &str,
+    source_texts: &[String],
+) -> Result<Vec<String>, String> {
+    let result = request_translations_for_language_pair(
+        base_url,
+        endpoint,
+        internal_token,
+        body_password,
+        timeout_ms,
+        source_lang,
+        target_lang,
+        source_texts,
+    )
+    .await;
+    if result.ok {
+        Ok(result.translations)
+    } else {
+        Err(result.message)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;

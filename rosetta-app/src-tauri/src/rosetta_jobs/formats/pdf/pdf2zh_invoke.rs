@@ -12,7 +12,7 @@ use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::{
-    managed_pdf2zh,
+    managed_pdf2zh::{self, openai_shim::ShimProviderConfig},
     rosetta_jobs::formats::pdf::errors::PdfError,
 };
 
@@ -30,7 +30,7 @@ pub(crate) struct Pdf2zhProgressPayload {
 #[derive(Debug, Clone)]
 pub(crate) struct Pdf2zhInvokeOptions {
     pub job_id: String,
-    pub rwkv_base_url: String,
+    pub provider: ShimProviderConfig,
     pub source_lang: String,
     pub target_lang: String,
     pub timeout_ms: u64,
@@ -73,10 +73,9 @@ pub(crate) async fn invoke_pdf2zh(
     emit_progress(app, &options.job_id, "parse", Some(5), "正在准备 PDF 版面...");
     let shim_log_file = output_dir.join("rosetta-pdf2zh-shim.log");
     let shim = managed_pdf2zh::openai_shim::spawn_shim(
-        options.rwkv_base_url.clone(),
+        options.provider.clone(),
         options.source_lang.clone(),
         options.target_lang.clone(),
-        options.timeout_ms,
         shim_log_file.clone(),
         debug,
     )

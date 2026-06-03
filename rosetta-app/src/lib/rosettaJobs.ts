@@ -224,6 +224,9 @@ export function generateRosettaTranslatedPdf(
   jobId: string,
   options?: {
     rwkvBaseUrl?: string;
+    providerEndpoint?: string;
+    providerInternalToken?: string;
+    providerBodyPassword?: string;
     sourceLang?: string | null;
     targetLang?: string;
     timeoutMs?: number;
@@ -233,6 +236,9 @@ export function generateRosettaTranslatedPdf(
   return invoke<string>("generate_rosetta_translated_pdf", {
     jobId,
     rwkvBaseUrl: options?.rwkvBaseUrl,
+    providerEndpoint: options?.providerEndpoint,
+    providerInternalToken: options?.providerInternalToken,
+    providerBodyPassword: options?.providerBodyPassword,
     sourceLang: options?.sourceLang,
     targetLang: options?.targetLang,
     timeoutMs: options?.timeoutMs,
@@ -260,6 +266,9 @@ export function translateRosettaPdfPages(
     pageSelection: string;
     targetLang: string;
     rwkvBaseUrl: string;
+    providerEndpoint?: string;
+    providerInternalToken?: string;
+    providerBodyPassword?: string;
     sourceLang?: string | null;
     timeoutMs?: number;
     force?: boolean;
@@ -270,6 +279,9 @@ export function translateRosettaPdfPages(
     pageSelection: options.pageSelection,
     targetLang: options.targetLang,
     rwkvBaseUrl: options.rwkvBaseUrl,
+    providerEndpoint: options.providerEndpoint,
+    providerInternalToken: options.providerInternalToken,
+    providerBodyPassword: options.providerBodyPassword,
     sourceLang: options.sourceLang,
     timeoutMs: options.timeoutMs,
     force: options.force,
