@@ -102,6 +102,9 @@ else:
     raise SystemExit(f"::error::could not find expected NumPy call in {target}")
 PY
 
+echo "[pdf2zh-release] applying PDF color preservation patch" >&2
+"$PYTHON_DIR/bin/python" "$SCRIPT_DIR/patch-pdf2zh-color-preservation.py"
+
 echo "[pdf2zh-release] removing Python bytecode caches" >&2
 find "$PACK_DIR" \( -name '__pycache__' -type d -prune -exec rm -rf {} + \) -o \( -name '*.pyc' -type f -delete \)
 

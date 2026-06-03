@@ -31,6 +31,7 @@ PBS_PYTHON_VERSION="${PBS_PYTHON_VERSION:-3.13.13}"
 PBS_DEFAULT_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_RELEASE}/cpython-${PBS_PYTHON_VERSION}+${PBS_RELEASE}-aarch64-apple-darwin-install_only.tar.gz"
 PBS_TARBALL_URL="${PBS_TARBALL_URL:-$PBS_DEFAULT_URL}"
 APP_ID="${ROSETTA_APP_ID:-com.rosetta.desktop}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [[ "$(uname -s)-$(uname -m)" != "Darwin-arm64" ]]; then
   echo "::error::local pdf2zh pack staging currently supports macOS arm64 only" >&2
@@ -92,12 +93,10 @@ elif new in text:
     print(f"[pdf2zh-pack] patch already present in {target}")
 else:
     raise SystemExit(f"::error::could not find expected NumPy call in {target}")
-
-for cache_dir in root.rglob("__pycache__"):
-    for child in cache_dir.iterdir():
-        child.unlink()
-    cache_dir.rmdir()
 PY
+
+echo "[pdf2zh-pack] applying PDF color preservation patch" >&2
+"$PYTHON_DIR/bin/python" "$SCRIPT_DIR/patch-pdf2zh-color-preservation.py"
 
 cat > "$BIN_DIR/pdf2zh" <<'SH'
 #!/usr/bin/env bash
