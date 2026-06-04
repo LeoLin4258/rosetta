@@ -73,22 +73,14 @@ export function PdfDocumentPreview({
   const paneContainerRef = useRef<HTMLDivElement | null>(null);
 
   // Measure the pane container width so rasterization matches display.
+  // Only measure once per jobId to avoid re-rendering all pages on resize.
   useLayoutEffect(() => {
     const el = paneContainerRef.current;
     if (!el) return;
-    const measure = () => {
-      const halfWidth = el.clientWidth / 2;
-      const dpr = window.devicePixelRatio || 1;
-      const want = Math.round(Math.max(400, halfWidth * dpr));
-      setPaneWidth((prev) =>
-        Math.abs(prev - want) > 32 ? want : prev,
-      );
-    };
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
+    const halfWidth = el.clientWidth / 2;
+    const dpr = window.devicePixelRatio || 1;
+    setPaneWidth(Math.round(Math.max(400, halfWidth * dpr)));
+  }, [jobId]);
 
   const refreshPageState = useCallback(async () => {
     try {

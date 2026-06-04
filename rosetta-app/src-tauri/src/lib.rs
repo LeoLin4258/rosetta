@@ -18,6 +18,7 @@ pub fn run() {
         .manage(managed_rwkv::InstallStateRegistry::default())
         .manage(managed_pdf2zh::InstallStateRegistry::default())
         .manage(rosetta_jobs::PdfTranslationCancelState::default())
+        .manage(rosetta_jobs::PdfPngCache::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())

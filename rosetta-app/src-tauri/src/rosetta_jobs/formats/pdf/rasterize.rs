@@ -22,11 +22,11 @@ use std::path::Path;
 
 use image::{ImageFormat, codecs::png::{CompressionType, FilterType, PngEncoder}};
 use image::ImageEncoder;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 use crate::rosetta_jobs::formats::pdf::{
     errors::PdfError,
-    runtime,
+    runtime::{self, PngCache},
 };
 
 /// Cap on the rendered pixel width. The frontend can ask for a smaller width
@@ -58,10 +58,21 @@ pub(crate) fn render_page_as_png(
     page_index: u32,
     target_width: u32,
 ) -> Result<Vec<u8>, PdfError> {
-    let pdfium = runtime::get_pdfium(app).map_err(PdfError::RuntimeMissing)?;
+    let width = target_width.clamp(MIN_TARGET_WIDTH, MAX_TARGET_WIDTH);
     let source_path_str = source_path
         .to_str()
         .ok_or_else(|| PdfError::Read("PDF 路径包含无效字符。".to_string()))?;
+
+    // Check cache first — avoids re-loading the PDF and re-rasterizing on
+    // repeated requests (e.g. scroll back, PDF switch, cacheKey bump).
+    let cache_key = (source_path_str.to_string(), page_index, width);
+    if let Ok(mut cache) = app.state::<PngCache>().0.lock() {
+        if let Some(cached) = cache.get(&cache_key) {
+            return Ok(cached.clone());
+        }
+    }
+
+    let pdfium = runtime::get_pdfium(app).map_err(PdfError::RuntimeMissing)?;
     let doc = pdfium
         .load_pdf_from_file(source_path_str, None)
         .map_err(|error| PdfError::Parse(format!("打开 PDF 失败: {error}")))?;
@@ -80,7 +91,6 @@ pub(crate) fn render_page_as_png(
         .get(page_index as i32)
         .map_err(|error| PdfError::Parse(format!("读取第 {} 页失败: {error}", page_index + 1)))?;
 
-    let width = target_width.clamp(MIN_TARGET_WIDTH, MAX_TARGET_WIDTH);
     let config = pdfium_render::prelude::PdfRenderConfig::new()
         .set_target_width(width as pdfium_render::prelude::Pixels);
 
@@ -109,6 +119,12 @@ pub(crate) fn render_page_as_png(
         .map_err(|error| PdfError::Parse(format!("PNG 编码失败: {error}")))?;
 
     let _ = ImageFormat::Png; // ensure the import is used even when not needed
+
+    // Store in cache for subsequent requests (resize, PDF switch, scroll back).
+    if let Ok(mut cache) = app.state::<PngCache>().0.lock() {
+        cache.put(cache_key, out.clone());
+    }
+
     Ok(out)
 }
 

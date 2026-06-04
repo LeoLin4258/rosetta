@@ -29,6 +29,8 @@ use crate::rwkv_providers::mobile_batch_chat::MobileBatchChatConfig;
 #[derive(Default)]
 pub struct PdfTranslationCancelState(pub Mutex<Option<oneshot::Sender<()>>>);
 
+pub use formats::pdf::runtime::PngCache as PdfPngCache;
+
 #[tauri::command]
 pub fn cancel_rosetta_translated_pdf(
     cancel_state: State<'_, PdfTranslationCancelState>,

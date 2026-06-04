@@ -11,11 +11,26 @@
 
 use std::path::{Path, PathBuf};
 
+use std::sync::Mutex;
+
+use lru::LruCache;
 use once_cell::sync::OnceCell;
 use pdfium_render::prelude::Pdfium;
 use tauri::{AppHandle, Manager};
 
 static PDFIUM: OnceCell<Pdfium> = OnceCell::new();
+
+/// LRU cache for rendered PNG bytes. Key: (path, page_index, target_width).
+/// Capacity: 64 entries (enough for ~10-page PDF × 2 panes with some headroom).
+pub struct PngCache(pub Mutex<LruCache<(String, u32, u32), Vec<u8>>>);
+
+impl Default for PngCache {
+    fn default() -> Self {
+        Self(Mutex::new(LruCache::new(
+            std::num::NonZeroUsize::new(64).unwrap(),
+        )))
+    }
+}
 
 /// Returns the platform subdirectory inside `resources/pdf-sidecar/pdfium/`.
 /// Matches the layout produced by `scripts/fetch-pdfium.sh`.

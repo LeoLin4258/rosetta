@@ -34,3 +34,4 @@ pdfium-render = { version = "0.9", features = ["thread_safe", "image_latest"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 lopdf = "0.34"
 once_cell = "1"
+lru = "0.12"
