@@ -148,6 +148,7 @@ export function DocumentPreview({
             side="source"
             sourceSegments={sourceSegments}
             translationSegments={translationSegments}
+            isTranslating={isTranslating}
           />
         </div>
       </Card>
@@ -208,6 +209,7 @@ export function DocumentPreview({
           side="source"
           sourceSegments={sourceSegments}
           translationSegments={translationSegments}
+          isTranslating={isTranslating}
         />
         {translationFile ? (
           <PreviewPane
@@ -224,6 +226,7 @@ export function DocumentPreview({
             side="translation"
             sourceSegments={sourceSegments}
             translationSegments={translationSegments}
+            isTranslating={isTranslating}
           />
         ) : (
           <div className="flex min-h-0 items-center justify-center bg-background px-8 text-center text-sm text-muted-foreground">
@@ -249,6 +252,7 @@ function PreviewPane({
   side,
   sourceSegments,
   translationSegments,
+  isTranslating,
 }: {
   document: RosettaDocument;
   file: RosettaSourceFile;
@@ -263,6 +267,7 @@ function PreviewPane({
   side: PreviewSide;
   sourceSegments: Segment[];
   translationSegments: TranslationSegment[];
+  isTranslating: boolean;
 }) {
   const segmentsByBlock = useMemo(
     () => groupSegmentsByBlock(sourceSegments),
@@ -332,6 +337,7 @@ function PreviewPane({
                     segmentsByBlock={segmentsByBlock}
                     side={side}
                     translationBySegmentId={translationBySegmentId}
+                    isTranslating={isTranslating}
                   />
                 </div>
               );
@@ -356,6 +362,7 @@ function PreviewBlock({
   segmentsByBlock,
   side,
   translationBySegmentId,
+  isTranslating,
 }: {
   block: RosettaBlock;
   document: RosettaDocument;
@@ -369,7 +376,14 @@ function PreviewBlock({
   segmentsByBlock: Map<string, Segment[]>;
   side: PreviewSide;
   translationBySegmentId: Map<string, TranslationSegment>;
+  isTranslating: boolean;
 }) {
+  const blockSegments = segmentsByBlock.get(block.id) ?? [];
+  const activity = blockTranslationActivity(
+    blockSegments,
+    translationBySegmentId,
+    isTranslating,
+  );
   const text =
     side === "source"
       ? block.sourceText
@@ -396,7 +410,10 @@ function PreviewBlock({
         selectable && "cursor-pointer",
         hovered && "bg-muted/60",
         selected && "bg-primary/10 ring-1 ring-primary/25",
-        hasEmptyTranslation && "text-muted-foreground"
+        hasEmptyTranslation && "text-muted-foreground",
+        side === "source" &&
+          activity === "translating" &&
+          "rosetta-markdown-source-scanning"
       )}
       data-block-id={block.id}
       onClick={() => {
@@ -418,7 +435,11 @@ function PreviewBlock({
       title={selectable ? "点击选择重翻" : undefined}
     >
       {hasEmptyTranslation ? (
-        <p className="min-h-7 text-sm leading-7">等待翻译</p>
+        isTranslating ? (
+          <MarkdownTranslationSkeleton active={activity === "translating"} />
+        ) : (
+          <p className="min-h-7 text-sm leading-7">等待翻译</p>
+        )
       ) : file.format === "markdown" ? (
         <div className="rosetta-markdown-preview">
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{renderedText}</ReactMarkdown>
@@ -428,6 +449,35 @@ function PreviewBlock({
       )}
     </div>
   );
+}
+
+function MarkdownTranslationSkeleton({ active }: { active: boolean }) {
+  return (
+    <div
+      className="rosetta-markdown-translation-skeleton"
+      data-active={active ? "true" : "false"}
+      aria-label={active ? "当前段落翻译中" : "段落等待翻译"}
+    >
+      <span />
+      <span />
+      <span />
+    </div>
+  );
+}
+
+function blockTranslationActivity(
+  segments: Segment[],
+  translationBySegmentId: Map<string, TranslationSegment>,
+  isTranslating: boolean,
+) {
+  if (!isTranslating || segments.length === 0) return null;
+  const statuses = segments.map((segment) => translationBySegmentId.get(segment.id)?.status);
+  if (statuses.some((status) => status === "translating")) return "translating";
+  if (statuses.some((status) => status === "pending")) return "queued";
+  if (segments.some((segment) => !translationBySegmentId.get(segment.id)?.translatedText?.trim())) {
+    return "queued";
+  }
+  return "translated";
 }
 
 function groupSegmentsByBlock(segments: Segment[]) {
