@@ -1,6 +1,13 @@
 import { useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { FileTextIcon, PlusIcon, SettingsIcon, Trash2Icon } from "lucide-react";
+import {
+  FileCodeIcon,
+  FileTextIcon,
+  FileTypeIcon,
+  PlusIcon,
+  SettingsIcon,
+  Trash2Icon,
+} from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import {
@@ -41,6 +48,12 @@ import { cn } from "@/lib/utils";
 type AppSidebarProps = React.ComponentProps<typeof Sidebar> & {
   hasMacTitlebarOverlay?: boolean;
 };
+
+function DocumentFormatIcon({ format }: { format: RosettaJobSummary["format"] }) {
+  if (format === "pdf") return <FileTypeIcon />;
+  if (format === "markdown") return <FileCodeIcon />;
+  return <FileTextIcon />;
+}
 
 export function AppSidebar({
   hasMacTitlebarOverlay = false,
@@ -166,18 +179,19 @@ export function AppSidebar({
                 {recentJobs.map((job) => (
                   <SidebarMenuItem key={job.id}>
                     <SidebarMenuButton
-                      className="pr-8"
+                      className="gap-1 !pr-2"
                       isActive={!isSettingsRoute && activeJobId === job.id}
                       onClick={() => void openJob(job)}
                       tooltip={job.filename}
                     >
-                      <FileTextIcon />
-                      <span className="flex-1 truncate">{job.filename}</span>
-                      <span className="shrink-0 text-xs text-muted-foreground/45 group-data-active/menu-button:text-sidebar-accent-foreground/65">
+                      <DocumentFormatIcon format={job.format} />
+                      <span className="min-w-0 flex-1 truncate">{job.filename}</span>
+                      <span className="min-w-[2.25ch] shrink-0 text-right text-xs tabular-nums text-muted-foreground/45 transition-opacity duration-150 group-hover/menu-item:opacity-0 group-focus-within/menu-item:opacity-0 group-data-active/menu-button:text-sidebar-accent-foreground/65">
                         {formatRelativeTime(job.updatedAt)}
                       </span>
                     </SidebarMenuButton>
                     <SidebarMenuAction
+                      className="right-1.5 bg-sidebar/90 text-sidebar-foreground/65 shadow-sm backdrop-blur hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
                       onClick={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
