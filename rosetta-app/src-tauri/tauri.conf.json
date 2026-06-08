@@ -68,10 +68,10 @@
     "macOS": {
       "dmg": {
         "background": "icons/dmg-background.png",
-        "windowSize": { "width": 960, "height": 600 },
+        "windowSize": { "width": 645, "height": 391 },
         "windowPosition": { "x": 400, "y": 100 },
-        "appPosition": { "x": 176, "y": 257 },
-        "applicationFolderPosition": { "x": 783, "y": 257 }
+        "appPosition": { "x": 176, "y": 205 },
+        "applicationFolderPosition": { "x": 492, "y": 205 }
       }
     }
   },

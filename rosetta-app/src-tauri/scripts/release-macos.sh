@@ -24,6 +24,7 @@ APP_DIR="$(cd "$TAURI_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$APP_DIR/.." && pwd)"
 
 ENTITLEMENTS="$TAURI_DIR/Entitlements.plist"
+DMG_BACKGROUND="$TAURI_DIR/icons/dmg-background.png"
 BUILT_APP="$TAURI_DIR/target/release/bundle/macos/$APP_NAME.app"
 DIST_DIR="$REPO_ROOT/dist/release"
 STAGE_ROOT="$(mktemp -d)"
@@ -122,23 +123,54 @@ notarize_and_staple_app() {
 create_sign_notarize_dmg() {
   local app_version="$1"
   local dmg_path="$DIST_DIR/$APP_NAME-$app_version-macos-arm64.dmg"
-  local tmp_dmg="$STAGE_ROOT/$APP_NAME.dmg"
+  local rw_dmg="$STAGE_ROOT/$APP_NAME-rw.dmg"
+  local tmp_dmg="$STAGE_ROOT/$APP_NAME-final.dmg"
   local dmg_source="$STAGE_ROOT/dmg-source"
+  local mount_dir="$STAGE_ROOT/dmg-mount"
+  local volume_path="$mount_dir/$APP_NAME"
+  local window_width=645
+  local window_height=391
 
   mkdir -p "$DIST_DIR"
-  rm -f "$dmg_path" "$tmp_dmg"
+  rm -f "$dmg_path" "$rw_dmg" "$tmp_dmg"
   rm -rf "$dmg_source"
-  mkdir -p "$dmg_source"
+  mkdir -p "$dmg_source/.background" "$mount_dir"
 
   step "Creating DMG"
   ditto --norsrc "$SIGNED_APP" "$dmg_source/$APP_NAME.app"
   ln -s /Applications "$dmg_source/Applications"
+  ditto --norsrc "$DMG_BACKGROUND" "$dmg_source/.background/dmg-background.png"
   hdiutil create \
     -volname "$APP_NAME" \
     -srcfolder "$dmg_source" \
     -ov \
-    -format UDZO \
-    "$tmp_dmg" >/dev/null
+    -format UDRW \
+    "$rw_dmg" >/dev/null
+
+  hdiutil attach "$rw_dmg" -mountpoint "$volume_path" -nobrowse -quiet
+  osascript <<OSA
+tell application "Finder"
+  tell disk "$APP_NAME"
+    open
+    set current view of container window to icon view
+    set toolbar visible of container window to false
+    set statusbar visible of container window to false
+    set the bounds of container window to {0, 0, $window_width, $window_height}
+    set viewOptions to the icon view options of container window
+    set arrangement of viewOptions to not arranged
+    set icon size of viewOptions to 112
+    set background picture of viewOptions to file ".background:dmg-background.png"
+    set position of item "$APP_NAME.app" of container window to {176, 205}
+    set position of item "Applications" of container window to {492, 205}
+    update without registering applications
+    close
+  end tell
+end tell
+OSA
+  SetFile -a V "$volume_path/.background"
+  hdiutil detach "$volume_path" -quiet
+
+  hdiutil convert "$rw_dmg" -format UDZO -imagekey zlib-level=9 -o "$tmp_dmg" >/dev/null
   ok "DMG created"
 
   step "Signing & notarizing DMG (this takes a few minutes)"
@@ -193,6 +225,8 @@ main() {
   require_command file
   require_command tar
   require_command hdiutil
+  require_command osascript
+  require_command SetFile
   require_command codesign
   require_command spctl
   require_command xcrun
@@ -205,6 +239,11 @@ main() {
 
   if [[ ! -f "$ENTITLEMENTS" ]]; then
     printf "  \033[0;31m✗ missing entitlements file: %s\033[0m\n" "$ENTITLEMENTS" >&2
+    exit 2
+  fi
+
+  if [[ ! -f "$DMG_BACKGROUND" ]]; then
+    printf "  \033[0;31m✗ missing DMG background image: %s\033[0m\n" "$DMG_BACKGROUND" >&2
     exit 2
   fi
 

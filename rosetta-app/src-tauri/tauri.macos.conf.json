@@ -60,6 +60,13 @@
       "resources/pdf-sidecar/pdfium/*/*"
     ],
     "macOS": {
+      "dmg": {
+        "background": "icons/dmg-background.png",
+        "windowSize": { "width": 645, "height": 391 },
+        "windowPosition": { "x": 400, "y": 100 },
+        "appPosition": { "x": 176, "y": 205 },
+        "applicationFolderPosition": { "x": 492, "y": 205 }
+      },
       "signingIdentity": "Developer ID Application: Shenzhen Yuanshi Intelligence Co., Ltd. (3FTQ9PH6TL)",
       "hardenedRuntime": true,
       "entitlements": "Entitlements.plist",
