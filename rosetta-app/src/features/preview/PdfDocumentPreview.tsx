@@ -221,6 +221,7 @@ export function PdfDocumentPreview({
             placeholder="加载源 PDF…"
             scrollRef={sourceScrollRef}
             onScroll={() => syncScroll("source")}
+            pageActivity={(pageIndex) => pageStatus(pageIndex)?.status ?? null}
             pageControls={(pageIndex) => {
               const pageNumber = pageIndex + 1;
               return (
@@ -247,6 +248,7 @@ export function PdfDocumentPreview({
             scrollRef={translationScrollRef}
             onScroll={() => syncScroll("translation")}
             canRenderPage={(pageIndex) => pageStatus(pageIndex)?.status === "translated"}
+            pageActivity={(pageIndex) => pageStatus(pageIndex)?.status ?? null}
             renderPage={(pageIndex, width) =>
               renderRosettaPdfTranslatedPageAsPng(jobId, pageIndex + 1, width)
             }

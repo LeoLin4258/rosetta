@@ -23,6 +23,13 @@ import { renderRosettaPdfPageAsPng } from "@/lib/rosettaJobs";
 // because we're using the same renderer Preview does. Tradeoff: no text
 // selection in the preview pane (export PDF still retains everything).
 
+type PdfPageActivity =
+  | "pending"
+  | "queued"
+  | "translating"
+  | "translated"
+  | "failed";
+
 type PdfPaneProps = {
   jobId: string | null;
   /// Which PDF on the backend to render. The two side-by-side panes pass
@@ -47,6 +54,7 @@ type PdfPaneProps = {
   onScroll?: () => void;
   pageControls?: (pageIndex: number) => React.ReactNode;
   pageStatus?: (pageIndex: number) => React.ReactNode;
+  pageActivity?: (pageIndex: number) => PdfPageActivity | null;
   canRenderPage?: (pageIndex: number) => boolean;
   renderPage?: (pageIndex: number, targetWidth: number) => Promise<Uint8Array>;
 };
@@ -63,6 +71,7 @@ export function PdfPane({
   onScroll,
   pageControls,
   pageStatus,
+  pageActivity,
   canRenderPage,
   renderPage,
 }: PdfPaneProps) {
@@ -127,6 +136,7 @@ export function PdfPane({
               canRender={canRenderPage ? canRenderPage(pageIndex) : true}
               renderPage={renderPage}
               status={pageStatus?.(pageIndex)}
+              activity={pageActivity?.(pageIndex) ?? null}
             />
           </div>
         </div>
@@ -147,6 +157,7 @@ function PdfPageImage({
   canRender,
   renderPage,
   status,
+  activity,
 }: {
   jobId: string;
   kind: "source" | "translated";
@@ -155,6 +166,7 @@ function PdfPageImage({
   canRender: boolean;
   renderPage?: (pageIndex: number, targetWidth: number) => Promise<Uint8Array>;
   status?: React.ReactNode;
+  activity?: PdfPageActivity | null;
 }) {
   const [src, setSrc] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -196,10 +208,16 @@ function PdfPageImage({
     const placeholderHeight = Math.max(targetWidth, 200) * 1.41;
     return (
       <div
-        className="flex items-center justify-center rounded border border-border bg-background px-4 text-center text-xs text-muted-foreground"
+        className="rosetta-pdf-page-frame rosetta-pdf-page-frame--placeholder"
         style={{ minHeight: `${placeholderHeight}px` }}
       >
-        {status ?? `第 ${pageIndex + 1} 页尚未翻译`}
+        {kind === "translated" ? (
+          <PdfPageSkeleton active={activity === "translating"} status={status} />
+        ) : (
+          <div className="flex h-full items-center justify-center px-4 text-center text-xs text-muted-foreground">
+            {status ?? `第 ${pageIndex + 1} 页尚未翻译`}
+          </div>
+        )}
       </div>
     );
   }
@@ -228,13 +246,69 @@ function PdfPageImage({
   }
 
   return (
-    <img
-      src={src}
-      alt={`第 ${pageIndex + 1} 页`}
-      className="block w-full rounded border border-border bg-background shadow-sm"
-      // Disable browser-level dragging so the user can pan / select scroll
-      // freely without the PNG starting an HTML5 drag operation.
-      draggable={false}
-    />
+    <div className="rosetta-pdf-page-frame">
+      <img
+        src={src}
+        alt={`第 ${pageIndex + 1} 页`}
+        className="block w-full rounded border border-border bg-background shadow-sm"
+        // Disable browser-level dragging so the user can pan / select scroll
+        // freely without the PNG starting an HTML5 drag operation.
+        draggable={false}
+      />
+      {kind === "source" && activity === "translating" ? (
+        <div className="rosetta-pdf-page-scan" aria-hidden="true" />
+      ) : null}
+    </div>
+  );
+}
+
+function PdfPageSkeleton({
+  active,
+  status,
+}: {
+  active: boolean;
+  status?: React.ReactNode;
+}) {
+  return (
+    <div
+      className="rosetta-pdf-page-skeleton"
+      data-active={active ? "true" : "false"}
+    >
+      <div className="rosetta-pdf-skeleton-header">
+        <span />
+        <span />
+      </div>
+      <div className="rosetta-pdf-skeleton-title">
+        <span />
+        <span />
+      </div>
+      <div className="rosetta-pdf-skeleton-abstract">
+        <span />
+        <span />
+        <span />
+        <span />
+      </div>
+      <div className="rosetta-pdf-skeleton-columns">
+        <div>
+          <span />
+          <span />
+          <span />
+          <span />
+          <span />
+        </div>
+        <div>
+          <span />
+          <span />
+          <span />
+          <span />
+        </div>
+      </div>
+      <div className="rosetta-pdf-skeleton-figure" />
+      <div className="rosetta-pdf-skeleton-caption">
+        <span />
+        <span />
+      </div>
+      <div className="rosetta-pdf-skeleton-status">{status}</div>
+    </div>
   );
 }
