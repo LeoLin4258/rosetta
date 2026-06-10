@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Download, Loader2, Play, RefreshCw, Square, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -31,7 +31,12 @@ type WorkspaceTopbarProps = {
   pdfEngineProgressMessage?: string | null;
   translatedCount: number;
   totalCount: number;
-  pdfProgress?: { phase: string; percent: number | null } | null;
+  pdfProgress?: {
+    phase: string;
+    percent: number | null;
+    currentPage: number | null;
+    totalPages: number | null;
+  } | null;
   sourceLang: string;
   targetLang: string;
   selectedBlockCount: number;
@@ -51,11 +56,54 @@ type WorkspaceTopbarProps = {
   onRetranslateAll: () => void;
 };
 
+/// Map the backend's `phase` enum to a user-facing label. `warmup` is the
+/// new phase emitted before pdf2zh.py actually starts writing stdout —
+/// covers shim launch, role-set HTTP, and pdf2zh subprocess spawn. Without
+/// it the UI used to sit silently on "翻译中" for the whole startup gap,
+/// which is the biggest contributor to the "feels frozen" perception.
 const PDF_PHASE_LABELS: Record<string, string> = {
+  warmup: "准备翻译引擎",
   parse: "解析版面",
   translate: "翻译中",
   render: "生成 PDF",
 };
+
+/// Format milliseconds as `mm:ss`. Used by the topbar's "翻译中 · 00:23"
+/// elapsed timer — even when pdf2zh.py is silent for tens of seconds (Python
+/// multiprocessing pool startup, first MLX batch's prefill, etc.), this
+/// counter keeps moving so the UI never looks frozen.
+function formatElapsed(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
+}
+
+/// Hook: track elapsed ms since `isActive` first became true. Resets when
+/// `isActive` goes false. Ticks every 1000ms while active so the topbar
+/// re-renders. Stops ticking when inactive — no background timer leakage.
+function useElapsedSince(isActive: boolean): number {
+  const startedAtRef = useRef<number | null>(null);
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    if (!isActive) {
+      startedAtRef.current = null;
+      setElapsed(0);
+      return;
+    }
+    startedAtRef.current = Date.now();
+    setElapsed(0);
+    const tick = () => {
+      if (startedAtRef.current == null) return;
+      setElapsed(Date.now() - startedAtRef.current);
+    };
+    const interval = setInterval(tick, 1000);
+    return () => clearInterval(interval);
+  }, [isActive]);
+
+  return elapsed;
+}
 
 export function WorkspaceTopbar({
   job,
@@ -88,6 +136,12 @@ export function WorkspaceTopbar({
 }: WorkspaceTopbarProps) {
   const [confirmingCancel, setConfirmingCancel] = useState(false);
   const [confirmingRetranslateAll, setConfirmingRetranslateAll] = useState(false);
+  // Elapsed timer for the "翻译中 · 00:23" display. Starts the moment
+  // `isTranslating` flips true (= user clicked translate) and stops when it
+  // flips false. Independent of whether pdf2zh has emitted any progress
+  // event yet — the whole point is to keep moving during the silent gap.
+  const elapsedMs = useElapsedSince(isTranslating);
+  const elapsedLabel = formatElapsed(elapsedMs);
 
   const hasTranslation =
     activeTranslationFile &&
@@ -164,11 +218,27 @@ export function WorkspaceTopbar({
             <span className="text-xs tabular-nums text-muted-foreground/60">
               {pdfProgress != null ? (
                 <>
+                  {/*
+                    PDF layout: "[phase label] · 第 X/Y 页 · 00:23 · 45%"
+                    Sections are separated by " · " and any of them can be
+                    absent. `currentPage` / `totalPages` come from the
+                    backend's per-page invocation loop (only present on the
+                    `for page_number in pages` path). The elapsed timer
+                    always shows because we tick locally; the percent only
+                    shows when pdf2zh.py emits a line with `%`.
+                  */}
                   {PDF_PHASE_LABELS[pdfProgress.phase] ?? pdfProgress.phase}
+                  {pdfProgress.currentPage != null &&
+                    pdfProgress.totalPages != null &&
+                    ` · 第 ${pdfProgress.currentPage}/${pdfProgress.totalPages} 页`}
+                  {" · "}
+                  {elapsedLabel}
                   {pdfProgress.percent != null ? ` · ${pdfProgress.percent}%` : ""}
                 </>
               ) : (
-                <>{translatedCount} / {totalCount} · {progressPercent}%</>
+                <>
+                  {translatedCount} / {totalCount} · {progressPercent}% · {elapsedLabel}
+                </>
               )}
             </span>
             {confirmingCancel ? (

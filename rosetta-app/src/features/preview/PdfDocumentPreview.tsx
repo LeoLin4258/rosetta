@@ -29,8 +29,16 @@ type PdfDocumentPreviewProps = {
   failedSegments: number;
   /// True while a translation run is actively writing back to segments.
   isTranslating: boolean;
-  /// Live phase+percent from the pdf2zh progress event, owned by WorkspacePage.
-  pdfProgress?: { phase: string; percent: number | null } | null;
+  /// Live phase+percent (+per-page progress) from the pdf2zh progress event,
+  /// owned by WorkspacePage. `currentPage` / `totalPages` are 1-based and
+  /// scoped to the filtered list of pages this run will translate (i.e.
+  /// "3rd of 5 pages I asked for", not "page 7 of a 100-page document").
+  pdfProgress?: {
+    phase: string;
+    percent: number | null;
+    currentPage: number | null;
+    totalPages: number | null;
+  } | null;
   /// Error message from the last failed PDF generation, owned by WorkspacePage.
   pdfError?: string | null;
   selectedPages: number[];

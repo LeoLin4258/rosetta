@@ -712,6 +712,13 @@ export type OnboardingDecision = {
   /** Derived: app should show the Onboarding window instead of Workspace.
    *  True iff `!completed` OR (`!skippedLocalInstall` AND `!modelInstalled`). */
   needsOnboarding: boolean;
+  /** Size in bytes of the current profile's downloadable model. Drives the
+   *  Welcome step's "约 X MB · 一次下载" subline. `null` on unsupported
+   *  platforms (no profile resolves). */
+  modelSizeBytes: number | null;
+  /** `true` when the user previously completed onboarding (= upgrading user).
+   *  Used to swap "新用户欢迎" copy for "欢迎回来 + 解释为什么要再下". */
+  isReturningUser: boolean;
 };
 
 export type CompleteOnboardingRequest = {

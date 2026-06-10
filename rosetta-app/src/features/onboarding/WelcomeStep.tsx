@@ -9,26 +9,73 @@ type WelcomeStepProps = {
   onBeginInstall: () => void;
   onSkipToExternal: () => void;
   isInstalling: boolean;
+  /** From `OnboardingDecision.modelSizeBytes` — actual bytes of the model
+   *  the user is about to download. `null` while the decision RPC is in
+   *  flight or on unsupported platforms. */
+  modelSizeBytes: number | null;
+  /** From `OnboardingDecision.isReturningUser` — `true` when the user
+   *  previously completed onboarding and is now seeing it again because
+   *  their model went missing (almost always = they upgraded to a release
+   *  that swapped the model). Used to show "欢迎回来" copy. */
+  isReturningUser: boolean;
 };
 
-export function WelcomeStep({ onBeginInstall, onSkipToExternal, isInstalling }: WelcomeStepProps) {
+/**
+ * Format a model size in bytes as a coarse "约 X" string for the Welcome
+ * CTA subline. Buckets are deliberately rough so we don't show
+ * "359.7 MB" — users care whether it's a Wi-Fi download or a "find
+ * unlimited internet" download.
+ */
+function formatModelSize(bytes: number | null): string {
+  if (bytes == null || bytes <= 0) return "下载量未知";
+  const mb = bytes / (1024 * 1024);
+  if (mb >= 1024) {
+    const gb = mb / 1024;
+    return `约 ${gb >= 10 ? gb.toFixed(0) : gb.toFixed(1)} GB`;
+  }
+  return `约 ${Math.round(mb)} MB`;
+}
+
+export function WelcomeStep({
+  onBeginInstall,
+  onSkipToExternal,
+  isInstalling,
+  modelSizeBytes,
+  isReturningUser,
+}: WelcomeStepProps) {
   const proxyUrl = useRosettaStore((s) => s.downloadProxy.url);
   const setProxyUrl = useRosettaStore((s) => s.setDownloadProxyUrl);
   const [showProxyConfig, setShowProxyConfig] = useState(false);
   const [confirmingSkip, setConfirmingSkip] = useState(false);
 
+  const sizeLabel = formatModelSize(modelSizeBytes);
+
   return (
     <div className="flex h-full flex-col justify-between px-14 py-10">
-      {/* Group 1: Icon + App name + Description */}
+      {/* Group 1: Icon + App name + Description.
+        *
+        * Returning users get a different headline + a one-line "why are you
+        * seeing this again" explanation, instead of being treated like a
+        * first-time visitor. Otherwise upgraders see the giant "Rosetta"
+        * marketing splash and think we lost their previous setup.
+        */}
       <div className="flex flex-col items-center gap-5 text-center mt-10">
-        {/* <div className="flex size-16 items-center justify-center rounded-2xl bg-primary/10 text-primary p-2">
-          <Sparkles className="size-8" strokeWidth={1.5} />
-        </div> */}
         <div className="space-y-3">
-          <h1 className="text-6xl font-bold tracking-tight">Rosetta</h1>
-          <p className="max-w-sm text-sm leading-relaxed text-muted-foreground">
-            在本机翻译文档。文件不离开你的 Mac，不联网也能用。
-          </p>
+          {isReturningUser ? (
+            <>
+              <h1 className="text-5xl font-bold tracking-tight">欢迎回来</h1>
+              <p className="max-w-sm text-sm leading-relaxed text-muted-foreground">
+                新版本更换了更小更快的本地翻译模型。下载完成后即可恢复使用，旧模型已自动清理。
+              </p>
+            </>
+          ) : (
+            <>
+              <h1 className="text-6xl font-bold tracking-tight">Rosetta</h1>
+              <p className="max-w-sm text-sm leading-relaxed text-muted-foreground">
+                在本机翻译文档。文件不离开你的 Mac，不联网也能用。
+              </p>
+            </>
+          )}
         </div>
       </div>
 
@@ -40,9 +87,10 @@ export function WelcomeStep({ onBeginInstall, onSkipToExternal, isInstalling }: 
           disabled={isInstalling}
           className="min-w-52 gap-2"
         >
-          <Download className="size-4" /> 安装本地翻译引擎
+          <Download className="size-4" />
+          {isReturningUser ? "下载新模型" : "安装本地翻译引擎"}
         </Button>
-        <p className="text-xs text-muted-foreground/60">约 1.3 GB · 一次下载</p>
+        <p className="text-xs text-muted-foreground/60">{sizeLabel} · 一次下载</p>
       </div>
 
       {/* Group 3: Network proxy + API option */}

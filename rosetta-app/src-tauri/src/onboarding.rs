@@ -55,6 +55,20 @@ pub struct OnboardingDecision {
     pub state: OnboardingState,
     pub model_installed: bool,
     pub needs_onboarding: bool,
+    /// Bytes of the current profile's downloadable model. Drives the
+    /// onboarding download CTA's "约 X MB · 一次下载" subline. Hardcoding
+    /// the previous (1.3 GB / WebRWKV) value into WelcomeStep is what made
+    /// beta.7 users see "1.3 GB" when the new MLX model is actually 360 MB.
+    /// `None` on unsupported platforms (no profile resolves).
+    pub model_size_bytes: Option<u64>,
+    /// `true` when the user previously completed onboarding (i.e. they're
+    /// an upgrading user, not a first-time install). WelcomeStep uses this
+    /// to swap the "新用户欢迎" copy for "欢迎回来 + 解释为什么要再下".
+    /// Independent of `model_installed` so we can distinguish:
+    ///   - returning user, model present  → main window (won't see this flag)
+    ///   - returning user, model missing  → upgraded user, show "欢迎回来"
+    ///   - fresh user, model missing      → show "新用户欢迎"
+    pub is_returning_user: bool,
 }
 
 fn state_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -93,12 +107,19 @@ pub fn save(app: &AppHandle, state: &OnboardingState) -> Result<(), String> {
 /// onboarding. Either missing → show onboarding (with resume support).
 pub fn decide(app: &AppHandle) -> OnboardingDecision {
     let state = load(app);
-    let model_installed = match managed_rwkv::profile::current_profile() {
+    let profile = managed_rwkv::profile::current_profile();
+    let model_installed = match profile {
         Some(profile) => managed_rwkv::layout::RuntimeLayout::from_app(app, profile)
-            .map(|layout| layout.model_file.is_file())
+            // Use the layout helper, not `model_file.is_file()` — the latter
+            // is wrong for zip profiles (MLX) because the zip gets deleted
+            // after extraction. Shipping it that way once already cost us a
+            // beta.7 → beta.8 upgrade loop where users who downloaded the
+            // new model were still treated as if they hadn't.
+            .map(|layout| layout.is_model_installed())
             .unwrap_or(false),
         None => false, // unsupported platform — onboarding will route to "use external API"
     };
+    let model_size_bytes = profile.map(|p| p.model_size_bytes);
     // User who opted out of local install doesn't need a model — but we still
     // need them to have completed onboarding once. `completed` alone wins
     // for the "skipped_local" path.
@@ -107,10 +128,18 @@ pub fn decide(app: &AppHandle) -> OnboardingDecision {
     } else {
         !state.completed || !model_installed
     };
+    // Returning user = previously walked through onboarding (state.completed).
+    // The only reason we're showing onboarding again now is the model went
+    // missing — either they deleted it manually, or beta.8's migration step
+    // cleaned out the legacy WebRWKV directory. Either way the UX should be
+    // "welcome back" not "welcome".
+    let is_returning_user = state.completed;
     OnboardingDecision {
         state,
         model_installed,
         needs_onboarding,
+        model_size_bytes,
+        is_returning_user,
     }
 }
 

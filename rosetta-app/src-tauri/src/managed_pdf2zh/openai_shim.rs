@@ -17,15 +17,43 @@ use crate::rwkv_providers::{
 const DEFAULT_MAX_BATCH_SIZE: usize = 4;
 
 /// Upper bound on `pdf2zh --thread`. pdf2zh.py spawns this many Python
-/// multiprocessing workers; pushing it past ~4 makes the worker-pool setup
-/// dominate the per-page cost and on small (1-2 page) inputs the pool can
-/// deadlock before any worker reaches the OpenAI shim. Decoupled from the
-/// RWKV server's reported `supported_batch_sizes` ceiling — the MLX backend
-/// truthfully reports up to 16, but pdf2zh stalls long before that.
-/// Empirically 4 matched the WebRWKV-era behavior (where the supported-sizes
-/// endpoint wasn't exposed and we fell back to `DEFAULT_MAX_BATCH_SIZE = 4`),
-/// which translated fine. Bump cautiously and watch shim.log timings.
-const PDF2ZH_THREAD_CEILING: usize = 4;
+/// multiprocessing workers; pushing it too high makes the worker-pool setup
+/// dominate the per-page cost and at the extreme can deadlock before any
+/// worker reaches the OpenAI shim. Decoupled from the RWKV server's
+/// reported `supported_batch_sizes` ceiling — the MLX backend truthfully
+/// reports up to 16, but pdf2zh's multiprocessing setup hits its own
+/// scaling limit well before that.
+///
+/// History:
+/// - 4 — initial cap after the 2026-06-10 MLX switch. At the time `threads=16`
+///   appeared to hang on small PDFs and the failure was attributed to the
+///   Python multiprocessing pool. *Caveat*: that diagnosis predated the
+///   `NO_PROXY` fix in `pdf2zh_invoke.rs`, so the hang may actually have been
+///   pdf2zh's OpenAI calls all 502'ing through Clash rather than a real
+///   pool-scaling issue. Retained for reference, not as evidence against 16.
+/// - 8 — bumped 2026-06-10 to let MLX run wider batches per `/v1/batch/chat`.
+///   Verified stable on M4 mini.
+/// - 16 — bumped 2026-06-10 to match markdown's RWKV-side batch ceiling
+///   (markdown plans batches up to 16 directly via `plan_batches`). At 8
+///   PDF was running batches half the size of markdown's, leaving half the
+///   MLX throughput idle. Now that the `NO_PROXY` env scrubbing is in place
+///   in `pdf2zh_invoke.rs`, this should let pdf2zh's 16 workers all reach
+///   the shim and let MLX run at full batch width.
+///
+/// If you bump this further (or have to back off from 16):
+/// 1. Watch the dev terminal for `[pdf2zh-batch] assembled N item(s)` lines.
+///    If N stays well below the cap, workers aren't actually arriving in
+///    parallel (and raising the cap won't help — investigate why).
+/// 2. Watch `rosetta-pdf2zh-live.log` for repeated errors. The 2026-06-10
+///    hang at `threads=16` left zero live.log artifacts because live.log
+///    didn't exist yet; now you should see actual stderr if anything's wrong.
+/// 3. If shim.log stays at only the `spawn shim` line for >60s with no
+///    `request messages=...`, the multiprocessing pool genuinely deadlocked —
+///    back off to 12 or 14.
+/// 4. Check `runtime.log` "active batches" stays bounded by the new ceiling.
+/// 5. Test against a 1-2 page PDF first; small inputs expose pool-startup
+///    overhead the worst.
+const PDF2ZH_THREAD_CEILING: usize = 16;
 
 #[derive(Debug, Clone)]
 pub struct LightningApiConfig {

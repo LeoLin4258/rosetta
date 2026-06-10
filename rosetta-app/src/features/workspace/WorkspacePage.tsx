@@ -75,7 +75,17 @@ export function WorkspacePage() {
   const [pdfSelectedPages, setPdfSelectedPages] = useState<number[]>([]);
   const [pdfForceRetranslate, setPdfForceRetranslate] = useState(false);
   const [hoveredBlockId, setHoveredBlockId] = useState<string | null>(null);
-  const [pdfProgress, setPdfProgress] = useState<{ phase: string; percent: number | null } | null>(null);
+  const [pdfProgress, setPdfProgress] = useState<{
+    phase: string;
+    percent: number | null;
+    /// 1-based index of the page currently being worked on, within the
+    /// filtered list of pages this invocation will translate. May be null
+    /// when the backend doesn't supply per-page progress (whole-document
+    /// fallback path).
+    currentPage: number | null;
+    /// Total pages in that filtered list. Paired with `currentPage`.
+    totalPages: number | null;
+  } | null>(null);
 
   const cancelRef = useRef<(() => void) | null>(null);
   const pdf2zhRuntime = useManagedPdf2zhRuntime();
@@ -141,7 +151,13 @@ export function WorkspacePage() {
     }
     let unlisten: (() => void) | null = null;
     let unmounted = false;
-    listen<{ jobId: string; phase: string; percent: number | null }>(
+    listen<{
+      jobId: string;
+      phase: string;
+      percent: number | null;
+      currentPage?: number;
+      totalPages?: number;
+    }>(
       "rosetta-pdf2zh-progress",
       (event) => {
         if (
@@ -150,7 +166,12 @@ export function WorkspacePage() {
         ) {
           return;
         }
-        setPdfProgress({ phase: event.payload.phase, percent: event.payload.percent });
+        setPdfProgress({
+          phase: event.payload.phase,
+          percent: event.payload.percent,
+          currentPage: event.payload.currentPage ?? null,
+          totalPages: event.payload.totalPages ?? null,
+        });
       },
     ).then((fn) => {
       if (unmounted) fn();

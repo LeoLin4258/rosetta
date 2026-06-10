@@ -95,7 +95,7 @@ bash rosetta-app/src-tauri/scripts/fetch-rwkv-sidecar.sh --tag sidecar-vX.Y.Z
 
 ```rust
 // openai_shim.rs
-const PDF2ZH_THREAD_CEILING: usize = 4;
+const PDF2ZH_THREAD_CEILING: usize = 16;
 
 pub struct OpenAiShim {
     pub batch_size: usize,             // 仍跟 RWKV 上限
@@ -106,7 +106,15 @@ pub struct OpenAiShim {
 
 `pdf2zh_invoke.rs` 改为 `let thread_count = shim.pdf2zh_thread_count;`。
 
-**怎么判断**：新一次 PDF 任务的 `rosetta-pdf2zh-command.log` 里 `threads=4`；runtime.log "active batches" 行数不会越过 4。
+**值的演进**：
+
+- `4` —— 最初在 2026-06-10 切换 MLX 后定的保守值。当时 `threads=16` 看起来会卡死小 PDF，归因为"Python multiprocessing pool 起 16 worker 太多"。
+- `8` —— 同日提速时的中间档。
+- `16` —— 同日继续提速后的终值。**回头复盘发现**：最初 `threads=16` 的 hang 其实是 #5 的代理 bug 在作怪（pdf2zh 的所有 OpenAI 请求都 502），跟 multiprocessing pool 无关。代理修了 + live.log 上线之后 16 完全稳定，M4 mini 上 batch 真能打到 16 满载，跟 markdown 在 MLX 上一样的批大小。
+
+**怎么判断**：dev 终端有 `[pdf2zh-batch] assembled 16 item(s) in batch`；新一次 PDF 任务的 `rosetta-pdf2zh-command.log` 里 `threads=16`。
+
+**剩余的速度差**：即便拉到 16，PDF 仍比 markdown 慢，因为 PDF 链路多出来的固定开销跟 cap 无关：pdf2zh.py 启动（~2-5s）、multiprocessing fork（~3-8s，跟 worker 数正相关）、pdfminer layout 解析（每页 ~0.5-2s）、HTTP loopback + shim 80ms 攒批窗口。小 PDF 上这部分占比很高、感觉相对慢；大 PDF 上摊薄了就接近 markdown。继续压缩要动 pdf2zh.py 这一层（常驻 worker pool / 跨页复用进程），工程量大。
 
 ### 5. pdf2zh 子进程必须显式 `NO_PROXY` + 清空 `HTTP(S)_PROXY`
 
@@ -173,6 +181,64 @@ pub struct OpenAiShim {
 - `rosetta-app/src-tauri/src/rosetta_jobs/formats/pdf/pdf2zh_invoke.rs` —— 子进程 env 清代理 + 注入 `NO_PROXY`；`thread_count` 改用 `shim.pdf2zh_thread_count`；新增 `rosetta-pdf2zh-live.log` 实时日志。
 - `rosetta-app/src-tauri/scripts/fetch-rwkv-sidecar.sh` —— `install_files()` 与 `--local` 路径同时 stage `default.metallib` 到 `binaries/` 和 `resources/rwkv-sidecar/`。
 - `.github/workflows/build-rwkv-sidecar-macos.yml` —— 此前已由 plan 改 commit pin 与 CMake flags，本次未再改。
+
+## Upgrade impact (beta.7 → beta.8)
+
+老用户从 beta.7（WebRWKV 1.5B）升到 beta.8（MLX 0.4B）会遇到这几件事：
+
+### 自动会发生的事
+
+- **旧 1.26 GB 的 WebRWKV 模型自动删除**。`managed_rwkv::migrate::run_migrations` 在 `lib.rs` 的 `setup` 里跑一次，扫 `<app-local-data>/managed-rwkv/models/rwkv-translate-1.5b-nf4/` 这条已知路径并整个干掉；删了多少 MB 会写到 stderr。完全幂等，已经升过的不会再清。
+- **旧 sidecar 进程在新启动时不会被复用**。`lifecycle.rs::cleanup_stale_sidecars` 会按当前 profile 的 sidecar 名匹配并 kill 掉残留；既然 beta.8 替换了同名的 `rwkv-server-aarch64-apple-darwin` 二进制为 MLX 构建，旧 PID 会被识别并清理。
+- **旧 logs / runtime-state 文件保留**。`runtime.log` 和 `runtime-state/active-runtime.json` 不动；下次启动 sidecar 会 overwrite，不影响新流程。
+
+### 需要用户自己做的事
+
+- **重新下载 360 MB 的 MLX 模型**。第一次启动 beta.8 设置面板会显示"翻译模型未下载"并给出下载按钮（install plan 复用现有 UI，不需要额外引导）。下载的是 zip，应用会自动解压到 `models/rwkv7-0.4b-mlx-6bit/<stem>/`。
+
+### 已有 jobs 的兼容性
+
+PDF / Markdown 翻译任务、缓存的译文、segments.json、pdf_page_translations.json 这些**完全不受影响**——它们跟具体后端无关，只关心译文产物本身。老的已翻译页面继续显示译文 PDF；未翻译的页面新调用走 MLX。
+
+### 一次升级要改的版本号
+
+- `rosetta-app/package.json`：`"version": "0.1.0-beta.8"`
+- `rosetta-app/src-tauri/Cargo.toml`：`version = "0.1.0-beta.8"`
+- `rosetta-app/src-tauri/tauri.conf.json`：`"version": "0.1.0-beta.8"`
+
+Cargo.lock 自动在下次 build 时刷新，无需手动改。
+
+### 加新 legacy 清理项的方式
+
+未来再有"换后端导致旧文件没用"的场景，往 `managed_rwkv::migrate::LEGACY_ARTIFACTS` 数组里 append 一条 `LegacyArtifact { subpath, reason }` 即可。**不要删除已有条目** —— 越级升级（比如 beta.6 → beta.9）的用户仍然需要它们。
+
+### 升级路径走查发现的 3 个坑（已修，但留下经验）
+
+走查 beta.7 → beta.8 实际用户路径时挖出来的，每个都会破坏"丝滑"。下次换 profile / 换模型类型时再核一遍：
+
+**坑 A：`onboarding::decide` 用 `model_file.is_file()` 判断模型存在性 —— zip profile 上永远 false**
+
+MLX 是 zip profile，安装后 `model_file`（zip 路径）被删了，模型变成 `model_extracted_dir/<stem>/`。原来的检查会让所有升级用户即便下完新模型也被无限送回 onboarding。
+
+修复：在 `layout::RuntimeLayout` 上加 `is_model_installed()` 方法（zip 看 extracted_dir，否则看 model_file），让 onboarding / install / status 三处共用同一个判断。
+
+**Future-proof 约定**：**不要在 `onboarding::decide`、`install_inner` 已安装短路、`build_install_plan` 之外的地方手写 model-presence 检查**。要查就调 `layout.is_model_installed()`。这条要写进 conventions/。
+
+**坑 B：`WelcomeStep` 把"约 1.3 GB"写死在 JSX 里**
+
+升 beta.8 时用户看到一个跟实际下载量（360MB）差 4 倍的数字。
+
+修复：`OnboardingDecision` 加 `model_size_bytes` 字段，从当前 profile 透出；WelcomeStep 加 `formatModelSize()` 显示真值。
+
+**Future-proof 约定**：**用户文案里出现的任何"体积 / 时长 / 模型名"都不要硬编码**，全部从 profile 透出。下次换模型只改 profile.rs，UI 自动跟上。
+
+**坑 C：升级用户看到的是新用户的欢迎屏**
+
+beta.7 用户升完后 onboarding 打开，看到大大的"Rosetta"标题 + "在本机翻译文档"，跟首次安装一模一样，会以为升级把状态搞丢了。
+
+修复：`OnboardingDecision` 加 `is_returning_user`（= `state.completed`，独立于 `model_installed`）。WelcomeStep 根据它切换成"欢迎回来 + 新版本换了更小的模型"。
+
+**Future-proof 约定**：**onboarding 窗口里的所有"首次使用"措辞都必须配 returning user 分支**。理论上 onboarding 只该在两种情况出现 —— 新用户、升级后模型没了的老用户。后者不该被当成前者。
 
 ## Cross-references
 

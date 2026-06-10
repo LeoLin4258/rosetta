@@ -30,6 +30,14 @@ pub fn run() {
             // the only entry point that decides "fresh user vs returning
             // user".
             let handle = app.handle();
+
+            // Run one-time on-disk migrations *before* `onboarding::decide`,
+            // because decide() inspects model presence. On beta.8 upgrades
+            // from beta.7 this reclaims ~1.26 GB by removing the orphaned
+            // WebRWKV 1.5B model directory; on fresh installs it's a no-op.
+            // See `managed_rwkv::migrate` for the legacy artifact list.
+            managed_rwkv::migrate::run_migrations(handle);
+
             let decision = onboarding::decide(handle);
             let target_label = if decision.needs_onboarding {
                 "onboarding"

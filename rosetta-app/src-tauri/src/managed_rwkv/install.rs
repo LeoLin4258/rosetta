@@ -257,11 +257,11 @@ async fn install_inner(
     proxy_url: Option<&str>,
 ) -> Result<InstallResult, String> {
     // Already installed? Re-verify SHA256 to be safe and short-circuit.
-    let already_installed = if profile.model_is_zip {
-        layout.model_extracted_dir.as_ref().is_some_and(|d| d.is_dir())
-    } else {
-        layout.model_file.is_file()
-    };
+    // Uses the same zip-vs-file detection helper as `onboarding::decide`
+    // and `status.rs::build_install_plan` — keep them aligned, breaking any
+    // one of them silently is what caused the beta.7 → beta.8 onboarding
+    // loop.
+    let already_installed = layout.is_model_installed();
     if already_installed {
         // For zip profiles the zip is gone after extraction; skip re-hash
         // (the extracted dir is the source of truth) and go straight to manifest.

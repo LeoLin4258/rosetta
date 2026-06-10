@@ -69,8 +69,14 @@ export function DocumentPreview({
   sourceSegments: Segment[];
   translationFile: RosettaTranslationFile | null;
   translationSegments: TranslationSegment[];
-  /// PDF-specific: live phase+percent from pdf2zh progress events.
-  pdfProgress?: { phase: string; percent: number | null } | null;
+  /// PDF-specific: live phase+percent (+per-page progress) from pdf2zh
+  /// progress events. See WorkspacePage for shape rationale.
+  pdfProgress?: {
+    phase: string;
+    percent: number | null;
+    currentPage: number | null;
+    totalPages: number | null;
+  } | null;
   /// PDF-specific: error message from the last failed PDF generation.
   pdfError?: string | null;
   pdfSelectedPages?: number[];

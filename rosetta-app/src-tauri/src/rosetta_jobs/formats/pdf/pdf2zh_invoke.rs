@@ -22,9 +22,22 @@ const PDF2ZH_PROGRESS_EVENT: &str = "rosetta-pdf2zh-progress";
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Pdf2zhProgressPayload {
     pub job_id: String,
+    /// One of: `warmup` (sidecar/shim being prepared), `parse` (PDF layout
+    /// extraction), `translate` (pdf2zh has reached translation), `render`
+    /// (translated PDF being assembled). Frontend maps to UI labels.
     pub phase: String,
     pub percent: Option<u8>,
     pub message: String,
+    /// 1-based index of the page currently being processed, within the
+    /// filtered "pages to translate" list passed to this invocation.
+    /// `None` when caller didn't supply per-page progress (whole-document
+    /// fallback path).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_page: Option<u32>,
+    /// Total pages in the filtered list. Paired with `current_page` so the
+    /// UI can render "第 X/Y 页".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_pages: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -36,6 +49,13 @@ pub(crate) struct Pdf2zhInvokeOptions {
     pub timeout_ms: u64,
     pub ignore_cache: bool,
     pub pages: Option<Vec<u32>>,
+    /// `(current_index_1_based, total_to_process)` from the caller's
+    /// per-page iteration. The caller filters out already-translated pages
+    /// before iterating, so this reflects the user-visible progress
+    /// ("3rd of 5 pages I asked to translate"), not absolute page numbers.
+    /// `None` for callers that translate the whole document in a single
+    /// invocation.
+    pub page_progress: Option<(u32, u32)>,
 }
 
 #[derive(Debug, Clone)]
@@ -52,6 +72,29 @@ pub(crate) async fn invoke_pdf2zh(
     options: Pdf2zhInvokeOptions,
     cancel_rx: oneshot::Receiver<()>,
 ) -> Result<Pdf2zhOutput, PdfError> {
+    // Helper: emit a progress event tagged with this invocation's page progress.
+    // Defined locally so every call site below picks up the current page automatically
+    // without threading the tuple through arg lists.
+    let page_progress = options.page_progress;
+    let emit = |phase: &str, percent: Option<u8>, message: &str| {
+        emit_progress_with_page(
+            app,
+            &options.job_id,
+            phase,
+            percent,
+            message,
+            page_progress,
+        );
+    };
+
+    // Phase: warmup — covers the time from "user clicked translate" to
+    // "pdf2zh.py has actually started parsing". This is non-trivial (status
+    // resolution, shim listener bind, in some runs `set_chat_roles_for_pair`
+    // hitting the RWKV server) and used to be the silent gap that made the
+    // UI feel frozen. Emit early so the topbar's elapsed timer has something
+    // to count against from the start.
+    emit("warmup", Some(0), "正在准备 PDF 翻译引擎…");
+
     let status = managed_pdf2zh::build_static_status(app).map_err(PdfError::RuntimeMissing)?;
     if !status.install_plan.ready {
         return Err(PdfError::RuntimeMissing(status.install_plan.message));
@@ -70,7 +113,7 @@ pub(crate) async fn invoke_pdf2zh(
         .map_err(|error| PdfError::Read(format!("无法创建 pdf2zh 临时目录: {error}")))?;
     let debug = pdf2zh_debug_enabled();
 
-    emit_progress(app, &options.job_id, "parse", Some(5), "正在准备 PDF 版面...");
+    emit("warmup", Some(20), "正在启动本地翻译 shim…");
     let shim_log_file = output_dir.join("rosetta-pdf2zh-shim.log");
     let shim = managed_pdf2zh::openai_shim::spawn_shim(
         options.provider.clone(),
@@ -81,6 +124,7 @@ pub(crate) async fn invoke_pdf2zh(
     )
     .await
     .map_err(PdfError::Pdf2zhFailed)?;
+    emit("warmup", Some(60), "翻译 shim 已就绪，启动 PDF 解析进程…");
 
     let openai_base_url = shim.base_url();
     // NOT `shim.batch_size`: that follows the RWKV server's reported batch
@@ -152,7 +196,7 @@ pub(crate) async fn invoke_pdf2zh(
     }
     let _ = options.ignore_cache;
 
-    emit_progress(app, &options.job_id, "translate", Some(0), "正在翻译 PDF...");
+    emit("translate", Some(0), "正在翻译 PDF…");
     let mut child = command
         .spawn()
         .map_err(|error| PdfError::Pdf2zhFailed(format!("启动 {} 失败: {error}", bin.display())))?;
@@ -179,12 +223,13 @@ pub(crate) async fn invoke_pdf2zh(
         let job_id = options.job_id.clone();
         let output_lines = Arc::clone(&output_lines);
         let live_log = Arc::clone(&live_log);
+        let page_progress = options.page_progress;
         tokio::spawn(async move {
             let mut lines = BufReader::new(stream).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 remember_line(&output_lines, &line);
                 append_live_log(&live_log, "stderr", &line);
-                handle_pdf2zh_line(&app, &job_id, &line);
+                handle_pdf2zh_line(&app, &job_id, &line, page_progress);
             }
         })
     });
@@ -193,12 +238,13 @@ pub(crate) async fn invoke_pdf2zh(
         let job_id = options.job_id.clone();
         let output_lines = Arc::clone(&output_lines);
         let live_log = Arc::clone(&live_log);
+        let page_progress = options.page_progress;
         tokio::spawn(async move {
             let mut lines = BufReader::new(stream).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 remember_line(&output_lines, &line);
                 append_live_log(&live_log, "stdout", &line);
-                handle_pdf2zh_line(&app, &job_id, &line);
+                handle_pdf2zh_line(&app, &job_id, &line, page_progress);
             }
         })
     });
@@ -241,12 +287,12 @@ pub(crate) async fn invoke_pdf2zh(
         )));
     }
 
-    emit_progress(app, &options.job_id, "render", Some(95), "正在整理译文 PDF...");
+    emit("render", Some(95), "正在整理译文 PDF…");
     let mono_pdf = find_pdf2zh_output(output_dir, source_path, "zh")
         .or_else(|| find_pdf2zh_output(output_dir, source_path, "mono"))
         .ok_or_else(|| PdfError::Pdf2zhFailed("未生成译文 PDF。".to_string()))?;
     let dual_pdf = find_pdf2zh_output(output_dir, source_path, "dual");
-    emit_progress(app, &options.job_id, "render", Some(100), "译文 PDF 已生成。");
+    emit("render", Some(100), "译文 PDF 已生成。");
     Ok(Pdf2zhOutput { mono_pdf, dual_pdf })
 }
 
@@ -272,7 +318,12 @@ fn remember_line(lines: &Arc<Mutex<Vec<String>>>, line: &str) {
     }
 }
 
-fn handle_pdf2zh_line(app: &AppHandle, job_id: &str, line: &str) {
+fn handle_pdf2zh_line(
+    app: &AppHandle,
+    job_id: &str,
+    line: &str,
+    page_progress: Option<(u32, u32)>,
+) {
     let lower = line.to_ascii_lowercase();
     let phase = if lower.contains("parse") || lower.contains("layout") {
         "parse"
@@ -281,7 +332,14 @@ fn handle_pdf2zh_line(app: &AppHandle, job_id: &str, line: &str) {
     } else {
         "translate"
     };
-    emit_progress(app, job_id, phase, parse_percent(line), line.trim());
+    emit_progress_with_page(
+        app,
+        job_id,
+        phase,
+        parse_percent(line),
+        line.trim(),
+        page_progress,
+    );
 }
 
 fn parse_percent(line: &str) -> Option<u8> {
@@ -298,7 +356,18 @@ fn parse_percent(line: &str) -> Option<u8> {
     normalized.parse::<u8>().ok().map(|value| value.min(100))
 }
 
-fn emit_progress(app: &AppHandle, job_id: &str, phase: &str, percent: Option<u8>, message: &str) {
+fn emit_progress_with_page(
+    app: &AppHandle,
+    job_id: &str,
+    phase: &str,
+    percent: Option<u8>,
+    message: &str,
+    page_progress: Option<(u32, u32)>,
+) {
+    let (current_page, total_pages) = match page_progress {
+        Some((cur, total)) => (Some(cur), Some(total)),
+        None => (None, None),
+    };
     let _ = app.emit(
         PDF2ZH_PROGRESS_EVENT,
         Pdf2zhProgressPayload {
@@ -306,6 +375,8 @@ fn emit_progress(app: &AppHandle, job_id: &str, phase: &str, percent: Option<u8>
             phase: phase.to_string(),
             percent,
             message: message.to_string(),
+            current_page,
+            total_pages,
         },
     );
 }

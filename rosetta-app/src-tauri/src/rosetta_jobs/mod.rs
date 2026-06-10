@@ -338,7 +338,28 @@ pub async fn translate_rosetta_pdf_pages(
     };
     let force = force.unwrap_or(false);
 
-    for page_number in pages {
+    // Pre-compute which pages will actually be invoked (skip already-translated
+    // unless `force`). The 1-based index within this filtered list, paired with
+    // its length, is what the UI shows as "第 X/Y 页". Using the filtered list
+    // (instead of raw `pages`) matches user expectation: "翻译 3 of 5 pages I
+    // asked for", not "translating page 7 of a 100-page document".
+    let pages_to_process: Vec<u32> = pages
+        .iter()
+        .copied()
+        .filter(|page_number| {
+            if force {
+                return true;
+            }
+            !state.pages.iter().any(|page| {
+                page.page_number == *page_number
+                    && page.status == "translated"
+                    && page.translated_pdf_path.is_some()
+            })
+        })
+        .collect();
+    let total_pages_to_process = pages_to_process.len() as u32;
+
+    for page_number in pages.iter().copied() {
         let already_translated = state.pages.iter().any(|page| {
             page.page_number == page_number
                 && page.status == "translated"
@@ -347,6 +368,12 @@ pub async fn translate_rosetta_pdf_pages(
         if already_translated && !force {
             continue;
         }
+        // 1-based position of this page within pages_to_process.
+        let current_page_progress: u32 = pages_to_process
+            .iter()
+            .position(|p| *p == page_number)
+            .map(|i| (i + 1) as u32)
+            .unwrap_or(1);
 
         formats::pdf::page_state::upsert_pdf_page(
             &mut state,
@@ -389,6 +416,7 @@ pub async fn translate_rosetta_pdf_pages(
                 timeout_ms: timeout,
                 ignore_cache: false,
                 pages: Some(vec![page_number]),
+                page_progress: Some((current_page_progress, total_pages_to_process)),
             },
             cancel_rx,
         )
@@ -660,6 +688,8 @@ pub async fn generate_rosetta_translated_pdf(
             timeout_ms: timeout,
             ignore_cache: ignore_cache.unwrap_or(false),
             pages: None,
+            // Whole-document fallback: no per-page progress to report.
+            page_progress: None,
         },
         cancel_rx,
     )

@@ -16,6 +16,7 @@
 pub mod install;
 pub mod layout;
 pub mod lifecycle;
+pub mod migrate;
 pub mod profile;
 pub mod status;
 

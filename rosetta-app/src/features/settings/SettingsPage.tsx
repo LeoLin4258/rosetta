@@ -38,6 +38,7 @@ import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { isManagedRuntimeReady } from "@/lib/useManagedRwkvRuntime";
+import { getReleaseNote, type ReleaseNote } from "../../data/releaseNotes";
 import { probeRwkvTranslationApi } from "../../lib/rwkvApi";
 import { cn } from "../../lib/utils";
 import { useRosettaStore } from "../../store/useRosettaStore";
@@ -989,7 +990,7 @@ function AboutSettingsSection({
             title="关于"
           />
 
-          <div className="flex min-w-0 flex-col gap-2">
+          <div className="flex min-w-0 flex-col gap-3">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <div className="flex items-center gap-2">
@@ -1003,6 +1004,18 @@ function AboutSettingsSection({
                 </p>
               </div>
             </div>
+
+            {/*
+              Always show the current version's highlights, regardless of
+              update state. Driven by `src/data/releaseNotes.ts`, not the
+              updater plugin's response — these are bundled with the build
+              so they render offline + instantly. If the lookup misses
+              (e.g. dev builds with a version string we haven't added yet),
+              the card just doesn't render the section.
+            */}
+            <CurrentVersionHighlights
+              note={getReleaseNote(appVersion)}
+            />
 
             <UpdateStatusMessage
               error={updateError}
@@ -1210,6 +1223,32 @@ function UpdateStatusBadge({ status }: { status: UpdateStatus }) {
   return <SemanticBadge tone="neutral">未检查</SemanticBadge>;
 }
 
+/**
+ * Always-on display of the currently-installed version's release highlights.
+ * Sits between the version badge line and the dynamic UpdateStatusMessage,
+ * so the user can see "what I'm running" even when no update is available
+ * (and offline). Returns a minimal placeholder when we don't have a note
+ * for the current version (typically a dev build before the version was
+ * added to `RELEASE_NOTES`).
+ */
+function CurrentVersionHighlights({ note }: { note: ReleaseNote | null }) {
+  if (!note || note.highlights.length === 0) {
+    return null;
+  }
+  return (
+    <div className="flex flex-col gap-2 rounded-md border bg-background p-3">
+      <p className="text-xs font-medium text-muted-foreground">
+        当前版本特性
+      </p>
+      <ul className="ml-4 list-disc space-y-1 text-sm leading-6 text-muted-foreground marker:text-muted-foreground/50">
+        {note.highlights.map((line, index) => (
+          <li key={index}>{line}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function UpdateStatusMessage({
   error,
   progress,
@@ -1239,15 +1278,22 @@ function UpdateStatusMessage({
 
   if (status === "available" && update) {
     return (
-      <div className="flex flex-col gap-3 rounded-md border bg-muted/30 p-3">
-        <div className="flex flex-wrap items-center gap-2 text-sm">
-          <span className="font-medium">发现 Rosetta {update.version}</span>
+      <div className="flex flex-col gap-2 rounded-md border border-primary/30 bg-primary/5 p-3">
+        <div className="flex flex-wrap items-center gap-2 text-xs font-medium text-muted-foreground">
+          <span>新版本特性</span>
+          <span className="rounded-sm bg-primary/10 px-1.5 py-0.5 text-primary">
+            {update.version}
+          </span>
           {update.date ? (
-            <span className="text-muted-foreground">{update.date}</span>
+            <span className="text-muted-foreground/70">{update.date}</span>
           ) : null}
         </div>
         {update.body ? (
-          <p className="whitespace-pre-wrap text-sm leading-6 text-muted-foreground">
+          // `update.body` 来自 Tauri updater 后端，通常是 Supabase function
+          // 拼接的 release notes（plain text 或 markdown）。这里按 whitespace
+          // 保留呈现；如果将来你想渲染 markdown，可以换成 react-markdown，
+          // 但 release notes 这种短文本 plain text 已经够了。
+          <p className="whitespace-pre-wrap text-sm leading-6 text-foreground/90">
             {update.body}
           </p>
         ) : (

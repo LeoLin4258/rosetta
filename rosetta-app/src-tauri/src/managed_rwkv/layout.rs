@@ -119,6 +119,27 @@ impl RuntimeLayout {
         }
         Ok(())
     }
+
+    /// `true` if the model artifact is on disk and ready to load.
+    ///
+    /// For zip profiles (MLX): the **extracted directory** is the source of
+    /// truth — the zip itself is deleted after extraction. For non-zip
+    /// profiles (WebRWKV, libtorch): the model file is loaded directly.
+    ///
+    /// Callers that need this check (onboarding decide, install plan,
+    /// already-installed shortcut in install_inner) **must** use this helper
+    /// instead of inspecting `model_file.is_file()` directly. Skipping the
+    /// zip branch is how the 2026-06-10 MLX switch shipped with onboarding
+    /// stuck in a loop for upgraded users; the helper exists to make that
+    /// mistake un-shippable.
+    pub fn is_model_installed(&self) -> bool {
+        match self.model_extracted_dir.as_ref() {
+            // Zip profile: only the extracted dir matters.
+            Some(dir) => dir.is_dir(),
+            // Non-zip profile: model_file is loaded directly.
+            None => self.model_file.is_file(),
+        }
+    }
 }
 
 #[cfg(test)]

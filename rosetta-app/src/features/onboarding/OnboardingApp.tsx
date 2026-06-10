@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-import { completeOnboardingAndOpenMain } from "@/lib/onboarding";
+import { completeOnboardingAndOpenMain, getOnboardingDecision } from "@/lib/onboarding";
 import {
   isPdf2zhReady,
   useManagedPdf2zhRuntime,
@@ -60,6 +60,30 @@ export function OnboardingApp() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [pdfErrorMessage, setPdfErrorMessage] = useState<string | null>(null);
   const [isFinishing, setIsFinishing] = useState(false);
+  // Pull the decision once to feed Welcome step the model size + "are we
+  // upgrading" flag. `null` while loading and on errors — Welcome falls
+  // back to neutral copy in that case rather than blocking the screen.
+  const [decision, setDecision] = useState<{
+    modelSizeBytes: number | null;
+    isReturningUser: boolean;
+  } | null>(null);
+  useEffect(() => {
+    let mounted = true;
+    void getOnboardingDecision()
+      .then((d) => {
+        if (!mounted) return;
+        setDecision({
+          modelSizeBytes: d.modelSizeBytes,
+          isReturningUser: d.isReturningUser,
+        });
+      })
+      .catch(() => {
+        // Best-effort: leave decision null and let Welcome step show defaults.
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   // React to runtime status updates that arrive after we kicked off install:
   // success → step "done", failure → stay on "installing" with error banner.
@@ -206,6 +230,8 @@ export function OnboardingApp() {
             onBeginInstall={handleBeginInstall}
             onSkipToExternal={handleSkipToExternal}
             isInstalling={runtime.isInstalling}
+            modelSizeBytes={decision?.modelSizeBytes ?? null}
+            isReturningUser={decision?.isReturningUser ?? false}
           />
         )}
         {step === "installing-runtime" && (
