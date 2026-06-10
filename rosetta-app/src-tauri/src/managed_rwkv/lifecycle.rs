@@ -97,6 +97,7 @@ pub async fn start_sidecar(
     tokenizer_path: PathBuf,
     model_path: PathBuf,
     log_file: PathBuf,
+    metallib_source: Option<PathBuf>,
 ) -> Result<ManagedRuntimeStartResult, String> {
     let mut guard = registry.inner.lock().await;
     reap_exited_child(&mut guard);
@@ -112,11 +113,73 @@ pub async fn start_sidecar(
         ("tokenizer", tokenizer_path.as_path()),
         ("model", model_path.as_path()),
     ] {
-        if !path.is_file() {
+        if !path.exists() {
             let msg = format!("{label} 文件不存在: {}", path.display());
             guard.last_error = Some(msg.clone());
             guard.state = Some(ManagedRuntimeState::Failed);
             return Err(msg);
+        }
+    }
+
+    // MLX backend setup: the rwkv-mobile MLX backend mmaps `default.metallib`
+    // from the process's working directory at startup. In dev `default.metallib`
+    // is staged into `src-tauri/binaries/` next to the sidecar by
+    // `fetch-rwkv-sidecar.sh`; in the bundle we ship it as a resource and
+    // need to make sure a copy lives next to the binary (or that we cwd into
+    // the right place) before spawn. If `metallib_source` is provided and the
+    // sidecar's parent dir doesn't already contain a `default.metallib`,
+    // best-effort copy one in. On signed `.app` installs the bundle dir may be
+    // read-only — in that case we silently fall back to cwd'ing into the
+    // source directory so MLX still finds the metallib relative to cwd.
+    let sidecar_dir = sidecar_path
+        .parent()
+        .ok_or_else(|| "sidecar 路径没有父目录。".to_string())?
+        .to_path_buf();
+    let mut working_dir = sidecar_dir.clone();
+    if profile.backend == "mlx" {
+        let target = sidecar_dir.join("default.metallib");
+        let need_copy = !target.is_file();
+        if need_copy {
+            if let Some(src) = metallib_source.as_deref() {
+                if src.is_file() {
+                    match std::fs::copy(src, &target) {
+                        Ok(_) => {
+                            eprintln!(
+                                "[rwkv-lifecycle] staged default.metallib at {} (from {})",
+                                target.display(),
+                                src.display()
+                            );
+                        }
+                        Err(error) => {
+                            // Bundle case: Contents/MacOS may be read-only on
+                            // a notarized install. Fall back to spawning with
+                            // cwd set to the source's parent dir so the MLX
+                            // backend still picks it up.
+                            eprintln!(
+                                "[rwkv-lifecycle] could not copy metallib to {}: {error}; falling back to cwd={}",
+                                target.display(),
+                                src.parent().map(|p| p.display().to_string()).unwrap_or_default()
+                            );
+                            if let Some(parent) = src.parent() {
+                                working_dir = parent.to_path_buf();
+                            }
+                        }
+                    }
+                } else {
+                    let msg = format!(
+                        "MLX 后端需要的 default.metallib 不存在: {}",
+                        src.display()
+                    );
+                    guard.last_error = Some(msg.clone());
+                    guard.state = Some(ManagedRuntimeState::Failed);
+                    return Err(msg);
+                }
+            } else {
+                let msg = "MLX 后端启用，但找不到 default.metallib。请重新运行 fetch-rwkv-sidecar.sh。".to_string();
+                guard.last_error = Some(msg.clone());
+                guard.state = Some(ManagedRuntimeState::Failed);
+                return Err(msg);
+            }
         }
     }
 
@@ -150,6 +213,7 @@ pub async fn start_sidecar(
     let mut command = TokioCommand::new(&sidecar_path);
     command
         .args(&args[1..]) // [0] is sidecar path itself, kept for `command` echo
+        .current_dir(&working_dir)
         .stdout(std::process::Stdio::from(stdout))
         .stderr(std::process::Stdio::from(stderr))
         .stdin(std::process::Stdio::null())

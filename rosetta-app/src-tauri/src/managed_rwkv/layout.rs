@@ -55,6 +55,9 @@ pub struct RuntimeLayout {
     pub models_dir: PathBuf,
     pub model_dir: PathBuf,
     pub model_file: PathBuf,
+    /// For zip profiles: the extracted directory (`model_filename` minus `.zip`).
+    /// `None` when `model_is_zip` is false. Lifecycle passes this to `--model`.
+    pub model_extracted_dir: Option<PathBuf>,
     pub model_manifest_file: PathBuf,
     pub runtime_state_dir: PathBuf,
     pub active_runtime_file: PathBuf,
@@ -70,6 +73,14 @@ impl RuntimeLayout {
         let models_dir = root.join(MODELS_DIR);
         let model_dir = models_dir.join(profile.model_directory_name);
         let model_file = model_dir.join(profile.model_filename);
+        let model_extracted_dir = if profile.model_is_zip {
+            // Strip the .zip extension to get the extracted directory name.
+            let stem = profile.model_filename.strip_suffix(".zip")
+                .unwrap_or(profile.model_filename);
+            Some(model_dir.join(stem))
+        } else {
+            None
+        };
         let model_manifest_file = model_dir.join(MODEL_MANIFEST_FILE);
         let runtime_state_dir = root.join(RUNTIME_STATE_DIR);
         let active_runtime_file = runtime_state_dir.join(ACTIVE_RUNTIME_FILE);
@@ -81,6 +92,7 @@ impl RuntimeLayout {
             models_dir,
             model_dir,
             model_file,
+            model_extracted_dir,
             model_manifest_file,
             runtime_state_dir,
             active_runtime_file,

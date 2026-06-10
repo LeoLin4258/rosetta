@@ -69,6 +69,12 @@ BIN_DIR="$SRC_TAURI_DIR/binaries"
 RES_DIR="$SRC_TAURI_DIR/resources/rwkv-sidecar"
 SIDECAR_NAME="rwkv-server-aarch64-apple-darwin"
 TOKENIZER_NAME="b_rwkv_vocab_v20230424.txt"
+# MLX backend requires the prebuilt Metal library next to the binary at
+# runtime; CI bakes it into the tarball as `default.metallib`. We stage it
+# into both binaries/ (so dev runs find it next to the sidecar) and
+# resources/rwkv-sidecar/ (so the bundled `.app` carries a copy that
+# lifecycle.rs can stage into a writable runtime dir at start time).
+METALLIB_NAME="default.metallib"
 
 mkdir -p "$BIN_DIR" "$RES_DIR"
 
@@ -78,9 +84,10 @@ install_files() {
   local source_dir="$1"
   local sidecar_src="$source_dir/$SIDECAR_NAME"
   local tokenizer_src="$source_dir/$TOKENIZER_NAME"
+  local metallib_src="$source_dir/$METALLIB_NAME"
   local manifest_src="$source_dir/MANIFEST.json"
 
-  for f in "$sidecar_src" "$tokenizer_src"; do
+  for f in "$sidecar_src" "$tokenizer_src" "$metallib_src"; do
     if [[ ! -f "$f" ]]; then
       echo "::error::missing $f in staged sidecar bundle" >&2
       exit 1
@@ -95,12 +102,22 @@ install_files() {
 
   install -m 0755 "$sidecar_src" "$BIN_DIR/$SIDECAR_NAME"
   install -m 0644 "$tokenizer_src" "$RES_DIR/$TOKENIZER_NAME"
+  # MLX needs the metallib alongside the binary. In dev we drop it into
+  # binaries/ so the sidecar finds it next to itself; for the bundled `.app`
+  # we ALSO drop a copy under resources/ so Tauri carries it into the bundle
+  # and lifecycle.rs can stage it into a writable runtime dir at start time.
+  install -m 0644 "$metallib_src" "$BIN_DIR/$METALLIB_NAME"
+  install -m 0644 "$metallib_src" "$RES_DIR/$METALLIB_NAME"
   if [[ -f "$manifest_src" ]]; then
     install -m 0644 "$manifest_src" "$RES_DIR/MANIFEST.json"
   fi
 
   echo "Staged sidecar:" >&2
-  ls -lh "$BIN_DIR/$SIDECAR_NAME" "$RES_DIR/$TOKENIZER_NAME" >&2
+  ls -lh \
+    "$BIN_DIR/$SIDECAR_NAME" \
+    "$BIN_DIR/$METALLIB_NAME" \
+    "$RES_DIR/$TOKENIZER_NAME" \
+    "$RES_DIR/$METALLIB_NAME" >&2
 }
 
 verify_manifest() {
@@ -133,9 +150,11 @@ if [[ -n "$LOCAL_DIR" ]]; then
   build_dir="$(cd "$LOCAL_DIR" && pwd)"
   server_src="$build_dir/build/examples/rwkv_server"
   tokenizer_src="$build_dir/assets/$TOKENIZER_NAME"
-  for f in "$server_src" "$tokenizer_src"; do
+  # MLX prebuilt Metal lib is checked into rwkv-mobile under the backend tree.
+  metallib_src="$build_dir/src/backends/mlx/prebuilt/macos-arm64/$METALLIB_NAME"
+  for f in "$server_src" "$tokenizer_src" "$metallib_src"; do
     if [[ ! -f "$f" ]]; then
-      echo "::error::missing $f — did you run cmake --build?" >&2
+      echo "::error::missing $f — did you run cmake --build with -DENABLE_MLX_BACKEND=ON?" >&2
       exit 1
     fi
   done
@@ -143,6 +162,7 @@ if [[ -n "$LOCAL_DIR" ]]; then
   staged="$(mktemp -d)"
   cp "$server_src" "$staged/$SIDECAR_NAME"
   cp "$tokenizer_src" "$staged/$TOKENIZER_NAME"
+  cp "$metallib_src" "$staged/$METALLIB_NAME"
   install_files "$staged"
   rm -rf "$staged"
   exit 0

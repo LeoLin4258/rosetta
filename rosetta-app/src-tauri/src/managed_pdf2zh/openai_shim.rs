@@ -16,6 +16,17 @@ use crate::rwkv_providers::{
 
 const DEFAULT_MAX_BATCH_SIZE: usize = 4;
 
+/// Upper bound on `pdf2zh --thread`. pdf2zh.py spawns this many Python
+/// multiprocessing workers; pushing it past ~4 makes the worker-pool setup
+/// dominate the per-page cost and on small (1-2 page) inputs the pool can
+/// deadlock before any worker reaches the OpenAI shim. Decoupled from the
+/// RWKV server's reported `supported_batch_sizes` ceiling — the MLX backend
+/// truthfully reports up to 16, but pdf2zh stalls long before that.
+/// Empirically 4 matched the WebRWKV-era behavior (where the supported-sizes
+/// endpoint wasn't exposed and we fell back to `DEFAULT_MAX_BATCH_SIZE = 4`),
+/// which translated fine. Bump cautiously and watch shim.log timings.
+const PDF2ZH_THREAD_CEILING: usize = 4;
+
 #[derive(Debug, Clone)]
 pub struct LightningApiConfig {
     pub base_url: String,
@@ -36,7 +47,19 @@ const BATCH_WINDOW_MS: u64 = 80;
 #[derive(Debug)]
 pub struct OpenAiShim {
     port: u16,
+    /// How many texts the shim will assemble into a single `/v1/batch/chat`
+    /// call to the RWKV server. Tracks the server's reported `supported_batch_sizes`
+    /// ceiling so MLX can run wider batches when there's enough demand.
+    /// Currently informational — kept for diagnostics + future code paths that
+    /// want to align downstream concurrency with the RWKV ceiling. Suppress
+    /// the dead-code warning because the value flows through `mobile_batch_processor`
+    /// at spawn time, not through field reads.
+    #[allow(dead_code)]
     pub batch_size: usize,
+    /// What to pass as pdf2zh's `--thread` argument. Capped lower than
+    /// `batch_size` so pdf2zh's Python multiprocessing pool doesn't blow up
+    /// on small inputs. See `PDF2ZH_THREAD_CEILING`.
+    pub pdf2zh_thread_count: usize,
     server_handle: JoinHandle<()>,
     batch_handle: JoinHandle<()>,
 }
@@ -165,7 +188,14 @@ pub async fn spawn_shim(
             eprintln!("[pdf2zh-shim] server exited: {error}");
         }
     });
-    Ok(OpenAiShim { port, batch_size: max_batch_size, server_handle, batch_handle })
+    let pdf2zh_thread_count = max_batch_size.min(PDF2ZH_THREAD_CEILING).max(1);
+    Ok(OpenAiShim {
+        port,
+        batch_size: max_batch_size,
+        pdf2zh_thread_count,
+        server_handle,
+        batch_handle,
+    })
 }
 
 async fn mobile_batch_processor(

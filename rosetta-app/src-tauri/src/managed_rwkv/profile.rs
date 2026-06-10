@@ -45,8 +45,13 @@ pub struct RuntimeProfile {
     pub tokenizer_filename: &'static str,
     /// Subdirectory under `<app-local-data>/models/` where the model file lives.
     pub model_directory_name: &'static str,
-    /// Model filename inside that directory.
+    /// Model filename (or zip archive name) inside that directory.
     pub model_filename: &'static str,
+    /// When `true`, `model_filename` is a zip archive; after download and
+    /// SHA256 verification it is extracted in-place, then the zip is deleted.
+    /// `layout.model_file` points to the zip during download and to the
+    /// extracted directory (same stem, no extension) once installed.
+    pub model_is_zip: bool,
     /// Exact size in bytes of the model file the SHA256 was computed against.
     /// HEAD requests verify this matches before download starts; mismatched
     /// content-length fails fast with `artifact-corrupted` instead of wasting
@@ -75,18 +80,45 @@ pub struct RuntimeProfile {
     pub bind_host: &'static str,
 }
 
-/// macOS Apple Silicon profile — the v1 default per ADR 0003.
+/// macOS Apple Silicon profile — MLX backend, 0.4B model (switched 2026-06-10).
+pub const MACOS_ARM64_MLX: RuntimeProfile = RuntimeProfile {
+    id: "macos-arm64-mlx",
+    provider_id: "rwkv-mobile-batch-chat",
+    platform_os: "macos",
+    platform_arch: "aarch64",
+    enabled: true,
+    backend: "mlx",
+    sidecar_binary_name: "rwkv-server-aarch64-apple-darwin",
+    tokenizer_filename: "b_rwkv_vocab_v20230424.txt",
+    model_directory_name: "rwkv7-0.4b-mlx-6bit",
+    model_filename: "rwkv7-0.4B-g1d-translate-20260607-ctx4096-mlx-6bit.zip",
+    model_is_zip: true,
+    model_size_bytes: 377_343_557,
+    model_sha256: "ae1109105ce91627406972c25d618da2922f74331f773b18975c7e4e290bc226",
+    model_download_urls: &[
+        "https://huggingface.co/mollysama/rwkv-mobile-models/resolve/main/mlx/rwkv7-0.4B-g1d-translate-20260607-ctx4096-mlx-6bit.zip",
+        "https://hf-mirror.com/mollysama/rwkv-mobile-models/resolve/main/mlx/rwkv7-0.4B-g1d-translate-20260607-ctx4096-mlx-6bit.zip",
+    ],
+    supported_directions: &["en-zh", "zh-en"],
+    model_name_arg: "rwkv-translate",
+    health_path: "/health",
+    batch_chat_path: "/v1/batch/chat",
+    bind_host: "127.0.0.1",
+};
+
+/// macOS Apple Silicon profile — WebRWKV backend (disabled, superseded by MLX).
 pub const MACOS_ARM64_WEBRWKV: RuntimeProfile = RuntimeProfile {
     id: "macos-arm64-webrwkv",
     provider_id: "rwkv-mobile-batch-chat",
     platform_os: "macos",
     platform_arch: "aarch64",
-    enabled: true,
+    enabled: false,
     backend: "web-rwkv",
     sidecar_binary_name: "rwkv-server-aarch64-apple-darwin",
     tokenizer_filename: "b_rwkv_vocab_v20230424.txt",
     model_directory_name: "rwkv-translate-1.5b-nf4",
     model_filename: "RWKV_v7_G1c_1.5B_Translate_ctx4096_20260118-nf4.prefab",
+    model_is_zip: false,
     // Exact byte count of the file Phase 0 validated against on 2026-05-13.
     // Matches the Content-Length the HuggingFace CDN reports.
     model_size_bytes: 1_355_373_863,
@@ -124,6 +156,7 @@ pub const WINDOWS_AMD64_LIBTORCH: RuntimeProfile = RuntimeProfile {
     tokenizer_filename: "rwkv_vocab_v20230424.txt",
     model_directory_name: "rwkv-v7-g1-translate-1.5b",
     model_filename: "RWKV_v7_G1c_1.5B_Translate_ctx4096_20260118.pth",
+    model_is_zip: false,
     model_size_bytes: 3_055_445_546,
     model_sha256: "b51051a35949cbd6189da3d99b2bd9ae632d5665716a8e647abbe208f21120fa",
     model_download_urls: &[
@@ -182,7 +215,7 @@ impl RuntimeProfileSummary {
     }
 }
 
-const ALL_PROFILES: &[RuntimeProfile] = &[MACOS_ARM64_WEBRWKV, WINDOWS_AMD64_LIBTORCH];
+const ALL_PROFILES: &[RuntimeProfile] = &[MACOS_ARM64_MLX, MACOS_ARM64_WEBRWKV, WINDOWS_AMD64_LIBTORCH];
 
 #[cfg(test)]
 #[allow(clippy::assertions_on_constants)] // intentional regression guards on const values
@@ -191,12 +224,17 @@ mod tests {
 
     #[test]
     fn macos_profile_is_enabled_and_targets_apple_silicon() {
-        assert!(MACOS_ARM64_WEBRWKV.enabled);
-        assert_eq!(MACOS_ARM64_WEBRWKV.platform_os, "macos");
-        assert_eq!(MACOS_ARM64_WEBRWKV.platform_arch, "aarch64");
-        assert_eq!(MACOS_ARM64_WEBRWKV.provider_id, "rwkv-mobile-batch-chat");
-        assert_eq!(MACOS_ARM64_WEBRWKV.bind_host, "127.0.0.1");
-        assert_eq!(MACOS_ARM64_WEBRWKV.backend, "web-rwkv");
+        assert!(MACOS_ARM64_MLX.enabled);
+        assert_eq!(MACOS_ARM64_MLX.platform_os, "macos");
+        assert_eq!(MACOS_ARM64_MLX.platform_arch, "aarch64");
+        assert_eq!(MACOS_ARM64_MLX.provider_id, "rwkv-mobile-batch-chat");
+        assert_eq!(MACOS_ARM64_MLX.bind_host, "127.0.0.1");
+        assert_eq!(MACOS_ARM64_MLX.backend, "mlx");
+    }
+
+    #[test]
+    fn webrwkv_profile_is_disabled() {
+        assert!(!MACOS_ARM64_WEBRWKV.enabled);
     }
 
     #[test]
@@ -209,11 +247,9 @@ mod tests {
         let resolved = current_profile();
         match (std::env::consts::OS, std::env::consts::ARCH) {
             ("macos", "aarch64") => assert!(
-                resolved.is_some_and(|p| p.id == "macos-arm64-webrwkv"),
-                "expected macOS arm64 profile"
+                resolved.is_some_and(|p| p.id == "macos-arm64-mlx"),
+                "expected macOS arm64 MLX profile"
             ),
-            // Windows profile is currently disabled — even on win/x86_64 the
-            // resolved profile should be None until Phase 8 flips `enabled`.
             _ => assert!(resolved.is_none(), "expected no profile on unsupported host"),
         }
     }

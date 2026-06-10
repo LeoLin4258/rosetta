@@ -257,7 +257,29 @@ async fn install_inner(
     proxy_url: Option<&str>,
 ) -> Result<InstallResult, String> {
     // Already installed? Re-verify SHA256 to be safe and short-circuit.
-    if layout.model_file.is_file() {
+    let already_installed = if profile.model_is_zip {
+        layout.model_extracted_dir.as_ref().is_some_and(|d| d.is_dir())
+    } else {
+        layout.model_file.is_file()
+    };
+    if already_installed {
+        // For zip profiles the zip is gone after extraction; skip re-hash
+        // (the extracted dir is the source of truth) and go straight to manifest.
+        if profile.model_is_zip {
+            let manifest_path = write_manifest(layout, profile, profile.model_download_urls[0])?;
+            set_done(registry, profile, "模型已就绪。".to_string()).await;
+            emit_progress(app, registry).await;
+            return Ok(InstallResult {
+                ready: true,
+                installed: false,
+                phase: InstallPhase::Done,
+                bytes_done: profile.model_size_bytes,
+                bytes_total: profile.model_size_bytes,
+                source_url: None,
+                message: "模型已就绪（跳过下载）。".to_string(),
+                manifest_path,
+            });
+        }
         match verify_existing_model(&layout.model_file, profile, cancel).await {
             Ok(()) => {
                 let manifest_path = write_manifest(layout, profile, profile.model_download_urls[0])?;
@@ -433,6 +455,23 @@ async fn install_inner(
         set_failed_message(registry, profile, msg.clone()).await;
         emit_progress(app, registry).await;
         return Err(msg);
+    }
+
+    // For zip profiles: extract then delete the zip.
+    if profile.model_is_zip {
+        update_progress(registry, |p| {
+            p.message = "正在解压模型文件…".to_string();
+        })
+        .await;
+        emit_progress(app, registry).await;
+
+        let extracted_dir = layout.model_extracted_dir.as_ref().ok_or_else(|| {
+            "zip profile 缺少 model_extracted_dir（layout bug）。".to_string()
+        })?;
+        extract_zip(&layout.model_file, extracted_dir).map_err(|e| {
+            format!("解压模型 zip 失败: {e}")
+        })?;
+        let _ = std::fs::remove_file(&layout.model_file);
     }
 
     // Manifest.
@@ -722,6 +761,13 @@ fn cleanup_artifacts(layout: &RuntimeLayout) -> Result<(), String> {
                 .map_err(|e| format!("删除 {} 失败: {e}", path.display()))?;
         }
     }
+    // For zip profiles, also remove the extracted directory.
+    if let Some(dir) = &layout.model_extracted_dir {
+        if dir.is_dir() {
+            std::fs::remove_dir_all(dir)
+                .map_err(|e| format!("删除解压目录 {} 失败: {e}", dir.display()))?;
+        }
+    }
     Ok(())
 }
 
@@ -729,6 +775,84 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     let mut s = path.as_os_str().to_owned();
     s.push(suffix);
     PathBuf::from(s)
+}
+
+/// Extract `zip_path` into `dest_dir`.
+///
+/// MLX 模型 zip 的内部结构不固定 —— 有时所有 entry 都裸放在 zip 根，
+/// 有时统一带一个顶层目录前缀（通常等于 zip 文件名去掉 `.zip`）。
+/// `dest_dir` 是我们想要的"模型目录"（即 `layout.model_extracted_dir`），
+/// 启动 sidecar 时直接传它给 `--model`。为了让两种 zip 结构在磁盘上都
+/// 落到同一处，这里先扫一遍所有 entry，找出共同的顶层目录前缀（如有），
+/// 然后在解压时把它剥掉。这样：
+///
+/// * zip 内：`foo/`、`foo/weights.safetensors`、`foo/config.json`
+///   → `dest_dir/weights.safetensors`、`dest_dir/config.json`
+/// * zip 内：`weights.safetensors`、`config.json`
+///   → `dest_dir/weights.safetensors`、`dest_dir/config.json`
+fn extract_zip(zip_path: &Path, dest_dir: &Path) -> std::io::Result<()> {
+    let file = std::fs::File::open(zip_path)?;
+    let mut archive = zip::ZipArchive::new(file)?;
+
+    // First pass: detect a common top-level prefix.
+    let common_prefix = detect_common_zip_prefix(&mut archive)?;
+
+    std::fs::create_dir_all(dest_dir)?;
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i)?;
+        let raw_name = entry.name().to_string();
+        let rel = match &common_prefix {
+            Some(prefix) => raw_name
+                .strip_prefix(prefix.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or(raw_name),
+            None => raw_name,
+        };
+        // Defense-in-depth: refuse absolute paths or parent-traversal.
+        if rel.is_empty() || rel.starts_with('/') || rel.contains("..") {
+            continue;
+        }
+        let out_path = dest_dir.join(&rel);
+        if entry.is_dir() {
+            std::fs::create_dir_all(&out_path)?;
+        } else {
+            if let Some(parent) = out_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let mut out_file = std::fs::File::create(&out_path)?;
+            std::io::copy(&mut entry, &mut out_file)?;
+        }
+    }
+    Ok(())
+}
+
+/// Returns `Some("foo/")` when every entry in `archive` lives under the same
+/// top-level directory; returns `None` when there's no common prefix (i.e. the
+/// zip is "flat" or mixes multiple top-level entries).
+fn detect_common_zip_prefix(
+    archive: &mut zip::ZipArchive<std::fs::File>,
+) -> std::io::Result<Option<String>> {
+    let mut prefix: Option<String> = None;
+    for i in 0..archive.len() {
+        let entry = archive.by_index(i)?;
+        let name = entry.name();
+        // Skip the directory entry that represents the prefix itself.
+        let Some(slash_idx) = name.find('/') else {
+            // Top-level file → no common prefix possible.
+            return Ok(None);
+        };
+        // Empty top-level name (e.g. just "/") is invalid; bail.
+        if slash_idx == 0 {
+            return Ok(None);
+        }
+        let top = &name[..=slash_idx]; // include the trailing slash
+        match &prefix {
+            None => prefix = Some(top.to_string()),
+            Some(existing) if existing == top => {}
+            Some(_) => return Ok(None),
+        }
+    }
+    Ok(prefix)
 }
 
 fn hex_lower(bytes: &[u8]) -> String {

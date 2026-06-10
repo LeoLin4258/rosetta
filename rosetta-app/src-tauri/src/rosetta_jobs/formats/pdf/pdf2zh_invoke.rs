@@ -83,7 +83,11 @@ pub(crate) async fn invoke_pdf2zh(
     .map_err(PdfError::Pdf2zhFailed)?;
 
     let openai_base_url = shim.base_url();
-    let thread_count = shim.batch_size;
+    // NOT `shim.batch_size`: that follows the RWKV server's reported batch
+    // ceiling (16 on MLX, 12 on WebRWKV). Reusing it as pdf2zh's `--thread`
+    // arg blows up pdf2zh.py's Python multiprocessing pool on small inputs.
+    // See `PDF2ZH_THREAD_CEILING` in `openai_shim.rs`.
+    let thread_count = shim.pdf2zh_thread_count;
     std::fs::write(
         output_dir.join("rosetta-pdf2zh-command.log"),
         format!(
@@ -119,6 +123,23 @@ pub(crate) async fn invoke_pdf2zh(
         .env("TMPDIR", &temp_dir)
         .env("TEMP", &temp_dir)
         .env("TMP", &temp_dir)
+        // Tell pdf2zh (and the OpenAI Python SDK underneath) to bypass any
+        // system / shell proxy for the loopback shim. Without this, users
+        // running Clash/Surge or with HTTP_PROXY set get every shim request
+        // routed through their proxy, which returns 502 Bad Gateway because
+        // it can't reach 127.0.0.1 from its egress. Set both NO_PROXY and the
+        // lowercase no_proxy (Python's urllib reads the lowercase form). Also
+        // explicitly clear HTTP_PROXY / HTTPS_PROXY / ALL_PROXY so the OpenAI
+        // SDK's httpx client doesn't pick them up via httpx.Client defaults
+        // (httpx ignores NO_PROXY for loopback only on some versions).
+        .env("NO_PROXY", "127.0.0.1,localhost,::1")
+        .env("no_proxy", "127.0.0.1,localhost,::1")
+        .env("HTTP_PROXY", "")
+        .env("HTTPS_PROXY", "")
+        .env("ALL_PROXY", "")
+        .env("http_proxy", "")
+        .env("https_proxy", "")
+        .env("all_proxy", "")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     if let Some(pages) = &options.pages {
@@ -139,14 +160,30 @@ pub(crate) async fn invoke_pdf2zh(
     let stderr = child.stderr.take();
     let stdout = child.stdout.take();
     let output_lines = Arc::new(Mutex::new(Vec::<String>::new()));
+    // Live tee of pdf2zh's stdout+stderr to disk so we can see what it's doing
+    // even when it hangs (in which case the failure-only `rosetta-pdf2zh-output.log`
+    // never gets written). Lock-protected `Option<File>` because both reader
+    // tasks share the same handle. Opened best-effort; logging failures are
+    // swallowed to keep the runtime path quiet.
+    let live_log_path = output_dir.join("rosetta-pdf2zh-live.log");
+    let live_log: Arc<Mutex<Option<std::fs::File>>> = Arc::new(Mutex::new(
+        std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&live_log_path)
+            .ok(),
+    ));
     let stderr_task = stderr.map(|stream| {
         let app = app.clone();
         let job_id = options.job_id.clone();
         let output_lines = Arc::clone(&output_lines);
+        let live_log = Arc::clone(&live_log);
         tokio::spawn(async move {
             let mut lines = BufReader::new(stream).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 remember_line(&output_lines, &line);
+                append_live_log(&live_log, "stderr", &line);
                 handle_pdf2zh_line(&app, &job_id, &line);
             }
         })
@@ -155,10 +192,12 @@ pub(crate) async fn invoke_pdf2zh(
         let app = app.clone();
         let job_id = options.job_id.clone();
         let output_lines = Arc::clone(&output_lines);
+        let live_log = Arc::clone(&live_log);
         tokio::spawn(async move {
             let mut lines = BufReader::new(stream).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 remember_line(&output_lines, &line);
+                append_live_log(&live_log, "stdout", &line);
                 handle_pdf2zh_line(&app, &job_id, &line);
             }
         })
@@ -209,6 +248,18 @@ pub(crate) async fn invoke_pdf2zh(
     let dual_pdf = find_pdf2zh_output(output_dir, source_path, "dual");
     emit_progress(app, &options.job_id, "render", Some(100), "译文 PDF 已生成。");
     Ok(Pdf2zhOutput { mono_pdf, dual_pdf })
+}
+
+fn append_live_log(file: &Arc<Mutex<Option<std::fs::File>>>, stream: &str, line: &str) {
+    use std::io::Write;
+    let Ok(mut guard) = file.lock() else {
+        return;
+    };
+    let Some(handle) = guard.as_mut() else {
+        return;
+    };
+    let _ = writeln!(handle, "[{stream}] {line}");
+    let _ = handle.flush();
 }
 
 fn remember_line(lines: &Arc<Mutex<Vec<String>>>, line: &str) {

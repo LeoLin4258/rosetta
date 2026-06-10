@@ -55,6 +55,7 @@ pub enum InstallItemKind {
     Sidecar,
     Tokenizer,
     Model,
+    Metallib,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -125,8 +126,13 @@ pub fn build_static_status(
     let layout = RuntimeLayout::from_app(app, profile)?;
     let sidecar_path = locate_sidecar(app, profile);
     let tokenizer_path = locate_tokenizer(app, profile);
+    let metallib_path = if profile.backend == "mlx" {
+        locate_metallib(app, sidecar_path.as_deref())
+    } else {
+        None
+    };
 
-    let install_plan = build_install_plan(profile, &layout, &sidecar_path, &tokenizer_path);
+    let install_plan = build_install_plan(profile, &layout, &sidecar_path, &tokenizer_path, &metallib_path);
     let initial_state = if install_plan.ready {
         ManagedRuntimeState::Installed
     } else {
@@ -138,6 +144,7 @@ pub fn build_static_status(
         layout,
         sidecar_path,
         tokenizer_path,
+        metallib_path,
         install_plan,
         initial_state,
     })
@@ -150,6 +157,10 @@ pub struct StaticStatus {
     pub layout: RuntimeLayout,
     pub sidecar_path: Option<PathBuf>,
     pub tokenizer_path: Option<PathBuf>,
+    /// `default.metallib` source path. Lifecycle copies it next to the sidecar
+    /// at start time (or falls back to setting cwd) so the MLX backend can find
+    /// it. `None` on non-MLX profiles.
+    pub metallib_path: Option<PathBuf>,
     pub install_plan: ManagedRuntimeInstallPlan,
     pub initial_state: ManagedRuntimeState,
 }
@@ -164,6 +175,7 @@ impl StaticStatus {
             ),
             sidecar_path: None,
             tokenizer_path: None,
+            metallib_path: None,
             install_plan: ManagedRuntimeInstallPlan {
                 ready: false,
                 items: Vec::new(),
@@ -186,10 +198,19 @@ impl StaticStatus {
             };
         }
 
+        // For zip profiles, after install the zip is deleted and the model is
+        // the extracted directory. Prefer that as the "model path" the user
+        // sees when it exists, so the Settings panel doesn't keep showing a
+        // path to a file that's been deleted.
+        let model_display_path = self.layout.model_extracted_dir
+            .as_ref()
+            .filter(|d| d.exists())
+            .map(|d| d.display().to_string())
+            .unwrap_or_else(|| self.layout.model_file.display().to_string());
         let paths = ManagedRuntimePaths {
             sidecar: self.sidecar_path.map(|p| p.display().to_string()),
             tokenizer: self.tokenizer_path.map(|p| p.display().to_string()),
-            model_file: self.layout.model_file.display().to_string(),
+            model_file: model_display_path,
             logs_dir: self.layout.logs_dir.display().to_string(),
         };
         let message = if self.install_plan.ready {
@@ -214,8 +235,9 @@ fn build_install_plan(
     layout: &RuntimeLayout,
     sidecar_path: &Option<PathBuf>,
     tokenizer_path: &Option<PathBuf>,
+    metallib_path: &Option<PathBuf>,
 ) -> ManagedRuntimeInstallPlan {
-    let mut items = Vec::with_capacity(3);
+    let mut items = Vec::with_capacity(4);
 
     items.push(make_item(
         InstallItemKind::Sidecar,
@@ -234,13 +256,21 @@ fn build_install_plan(
         "分词表已就绪。".to_string(),
     ));
 
+    if profile.backend == "mlx" {
+        items.push(make_item(
+            InstallItemKind::Metallib,
+            metallib_path.as_deref(),
+            "MLX 运行所需的 default.metallib 未找到。请重新运行 src-tauri/scripts/fetch-rwkv-sidecar.sh（已在 2026-06-10 后更新为同时 stage metallib）。".to_string(),
+            "MLX default.metallib 已就绪。".to_string(),
+        ));
+    }
+
+    let model_ready_path = layout.model_extracted_dir.as_deref()
+        .filter(|p| p.exists())
+        .or_else(|| if layout.model_file.is_file() { Some(layout.model_file.as_path()) } else { None });
     items.push(make_item(
         InstallItemKind::Model,
-        if layout.model_file.is_file() {
-            Some(layout.model_file.as_path())
-        } else {
-            None
-        },
+        model_ready_path,
         format!(
             "翻译模型尚未下载 ({})。下次进入 Phase 4 后会从 UI 一键下载。",
             profile.model_filename
@@ -361,6 +391,50 @@ fn strip_target_triple_suffix(name: &str) -> &str {
     name
 }
 
+/// Locate `default.metallib` across dev / bundle contexts.
+///
+/// MLX needs this file at runtime; the easiest place to find it is next to
+/// the sidecar (which is where `fetch-rwkv-sidecar.sh` stages it in dev). For
+/// the bundled `.app` the file ships as a Tauri resource under
+/// `Contents/Resources/resources/rwkv-sidecar/default.metallib`. Lifecycle
+/// will copy it next to the sidecar at start time if it's not already there.
+fn locate_metallib(app: &AppHandle, sidecar_path: Option<&Path>) -> Option<PathBuf> {
+    const METALLIB_NAME: &str = "default.metallib";
+
+    if let Some(sidecar) = sidecar_path {
+        if let Some(parent) = sidecar.parent() {
+            let candidate = parent.join(METALLIB_NAME);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        for candidate in [
+            resource_dir.join("resources").join("rwkv-sidecar").join(METALLIB_NAME),
+            resource_dir
+                .join("_up_")
+                .join("resources")
+                .join("rwkv-sidecar")
+                .join(METALLIB_NAME),
+        ] {
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    let dev_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("binaries")
+        .join(METALLIB_NAME);
+    if dev_path.is_file() {
+        return Some(dev_path);
+    }
+
+    None
+}
+
 /// Locate the tokenizer across dev / bundle contexts.
 ///
 /// Tauri 2 resource layout discovered via A2 bundle test (2026-05-14):
@@ -416,8 +490,9 @@ mod tests {
     fn install_plan_missing_all_artifacts_when_none_present() {
         let layout =
             RuntimeLayout::resolve(Path::new("/tmp/rosetta-fake"), &MACOS_ARM64_WEBRWKV);
-        let plan = build_install_plan(&MACOS_ARM64_WEBRWKV, &layout, &None, &None);
+        let plan = build_install_plan(&MACOS_ARM64_WEBRWKV, &layout, &None, &None, &None);
         assert!(!plan.ready);
+        // WebRWKV profile: no metallib item, so still 3 items.
         assert_eq!(plan.items.len(), 3);
         for item in &plan.items {
             assert_eq!(item.state, InstallItemState::Missing);
@@ -449,6 +524,7 @@ mod tests {
             &layout,
             &Some(sidecar),
             &Some(tokenizer),
+            &None,
         );
         assert!(plan.ready, "plan should be ready when all artifacts exist");
         for item in &plan.items {
