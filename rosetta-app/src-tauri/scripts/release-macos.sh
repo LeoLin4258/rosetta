@@ -32,8 +32,12 @@ SIGNED_APP="$STAGE_ROOT/$APP_NAME.app"
 APP_ZIP="$STAGE_ROOT/$APP_NAME.zip"
 UPDATER_ARTIFACT_PATH=""
 UPDATER_SIGNATURE_PATH=""
+DMG_ATTACHED_VOLUME_PATH=""
 
 cleanup() {
+  if [[ -n "$DMG_ATTACHED_VOLUME_PATH" && -d "$DMG_ATTACHED_VOLUME_PATH" ]]; then
+    hdiutil detach "$DMG_ATTACHED_VOLUME_PATH" -quiet >/dev/null 2>&1 || true
+  fi
   rm -rf "$STAGE_ROOT"
 }
 trap cleanup EXIT
@@ -126,15 +130,23 @@ create_sign_notarize_dmg() {
   local rw_dmg="$STAGE_ROOT/$APP_NAME-rw.dmg"
   local tmp_dmg="$STAGE_ROOT/$APP_NAME-final.dmg"
   local dmg_source="$STAGE_ROOT/dmg-source"
-  local mount_dir="$STAGE_ROOT/dmg-mount"
-  local volume_path="$mount_dir/$APP_NAME"
+  local volume_path="/Volumes/$APP_NAME"
   local window_width=645
   local window_height=391
+  local window_x=400
+  local window_y=100
+  local window_right=$((window_x + window_width))
+  local window_bottom=$((window_y + window_height))
 
   mkdir -p "$DIST_DIR"
   rm -f "$dmg_path" "$rw_dmg" "$tmp_dmg"
   rm -rf "$dmg_source"
-  mkdir -p "$dmg_source/.background" "$mount_dir"
+  mkdir -p "$dmg_source/.background"
+
+  if [[ -e "$volume_path" ]]; then
+    printf "  \033[0;31m✗ %s is already mounted. Eject the existing Rosetta DMG before building a release.\033[0m\n" "$volume_path" >&2
+    exit 1
+  fi
 
   step "Creating DMG"
   ditto --norsrc "$SIGNED_APP" "$dmg_source/$APP_NAME.app"
@@ -147,28 +159,43 @@ create_sign_notarize_dmg() {
     -format UDRW \
     "$rw_dmg" >/dev/null
 
-  hdiutil attach "$rw_dmg" -mountpoint "$volume_path" -nobrowse -quiet
+  hdiutil attach "$rw_dmg" -nobrowse -quiet
+  DMG_ATTACHED_VOLUME_PATH="$volume_path"
   osascript <<OSA
+set backgroundImage to POSIX file "$volume_path/.background/dmg-background.png" as alias
 tell application "Finder"
   tell disk "$APP_NAME"
     open
     set current view of container window to icon view
     set toolbar visible of container window to false
     set statusbar visible of container window to false
-    set the bounds of container window to {0, 0, $window_width, $window_height}
+    set the bounds of container window to {$window_x, $window_y, $window_right, $window_bottom}
     set viewOptions to the icon view options of container window
     set arrangement of viewOptions to not arranged
     set icon size of viewOptions to 112
-    set background picture of viewOptions to file ".background:dmg-background.png"
+    set background picture of viewOptions to backgroundImage
     set position of item "$APP_NAME.app" of container window to {176, 205}
     set position of item "Applications" of container window to {492, 205}
     update without registering applications
     close
+    open
+    delay 1
+    set the bounds of container window to {$window_x, $window_y, $((window_right - 10)), $((window_bottom - 10))}
   end tell
+  delay 1
+  tell disk "$APP_NAME"
+    set the bounds of container window to {$window_x, $window_y, $window_right, $window_bottom}
+  end tell
+  delay 3
 end tell
 OSA
   SetFile -a V "$volume_path/.background"
+  if [[ ! -s "$volume_path/.DS_Store" ]]; then
+    printf "  \033[0;31m✗ Finder did not persist DMG layout metadata at %s/.DS_Store\033[0m\n" "$volume_path" >&2
+    exit 1
+  fi
   hdiutil detach "$volume_path" -quiet
+  DMG_ATTACHED_VOLUME_PATH=""
 
   hdiutil convert "$rw_dmg" -format UDZO -imagekey zlib-level=9 -o "$tmp_dmg" >/dev/null
   ok "DMG created"
