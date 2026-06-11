@@ -277,6 +277,25 @@ Do not keep retrying direct Tauri signing. Use the release script, which copies 
 
 The app is signed but not notarized or not stapled. Re-run the release script and check the `notarytool submit` output.
 
+### `The timestamp service is not available`
+
+`codesign --timestamp` depends on Apple's timestamp service. The release script retries timestamp failures automatically. If the service remains unavailable, wait a few minutes and run the script again.
+
+Retry behavior can be adjusted for a release session:
+
+```bash
+export CODESIGN_MAX_ATTEMPTS=8
+export CODESIGN_RETRY_DELAY_SECONDS=15
+```
+
+### `/Volumes/Rosetta is already mounted`
+
+The release script now attempts to detach an already-mounted `/Volumes/Rosetta` volume before creating the release DMG. If detach fails, eject the old Rosetta DMG from Finder or run:
+
+```bash
+hdiutil detach /Volumes/Rosetta
+```
+
 ### `notarytool` authentication failure
 
 Refresh the local Keychain profile:

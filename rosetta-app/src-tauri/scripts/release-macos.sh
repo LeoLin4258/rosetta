@@ -67,6 +67,62 @@ require_command() {
   fi
 }
 
+is_codesign_timestamp_failure() {
+  local output="$1"
+  [[ "$output" == *"timestamp service"* || "$output" == *"Timestamp service"* ]]
+}
+
+codesign_with_retries() {
+  local max_attempts="${CODESIGN_MAX_ATTEMPTS:-5}"
+  local retry_delay="${CODESIGN_RETRY_DELAY_SECONDS:-8}"
+  local attempt=1
+  local output
+  local status
+
+  while true; do
+    set +e
+    output="$(codesign "$@" 2>&1)"
+    status=$?
+    set -e
+
+    if [[ "$status" -eq 0 ]]; then
+      if [[ -n "$output" ]]; then
+        printf "%s\n" "$output" >&2
+      fi
+      return 0
+    fi
+
+    if is_codesign_timestamp_failure "$output" && [[ "$attempt" -lt "$max_attempts" ]]; then
+      log "codesign timestamp service unavailable; retrying in ${retry_delay}s ($attempt/$max_attempts)"
+      sleep "$retry_delay"
+      attempt=$((attempt + 1))
+      continue
+    fi
+
+    if [[ -n "$output" ]]; then
+      printf "%s\n" "$output" >&2
+    fi
+    return "$status"
+  done
+}
+
+detach_existing_volume_if_mounted() {
+  local volume_path="$1"
+
+  if [[ ! -e "$volume_path" ]]; then
+    return 0
+  fi
+
+  if mount | grep -F " on $volume_path " >/dev/null; then
+    log "$volume_path is already mounted; detaching existing volume"
+    hdiutil detach "$volume_path" -quiet
+    return 0
+  fi
+
+  printf "  \033[0;31m✗ %s already exists but is not a mounted volume. Remove or rename it before building a release.\033[0m\n" "$volume_path" >&2
+  exit 1
+}
+
 version() {
   node -p "require('./package.json').version"
 }
@@ -76,7 +132,7 @@ sign_file() {
   local identifier="$2"
 
   codesign --remove-signature "$path" >/dev/null 2>&1 || true
-  codesign \
+  codesign_with_retries \
     --force \
     --timestamp \
     --options runtime \
@@ -96,7 +152,7 @@ sign_macho_files() {
 
     if [[ "$path" == "$main_executable" ]]; then
       codesign --remove-signature "$path" >/dev/null 2>&1 || true
-      codesign \
+      codesign_with_retries \
         --force \
         --timestamp \
         --options runtime \
@@ -143,10 +199,7 @@ create_sign_notarize_dmg() {
   rm -rf "$dmg_source"
   mkdir -p "$dmg_source/.background"
 
-  if [[ -e "$volume_path" ]]; then
-    printf "  \033[0;31m✗ %s is already mounted. Eject the existing Rosetta DMG before building a release.\033[0m\n" "$volume_path" >&2
-    exit 1
-  fi
+  detach_existing_volume_if_mounted "$volume_path"
 
   step "Creating DMG"
   ditto --norsrc "$SIGNED_APP" "$dmg_source/$APP_NAME.app"
@@ -201,7 +254,7 @@ OSA
   ok "DMG created"
 
   step "Signing & notarizing DMG (this takes a few minutes)"
-  codesign --force --timestamp --sign "$SIGNING_IDENTITY" "$tmp_dmg"
+  codesign_with_retries --force --timestamp --sign "$SIGNING_IDENTITY" "$tmp_dmg"
   xcrun notarytool submit "$tmp_dmg" --keychain-profile "$NOTARY_PROFILE" --wait
   ok "Notarization accepted"
 
@@ -304,7 +357,7 @@ main() {
 
   step "Signing app bundle"
   codesign --remove-signature "$SIGNED_APP" >/dev/null 2>&1 || true
-  codesign \
+  codesign_with_retries \
     --force \
     --deep \
     --timestamp \
