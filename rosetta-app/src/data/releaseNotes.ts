@@ -34,6 +34,15 @@ export type ReleaseNote = {
  * appearing in `package.json` (e.g. `"0.1.0-beta.8"`), not semver tuples.
  */
 export const RELEASE_NOTES: Record<string, ReleaseNote> = {
+  "0.1.0-beta.9": {
+    version: "0.1.0-beta.9",
+    highlights: [
+      "设置页重新整理层级，翻译引擎、外观、文档处理和关于信息更清晰",
+      "本地模型和 PDF 组件管理面板改为更紧凑的折叠布局",
+      "新增一键清除本机数据：任务历史、本地模型、PDF 组件和本机设置可一次移除",
+      "清除本机数据时会保留原始文件、手动导出的文件和 Rosetta 应用本身",
+    ],
+  },
   "0.1.0-beta.8": {
     version: "0.1.0-beta.8",
     highlights: [
