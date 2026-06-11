@@ -1,4 +1,10 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+};
 
 use axum::{extract::State, http::StatusCode, routing::post, Json, Router};
 use serde::{Deserialize, Serialize};
@@ -72,6 +78,62 @@ pub enum ShimProviderConfig {
 
 const BATCH_WINDOW_MS: u64 = 80;
 
+/// Aggregated RWKV request timing for one shim lifetime. Written by the batch
+/// processors, read after the run to build the diagnostics profile. Counts
+/// and durations only — never text content.
+#[derive(Debug, Default)]
+pub struct ShimRwkvMetrics {
+    pub request_count: AtomicU64,
+    pub failed_request_count: AtomicU64,
+    pub total_request_ms: AtomicU64,
+    pub max_request_ms: AtomicU64,
+    pub total_input_chars: AtomicU64,
+    pub total_output_chars: AtomicU64,
+}
+
+impl ShimRwkvMetrics {
+    fn record(&self, elapsed_ms: u64, ok: bool, input_chars: u64, output_chars: u64) {
+        self.request_count.fetch_add(1, Ordering::Relaxed);
+        if !ok {
+            self.failed_request_count.fetch_add(1, Ordering::Relaxed);
+        }
+        self.total_request_ms.fetch_add(elapsed_ms, Ordering::Relaxed);
+        self.max_request_ms.fetch_max(elapsed_ms, Ordering::Relaxed);
+        self.total_input_chars.fetch_add(input_chars, Ordering::Relaxed);
+        self.total_output_chars.fetch_add(output_chars, Ordering::Relaxed);
+    }
+
+    pub fn snapshot(&self) -> ShimRwkvMetricsSnapshot {
+        let request_count = self.request_count.load(Ordering::Relaxed);
+        let total_request_ms = self.total_request_ms.load(Ordering::Relaxed);
+        ShimRwkvMetricsSnapshot {
+            request_count,
+            failed_request_count: self.failed_request_count.load(Ordering::Relaxed),
+            total_request_ms,
+            average_request_ms: if request_count > 0 {
+                total_request_ms / request_count
+            } else {
+                0
+            },
+            max_request_ms: self.max_request_ms.load(Ordering::Relaxed),
+            total_input_chars: self.total_input_chars.load(Ordering::Relaxed),
+            total_output_chars: self.total_output_chars.load(Ordering::Relaxed),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShimRwkvMetricsSnapshot {
+    pub request_count: u64,
+    pub failed_request_count: u64,
+    pub total_request_ms: u64,
+    pub average_request_ms: u64,
+    pub max_request_ms: u64,
+    pub total_input_chars: u64,
+    pub total_output_chars: u64,
+}
+
 #[derive(Debug)]
 pub struct OpenAiShim {
     port: u16,
@@ -88,6 +150,9 @@ pub struct OpenAiShim {
     /// `batch_size` so pdf2zh's Python multiprocessing pool doesn't blow up
     /// on small inputs. See `PDF2ZH_THREAD_CEILING`.
     pub pdf2zh_thread_count: usize,
+    /// RWKV request timing collected while this shim is alive. Snapshot it
+    /// before dropping the shim to feed the diagnostics profile.
+    pub metrics: Arc<ShimRwkvMetrics>,
     server_handle: JoinHandle<()>,
     batch_handle: JoinHandle<()>,
 }
@@ -155,6 +220,7 @@ pub async fn spawn_shim(
     log_file: PathBuf,
     debug: bool,
 ) -> Result<OpenAiShim, String> {
+    let metrics = Arc::new(ShimRwkvMetrics::default());
     let (max_batch_size, batch_handle) = match provider {
         ShimProviderConfig::MobileBatch(rwkv) => {
             mobile_batch_chat::set_chat_roles_for_pair(&rwkv, &source_lang, &target_lang, None)
@@ -170,6 +236,7 @@ pub async fn spawn_shim(
                 rwkv,
                 target_lang.clone(),
                 max_batch_size,
+                Arc::clone(&metrics),
             ));
             (max_batch_size, (batch_tx, handle))
         }
@@ -182,6 +249,7 @@ pub async fn spawn_shim(
                 source_lang.clone(),
                 target_lang.clone(),
                 max_batch_size,
+                Arc::clone(&metrics),
             ));
             (max_batch_size, (batch_tx, handle))
         }
@@ -221,6 +289,7 @@ pub async fn spawn_shim(
         port,
         batch_size: max_batch_size,
         pdf2zh_thread_count,
+        metrics,
         server_handle,
         batch_handle,
     })
@@ -231,6 +300,7 @@ async fn mobile_batch_processor(
     rwkv: MobileBatchChatConfig,
     target_lang: String,
     max_batch_size: usize,
+    metrics: Arc<ShimRwkvMetrics>,
 ) {
     loop {
         let Some(first) = rx.recv().await else {
@@ -248,6 +318,7 @@ async fn mobile_batch_processor(
 
         eprintln!("[pdf2zh-batch] assembled {} item(s) in batch", batch.len());
         let source_texts: Vec<String> = batch.iter().map(|p| p.text.clone()).collect();
+        let request_started = Instant::now();
         let result = mobile_batch_chat::translate_batch(
             &rwkv,
             ProviderTranslateBatch {
@@ -258,6 +329,16 @@ async fn mobile_batch_processor(
             },
         )
         .await;
+        metrics.record(
+            request_started.elapsed().as_millis() as u64,
+            result.ok,
+            source_texts.iter().map(|t| t.chars().count() as u64).sum(),
+            result
+                .translations
+                .iter()
+                .map(|t| t.chars().count() as u64)
+                .sum(),
+        );
 
         eprintln!(
             "[pdf2zh-batch] result: ok={}, translations={}",
@@ -291,6 +372,7 @@ async fn lightning_batch_processor(
     source_lang: String,
     target_lang: String,
     max_batch_size: usize,
+    metrics: Arc<ShimRwkvMetrics>,
 ) {
     loop {
         let Some(first) = rx.recv().await else {
@@ -311,7 +393,8 @@ async fn lightning_batch_processor(
             batch.len()
         );
         let source_texts: Vec<String> = batch.iter().map(|p| p.text.clone()).collect();
-        match crate::rwkv_api::translate_batch_via_lightning(
+        let request_started = Instant::now();
+        let result = crate::rwkv_api::translate_batch_via_lightning(
             &config.base_url,
             &config.endpoint,
             &config.internal_token,
@@ -321,8 +404,22 @@ async fn lightning_batch_processor(
             &target_lang,
             &source_texts,
         )
-        .await
-        {
+        .await;
+        metrics.record(
+            request_started.elapsed().as_millis() as u64,
+            result.is_ok(),
+            source_texts.iter().map(|t| t.chars().count() as u64).sum(),
+            result
+                .as_ref()
+                .map(|translations| {
+                    translations
+                        .iter()
+                        .map(|t| t.chars().count() as u64)
+                        .sum()
+                })
+                .unwrap_or(0),
+        );
+        match result {
             Ok(translations) if translations.len() == batch.len() => {
                 for (pending, translation) in batch.into_iter().zip(translations) {
                     let _ = pending.result_tx.send(Ok(translation));

@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { listen } from "@tauri-apps/api/event";
 
 import {
   cancelRosettaTranslatedPdf,
@@ -75,17 +74,9 @@ export function WorkspacePage() {
   const [pdfSelectedPages, setPdfSelectedPages] = useState<number[]>([]);
   const [pdfForceRetranslate, setPdfForceRetranslate] = useState(false);
   const [hoveredBlockId, setHoveredBlockId] = useState<string | null>(null);
-  const [pdfProgress, setPdfProgress] = useState<{
-    phase: string;
-    percent: number | null;
-    /// 1-based index of the page currently being worked on, within the
-    /// filtered list of pages this invocation will translate. May be null
-    /// when the backend doesn't supply per-page progress (whole-document
-    /// fallback path).
-    currentPage: number | null;
-    /// Total pages in that filtered list. Paired with `currentPage`.
-    totalPages: number | null;
-  } | null>(null);
+  // Live pdf2zh phase/page progress. Subscribed app-level in AppShell and
+  // keyed by jobId, so it survives switching files mid-run.
+  const pdfRunProgressByJobId = useRosettaStore((s) => s.pdfRunProgressByJobId);
 
   const cancelRef = useRef<(() => void) | null>(null);
   const pdf2zhRuntime = useManagedPdf2zhRuntime();
@@ -142,47 +133,9 @@ export function WorkspacePage() {
     setPdfSelectedPages(pages);
   }, []);
 
-  // Subscribe to pdf2zh phase/percent progress while a PDF translation is running
   const isPdfJob = sourceFile?.format === "pdf";
-  useEffect(() => {
-    if (!isTranslating || !isPdfJob || !activeJobId || !activeSourceFileId) {
-      setPdfProgress(null);
-      return;
-    }
-    let unlisten: (() => void) | null = null;
-    let unmounted = false;
-    listen<{
-      jobId: string;
-      phase: string;
-      percent: number | null;
-      currentPage?: number;
-      totalPages?: number;
-    }>(
-      "rosetta-pdf2zh-progress",
-      (event) => {
-        if (
-          event.payload.jobId !== activeJobId ||
-          activeFileTranslationRun?.sourceFileId !== activeSourceFileId
-        ) {
-          return;
-        }
-        setPdfProgress({
-          phase: event.payload.phase,
-          percent: event.payload.percent,
-          currentPage: event.payload.currentPage ?? null,
-          totalPages: event.payload.totalPages ?? null,
-        });
-      },
-    ).then((fn) => {
-      if (unmounted) fn();
-      else unlisten = fn;
-    }).catch(() => {});
-    return () => {
-      unmounted = true;
-      unlisten?.();
-    };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isTranslating, isPdfJob, activeJobId, activeSourceFileId, activeFileTranslationRun?.sourceFileId]);
+  const pdfProgress =
+    isPdfJob && activeJobId ? pdfRunProgressByJobId[activeJobId] ?? null : null;
 
   // After a document is loaded (or switched), restore translation segments if
   // there's a known active translation file but no segments in memory yet.
@@ -814,6 +767,11 @@ export function WorkspacePage() {
             pdfEngineProgressMessage={pdfEngineProgressMessage}
             translatedCount={completedCount}
             totalCount={totalCount}
+            runStartedAtMs={
+              activeFileTranslationRun
+                ? Number(activeFileTranslationRun.startedAt) || null
+                : null
+            }
             pdfProgress={pdfProgress}
             sourceLang={sourceLang}
             targetLang={targetLang}

@@ -4,6 +4,7 @@
 //! while translation is delegated end-to-end to PDFMathTranslate (`pdf2zh`).
 //! Rosetta keeps the existing pdfium rasterizer for source/translated preview.
 
+pub(crate) mod diagnostics;
 pub(crate) mod errors;
 pub(crate) mod extract;
 pub(crate) mod page_assemble;

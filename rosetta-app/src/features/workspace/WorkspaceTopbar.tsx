@@ -31,6 +31,9 @@ type WorkspaceTopbarProps = {
   pdfEngineProgressMessage?: string | null;
   translatedCount: number;
   totalCount: number;
+  /// Epoch ms when the active run started. Anchors the elapsed timer so it
+  /// survives unmount/remount (file switches) during a long run.
+  runStartedAtMs?: number | null;
   pdfProgress?: {
     phase: string;
     percent: number | null;
@@ -79,28 +82,27 @@ function formatElapsed(ms: number): string {
   return `${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
 }
 
-/// Hook: track elapsed ms since `isActive` first became true. Resets when
-/// `isActive` goes false. Ticks every 1000ms while active so the topbar
-/// re-renders. Stops ticking when inactive — no background timer leakage.
-function useElapsedSince(isActive: boolean): number {
-  const startedAtRef = useRef<number | null>(null);
+/// Hook: track elapsed ms while `isActive`. Anchored to `startedAtMs` (the
+/// run's persisted start timestamp) when available, so remounting this
+/// component mid-run — e.g. switching files and coming back — doesn't reset
+/// the counter to 00:00. Falls back to mount time when no anchor is given.
+function useElapsedSince(isActive: boolean, startedAtMs?: number | null): number {
+  const fallbackStartRef = useRef<number | null>(null);
   const [elapsed, setElapsed] = useState(0);
 
   useEffect(() => {
     if (!isActive) {
-      startedAtRef.current = null;
+      fallbackStartRef.current = null;
       setElapsed(0);
       return;
     }
-    startedAtRef.current = Date.now();
-    setElapsed(0);
-    const tick = () => {
-      if (startedAtRef.current == null) return;
-      setElapsed(Date.now() - startedAtRef.current);
-    };
-    const interval = setInterval(tick, 1000);
+    const anchor = startedAtMs ?? (fallbackStartRef.current ??= Date.now());
+    setElapsed(Math.max(0, Date.now() - anchor));
+    const interval = setInterval(() => {
+      setElapsed(Math.max(0, Date.now() - anchor));
+    }, 1000);
     return () => clearInterval(interval);
-  }, [isActive]);
+  }, [isActive, startedAtMs]);
 
   return elapsed;
 }
@@ -115,6 +117,7 @@ export function WorkspaceTopbar({
   pdfEngineProgressMessage = null,
   translatedCount,
   totalCount,
+  runStartedAtMs = null,
   pdfProgress = null,
   sourceLang,
   targetLang,
@@ -140,7 +143,7 @@ export function WorkspaceTopbar({
   // `isTranslating` flips true (= user clicked translate) and stops when it
   // flips false. Independent of whether pdf2zh has emitted any progress
   // event yet — the whole point is to keep moving during the silent gap.
-  const elapsedMs = useElapsedSince(isTranslating);
+  const elapsedMs = useElapsedSince(isTranslating, runStartedAtMs);
   const elapsedLabel = formatElapsed(elapsedMs);
 
   const hasTranslation =
@@ -216,24 +219,27 @@ export function WorkspaceTopbar({
           <>
             <Loader2 className="size-3.5 animate-spin text-muted-foreground/50" />
             <span className="text-xs tabular-nums text-muted-foreground/60">
-              {pdfProgress != null ? (
+              {isPdf ? (
                 <>
                   {/*
                     PDF layout: "[phase label] · 第 X/Y 页 · 00:23 · 45%"
                     Sections are separated by " · " and any of them can be
                     absent. `currentPage` / `totalPages` come from the
-                    backend's per-page invocation loop (only present on the
-                    `for page_number in pages` path). The elapsed timer
-                    always shows because we tick locally; the percent only
-                    shows when pdf2zh.py emits a line with `%`.
+                    backend's per-page invocation loop. Before the first
+                    progress event lands we show 准备翻译引擎 instead of the
+                    misleading segment-count fallback (PDF runs aren't
+                    segment-based). The elapsed timer always shows because
+                    we tick locally.
                   */}
-                  {PDF_PHASE_LABELS[pdfProgress.phase] ?? pdfProgress.phase}
-                  {pdfProgress.currentPage != null &&
-                    pdfProgress.totalPages != null &&
+                  {pdfProgress
+                    ? PDF_PHASE_LABELS[pdfProgress.phase] ?? pdfProgress.phase
+                    : PDF_PHASE_LABELS.warmup}
+                  {pdfProgress?.currentPage != null &&
+                    pdfProgress?.totalPages != null &&
                     ` · 第 ${pdfProgress.currentPage}/${pdfProgress.totalPages} 页`}
                   {" · "}
                   {elapsedLabel}
-                  {pdfProgress.percent != null ? ` · ${pdfProgress.percent}%` : ""}
+                  {pdfProgress?.percent != null ? ` · ${pdfProgress.percent}%` : ""}
                 </>
               ) : (
                 <>

@@ -46,35 +46,50 @@ pub(crate) fn assemble_pdf_with_page_translations(
     Ok(())
 }
 
-pub(crate) fn extract_single_page_pdf(
+/// Count pages of a PDF on disk via lopdf (no pdfium dependency). Used to
+/// figure out whether a batch pdf2zh output contains the whole document or
+/// only the selected pages.
+pub(crate) fn count_pdf_pages_lopdf(path: &Path) -> Result<u32, String> {
+    let doc = Document::load(path)
+        .map_err(|error| format!("无法读取 PDF {}: {error}", path.display()))?;
+    Ok(doc.get_pages().len() as u32)
+}
+
+/// Extract several single pages from one PDF into separate one-page PDFs.
+/// Loads the source document once and clones per page, which is much cheaper
+/// than re-parsing the file for every page.
+///
+/// For each `(requested_page_number, target_path)`: if the requested page
+/// exists it is used; if the document has exactly one page, that page is used
+/// regardless (pdf2zh sometimes emits a renumbered single-page output).
+pub(crate) fn extract_pages_pdf(
     source_path: &Path,
-    requested_page_number: u32,
-    target_path: &Path,
+    extractions: &[(u32, PathBuf)],
 ) -> Result<(), String> {
     let doc = Document::load(source_path)
         .map_err(|error| format!("无法读取 PDF 页面缓存 {}: {error}", source_path.display()))?;
     let pages = doc.get_pages();
-    let page_number = if pages.contains_key(&requested_page_number) {
-        requested_page_number
-    } else if pages.len() == 1 {
-        1
-    } else {
-        return Err(format!(
-            "PDF 输出中不存在第 {requested_page_number} 页，无法缓存页级译文。"
-        ));
-    };
 
-    let mut single = merge_single_pages(&[PageSource {
-        path: source_path.to_path_buf(),
-        page_number,
-    }])?;
-    if let Some(parent) = target_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("无法创建 PDF 页缓存目录: {error}"))?;
+    for (requested_page_number, target_path) in extractions {
+        let page_number = if pages.contains_key(requested_page_number) {
+            *requested_page_number
+        } else if pages.len() == 1 {
+            1
+        } else {
+            return Err(format!(
+                "PDF 输出中不存在第 {requested_page_number} 页，无法缓存页级译文。"
+            ));
+        };
+
+        let mut single = merge_loaded_pages(vec![(doc.clone(), page_number)])?;
+        if let Some(parent) = target_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("无法创建 PDF 页缓存目录: {error}"))?;
+        }
+        single
+            .save(target_path)
+            .map_err(|error| format!("无法写入 PDF 页缓存: {error}"))?;
     }
-    single
-        .save(target_path)
-        .map_err(|error| format!("无法写入 PDF 页缓存: {error}"))?;
     Ok(())
 }
 
@@ -99,15 +114,23 @@ fn translated_page_path(
 }
 
 fn merge_single_pages(page_sources: &[PageSource]) -> Result<Document, String> {
+    let mut loaded = Vec::with_capacity(page_sources.len());
+    for source in page_sources {
+        let doc = Document::load(&source.path)
+            .map_err(|error| format!("无法读取 PDF 页面 {}: {error}", source.path.display()))?;
+        loaded.push((doc, source.page_number));
+    }
+    merge_loaded_pages(loaded)
+}
+
+fn merge_loaded_pages(loaded: Vec<(Document, u32)>) -> Result<Document, String> {
     let mut documents_pages = BTreeMap::<ObjectId, Object>::new();
     let mut documents_objects = BTreeMap::<ObjectId, Object>::new();
     let mut document = Document::with_version("1.5");
     let mut max_id = 1;
 
-    for source in page_sources {
-        let mut doc = Document::load(&source.path)
-            .map_err(|error| format!("无法读取 PDF 页面 {}: {error}", source.path.display()))?;
-        keep_only_page(&mut doc, source.page_number)?;
+    for (mut doc, page_number) in loaded {
+        keep_only_page(&mut doc, page_number)?;
         doc.renumber_objects_with(max_id);
         max_id = doc.max_id + 1;
 

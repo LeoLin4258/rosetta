@@ -110,13 +110,8 @@ fn remove_path_if_exists(path: &Path) -> Result<bool, String> {
 fn cancel_pdf_translation(
     cancel_state: State<'_, rosetta_jobs::PdfTranslationCancelState>,
 ) -> bool {
-    let Ok(mut guard) = cancel_state.0.lock() else {
-        return false;
-    };
-    let Some(sender) = guard.take() else {
-        return false;
-    };
-    sender.send(()).is_ok()
+    cancel_state.request_cancel();
+    true
 }
 
 #[cfg(test)]

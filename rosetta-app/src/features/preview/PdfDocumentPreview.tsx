@@ -50,6 +50,12 @@ type PdfDocumentPreviewProps = {
 /// ~1.5x the source page width so retina screens stay crisp.
 const DEFAULT_RASTER_WIDTH = 1200;
 
+/// Upper bound on requested raster width. Matches the backend clamp
+/// (MAX_TARGET_WIDTH in rasterize.rs) so the frontend cache key and the
+/// actually-rendered width never diverge, and bounds PNG memory use on very
+/// large/high-DPI displays.
+const MAX_RASTER_WIDTH = 1800;
+
 /// Side-by-side PDF preview. Both panes are rasterized server-side via
 /// pdfium and shipped as PNG bytes per page. This component is a pure
 /// display component — all PDF generation logic lives in WorkspacePage.
@@ -80,14 +86,36 @@ export function PdfDocumentPreview({
   const [pdfPageState, setPdfPageState] = useState<PdfPageTranslationState | null>(null);
   const paneContainerRef = useRef<HTMLDivElement | null>(null);
 
-  // Measure the pane container width so rasterization matches display.
-  // Only measure once per jobId to avoid re-rendering all pages on resize.
+  // Track the pane container width so rasterization matches display. A
+  // debounced ResizeObserver keeps large screens sharp after window resizes /
+  // sidebar toggles; the debounce plus a 10% change threshold avoids
+  // re-rasterizing every page while the user is mid-drag.
   useLayoutEffect(() => {
     const el = paneContainerRef.current;
     if (!el) return;
-    const halfWidth = el.clientWidth / 2;
-    const dpr = window.devicePixelRatio || 1;
-    setPaneWidth(Math.round(Math.max(400, halfWidth * dpr)));
+
+    const computeWidth = () => {
+      const halfWidth = el.clientWidth / 2;
+      const dpr = window.devicePixelRatio || 1;
+      return Math.round(Math.min(Math.max(400, halfWidth * dpr), MAX_RASTER_WIDTH));
+    };
+    setPaneWidth(computeWidth());
+
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const observer = new ResizeObserver(() => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        const next = computeWidth();
+        setPaneWidth((current) =>
+          Math.abs(next - current) / current > 0.1 ? next : current,
+        );
+      }, 300);
+    });
+    observer.observe(el);
+    return () => {
+      if (timer) clearTimeout(timer);
+      observer.disconnect();
+    };
   }, [jobId]);
 
   const refreshPageState = useCallback(async () => {
@@ -153,6 +181,12 @@ export function PdfDocumentPreview({
     };
   }, []);
 
+  // Page-anchor scroll sync: find the page row under the driving pane's
+  // viewport top, then scroll the other pane so the SAME page number sits at
+  // the same page-local offset. Whole-pane ratio sync (the previous approach)
+  // drifts whenever the two panes' total heights differ — which is the normal
+  // case here, since untranslated pages render as fixed-height placeholders
+  // and PNGs load at different times.
   function syncScroll(side: PreviewSide) {
     if (scrollDriverRef.current !== null && scrollDriverRef.current !== side) return;
     const from =
@@ -161,10 +195,35 @@ export function PdfDocumentPreview({
       side === "source" ? translationScrollRef.current : sourceScrollRef.current;
     if (!from || !to) return;
 
-    const maxFrom = from.scrollHeight - from.clientHeight;
-    const maxTo = to.scrollHeight - to.clientHeight;
-    const ratio = maxFrom > 0 ? from.scrollTop / maxFrom : 0;
-    const targetScrollTop = ratio * Math.max(maxTo, 0);
+    const fromRows = from.children;
+    const toRows = to.children;
+    if (fromRows.length === 0 || toRows.length === 0) return;
+
+    // First page row whose bottom edge is below the viewport top.
+    let anchorIndex = 0;
+    let anchorTop = 0;
+    for (let index = 0; index < fromRows.length; index += 1) {
+      const row = fromRows[index] as HTMLElement;
+      if (row.offsetTop + row.offsetHeight > from.scrollTop) {
+        anchorIndex = index;
+        anchorTop = row.offsetTop;
+        break;
+      }
+    }
+    const anchorRow = fromRows[anchorIndex] as HTMLElement;
+    const localOffsetRatio =
+      anchorRow.offsetHeight > 0
+        ? (from.scrollTop - anchorTop) / anchorRow.offsetHeight
+        : 0;
+
+    const targetRow = toRows[Math.min(anchorIndex, toRows.length - 1)] as HTMLElement;
+    const targetScrollTop = Math.max(
+      0,
+      Math.min(
+        targetRow.offsetTop + localOffsetRatio * targetRow.offsetHeight,
+        to.scrollHeight - to.clientHeight,
+      ),
+    );
     if (Math.abs(to.scrollTop - targetScrollTop) < 2) return;
 
     scrollDriverRef.current = side;

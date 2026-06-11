@@ -63,6 +63,13 @@ pub(crate) struct Pdf2zhOutput {
     pub mono_pdf: PathBuf,
     #[allow(dead_code)]
     pub dual_pdf: Option<PathBuf>,
+    /// Time from invocation start to pdf2zh process spawn (status resolution,
+    /// shim startup, RWKV role setup).
+    pub warmup_ms: u64,
+    /// Wall time of the pdf2zh process itself (parse + translate + render).
+    pub process_ms: u64,
+    /// RWKV request stats collected by the shim during this invocation.
+    pub rwkv_metrics: crate::managed_pdf2zh::openai_shim::ShimRwkvMetricsSnapshot,
 }
 
 pub(crate) async fn invoke_pdf2zh(
@@ -79,6 +86,7 @@ pub(crate) async fn invoke_pdf2zh(
     let emit = |phase: &str, percent: Option<u8>, message: &str| {
         emit_progress_with_page(app, &options.job_id, phase, percent, message, page_progress);
     };
+    let invoke_started = std::time::Instant::now();
 
     // Phase: warmup — covers the time from "user clicked translate" to
     // "pdf2zh.py has actually started parsing". This is non-trivial (status
@@ -179,6 +187,13 @@ pub(crate) async fn invoke_pdf2zh(
         .env("all_proxy", "")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // Start pdf2zh in its own process group so cancellation can kill the
+    // whole tree. pdf2zh is a Python launcher that spawns multiprocessing
+    // workers; killing only the immediate child leaves those workers (and
+    // their in-flight RWKV requests) running, which is why "stop" used to
+    // appear to do nothing on large PDFs.
+    #[cfg(unix)]
+    command.process_group(0);
     if let Some(pages) = &options.pages {
         let pages_arg = pages
             .iter()
@@ -190,6 +205,8 @@ pub(crate) async fn invoke_pdf2zh(
     let _ = options.ignore_cache;
 
     emit("translate", Some(0), "正在翻译 PDF…");
+    let warmup_ms = invoke_started.elapsed().as_millis() as u64;
+    let process_started = std::time::Instant::now();
     let mut child = command
         .spawn()
         .map_err(|error| PdfError::Pdf2zhFailed(format!("启动 {} 失败: {error}", bin.display())))?;
@@ -247,8 +264,7 @@ pub(crate) async fn invoke_pdf2zh(
             result.map_err(|error| PdfError::Pdf2zhFailed(format!("等待 pdf2zh 结束失败: {error}")))?
         }
         _ = cancel_rx => {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
+            kill_process_tree(&mut child).await;
             if let Some(task) = stderr_task { task.abort(); }
             if let Some(task) = stdout_task { task.abort(); }
             drop(shim);
@@ -261,6 +277,8 @@ pub(crate) async fn invoke_pdf2zh(
     if let Some(task) = stdout_task {
         let _ = task.await;
     }
+    let process_ms = process_started.elapsed().as_millis() as u64;
+    let rwkv_metrics = shim.metrics.snapshot();
     drop(shim);
     let status = exit_status;
 
@@ -288,7 +306,38 @@ pub(crate) async fn invoke_pdf2zh(
         .ok_or_else(|| PdfError::Pdf2zhFailed("未生成译文 PDF。".to_string()))?;
     let dual_pdf = find_pdf2zh_output(output_dir, source_path, "dual");
     emit("render", Some(100), "译文 PDF 已生成。");
-    Ok(Pdf2zhOutput { mono_pdf, dual_pdf })
+    Ok(Pdf2zhOutput {
+        mono_pdf,
+        dual_pdf,
+        warmup_ms,
+        process_ms,
+        rwkv_metrics,
+    })
+}
+
+/// Kill pdf2zh and all of its descendants. On unix the child was started in
+/// its own process group (`process_group(0)`), so signalling `-pgid` reaches
+/// the Python multiprocessing workers too. Falls back to killing just the
+/// immediate child elsewhere.
+async fn kill_process_tree(child: &mut tokio::process::Child) {
+    #[cfg(unix)]
+    if let Some(pid) = child.id() {
+        unsafe {
+            // SIGTERM first so workers can exit cleanly, then SIGKILL the group.
+            libc::killpg(pid as i32, libc::SIGTERM);
+        }
+        let graceful =
+            tokio::time::timeout(std::time::Duration::from_millis(1500), child.wait()).await;
+        if graceful.is_err() {
+            unsafe {
+                libc::killpg(pid as i32, libc::SIGKILL);
+            }
+        }
+        let _ = child.wait().await;
+        return;
+    }
+    let _ = child.kill().await;
+    let _ = child.wait().await;
 }
 
 fn append_live_log(file: &Arc<Mutex<Option<std::fs::File>>>, stream: &str, line: &str) {

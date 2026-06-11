@@ -27,6 +27,24 @@ const pageTitles: Record<string, string> = {
 
 const appWindow = getCurrentWindow();
 
+/// Load the job list and, when the workspace is empty, create + activate the
+/// welcome document. Shared by first mount and the post-onboarding reset so
+/// both paths end in the same deterministic state.
+async function bootstrapJobList() {
+  const { setJobList, setActiveBundle } = useRosettaStore.getState();
+  try {
+    const jobs = await listRosettaJobs();
+    setJobList(jobs);
+    if (jobs.length === 0) {
+      const bundle = await createWelcomeDocument();
+      setJobList([bundle.job]);
+      setActiveBundle(bundle);
+    }
+  } catch {
+    setJobList([]);
+  }
+}
+
 function useOnboardingCompleted() {
   const clearJobHistory = useRosettaStore((s) => s.clearJobHistory);
 
@@ -35,7 +53,12 @@ function useOnboardingCompleted() {
     let unlisten: (() => void) | null = null;
 
     listen("rosetta-onboarding-completed", () => {
+      // The main window may have bootstrapped its job list while onboarding
+      // was still open (both windows exist from app start). Re-bootstrap
+      // after clearing so the welcome document reliably shows instead of
+      // depending on event timing.
       clearJobHistory();
+      void bootstrapJobList();
     }).then((fn) => {
       if (unmounted) { fn(); } else { unlisten = fn; }
     }).catch(console.error);
@@ -44,10 +67,44 @@ function useOnboardingCompleted() {
   }, [clearJobHistory]);
 }
 
+/// App-level subscription to pdf2zh progress events. Lives here (not in
+/// WorkspacePage) and writes to the store keyed by jobId, so switching files
+/// or navigating to Settings during a long PDF run doesn't lose the live
+/// phase/page display.
+function usePdfRunProgressEvents() {
+  const setPdfRunProgress = useRosettaStore((s) => s.setPdfRunProgress);
+
+  useEffect(() => {
+    let unmounted = false;
+    let unlisten: (() => void) | null = null;
+
+    listen<{
+      jobId: string;
+      phase: string;
+      percent: number | null;
+      currentPage?: number;
+      totalPages?: number;
+    }>("rosetta-pdf2zh-progress", (event) => {
+      setPdfRunProgress(event.payload.jobId, {
+        phase: event.payload.phase,
+        percent: event.payload.percent,
+        currentPage: event.payload.currentPage ?? null,
+        totalPages: event.payload.totalPages ?? null,
+      });
+    }).then((fn) => {
+      if (unmounted) fn();
+      else unlisten = fn;
+    }).catch(console.error);
+
+    return () => { unmounted = true; unlisten?.(); };
+  }, [setPdfRunProgress]);
+}
+
 function MenuEventHandler() {
   const { toggleSidebar } = useSidebar();
   useMenuEvents(toggleSidebar);
   useOnboardingCompleted();
+  usePdfRunProgressEvents();
   return null;
 }
 
@@ -89,12 +146,10 @@ function AppHeader({
 export function AppShell() {
   const location = useLocation();
   const themeMode = useRosettaStore((state) => state.themeMode);
-  const setJobList = useRosettaStore((state) => state.setJobList);
   const activeDocument = useRosettaStore((state) => state.activeDocument);
   const activeJobId = useRosettaStore((state) => state.activeJobId);
   const managedRuntimeStatus = useRosettaStore((state) => state.managedRuntime.status);
   const setManagedRuntimeStatus = useRosettaStore((state) => state.setManagedRuntimeStatus);
-  const setActiveBundle = useRosettaStore((state) => state.setActiveBundle);
   const refreshJobBundle = useRosettaStore((state) => state.refreshJobBundle);
   // Tracks whether the one-shot auto-start has been attempted this session.
   // Prevents re-starting the runtime when the user explicitly stops it.
@@ -152,21 +207,8 @@ export function AppShell() {
   }, [isDark]);
 
   useEffect(() => {
-    void listRosettaJobs()
-      .then((jobs) => {
-        setJobList(jobs);
-        if (jobs.length === 0) {
-          void createWelcomeDocument().then((bundle) => {
-            setJobList([bundle.job]);
-            setActiveBundle(bundle);
-          });
-        }
-      })
-      .catch(() => {
-        setJobList([]);
-      });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [setJobList]);
+    void bootstrapJobList();
+  }, []);
 
   // Auto-restore the active document after restart (activeJobId is persisted
   // but activeDocument is in-memory only).

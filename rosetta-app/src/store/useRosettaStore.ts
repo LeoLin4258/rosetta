@@ -54,6 +54,18 @@ export type ManagedRuntimeSlice = {
   lastError: string | null;
 };
 
+/**
+ * Live pdf2zh phase/percent/page progress for the active PDF translation run.
+ * Stored app-level (keyed by jobId) instead of in component state so that
+ * switching files and coming back doesn't lose the display.
+ */
+export type PdfRunProgress = {
+  phase: string;
+  percent: number | null;
+  currentPage: number | null;
+  totalPages: number | null;
+};
+
 type RosettaState = {
   themeMode: AppThemeMode;
   rwkv: RwkvConnectionConfig;
@@ -71,6 +83,7 @@ type RosettaState = {
   translationSegments: TranslationSegment[];
   translationRevisions: TranslationRevision[];
   activeTranslationRun: ActiveTranslationRun | null;
+  pdfRunProgressByJobId: Record<string, PdfRunProgress>;
   managedRuntime: ManagedRuntimeSlice;
   downloadProxy: DownloadProxyConfig;
   defaultTargetLang: string;
@@ -124,6 +137,7 @@ type RosettaState = {
   markTranslationRunCompleted: (runId: string, segmentIds: string[]) => void;
   markTranslationRunFailed: (runId: string, segmentIds: string[]) => void;
   finishTranslationRun: (runId: string) => void;
+  setPdfRunProgress: (jobId: string, progress: PdfRunProgress | null) => void;
   beginPreviewSegmentTranslation: (segmentIds: string[]) => Segment[];
   completePreviewSegmentTranslation: (
     segmentIds: string[],
@@ -241,6 +255,7 @@ export const useRosettaStore = create<RosettaState>()(
       translationSegments: [],
       translationRevisions: [],
       activeTranslationRun: null,
+      pdfRunProgressByJobId: {},
       managedRuntime: {
         status: null,
         progress: null,
@@ -702,11 +717,22 @@ export const useRosettaStore = create<RosettaState>()(
           };
         }),
       finishTranslationRun: (runId) =>
-        set((state) =>
-          state.activeTranslationRun?.id === runId
-            ? { activeTranslationRun: null }
-            : state
-        ),
+        set((state) => {
+          if (state.activeTranslationRun?.id !== runId) return state;
+          const pdfProgress = { ...state.pdfRunProgressByJobId };
+          delete pdfProgress[state.activeTranslationRun.jobId];
+          return {
+            activeTranslationRun: null,
+            pdfRunProgressByJobId: pdfProgress,
+          };
+        }),
+      setPdfRunProgress: (jobId, progress) =>
+        set((state) => {
+          const next = { ...state.pdfRunProgressByJobId };
+          if (progress) next[jobId] = progress;
+          else delete next[jobId];
+          return { pdfRunProgressByJobId: next };
+        }),
       beginPreviewSegmentTranslation: (segmentIds) => {
         const segmentIdSet = new Set(segmentIds);
         const nextSegments = get().previewSegments.map((segment) =>

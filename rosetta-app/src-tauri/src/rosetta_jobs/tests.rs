@@ -2,7 +2,9 @@ use std::{collections::HashMap, fs, path::PathBuf};
 
 use crate::rosetta_jobs::{
     export::*,
-    formats::pdf::page_assemble::{assemble_pdf_with_page_translations, extract_single_page_pdf},
+    formats::pdf::page_assemble::{
+        assemble_pdf_with_page_translations, count_pdf_pages_lopdf, extract_pages_pdf,
+    },
     formats::pdf::page_state::*,
     formats::pdf::test_helpers::fixture_path,
     formats::{markdown::parse_markdown, txt::parse_txt},
@@ -497,7 +499,7 @@ fn pdf_page_cache_extracts_requested_page_from_full_pdf_output() {
     fs::create_dir_all(&dir).expect("create temp dir");
     let target = dir.join("page-0002.pdf");
 
-    extract_single_page_pdf(&source, 2, &target).expect("extract second page");
+    extract_pages_pdf(&source, &[(2, target.clone())]).expect("extract second page");
 
     let output_pages = lopdf::Document::load(&target)
         .expect("load extracted page")
@@ -508,13 +510,37 @@ fn pdf_page_cache_extracts_requested_page_from_full_pdf_output() {
 }
 
 #[test]
+fn pdf_page_cache_extracts_multiple_pages_in_one_pass() {
+    let source = fixture_path("2305.13048v2.pdf");
+    let source_pages = count_pdf_pages_lopdf(&source).expect("count source pages");
+    assert!(source_pages >= 3);
+    let dir = unique_temp_dir("pdf-page-cache-extract-multi");
+    fs::create_dir_all(&dir).expect("create temp dir");
+
+    let extractions = vec![
+        (1, dir.join("page-0001.pdf")),
+        (3, dir.join("page-0003.pdf")),
+    ];
+    extract_pages_pdf(&source, &extractions).expect("extract pages 1 and 3");
+
+    for (_, target) in &extractions {
+        let pages = lopdf::Document::load(target)
+            .expect("load extracted page")
+            .get_pages()
+            .len();
+        assert_eq!(pages, 1);
+    }
+    fs::remove_dir_all(dir).ok();
+}
+
+#[test]
 fn pdf_page_cache_accepts_single_page_pdf_output_for_any_requested_page() {
     let source = fixture_path("simple-one-page.pdf");
     let dir = unique_temp_dir("pdf-page-cache-single-output");
     fs::create_dir_all(&dir).expect("create temp dir");
     let target = dir.join("page-0002.pdf");
 
-    extract_single_page_pdf(&source, 2, &target).expect("extract fallback page");
+    extract_pages_pdf(&source, &[(2, target.clone())]).expect("extract fallback page");
 
     let output_pages = lopdf::Document::load(&target)
         .expect("load extracted page")

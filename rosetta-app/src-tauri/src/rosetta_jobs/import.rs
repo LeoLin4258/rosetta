@@ -707,9 +707,7 @@ pub(crate) fn delete_job_file(
 
 const WELCOME_JOB_ID: &str = "job-welcome";
 
-const WELCOME_CONTENT: &str = r#"![Rosetta](/icon.png)
-
-# 欢迎使用 Rosetta
+const WELCOME_CONTENT: &str = r#"# 欢迎使用 Rosetta
 
 Rosetta 是一款专为文档翻译设计的桌面应用，支持 Markdown、TXT 和 PDF 格式，让你的内容跨越语言边界。
 
