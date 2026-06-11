@@ -75,7 +75,9 @@ impl RuntimeLayout {
         let model_file = model_dir.join(profile.model_filename);
         let model_extracted_dir = if profile.model_is_zip {
             // Strip the .zip extension to get the extracted directory name.
-            let stem = profile.model_filename.strip_suffix(".zip")
+            let stem = profile
+                .model_filename
+                .strip_suffix(".zip")
                 .unwrap_or(profile.model_filename);
             Some(model_dir.join(stem))
         } else {
@@ -103,9 +105,10 @@ impl RuntimeLayout {
 
     /// Resolve from an `AppHandle`. Equivalent to `resolve(app_local_data, ..)`.
     pub fn from_app(app: &AppHandle, profile: &RuntimeProfile) -> Result<Self, String> {
-        let base = app.path().app_local_data_dir().map_err(|error| {
-            format!("无法解析 Rosetta 应用本地数据目录: {error}")
-        })?;
+        let base = app
+            .path()
+            .app_local_data_dir()
+            .map_err(|error| format!("无法解析 Rosetta 应用本地数据目录: {error}"))?;
         Ok(Self::resolve(&base, profile))
     }
 
@@ -113,9 +116,8 @@ impl RuntimeLayout {
     /// produced by Phase 4 download; here we only ensure its parent exists.
     pub fn ensure_dirs(&self) -> Result<(), String> {
         for dir in [&self.model_dir, &self.runtime_state_dir, &self.logs_dir] {
-            std::fs::create_dir_all(dir).map_err(|error| {
-                format!("无法创建 {}: {error}", dir.display())
-            })?;
+            std::fs::create_dir_all(dir)
+                .map_err(|error| format!("无法创建 {}: {error}", dir.display()))?;
         }
         Ok(())
     }

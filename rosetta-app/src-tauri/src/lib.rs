@@ -1,3 +1,4 @@
+mod local_data_reset;
 mod managed_pdf2zh;
 mod managed_rwkv;
 mod onboarding;
@@ -116,15 +117,13 @@ pub fn run() {
                             app,
                             "View",
                             true,
-                            &[
-                                &MenuItem::with_id(
-                                    app,
-                                    "toggle-sidebar",
-                                    "Toggle Sidebar",
-                                    true,
-                                    Some("CmdOrCtrl+\\"),
-                                )?,
-                            ],
+                            &[&MenuItem::with_id(
+                                app,
+                                "toggle-sidebar",
+                                "Toggle Sidebar",
+                                true,
+                                Some("CmdOrCtrl+\\"),
+                            )?],
                         )?,
                         // Window menu
                         &Submenu::with_items(
@@ -174,6 +173,7 @@ pub fn run() {
             managed_pdf2zh::get_pdf2zh_install_progress,
             managed_pdf2zh::get_pdf2zh_status,
             managed_pdf2zh::install_pdf2zh_pack,
+            local_data_reset::clear_rosetta_local_data,
             onboarding::complete_onboarding_and_open_main,
             onboarding::get_onboarding_decision,
             onboarding::reopen_onboarding_window,
@@ -225,7 +225,11 @@ pub fn run() {
             // of right-click → Quit. Re-show whichever window we previously
             // chose at startup (main or onboarding).
             #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Reopen { has_visible_windows, .. } = event {
+            if let tauri::RunEvent::Reopen {
+                has_visible_windows,
+                ..
+            } = event
+            {
                 if has_visible_windows {
                     return;
                 }

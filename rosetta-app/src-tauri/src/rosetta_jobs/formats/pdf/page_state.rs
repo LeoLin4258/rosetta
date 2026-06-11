@@ -133,14 +133,20 @@ pub(crate) fn pdf_page_relative_path(page_number: u32) -> String {
     format!("pdf-pages/{}", pdf_page_filename(page_number))
 }
 
-pub(crate) fn pdf_page_status_summary(state: &PdfPageTranslationState) -> (usize, usize, usize, String) {
+pub(crate) fn pdf_page_status_summary(
+    state: &PdfPageTranslationState,
+) -> (usize, usize, usize, String) {
     let segment_count = state.source_page_count as usize;
     let completed_segments = state
         .pages
         .iter()
         .filter(|page| page.status == "translated")
         .count();
-    let failed_segments = state.pages.iter().filter(|page| page.status == "failed").count();
+    let failed_segments = state
+        .pages
+        .iter()
+        .filter(|page| page.status == "failed")
+        .count();
     let has_running = state
         .pages
         .iter()

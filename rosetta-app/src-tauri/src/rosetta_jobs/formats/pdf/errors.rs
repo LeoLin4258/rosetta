@@ -30,10 +30,11 @@ impl PdfError {
         match self {
             Self::Read(detail) => format!("无法读取 PDF 文件：{detail}"),
             Self::Parse(detail) => format!("PDF 文件解析失败：{detail}"),
-            Self::Encrypted => {
-                "这份 PDF 加了密码，当前版本暂不支持加密 PDF 的翻译。".to_string()
+            Self::Encrypted => "这份 PDF 加了密码，当前版本暂不支持加密 PDF 的翻译。".to_string(),
+            Self::ImageOnly => {
+                "这份 PDF 看起来是扫描件或纯图片，没有可提取的文字。Rosetta 当前版本暂不做 OCR。"
+                    .to_string()
             }
-            Self::ImageOnly => "这份 PDF 看起来是扫描件或纯图片，没有可提取的文字。Rosetta 当前版本暂不做 OCR。".to_string(),
             Self::TooLarge { reason } => format!("PDF 超过当前版本的处理上限：{reason}"),
             Self::RuntimeMissing(detail) => format!("PDF 翻译运行时未就绪：{detail}"),
             Self::Pdf2zhFailed(detail) => format!("PDF 译文生成失败：{detail}"),

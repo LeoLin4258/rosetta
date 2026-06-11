@@ -146,13 +146,19 @@ pub async fn start_managed_rwkv_runtime(
     let tokenizer = static_status
         .tokenizer_path
         .ok_or_else(|| "找不到分词表文件。".to_string())?;
-    let model = static_status.layout.model_extracted_dir.clone()
+    let model = static_status
+        .layout
+        .model_extracted_dir
+        .clone()
         .unwrap_or_else(|| static_status.layout.model_file.clone());
     let log_file = static_status.layout.runtime_log_file.clone();
     let metallib = static_status.metallib_path.clone();
 
     static_status.layout.ensure_dirs()?;
-    start_sidecar(&registry, profile, sidecar, tokenizer, model, log_file, metallib).await
+    start_sidecar(
+        &registry, profile, sidecar, tokenizer, model, log_file, metallib,
+    )
+    .await
 }
 
 #[tauri::command]

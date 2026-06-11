@@ -13,8 +13,8 @@ pub(crate) fn assemble_pdf_with_page_translations(
     state: &PdfPageTranslationState,
     target_path: &Path,
 ) -> Result<(), String> {
-    let source_doc = Document::load(source_path)
-        .map_err(|error| format!("无法读取源 PDF 用于导出: {error}"))?;
+    let source_doc =
+        Document::load(source_path).map_err(|error| format!("无法读取源 PDF 用于导出: {error}"))?;
     let source_page_count = source_doc.get_pages().len() as u32;
     if source_page_count == 0 {
         return Err("源 PDF 没有页面，无法导出。".to_string());
@@ -137,8 +137,10 @@ fn merge_single_pages(page_sources: &[PageSource]) -> Result<Document, String> {
                             dictionary.extend(old_dictionary);
                         }
                     }
-                    pages_object =
-                        Some((pages_object.map_or(object_id, |(id, _)| id), Object::Dictionary(dictionary)));
+                    pages_object = Some((
+                        pages_object.map_or(object_id, |(id, _)| id),
+                        Object::Dictionary(dictionary),
+                    ));
                 }
             }
             "Page" | "Outlines" | "Outline" => {}
@@ -154,7 +156,9 @@ fn merge_single_pages(page_sources: &[PageSource]) -> Result<Document, String> {
         if let Ok(dictionary) = object.as_dict() {
             let mut dictionary = dictionary.clone();
             dictionary.set("Parent", pages_id);
-            document.objects.insert(*object_id, Object::Dictionary(dictionary));
+            document
+                .objects
+                .insert(*object_id, Object::Dictionary(dictionary));
         }
     }
 
@@ -170,14 +174,18 @@ fn merge_single_pages(page_sources: &[PageSource]) -> Result<Document, String> {
                 .map(Object::Reference)
                 .collect::<Vec<_>>(),
         );
-        document.objects.insert(pages_id, Object::Dictionary(dictionary));
+        document
+            .objects
+            .insert(pages_id, Object::Dictionary(dictionary));
     }
     if let Ok(dictionary) = catalog_object.as_dict() {
         let mut dictionary = dictionary.clone();
         dictionary.set("Pages", pages_id);
         dictionary.remove(b"Outlines");
         dictionary.remove(b"PageMode");
-        document.objects.insert(catalog_id, Object::Dictionary(dictionary));
+        document
+            .objects
+            .insert(catalog_id, Object::Dictionary(dictionary));
     } else {
         document.objects.insert(
             catalog_id,

@@ -77,14 +77,7 @@ pub(crate) async fn invoke_pdf2zh(
     // without threading the tuple through arg lists.
     let page_progress = options.page_progress;
     let emit = |phase: &str, percent: Option<u8>, message: &str| {
-        emit_progress_with_page(
-            app,
-            &options.job_id,
-            phase,
-            percent,
-            message,
-            page_progress,
-        );
+        emit_progress_with_page(app, &options.job_id, phase, percent, message, page_progress);
     };
 
     // Phase: warmup — covers the time from "user clicked translate" to
@@ -282,7 +275,9 @@ pub(crate) async fn invoke_pdf2zh(
         let _ = std::fs::write(&output_log, &tail);
         return Err(PdfError::Pdf2zhFailed(format!(
             "PDF 版面处理没有完成（退出码：{}）。请重试；若持续失败，可查看日志：{}",
-            status.code().map_or_else(|| "signal".to_string(), |code| code.to_string()),
+            status
+                .code()
+                .map_or_else(|| "signal".to_string(), |code| code.to_string()),
             output_log.display()
         )));
     }

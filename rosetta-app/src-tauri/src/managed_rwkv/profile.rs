@@ -177,9 +177,9 @@ pub fn current_profile() -> Option<&'static RuntimeProfile> {
     // of `cfg!(target_os)` baking the answer at compile time.
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
-    ALL_PROFILES
-        .iter()
-        .find(|profile| profile.enabled && profile.platform_os == os && profile.platform_arch == arch)
+    ALL_PROFILES.iter().find(|profile| {
+        profile.enabled && profile.platform_os == os && profile.platform_arch == arch
+    })
 }
 
 /// Profile-summary shape exposed to the frontend.
@@ -215,7 +215,8 @@ impl RuntimeProfileSummary {
     }
 }
 
-const ALL_PROFILES: &[RuntimeProfile] = &[MACOS_ARM64_MLX, MACOS_ARM64_WEBRWKV, WINDOWS_AMD64_LIBTORCH];
+const ALL_PROFILES: &[RuntimeProfile] =
+    &[MACOS_ARM64_MLX, MACOS_ARM64_WEBRWKV, WINDOWS_AMD64_LIBTORCH];
 
 #[cfg(test)]
 #[allow(clippy::assertions_on_constants)] // intentional regression guards on const values
@@ -250,7 +251,10 @@ mod tests {
                 resolved.is_some_and(|p| p.id == "macos-arm64-mlx"),
                 "expected macOS arm64 MLX profile"
             ),
-            _ => assert!(resolved.is_none(), "expected no profile on unsupported host"),
+            _ => assert!(
+                resolved.is_none(),
+                "expected no profile on unsupported host"
+            ),
         }
     }
 }

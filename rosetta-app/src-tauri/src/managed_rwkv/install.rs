@@ -155,10 +155,7 @@ struct InstallInner {
 impl InstallRegistry {
     pub async fn snapshot(&self) -> InstallProgress {
         let guard = self.inner.lock().await;
-        guard
-            .progress
-            .clone()
-            .unwrap_or_else(InstallProgress::idle)
+        guard.progress.clone().unwrap_or_else(InstallProgress::idle)
     }
 
     pub async fn request_cancel(&self) -> bool {
@@ -185,11 +182,15 @@ pub async fn install_model(
     let cancel = Arc::new(AtomicBool::new(false));
     {
         let mut guard = registry.inner.lock().await;
-        if guard
-            .progress
-            .as_ref()
-            .is_some_and(|p| matches!(p.phase, InstallPhase::Preflight | InstallPhase::Downloading | InstallPhase::Verifying | InstallPhase::WritingManifest))
-        {
+        if guard.progress.as_ref().is_some_and(|p| {
+            matches!(
+                p.phase,
+                InstallPhase::Preflight
+                    | InstallPhase::Downloading
+                    | InstallPhase::Verifying
+                    | InstallPhase::WritingManifest
+            )
+        }) {
             return Err("已有安装任务在进行中。".to_string());
         }
         guard.cancel = Some(cancel.clone());
@@ -282,7 +283,8 @@ async fn install_inner(
         }
         match verify_existing_model(&layout.model_file, profile, cancel).await {
             Ok(()) => {
-                let manifest_path = write_manifest(layout, profile, profile.model_download_urls[0])?;
+                let manifest_path =
+                    write_manifest(layout, profile, profile.model_download_urls[0])?;
                 set_done(registry, profile, "模型已就绪。".to_string()).await;
                 emit_progress(app, registry).await;
                 return Ok(InstallResult {
@@ -304,7 +306,10 @@ async fn install_inner(
                 set_failed_message(
                     registry,
                     profile,
-                    format!("现有模型文件校验失败，已重命名为 {}: {error}", broken.display()),
+                    format!(
+                        "现有模型文件校验失败，已重命名为 {}: {error}",
+                        broken.display()
+                    ),
                 )
                 .await;
                 emit_progress(app, registry).await;
@@ -341,10 +346,7 @@ async fn install_inner(
         p.bytes_total = profile.model_size_bytes;
         p.phase = InstallPhase::Downloading;
         p.message = if bytes_done_initial > 0 {
-            format!(
-                "断点续传中（已恢复 {} bytes）…",
-                bytes_done_initial
-            )
+            format!("断点续传中（已恢复 {} bytes）…", bytes_done_initial)
         } else {
             "开始下载…".to_string()
         };
@@ -465,12 +467,12 @@ async fn install_inner(
         .await;
         emit_progress(app, registry).await;
 
-        let extracted_dir = layout.model_extracted_dir.as_ref().ok_or_else(|| {
-            "zip profile 缺少 model_extracted_dir（layout bug）。".to_string()
-        })?;
-        extract_zip(&layout.model_file, extracted_dir).map_err(|e| {
-            format!("解压模型 zip 失败: {e}")
-        })?;
+        let extracted_dir = layout
+            .model_extracted_dir
+            .as_ref()
+            .ok_or_else(|| "zip profile 缺少 model_extracted_dir（layout bug）。".to_string())?;
+        extract_zip(&layout.model_file, extracted_dir)
+            .map_err(|e| format!("解压模型 zip 失败: {e}"))?;
         let _ = std::fs::remove_file(&layout.model_file);
     }
 
@@ -534,9 +536,8 @@ async fn download_from_mirror(
         // routes both HTTP and HTTPS through it. Bad URLs are bubbled up as
         // Fatal so the user sees a clear error instead of a generic
         // connect-refused later.
-        let parsed = reqwest::Proxy::all(proxy).map_err(|e| {
-            DownloadError::Fatal(format!("代理 URL 无效（{proxy}）: {e}"))
-        })?;
+        let parsed = reqwest::Proxy::all(proxy)
+            .map_err(|e| DownloadError::Fatal(format!("代理 URL 无效（{proxy}）: {e}")))?;
         builder = builder.proxy(parsed);
         eprintln!("[rwkv-install] mirror via proxy: {proxy}");
     }
@@ -574,10 +575,7 @@ async fn download_from_mirror(
     // GET (optionally with Range for resume).
     let mut request = client.get(url);
     if *bytes_done > 0 && *bytes_done < profile.model_size_bytes {
-        request = request.header(
-            reqwest::header::RANGE,
-            format!("bytes={}-", bytes_done),
-        );
+        request = request.header(reqwest::header::RANGE, format!("bytes={}-", bytes_done));
     }
     let response = request
         .send()
@@ -587,7 +585,10 @@ async fn download_from_mirror(
     let status = response.status();
     let accept_range = status == reqwest::StatusCode::PARTIAL_CONTENT;
     if !status.is_success() {
-        return Err(DownloadError::Mirror(format!("GET 返回 HTTP {}", status.as_u16())));
+        return Err(DownloadError::Mirror(format!(
+            "GET 返回 HTTP {}",
+            status.as_u16()
+        )));
     }
 
     // If we requested Range and the server ignored it (200 instead of 206),
@@ -623,8 +624,7 @@ async fn download_from_mirror(
         if cancel.load(Ordering::SeqCst) {
             return Err(DownloadError::Cancelled);
         }
-        let bytes = chunk
-            .map_err(|e| DownloadError::Mirror(format!("流读取失败: {e}")))?;
+        let bytes = chunk.map_err(|e| DownloadError::Mirror(format!("流读取失败: {e}")))?;
         hasher.update(&bytes);
         file.write_all(&bytes)
             .await
@@ -863,10 +863,7 @@ fn hex_lower(bytes: &[u8]) -> String {
     out
 }
 
-async fn update_progress(
-    registry: &InstallRegistry,
-    mutate: impl FnOnce(&mut InstallProgress),
-) {
+async fn update_progress(registry: &InstallRegistry, mutate: impl FnOnce(&mut InstallProgress)) {
     let mut guard = registry.inner.lock().await;
     if guard.progress.is_none() {
         guard.progress = Some(InstallProgress::idle());
@@ -904,7 +901,11 @@ async fn set_cancelled(registry: &InstallRegistry) {
     }
 }
 
-async fn set_failed_message(registry: &InstallRegistry, _profile: &RuntimeProfile, message: String) {
+async fn set_failed_message(
+    registry: &InstallRegistry,
+    _profile: &RuntimeProfile,
+    message: String,
+) {
     let mut guard = registry.inner.lock().await;
     if let Some(progress) = guard.progress.as_mut() {
         progress.phase = InstallPhase::Failed;
@@ -1124,7 +1125,8 @@ mod tests {
         let layout = RuntimeLayout::resolve(&tmp, &MACOS_ARM64_WEBRWKV);
         layout.ensure_dirs().unwrap();
 
-        let path = write_manifest(&layout, &MACOS_ARM64_WEBRWKV, "https://example.test/model").unwrap();
+        let path =
+            write_manifest(&layout, &MACOS_ARM64_WEBRWKV, "https://example.test/model").unwrap();
         assert_eq!(path, layout.model_manifest_file.display().to_string());
 
         let body = std::fs::read_to_string(&layout.model_manifest_file).unwrap();

@@ -116,9 +116,7 @@ pub struct ManagedRuntimeStatus {
 
 /// Compute everything but the live process snapshot. Lifecycle layers the
 /// process snapshot on top before returning the status to the frontend.
-pub fn build_static_status(
-    app: &AppHandle,
-) -> Result<StaticStatus, String> {
+pub fn build_static_status(app: &AppHandle) -> Result<StaticStatus, String> {
     let Some(profile) = current_profile() else {
         return Ok(StaticStatus::unsupported());
     };
@@ -132,7 +130,13 @@ pub fn build_static_status(
         None
     };
 
-    let install_plan = build_install_plan(profile, &layout, &sidecar_path, &tokenizer_path, &metallib_path);
+    let install_plan = build_install_plan(
+        profile,
+        &layout,
+        &sidecar_path,
+        &tokenizer_path,
+        &metallib_path,
+    );
     let initial_state = if install_plan.ready {
         ManagedRuntimeState::Installed
     } else {
@@ -169,10 +173,7 @@ impl StaticStatus {
     fn unsupported() -> Self {
         Self {
             profile: &super::profile::MACOS_ARM64_WEBRWKV,
-            layout: RuntimeLayout::resolve(
-                Path::new(""),
-                &super::profile::MACOS_ARM64_WEBRWKV,
-            ),
+            layout: RuntimeLayout::resolve(Path::new(""), &super::profile::MACOS_ARM64_WEBRWKV),
             sidecar_path: None,
             tokenizer_path: None,
             metallib_path: None,
@@ -202,7 +203,9 @@ impl StaticStatus {
         // the extracted directory. Prefer that as the "model path" the user
         // sees when it exists, so the Settings panel doesn't keep showing a
         // path to a file that's been deleted.
-        let model_display_path = self.layout.model_extracted_dir
+        let model_display_path = self
+            .layout
+            .model_extracted_dir
             .as_ref()
             .filter(|d| d.exists())
             .map(|d| d.display().to_string())
@@ -265,9 +268,17 @@ fn build_install_plan(
         ));
     }
 
-    let model_ready_path = layout.model_extracted_dir.as_deref()
+    let model_ready_path = layout
+        .model_extracted_dir
+        .as_deref()
         .filter(|p| p.exists())
-        .or_else(|| if layout.model_file.is_file() { Some(layout.model_file.as_path()) } else { None });
+        .or_else(|| {
+            if layout.model_file.is_file() {
+                Some(layout.model_file.as_path())
+            } else {
+                None
+            }
+        });
     items.push(make_item(
         InstallItemKind::Model,
         model_ready_path,
@@ -275,10 +286,7 @@ fn build_install_plan(
             "翻译模型尚未下载 ({})。下次进入 Phase 4 后会从 UI 一键下载。",
             profile.model_filename
         ),
-        format!(
-            "翻译模型 {} 已就绪。",
-            profile.model_filename
-        ),
+        format!("翻译模型 {} 已就绪。", profile.model_filename),
     ));
 
     let ready = items
@@ -348,10 +356,7 @@ fn locate_sidecar(app: &AppHandle, profile: &RuntimeProfile) -> Option<PathBuf> 
     if let Ok(resource_dir) = app.path().resource_dir() {
         if let Some(contents_dir) = resource_dir.parent() {
             let macos_dir = contents_dir.join("MacOS");
-            for candidate in [
-                macos_dir.join(bundle_name),
-                macos_dir.join(full_name),
-            ] {
+            for candidate in [macos_dir.join(bundle_name), macos_dir.join(full_name)] {
                 if candidate.is_file() {
                     return Some(candidate);
                 }
@@ -412,7 +417,10 @@ fn locate_metallib(app: &AppHandle, sidecar_path: Option<&Path>) -> Option<PathB
 
     if let Ok(resource_dir) = app.path().resource_dir() {
         for candidate in [
-            resource_dir.join("resources").join("rwkv-sidecar").join(METALLIB_NAME),
+            resource_dir
+                .join("resources")
+                .join("rwkv-sidecar")
+                .join(METALLIB_NAME),
             resource_dir
                 .join("_up_")
                 .join("resources")
@@ -488,8 +496,7 @@ mod tests {
 
     #[test]
     fn install_plan_missing_all_artifacts_when_none_present() {
-        let layout =
-            RuntimeLayout::resolve(Path::new("/tmp/rosetta-fake"), &MACOS_ARM64_WEBRWKV);
+        let layout = RuntimeLayout::resolve(Path::new("/tmp/rosetta-fake"), &MACOS_ARM64_WEBRWKV);
         let plan = build_install_plan(&MACOS_ARM64_WEBRWKV, &layout, &None, &None, &None);
         assert!(!plan.ready);
         // WebRWKV profile: no metallib item, so still 3 items.

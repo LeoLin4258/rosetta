@@ -17,9 +17,21 @@ import {
   Send,
   ShieldCheck,
   Timer,
+  Trash2,
   XCircle,
 } from "lucide-react";
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -34,6 +46,10 @@ import { Separator } from "@/components/ui/separator";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { isManagedRuntimeReady } from "@/lib/useManagedRwkvRuntime";
 import { getReleaseNote, type ReleaseNote } from "../../data/releaseNotes";
+import {
+  clearRosettaLocalData,
+  type LocalDataResetResult,
+} from "../../lib/rosettaJobs";
 import { probeRwkvTranslationApi } from "../../lib/rwkvApi";
 import { cn } from "../../lib/utils";
 import { useRosettaStore } from "../../store/useRosettaStore";
@@ -83,6 +99,7 @@ export function SettingsPage() {
   const activeTranslationRun = useRosettaStore(
     (state) => state.activeTranslationRun
   );
+  const clearJobHistory = useRosettaStore((state) => state.clearJobHistory);
   const updateRwkvConfig = useRosettaStore((state) => state.updateRwkvConfig);
   const setTranslationMode = useRosettaStore((state) => state.setTranslationMode);
   const [externalApiOpen, setExternalApiOpen] = useState(false);
@@ -246,7 +263,7 @@ export function SettingsPage() {
 
   return (
     <ScrollArea className="h-full w-full">
-      <section className="mx-auto mb-20 flex w-full max-w-5xl flex-col gap-5 px-6 py-6">
+      <section className="mx-auto mb-20 flex w-full max-w-5xl flex-col gap-8 px-6 py-6">
         <header className="flex flex-col gap-2">
           <h1 className="text-2xl font-semibold tracking-normal">设置</h1>
           <p className="max-w-3xl text-sm text-muted-foreground">
@@ -294,6 +311,8 @@ export function SettingsPage() {
             updateError={updateError}
             updateStatus={updateStatus}
           />
+
+          <DangerSettingsSection clearJobHistory={clearJobHistory} />
         </main>
       </section>
     </ScrollArea>
@@ -1029,6 +1048,146 @@ function AboutSettingsSection({
               </Button>
             ) : null}
           </div>
+        </CardContent>
+      </Card>
+    </section>
+  );
+}
+
+function DangerSettingsSection({
+  clearJobHistory,
+}: {
+  clearJobHistory: () => void;
+}) {
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [isClearing, setIsClearing] = useState(false);
+  const [resetError, setResetError] = useState<string | null>(null);
+  const [resetResult, setResetResult] = useState<LocalDataResetResult | null>(
+    null
+  );
+
+  async function clearLocalData() {
+    setIsClearing(true);
+    setResetError(null);
+    setResetResult(null);
+
+    try {
+      const result = await clearRosettaLocalData();
+      clearJobHistory();
+      useRosettaStore.persist.clearStorage();
+      window.localStorage.removeItem("rosetta-app-settings");
+      setResetResult(result);
+      setDialogOpen(false);
+    } catch (error) {
+      setResetError(
+        error instanceof Error
+          ? error.message
+          : "无法清除 Rosetta 本机数据。"
+      );
+    } finally {
+      setIsClearing(false);
+    }
+  }
+
+  const deletedItems =
+    resetResult?.items.filter((item) => item.deleted).map((item) => item.label) ??
+    [];
+
+  return (
+    <section className="flex flex-col gap-3" id="danger-settings">
+      <Card className="border-destructive/30">
+        <CardContent className="grid gap-5 py-5 md:grid-cols-[minmax(16rem,0.42fr)_minmax(0,1fr)_auto] md:items-start">
+          <SettingsRowHeader
+            description="清除这台电脑上的 Rosetta 数据。"
+            icon={<Trash2 />}
+            title="危险操作"
+          />
+
+          <div className="flex min-w-0 flex-col gap-3">
+            <div>
+              <p className="text-sm font-medium">清除本机数据</p>
+              <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                删除任务历史、本地模型、PDF 处理组件和本机设置。不会删除原始文件、手动导出的文件或 Rosetta 应用本身。
+              </p>
+            </div>
+
+            {resetResult ? (
+              <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-800 dark:text-emerald-200">
+                <p className="font-medium">
+                  已清除 Rosetta 本机数据。请重启应用以恢复初始设置。
+                </p>
+                <p className="mt-1 text-xs text-emerald-800/80 dark:text-emerald-200/80">
+                  {deletedItems.length > 0
+                    ? `已删除：${deletedItems.join("、")}。`
+                    : "未找到需要删除的本机数据目录。"}
+                </p>
+                {resetResult.runtimeStopError ? (
+                  <p className="mt-1 text-xs">
+                    本地模型停止时返回：{resetResult.runtimeStopError}
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+
+            {resetError ? (
+              <p className="text-sm text-destructive">{resetError}</p>
+            ) : null}
+          </div>
+
+          <AlertDialog open={dialogOpen} onOpenChange={setDialogOpen}>
+            <AlertDialogTrigger asChild>
+              <Button
+                className="justify-self-start md:justify-self-end"
+                disabled={isClearing}
+                type="button"
+                variant="destructive"
+              >
+                {isClearing ? (
+                  <LoaderCircle
+                    className="animate-spin"
+                    data-icon="inline-start"
+                  />
+                ) : (
+                  <Trash2 data-icon="inline-start" />
+                )}
+                清除 Rosetta 数据
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>清除 Rosetta 本机数据？</AlertDialogTitle>
+                <AlertDialogDescription className="text-left leading-6">
+                  这会停止正在运行的本地模型，并删除任务历史、本地模型文件、PDF 处理组件和本机设置。原始文件、手动导出的文件和 Rosetta 应用不会被删除。
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <div className="rounded-md bg-muted/50 p-3 text-xs leading-6 text-muted-foreground">
+                删除后，Rosetta 下次启动会回到初始状态；本地模型和 PDF 组件需要重新安装。
+              </div>
+              <AlertDialogFooter>
+                <AlertDialogCancel disabled={isClearing}>
+                  取消
+                </AlertDialogCancel>
+                <AlertDialogAction
+                  disabled={isClearing}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    void clearLocalData();
+                  }}
+                  variant="destructive"
+                >
+                  {isClearing ? (
+                    <LoaderCircle
+                      className="animate-spin"
+                      data-icon="inline-start"
+                    />
+                  ) : (
+                    <Trash2 data-icon="inline-start" />
+                  )}
+                  清除本机数据
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </CardContent>
       </Card>
     </section>

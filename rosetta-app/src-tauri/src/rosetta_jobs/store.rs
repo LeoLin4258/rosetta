@@ -90,7 +90,10 @@ pub(crate) fn write_job_bundle_pdf(
 /// Resolve the cached PDF path for a job (where `write_job_bundle_pdf` wrote
 /// the original PDF). Generation reads from here; if the user has moved or
 /// deleted the original, this copy is still available.
-pub(crate) fn cached_pdf_source_path(app: &AppHandle, job_id: &str) -> Result<std::path::PathBuf, String> {
+pub(crate) fn cached_pdf_source_path(
+    app: &AppHandle,
+    job_id: &str,
+) -> Result<std::path::PathBuf, String> {
     let root = jobs_root(app)?;
     let dir = checked_job_dir(&root, job_id)?;
     Ok(dir.join("source.pdf"))

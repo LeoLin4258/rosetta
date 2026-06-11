@@ -92,13 +92,11 @@ pub fn load(app: &AppHandle) -> OnboardingState {
 pub fn save(app: &AppHandle, state: &OnboardingState) -> Result<(), String> {
     let path = state_path(app)?;
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("无法创建 app 数据目录: {e}"))?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("无法创建 app 数据目录: {e}"))?;
     }
     let json = serde_json::to_string_pretty(state)
         .map_err(|e| format!("无法序列化 onboarding state: {e}"))?;
-    std::fs::write(&path, json)
-        .map_err(|e| format!("无法写入 onboarding state: {e}"))?;
+    std::fs::write(&path, json).map_err(|e| format!("无法写入 onboarding state: {e}"))?;
     Ok(())
 }
 
@@ -198,7 +196,8 @@ pub async fn complete_onboarding_and_open_main(
 #[tauri::command]
 pub async fn reopen_onboarding_window(app: AppHandle) -> Result<(), String> {
     if let Some(onb) = app.get_webview_window("onboarding") {
-        onb.show().map_err(|e| format!("无法显示 onboarding 窗口: {e}"))?;
+        onb.show()
+            .map_err(|e| format!("无法显示 onboarding 窗口: {e}"))?;
         onb.set_focus().ok();
         return Ok(());
     }

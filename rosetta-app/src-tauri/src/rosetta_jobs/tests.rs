@@ -2,9 +2,7 @@ use std::{collections::HashMap, fs, path::PathBuf};
 
 use crate::rosetta_jobs::{
     export::*,
-    formats::pdf::page_assemble::{
-        assemble_pdf_with_page_translations, extract_single_page_pdf,
-    },
+    formats::pdf::page_assemble::{assemble_pdf_with_page_translations, extract_single_page_pdf},
     formats::pdf::page_state::*,
     formats::pdf::test_helpers::fixture_path,
     formats::{markdown::parse_markdown, txt::parse_txt},

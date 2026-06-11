@@ -166,16 +166,15 @@ pub async fn start_sidecar(
                         }
                     }
                 } else {
-                    let msg = format!(
-                        "MLX 后端需要的 default.metallib 不存在: {}",
-                        src.display()
-                    );
+                    let msg = format!("MLX 后端需要的 default.metallib 不存在: {}", src.display());
                     guard.last_error = Some(msg.clone());
                     guard.state = Some(ManagedRuntimeState::Failed);
                     return Err(msg);
                 }
             } else {
-                let msg = "MLX 后端启用，但找不到 default.metallib。请重新运行 fetch-rwkv-sidecar.sh。".to_string();
+                let msg =
+                    "MLX 后端启用，但找不到 default.metallib。请重新运行 fetch-rwkv-sidecar.sh。"
+                        .to_string();
                 guard.last_error = Some(msg.clone());
                 guard.state = Some(ManagedRuntimeState::Failed);
                 return Err(msg);

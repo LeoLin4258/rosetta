@@ -33,7 +33,9 @@ pub(crate) mod test_helpers {
     /// two tests in parallel SIGSEGVs inside FPDF_* routines. Each test that
     /// touches pdfium calls this and holds the guard for the whole test body.
     pub(crate) fn pdfium_test_lock() -> MutexGuard<'static, ()> {
-        PDFIUM_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        PDFIUM_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     pub(crate) fn shared_pdfium() -> &'static Pdfium {

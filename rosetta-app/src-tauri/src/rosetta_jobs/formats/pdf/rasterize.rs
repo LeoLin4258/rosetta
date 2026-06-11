@@ -20,8 +20,11 @@
 
 use std::path::Path;
 
-use image::{ImageFormat, codecs::png::{CompressionType, FilterType, PngEncoder}};
 use image::ImageEncoder;
+use image::{
+    codecs::png::{CompressionType, FilterType, PngEncoder},
+    ImageFormat,
+};
 use tauri::{AppHandle, Manager};
 
 use crate::rosetta_jobs::formats::pdf::{
@@ -108,7 +111,8 @@ pub(crate) fn render_page_as_png(
     let rgba = dyn_image.to_rgba8();
 
     let mut out: Vec<u8> = Vec::with_capacity(64 * 1024);
-    let encoder = PngEncoder::new_with_quality(&mut out, CompressionType::Fast, FilterType::NoFilter);
+    let encoder =
+        PngEncoder::new_with_quality(&mut out, CompressionType::Fast, FilterType::NoFilter);
     encoder
         .write_image(
             rgba.as_raw(),
@@ -135,8 +139,15 @@ mod tests {
         fixture_path, pdfium_test_lock, shared_pdfium,
     };
 
-    fn render_with_bound(pdfium: &pdfium_render::prelude::Pdfium, source: &Path, page: u32, width: u32) -> Vec<u8> {
-        let doc = pdfium.load_pdf_from_file(source.to_str().unwrap(), None).unwrap();
+    fn render_with_bound(
+        pdfium: &pdfium_render::prelude::Pdfium,
+        source: &Path,
+        page: u32,
+        width: u32,
+    ) -> Vec<u8> {
+        let doc = pdfium
+            .load_pdf_from_file(source.to_str().unwrap(), None)
+            .unwrap();
         let pg = doc.pages().get(page as i32).unwrap();
         let cfg = pdfium_render::prelude::PdfRenderConfig::new()
             .set_target_width(width as pdfium_render::prelude::Pixels);
@@ -144,9 +155,15 @@ mod tests {
         let dyn_img = bm.as_image().unwrap();
         let rgba = dyn_img.to_rgba8();
         let mut out = Vec::new();
-        let enc = PngEncoder::new_with_quality(&mut out, CompressionType::Fast, FilterType::NoFilter);
-        enc.write_image(rgba.as_raw(), rgba.width(), rgba.height(), image::ExtendedColorType::Rgba8)
-            .unwrap();
+        let enc =
+            PngEncoder::new_with_quality(&mut out, CompressionType::Fast, FilterType::NoFilter);
+        enc.write_image(
+            rgba.as_raw(),
+            rgba.width(),
+            rgba.height(),
+            image::ExtendedColorType::Rgba8,
+        )
+        .unwrap();
         out
     }
 
@@ -157,7 +174,11 @@ mod tests {
         let source = fixture_path("simple-one-page.pdf");
         let png = render_with_bound(pdfium, &source, 0, 900);
 
-        assert!(png.len() > 1024, "PNG should be non-trivial, got {} bytes", png.len());
+        assert!(
+            png.len() > 1024,
+            "PNG should be non-trivial, got {} bytes",
+            png.len()
+        );
         assert_eq!(
             &png[..8],
             &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A],

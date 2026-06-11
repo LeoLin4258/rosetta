@@ -259,7 +259,11 @@ async fn mobile_batch_processor(
         )
         .await;
 
-        eprintln!("[pdf2zh-batch] result: ok={}, translations={}", result.ok, result.translations.len());
+        eprintln!(
+            "[pdf2zh-batch] result: ok={}, translations={}",
+            result.ok,
+            result.translations.len()
+        );
         if result.ok && result.translations.len() == batch.len() {
             for (pending, translation) in batch.into_iter().zip(result.translations) {
                 let _ = pending.result_tx.send(Ok(translation));
@@ -302,7 +306,10 @@ async fn lightning_batch_processor(
             }
         }
 
-        eprintln!("[pdf2zh-lightning] assembled {} item(s) in batch", batch.len());
+        eprintln!(
+            "[pdf2zh-lightning] assembled {} item(s) in batch",
+            batch.len()
+        );
         let source_texts: Vec<String> = batch.iter().map(|p| p.text.clone()).collect();
         match crate::rwkv_api::translate_batch_via_lightning(
             &config.base_url,
@@ -443,7 +450,12 @@ fn extract_text(messages: &[ChatMessage]) -> Option<String> {
         .iter()
         .rev()
         .find(|message| message.role == "user" && !message.content.trim().is_empty())
-        .or_else(|| messages.iter().rev().find(|message| !message.content.trim().is_empty()))
+        .or_else(|| {
+            messages
+                .iter()
+                .rev()
+                .find(|message| !message.content.trim().is_empty())
+        })
         .map(|message| message.content.trim().to_string())?;
     Some(extract_pdf2zh_source_text(&content).unwrap_or(content))
 }
@@ -477,8 +489,13 @@ fn is_pdf2zh_placeholder_only(text: &str) -> bool {
 
     let mut saw_placeholder = false;
     for token in trimmed.split_whitespace() {
-        let token = token.trim_matches(|ch: char| matches!(ch, ',' | '.' | ';' | ':' | '，' | '。' | '；' | '：'));
-        let Some(inner) = token.strip_prefix("$v").and_then(|value| value.strip_suffix('$')) else {
+        let token = token.trim_matches(|ch: char| {
+            matches!(ch, ',' | '.' | ';' | ':' | '，' | '。' | '；' | '：')
+        });
+        let Some(inner) = token
+            .strip_prefix("$v")
+            .and_then(|value| value.strip_suffix('$'))
+        else {
             return false;
         };
         if inner.is_empty() || !inner.chars().all(|ch| ch.is_ascii_digit()) {
@@ -515,10 +532,22 @@ mod tests {
     #[test]
     fn extract_text_prefers_last_user_message() {
         let messages = vec![
-            ChatMessage { role: "system".to_string(), content: "rules".to_string() },
-            ChatMessage { role: "user".to_string(), content: "first".to_string() },
-            ChatMessage { role: "assistant".to_string(), content: "ignored".to_string() },
-            ChatMessage { role: "user".to_string(), content: " second ".to_string() },
+            ChatMessage {
+                role: "system".to_string(),
+                content: "rules".to_string(),
+            },
+            ChatMessage {
+                role: "user".to_string(),
+                content: "first".to_string(),
+            },
+            ChatMessage {
+                role: "assistant".to_string(),
+                content: "ignored".to_string(),
+            },
+            ChatMessage {
+                role: "user".to_string(),
+                content: " second ".to_string(),
+            },
         ];
         assert_eq!(extract_text(&messages).as_deref(), Some("second"));
     }

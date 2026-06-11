@@ -26,8 +26,27 @@ export type PdfPageTranslationState = {
   pages: PdfPageTranslation[];
 };
 
+export type LocalDataResetItem = {
+  label: string;
+  path: string;
+  deleted: boolean;
+};
+
+export type LocalDataResetResult = {
+  items: LocalDataResetItem[];
+  stoppedRuntime: boolean;
+  cancelledRwkvInstall: boolean;
+  cancelledPdf2zhInstall: boolean;
+  cancelledPdfTranslation: boolean;
+  runtimeStopError?: string | null;
+};
+
 export function createWelcomeDocument() {
   return invoke<RosettaJobBundle>("create_welcome_document");
+}
+
+export function clearRosettaLocalData() {
+  return invoke<LocalDataResetResult>("clear_rosetta_local_data");
 }
 
 export function importRosettaDocumentFromPath(path: string) {

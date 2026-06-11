@@ -41,9 +41,9 @@ const ALL_PROFILES: &[Pdf2zhProfile] = &[MACOS_ARM64_PDF2ZH];
 pub fn current_profile() -> Option<&'static Pdf2zhProfile> {
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
-    ALL_PROFILES
-        .iter()
-        .find(|profile| profile.enabled && profile.platform_os == os && profile.platform_arch == arch)
+    ALL_PROFILES.iter().find(|profile| {
+        profile.enabled && profile.platform_os == os && profile.platform_arch == arch
+    })
 }
 
 #[derive(Debug, Clone, Serialize)]

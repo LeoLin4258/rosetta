@@ -18,13 +18,13 @@ pub(crate) mod store;
 mod tests;
 pub(crate) mod translation_files;
 
+use crate::managed_pdf2zh::openai_shim::{LightningApiConfig, ShimProviderConfig};
+use crate::rwkv_providers::mobile_batch_chat::MobileBatchChatConfig;
 use model::{
     RosettaExportKind, RosettaExportResult, RosettaJobBundle, RosettaJobFileDeleteResult,
     RosettaJobSummary, RosettaTranslationFileBundle, Segment, TranslationRevisionReason,
     TranslationSegment,
 };
-use crate::managed_pdf2zh::openai_shim::{LightningApiConfig, ShimProviderConfig};
-use crate::rwkv_providers::mobile_batch_chat::MobileBatchChatConfig;
 
 #[derive(Default)]
 pub struct PdfTranslationCancelState(pub Mutex<Option<oneshot::Sender<()>>>);
@@ -32,9 +32,7 @@ pub struct PdfTranslationCancelState(pub Mutex<Option<oneshot::Sender<()>>>);
 pub use formats::pdf::runtime::PngCache as PdfPngCache;
 
 #[tauri::command]
-pub fn cancel_rosetta_translated_pdf(
-    cancel_state: State<'_, PdfTranslationCancelState>,
-) {
+pub fn cancel_rosetta_translated_pdf(cancel_state: State<'_, PdfTranslationCancelState>) {
     if let Ok(mut guard) = cancel_state.0.lock() {
         if let Some(tx) = guard.take() {
             let _ = tx.send(());
@@ -152,10 +150,7 @@ pub struct RosettaPdfAssets {
 /// checks (e.g. "translated PDF already generated?"); to render a PDF they
 /// pull bytes via [`read_rosetta_pdf_bytes`].
 #[tauri::command]
-pub fn get_rosetta_pdf_assets(
-    app: AppHandle,
-    job_id: String,
-) -> Result<RosettaPdfAssets, String> {
+pub fn get_rosetta_pdf_assets(app: AppHandle, job_id: String) -> Result<RosettaPdfAssets, String> {
     let source_pdf = store::cached_pdf_source_path(&app, &job_id)?;
     if !source_pdf.is_file() {
         return Err("项目缓存里找不到源 PDF。".to_string());
@@ -191,8 +186,7 @@ pub fn read_rosetta_pdf_bytes(
     if !path.is_file() {
         return Err(format!("文件不存在: {}", path.display()));
     }
-    let bytes = std::fs::read(&path)
-        .map_err(|error| format!("读取 PDF 失败: {error}"))?;
+    let bytes = std::fs::read(&path).map_err(|error| format!("读取 PDF 失败: {error}"))?;
     Ok(tauri::ipc::Response::new(bytes))
 }
 
@@ -253,8 +247,8 @@ pub fn get_rosetta_pdf_page_status(
     target_lang: Option<String>,
 ) -> Result<formats::pdf::page_state::PdfPageTranslationState, String> {
     let source_path = store::cached_pdf_source_path(&app, &job_id)?;
-    let page_count = formats::pdf::count_pages(&app, &source_path)
-        .map_err(|error| error.user_message())?;
+    let page_count =
+        formats::pdf::count_pages(&app, &source_path).map_err(|error| error.user_message())?;
     let root = path::jobs_root(&app)?;
     let dir = path::checked_job_dir(&root, &job_id)?;
     let bundle = store::load_job_bundle(&app, &job_id)?;
@@ -292,14 +286,13 @@ pub async fn translate_rosetta_pdf_pages(
     }
 
     let source_path = store::cached_pdf_source_path(&app, &job_id)?;
-    let page_count = formats::pdf::count_pages(&app, &source_path)
-        .map_err(|error| error.user_message())?;
+    let page_count =
+        formats::pdf::count_pages(&app, &source_path).map_err(|error| error.user_message())?;
     let pages = formats::pdf::page_state::parse_pdf_page_selection(&page_selection, page_count)?;
     let root = path::jobs_root(&app)?;
     let dir = path::checked_job_dir(&root, &job_id)?;
     let pages_dir = dir.join("pdf-pages");
-    fs::create_dir_all(&pages_dir)
-        .map_err(|error| format!("无法创建 PDF 页缓存目录: {error}"))?;
+    fs::create_dir_all(&pages_dir).map_err(|error| format!("无法创建 PDF 页缓存目录: {error}"))?;
     let mut state =
         formats::pdf::page_state::read_pdf_page_translation_state(&dir, page_count, &target_lang)?;
     let source_lang = source_lang
@@ -492,7 +485,9 @@ pub fn render_rosetta_pdf_translated_page_as_png(
     }
     let root = path::jobs_root(&app)?;
     let dir = path::checked_job_dir(&root, &job_id)?;
-    let page_path = dir.join(formats::pdf::page_state::pdf_page_relative_path(page_number));
+    let page_path = dir.join(formats::pdf::page_state::pdf_page_relative_path(
+        page_number,
+    ));
     if !page_path.is_file() {
         return Err(format!("第 {page_number} 页还没有译文 PDF。"));
     }
@@ -534,8 +529,8 @@ pub fn export_rosetta_translated_pdf(
     target_path: String,
 ) -> Result<model::RosettaExportResult, String> {
     let source_pdf = store::cached_pdf_source_path(&app, &job_id)?;
-    let page_count = formats::pdf::count_pages(&app, &source_pdf)
-        .map_err(|error| error.user_message())?;
+    let page_count =
+        formats::pdf::count_pages(&app, &source_pdf).map_err(|error| error.user_message())?;
     let root = path::jobs_root(&app)?;
     let dir = path::checked_job_dir(&root, &job_id)?;
     let bundle = store::load_job_bundle(&app, &job_id)?;
@@ -556,8 +551,7 @@ pub fn export_rosetta_translated_pdf(
     )?;
     let target = std::path::PathBuf::from(&target_path);
     if let Some(parent) = target.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("无法创建导出目录: {error}"))?;
+        std::fs::create_dir_all(parent).map_err(|error| format!("无法创建导出目录: {error}"))?;
     }
     let bytes_written = std::fs::copy(&assembled_path, &target)
         .map_err(|error| format!("复制翻译后 PDF 失败: {error}"))?;
@@ -615,8 +609,7 @@ pub async fn generate_rosetta_translated_pdf(
     let dir = path::checked_job_dir(&root, &job_id)?;
     let output_path = store::translated_pdf_output_path(&app, &job_id)?;
     if let Some(parent) = output_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("无法创建导出目录: {error}"))?;
+        std::fs::create_dir_all(parent).map_err(|error| format!("无法创建导出目录: {error}"))?;
     }
     let pdf2zh_output_dir = dir.join("pdf2zh-output");
     if pdf2zh_output_dir.exists() {
@@ -648,7 +641,9 @@ pub async fn generate_rosetta_translated_pdf(
     let base_url = rwkv_base_url
         .map(|u| u.trim().to_string())
         .filter(|u| !u.is_empty())
-        .ok_or_else(|| "PDF 翻译需要配置 API 地址。请先启动本地运行时或配置远程 API。".to_string())?;
+        .ok_or_else(|| {
+            "PDF 翻译需要配置 API 地址。请先启动本地运行时或配置远程 API。".to_string()
+        })?;
     let timeout = timeout_ms.unwrap_or(120_000);
     let ep = provider_endpoint
         .as_deref()
@@ -672,7 +667,10 @@ pub async fn generate_rosetta_translated_pdf(
 
     let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
     {
-        let mut guard = cancel_state.0.lock().map_err(|_| "取消状态锁定失败。".to_string())?;
+        let mut guard = cancel_state
+            .0
+            .lock()
+            .map_err(|_| "取消状态锁定失败。".to_string())?;
         *guard = Some(cancel_tx);
     }
 
@@ -696,7 +694,10 @@ pub async fn generate_rosetta_translated_pdf(
     .await;
 
     {
-        let mut guard = cancel_state.0.lock().map_err(|_| "取消状态锁定失败。".to_string())?;
+        let mut guard = cancel_state
+            .0
+            .lock()
+            .map_err(|_| "取消状态锁定失败。".to_string())?;
         *guard = None;
     }
 

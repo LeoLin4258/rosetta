@@ -224,7 +224,9 @@ async fn install_inner(
     let expected_sha = effective_sha(profile, options);
     let expected_size = effective_size(profile, options);
     let archive_path = layout.downloads_dir.join(profile.pack_filename);
-    let part_path = layout.downloads_dir.join(format!("{}.part", profile.pack_filename));
+    let part_path = layout
+        .downloads_dir
+        .join(format!("{}.part", profile.pack_filename));
 
     if options.repair {
         let _ = std::fs::remove_dir_all(&layout.pack_dir);
@@ -319,7 +321,8 @@ async fn install_inner(
     if let Some(expected) = expected_sha.as_deref() {
         if actual_sha != expected {
             let _ = std::fs::remove_file(&archive_path);
-            let message = format!("PDF 版面处理组件校验失败（预期 {expected}，实际 {actual_sha}）。");
+            let message =
+                format!("PDF 版面处理组件校验失败（预期 {expected}，实际 {actual_sha}）。");
             set_failed(registry, message.clone()).await;
             emit_progress(app, registry).await;
             return Err(message);
@@ -331,7 +334,8 @@ async fn install_inner(
             .len();
         if actual_size != expected {
             let _ = std::fs::remove_file(&archive_path);
-            let message = format!("PDF 版面处理组件大小不匹配（预期 {expected}，实际 {actual_size}）。");
+            let message =
+                format!("PDF 版面处理组件大小不匹配（预期 {expected}，实际 {actual_size}）。");
             set_failed(registry, message.clone()).await;
             emit_progress(app, registry).await;
             return Err(message);
@@ -347,7 +351,13 @@ async fn install_inner(
 
     extract_pack(&archive_path, layout, profile, cancel).await?;
     scrub_python_bytecode(&layout.pack_dir)?;
-    write_manifest(layout, profile, &source_url, expected_size, Some(actual_sha))?;
+    write_manifest(
+        layout,
+        profile,
+        &source_url,
+        expected_size,
+        Some(actual_sha),
+    )?;
 
     set_done(registry, "PDF 版面处理组件已安装。".to_string()).await;
     emit_progress(app, registry).await;
@@ -388,7 +398,10 @@ async fn download_http(
         .await
         .map_err(|error| format!("下载 PDF 版面处理组件失败: {error}"))?;
     if !response.status().is_success() {
-        return Err(format!("下载 PDF 版面处理组件返回 HTTP {}", response.status().as_u16()));
+        return Err(format!(
+            "下载 PDF 版面处理组件返回 HTTP {}",
+            response.status().as_u16()
+        ));
     }
     stream_response_to_file(app, registry, response, target, expected_size, cancel).await
 }
@@ -435,7 +448,10 @@ async fn stream_response_to_file(
                 progress.bytes_total = expected_size.unwrap_or(progress.bytes_total);
                 progress.speed_bytes_per_sec = speed;
                 progress.message = if let Some(total) = expected_size {
-                    let percent = bytes_done.saturating_mul(100).checked_div(total).unwrap_or(0);
+                    let percent = bytes_done
+                        .saturating_mul(100)
+                        .checked_div(total)
+                        .unwrap_or(0);
                     format!("下载 PDF 版面处理组件中 {percent}%")
                 } else {
                     format!("下载 PDF 版面处理组件中 ({bytes_done} bytes)")
@@ -569,7 +585,8 @@ async fn extract_pack(
 
 fn copy_dir_all(source: &Path, target: &Path) -> Result<(), String> {
     std::fs::create_dir_all(target).map_err(|error| format!("无法创建目录: {error}"))?;
-    for entry in std::fs::read_dir(source).map_err(|error| format!("无法读取目录: {error}"))? {
+    for entry in std::fs::read_dir(source).map_err(|error| format!("无法读取目录: {error}"))?
+    {
         let entry = entry.map_err(|error| format!("无法读取目录项: {error}"))?;
         let file_type = entry
             .file_type()
@@ -605,8 +622,9 @@ fn scrub_python_bytecode_inner(dir: &Path) -> Result<(), String> {
             .map_err(|error| format!("无法读取目录项类型: {error}"))?;
         if file_type.is_dir() {
             if entry.file_name() == "__pycache__" {
-                std::fs::remove_dir_all(&path)
-                    .map_err(|error| format!("无法删除 Python bytecode 缓存 {}: {error}", path.display()))?;
+                std::fs::remove_dir_all(&path).map_err(|error| {
+                    format!("无法删除 Python bytecode 缓存 {}: {error}", path.display())
+                })?;
             } else {
                 scrub_python_bytecode_inner(&path)?;
             }

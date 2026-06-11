@@ -49,16 +49,14 @@ struct LegacyArtifact {
 ///
 /// **Do not delete entries from this array** even after they've shipped for
 /// a long time; users skipping multiple versions still rely on them.
-const LEGACY_ARTIFACTS: &[LegacyArtifact] = &[
-    LegacyArtifact {
-        // beta.7 and earlier: WebRWKV 1.5B nf4 model, ~1.26 GB on disk.
-        // Superseded by MLX 0.4B 6-bit in beta.8 (different model_directory_name).
-        // The directory contains the .prefab weight file + `manifest.json` + any
-        // `.part` / `.part.broken` files from partial downloads.
-        subpath: "managed-rwkv/models/rwkv-translate-1.5b-nf4",
-        reason: "WebRWKV 1.5B 模型（已被 MLX 0.4B 取代，beta.8 起不再使用）",
-    },
-];
+const LEGACY_ARTIFACTS: &[LegacyArtifact] = &[LegacyArtifact {
+    // beta.7 and earlier: WebRWKV 1.5B nf4 model, ~1.26 GB on disk.
+    // Superseded by MLX 0.4B 6-bit in beta.8 (different model_directory_name).
+    // The directory contains the .prefab weight file + `manifest.json` + any
+    // `.part` / `.part.broken` files from partial downloads.
+    subpath: "managed-rwkv/models/rwkv-translate-1.5b-nf4",
+    reason: "WebRWKV 1.5B 模型（已被 MLX 0.4B 取代，beta.8 起不再使用）",
+}];
 
 /// Run all known migrations. Call once at app startup, after the AppHandle
 /// is available and before the install plan is computed for the first time.

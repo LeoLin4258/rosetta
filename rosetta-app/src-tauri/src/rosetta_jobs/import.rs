@@ -8,12 +8,7 @@ use crate::rosetta_jobs::{
         sync_document_default_language_from_files, sync_document_file_statuses, sync_job_counts,
         sync_job_source_files,
     },
-    formats::{
-        collect_supported_source_paths, document_format,
-        parse_source,
-        pdf,
-        SourceFormat,
-    },
+    formats::{collect_supported_source_paths, document_format, parse_source, pdf, SourceFormat},
     model::{
         default_file_translation_status, RosettaDocument, RosettaJobBundle,
         RosettaJobFileDeleteResult, RosettaJobSummary, RosettaSourceFile, Segment, SourceSnapshot,
@@ -40,8 +35,8 @@ pub(crate) async fn import_pdf_skeleton(
     app: &AppHandle,
     source_path: &Path,
 ) -> Result<RosettaJobBundle, String> {
-    let metadata = fs::metadata(source_path)
-        .map_err(|error| format!("无法读取文件信息: {error}"))?;
+    let metadata =
+        fs::metadata(source_path).map_err(|error| format!("无法读取文件信息: {error}"))?;
     if !metadata.is_file() {
         return Err("只能导入文件。".to_string());
     }
@@ -52,8 +47,7 @@ pub(crate) async fn import_pdf_skeleton(
 
     // Cheap fast-fail BEFORE we create the sidebar entry — catches encrypted /
     // too-large / too-many-pages so users don't end up with a phantom job.
-    pdf::extract::pre_flight(app, source_path)
-        .map_err(|error| error.user_message())?;
+    pdf::extract::pre_flight(app, source_path).map_err(|error| error.user_message())?;
 
     let now = timestamp_ms_string();
     let filename = source_path
@@ -154,8 +148,7 @@ pub(crate) async fn import_document_from_path(
     // Branch: PDF is imported as a black-box source file; text formats stay UTF-8.
     let (blocks, segments, source_contents) = match format {
         SourceFormat::Pdf => {
-            pdf::extract::pre_flight(app, source_path)
-                .map_err(|error| error.user_message())?;
+            pdf::extract::pre_flight(app, source_path).map_err(|error| error.user_message())?;
             (Vec::new(), Vec::new(), None)
         }
         _ => {
