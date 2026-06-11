@@ -4,7 +4,6 @@ import {
   CheckCircle2,
   ChevronDown,
   Download,
-  FileText,
   FolderInput,
   LoaderCircle,
   RefreshCw,
@@ -13,7 +12,6 @@ import {
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import {
   Collapsible,
   CollapsibleContent,
@@ -51,105 +49,98 @@ export function Pdf2zhPanel({ className }: { className?: string }) {
   const isUnsupported = state === "unsupported";
 
   return (
-    <section className={cn("flex flex-col gap-3", className)} id="pdf2zh">
+    <section
+      className={cn("flex flex-col gap-4 rounded-md bg-muted/20 p-4", className)}
+      id="pdf2zh"
+    >
       <div className="flex items-start justify-between gap-4">
-        <div className="flex min-w-0 gap-3">
-          <div className="flex size-9 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
-            <FileText className="size-4" />
-          </div>
-          <div className="min-w-0">
-            <h2 className="text-lg font-semibold tracking-normal">PDF 版面处理</h2>
-            <p className="mt-1 text-sm text-muted-foreground">
-              用于读取 PDF、保留原文排版，并生成可预览和导出的译文 PDF。
-            </p>
-          </div>
-        </div>
+        <StatusRow
+          state={state}
+          status={rt.status}
+          isRefreshing={rt.isRefreshing}
+          isInstallActive={isInstallActive}
+        />
         <Pdf2zhBadge state={state} isInstallActive={isInstallActive} />
       </div>
 
-      <Card>
-        <CardContent className="flex flex-col gap-4 py-5">
-          <StatusRow
-            state={state}
-            status={rt.status}
-            isRefreshing={rt.isRefreshing}
-            isInstallActive={isInstallActive}
+      <div className="flex flex-col gap-4 border-t pt-4">
+        {isInstallActive && (
+          <InstallProgressRow
+            percent={installPercent(rt.progress)}
+            message={rt.progress?.message ?? ""}
+            speedBytesPerSec={rt.progress?.speedBytesPerSec ?? 0}
           />
+        )}
 
-          {isInstallActive && (
-            <InstallProgressRow
-              percent={installPercent(rt.progress)}
-              message={rt.progress?.message ?? ""}
-              speedBytesPerSec={rt.progress?.speedBytesPerSec ?? 0}
-            />
-          )}
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => void rt.refreshStatus()}
+            disabled={rt.isRefreshing || isInstallActive}
+          >
+            {rt.isRefreshing ? (
+              <LoaderCircle className="size-4 animate-spin" />
+            ) : (
+              <RefreshCw className="size-4" />
+            )}
+            重新检查
+          </Button>
 
-          <div className="flex flex-wrap items-center gap-2">
+          {isInstallActive ? (
             <Button
               size="sm"
               variant="outline"
-              onClick={() => void rt.refreshStatus()}
-              disabled={rt.isRefreshing || isInstallActive}
+              onClick={() => void rt.cancelInstall()}
             >
-              {rt.isRefreshing ? (
-                <LoaderCircle className="size-4 animate-spin" />
-              ) : (
-                <RefreshCw className="size-4" />
-              )}
-              刷新状态
+              <X className="size-4" /> 取消安装
             </Button>
+          ) : null}
+        </div>
 
-            {isInstallActive ? (
-              <Button size="sm" variant="outline" onClick={() => void rt.cancelInstall()}>
-                <X className="size-4" /> 取消安装
-              </Button>
-            ) : null}
+        {showProxyInput(state, isInstallActive) && (
+          <DownloadProxyField disabled={isInstallActive} />
+        )}
+
+        {rt.lastError && (
+          <div className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
+            <AlertCircle className="mt-0.5 size-4 shrink-0" />
+            <span className="break-all">{rt.lastError}</span>
           </div>
+        )}
 
-          {showProxyInput(state, isInstallActive) && (
-            <DownloadProxyField disabled={isInstallActive} />
-          )}
-
-          {rt.lastError && (
-            <div className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
-              <AlertCircle className="mt-0.5 size-4 shrink-0" />
-              <span className="break-all">{rt.lastError}</span>
-            </div>
-          )}
-
-          {!isUnsupported && (
-            <Collapsible open={detailsOpen} onOpenChange={setDetailsOpen}>
-              <CollapsibleTrigger asChild>
-                <button
-                  type="button"
-                  className="-ml-1 flex items-center gap-1 rounded px-1 py-0.5 text-xs text-muted-foreground/60 transition-colors hover:text-muted-foreground"
-                >
-                  <ChevronDown
-                    className={cn(
-                      "size-3.5 transition-transform",
-                      detailsOpen && "rotate-180"
-                    )}
-                  />
-                  详细信息
-                </button>
-              </CollapsibleTrigger>
-              <CollapsibleContent>
-                <div className="mt-3 flex flex-col gap-4 rounded-md border bg-muted/20 p-4">
-                  <RepairActions
-                    state={state}
-                    isInstallActive={isInstallActive}
-                    isInstalling={rt.isInstalling}
-                    onInstall={() => void rt.install({ repair: false })}
-                    onRepair={() => void rt.install({ repair: true })}
-                    onImportFromFile={() => void rt.importFromFile()}
-                  />
-                  {rt.status && <Pdf2zhInfoRows status={rt.status} />}
-                </div>
-              </CollapsibleContent>
-            </Collapsible>
-          )}
-        </CardContent>
-      </Card>
+        {!isUnsupported && (
+          <Collapsible open={detailsOpen} onOpenChange={setDetailsOpen}>
+            <CollapsibleTrigger asChild>
+              <button
+                type="button"
+                className="flex h-8 w-fit items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <ChevronDown
+                  className={cn(
+                    "size-3.5 transition-transform",
+                    detailsOpen && "rotate-180"
+                  )}
+                />
+                维护与技术信息
+              </button>
+            </CollapsibleTrigger>
+            <CollapsibleContent>
+              <div className="mt-2 flex flex-col gap-4 border-t pt-4">
+                <RepairActions
+                  state={state}
+                  isInstallActive={isInstallActive}
+                  isInstalling={rt.isInstalling}
+                  onInstall={() => void rt.install({ repair: false })}
+                  onRepair={() => void rt.install({ repair: true })}
+                  onImportFromFile={() => void rt.importFromFile()}
+                />
+                {rt.status && <Pdf2zhInfoRows status={rt.status} />}
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
+        )}
+      </div>
     </section>
   );
 }
@@ -190,35 +181,34 @@ function resolveStatus(
   if (isInstallActive) {
     return {
       dot: "bg-blue-500",
-      label: "正在准备 PDF 版面处理组件…",
-      sub: "完成后，PDF 文档会自动保留排版并生成译文 PDF。",
+      label: "正在安装 PDF 处理组件",
+      sub: "安装完成后，PDF 文档可以保留版面并导出译文 PDF。",
       spinning: true,
     };
   }
   if (isRefreshing || state === null) {
     return {
       dot: "bg-muted-foreground/30",
-      label: "正在检测 PDF 版面处理组件…",
+      label: "正在检查 PDF 处理组件",
       spinning: true,
     };
   }
   if (state === "installed") {
     return {
       dot: "bg-emerald-500",
-      label: "PDF 版面处理已就绪",
-      sub: status?.paths?.bin ? `使用 ${status.paths.bin}` : undefined,
+      label: "PDF 处理组件已安装",
     };
   }
   if (state === "unsupported") {
     return {
       dot: "bg-muted-foreground/40",
-      label: "当前设备暂不支持自动处理 PDF 版面",
+      label: "当前设备暂不支持 PDF 版面处理",
       sub: status?.message,
     };
   }
   return {
     dot: "bg-muted-foreground/30",
-    label: "PDF 版面处理组件尚未安装",
+    label: "PDF 处理组件尚未安装",
     sub: status?.message,
   };
 }
@@ -251,7 +241,7 @@ function RepairActions({
           disabled={isInstalling}
           className="w-fit"
         >
-          <RefreshCw className="size-4" /> 重新安装 / 修复
+          <RefreshCw className="size-4" /> 重新安装组件
         </Button>
         <Button
           variant="ghost"
@@ -279,7 +269,7 @@ function RepairActions({
         ) : (
           <Download className="size-4" />
         )}
-        安装 PDF 版面处理组件
+        安装 PDF 处理组件
       </Button>
       {/*
         Secondary action positioned right below the primary download button.
@@ -295,7 +285,7 @@ function RepairActions({
         disabled={isInstalling}
         className="w-fit text-muted-foreground"
       >
-        <FolderInput className="size-4" /> 已下载？从本地文件导入
+        <FolderInput className="size-4" /> 从本地安装包导入
       </Button>
     </div>
   );
@@ -359,7 +349,7 @@ function DownloadProxyField({ disabled }: { disabled: boolean }) {
         <Label htmlFor="pdf2zh-download-proxy" className="text-xs font-medium">
           下载代理（可选）
         </Label>
-        <span className="text-[11px] text-muted-foreground">仅用于下载组件</span>
+        <span className="text-[11px] text-muted-foreground">只影响组件下载</span>
       </div>
       <Input
         id="pdf2zh-download-proxy"

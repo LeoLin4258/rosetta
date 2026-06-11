@@ -128,7 +128,7 @@ export function useManagedPdf2zhRuntime() {
       if (selection == null) {
         return null;
       }
-      const localPath = typeof selection === "string" ? selection : selection.path;
+      const localPath = selection;
       // file:// URLs need an absolute path. macOS file picker always returns
       // absolute paths, but we sanity-check rather than letting a malformed
       // URL silently fall through to the HTTP branch.

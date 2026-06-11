@@ -22,16 +22,11 @@ import {
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import {
   Collapsible,
   CollapsibleContent,
+  CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -171,7 +166,7 @@ export function SettingsPage() {
     } catch (error) {
       setUpdateStatus("failed");
       setUpdateError(
-        error instanceof Error ? error.message : "检查更新失败。"
+        error instanceof Error ? error.message : "无法检查更新。请稍后重试。"
       );
     }
   }
@@ -215,7 +210,7 @@ export function SettingsPage() {
     } catch (error) {
       setUpdateStatus("failed");
       setUpdateError(
-        error instanceof Error ? error.message : "下载或安装更新失败。"
+        error instanceof Error ? error.message : "无法安装更新。请稍后重新下载。"
       );
     }
   }
@@ -229,16 +224,16 @@ export function SettingsPage() {
     } catch (error) {
       setUpdateStatus("failed");
       setUpdateError(
-        error instanceof Error ? error.message : "重启应用失败。"
+        error instanceof Error ? error.message : "无法重启 Rosetta。请手动退出后重新打开。"
       );
     }
   }
 
   const missingConnectionFields = [
-    !rwkv.baseUrl.trim() && "API 地址",
+    !rwkv.baseUrl.trim() && "服务地址",
     !rwkv.endpoint.trim() && "接口路径",
     !rwkv.internalToken.trim() && "访问密钥",
-    !rwkv.bodyPassword.trim() && "模型口令",
+    !rwkv.bodyPassword.trim() && "请求口令",
     rwkv.timeoutMs <= 0 && "超时时间",
   ].filter(Boolean) as string[];
   const canProbeApi = missingConnectionFields.length === 0 && !isProbingApi;
@@ -255,11 +250,11 @@ export function SettingsPage() {
         <header className="flex flex-col gap-2">
           <h1 className="text-2xl font-semibold tracking-normal">设置</h1>
           <p className="max-w-3xl text-sm text-muted-foreground">
-            管理翻译引擎、外观、文档处理与应用更新等选项。
+            选择翻译方式，检查本地组件，并管理外观与更新。
           </p>
         </header>
 
-        <main className="flex w-full flex-col gap-3">
+        <main className="flex w-full flex-col gap-8">
           <TranslationAiSection
             apiStatus={apiStatus}
             canProbeApi={canProbeApi}
@@ -356,7 +351,7 @@ function TranslationAiSection({
   const isSwitchingProvider = switchingTo != null;
   const state = managedRuntimeStatus?.state ?? null;
   const switchDisabled = isSwitchingProvider || isTranslationRunning;
-  const currentEngineLabel = selectedLocal ? "本地模型" : "远程 API";
+  const currentEngineLabel = selectedLocal ? "本地模型" : "远程服务";
   const currentEngineTone = selectedProviderReady ? "selected" : "warning";
 
   useEffect(() => {
@@ -383,12 +378,12 @@ function TranslationAiSection({
 
   return (
     <section className="flex flex-col gap-3" id="translation-ai">
-      <Card>
+      <Card className="">
         <CardContent className="flex flex-col gap-5 py-5">
           <SettingsRowHeader
             description={
               <>
-                选择并配置用于翻译的引擎。当前使用：
+                选择 Rosetta 翻译文档时使用的服务。当前使用：
                 <SemanticBadge tone={currentEngineTone}>
                   {currentEngineLabel}
                   <span
@@ -423,17 +418,16 @@ function TranslationAiSection({
                     : localServiceSelectedProblemLabel(state)
                   : localServiceStatusLabel(state)
               }
-              meta={<LocalEngineMeta state={state} />}
               switchDisabled={switchDisabled}
             />
             <BackendChoiceCard
               description={
                 remoteApiConfigured
                   ? displayRemoteApiUrl(rwkv)
-                  : "远程 API 尚未填写完整。"
+                  : "填写服务地址、接口路径和口令后才能使用。"
               }
               icon={<Cloud className="size-4" />}
-              label="远程 API"
+              label="远程服务"
               onSelect={() => selectProviderPreference("remote-api")}
               selected={!selectedLocal}
               status={
@@ -449,17 +443,10 @@ function TranslationAiSection({
                   : !selectedLocal
                   ? remoteApiConfigured
                     ? "已选择"
-                    : "需填写"
+                    : "缺少配置"
                   : remoteApiConfigured
                     ? remoteApiFallbackLabel(apiStatus)
                     : "未配置"
-              }
-              meta={
-                remoteApiConfigured ? (
-                  <span>端点：{displayRemoteApiUrl(rwkv)}</span>
-                ) : (
-                  <span>状态：未配置</span>
-                )
               }
               switchDisabled={switchDisabled}
             />
@@ -467,12 +454,12 @@ function TranslationAiSection({
 
           {isTranslationRunning ? (
             <p className="text-xs text-amber-700 dark:text-amber-300">
-              正在翻译。停止或等待完成后才能切换后端。
+              正在翻译。停止当前任务后再切换翻译引擎。
             </p>
           ) : isSwitchingProvider ? (
             <p className="flex items-center gap-1.5 text-xs text-sky-700 dark:text-sky-300">
               <LoaderCircle className="size-3.5 animate-spin" />
-              正在切换翻译后端，请稍候。
+              正在切换翻译引擎。
             </p>
           ) : null}
 
@@ -495,33 +482,47 @@ function TranslationAiSection({
             </Button>
             <CollapsibleTriggerButton
               icon={<Cloud data-icon="inline-start" />}
-              label="配置远程 API"
+              label="配置远程服务"
               open={externalApiOpen}
               onOpenChange={onExternalApiOpenChange}
             />
           </div>
+
+          <Collapsible
+            open={localSettingsOpen}
+            onOpenChange={setLocalSettingsOpen}
+          >
+            <CollapsibleContent>
+              <div className="border-t pt-5">
+                <LocalRwkvPanel />
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
+
+          <Collapsible
+            open={externalApiOpen}
+            onOpenChange={onExternalApiOpenChange}
+          >
+            <CollapsibleContent>
+              <div className="border-t pt-5">
+                <RemoteApiSettingsPanel
+                  apiError={apiError}
+                  apiProbeResult={apiProbeResult}
+                  apiStatus={apiStatus}
+                  canProbeApi={canProbeApi}
+                  isProbingApi={isProbingApi}
+                  missingConnectionFields={missingConnectionFields}
+                  onProbeApi={onProbeApi}
+                  rwkv={rwkv}
+                  setTranslationMode={setTranslationMode}
+                  updateTextField={updateTextField}
+                  updateTimeout={updateTimeout}
+                />
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
         </CardContent>
       </Card>
-
-      {localSettingsOpen ? <LocalRwkvPanel /> : null}
-
-      <Collapsible open={externalApiOpen} onOpenChange={onExternalApiOpenChange}>
-        <CollapsibleContent>
-          <RemoteApiSettingsPanel
-            apiError={apiError}
-            apiProbeResult={apiProbeResult}
-            apiStatus={apiStatus}
-            canProbeApi={canProbeApi}
-            isProbingApi={isProbingApi}
-            missingConnectionFields={missingConnectionFields}
-            onProbeApi={onProbeApi}
-            rwkv={rwkv}
-            setTranslationMode={setTranslationMode}
-            updateTextField={updateTextField}
-            updateTimeout={updateTimeout}
-          />
-        </CollapsibleContent>
-      </Collapsible>
     </section>
   );
 }
@@ -588,21 +589,23 @@ function RemoteApiSettingsPanel({
   updateTimeout: (event: ChangeEvent<HTMLInputElement>) => void;
 }) {
   return (
-    <Card>
-      <CardHeader>
+    <section className="flex flex-col gap-5 rounded-md bg-muted/20 p-4">
+      <div>
         <div className="flex items-start justify-between gap-3">
           <div>
-            <CardTitle>配置远程 API</CardTitle>
-            <CardDescription>
-              仅在选择远程 API 或需要备用后端时填写。
-            </CardDescription>
+            <h3 className="text-sm font-semibold tracking-normal">
+              远程翻译服务
+            </h3>
+            <p className="mt-1 text-sm text-muted-foreground">
+              填写兼容 OpenAI Chat Completions 的服务地址。选择远程服务后，文本会发送到该地址。
+            </p>
           </div>
           <StatusBadge status={apiStatus} />
         </div>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-5">
+      </div>
+      <div className="flex flex-col gap-5">
         <div className="grid gap-4 md:grid-cols-2">
-          <SettingField htmlFor="rwkv-base-url" label="API 地址">
+          <SettingField htmlFor="rwkv-base-url" label="服务地址">
             <Input
               id="rwkv-base-url"
               onChange={updateTextField("baseUrl")}
@@ -630,7 +633,7 @@ function RemoteApiSettingsPanel({
             />
           </SettingField>
 
-          <SettingField htmlFor="rwkv-body-password" label="模型口令">
+          <SettingField htmlFor="rwkv-body-password" label="请求口令">
             <Input
               autoComplete="off"
               id="rwkv-body-password"
@@ -659,7 +662,7 @@ function RemoteApiSettingsPanel({
           </SettingField>
 
           <div className="flex flex-col gap-2">
-            <Label>翻译偏好</Label>
+            <Label>译文生成模式</Label>
             <ToggleGroup
               className="grid grid-cols-3"
               onValueChange={(value) => {
@@ -691,20 +694,20 @@ function RemoteApiSettingsPanel({
               variant={apiStatus === "connected" ? "outline" : "default"}
             >
               <Send data-icon="inline-start" />
-              {isProbingApi ? "测试中..." : "测试连接"}
+              {isProbingApi ? "正在测试" : canProbeApi ? "测试连接" : "填写后测试"}
             </Button>
           </div>
 
           {missingConnectionFields.length > 0 && (
             <p className="text-xs text-muted-foreground">
-              还需要填写：{missingConnectionFields.join("、")}。
+              请先填写：{missingConnectionFields.join("、")}。
             </p>
           )}
           {apiError && <p className="text-sm text-destructive">{apiError}</p>}
           {apiProbeResult && <ApiProbeResult result={apiProbeResult} />}
         </div>
-      </CardContent>
-    </Card>
+      </div>
+    </section>
   );
 }
 
@@ -740,7 +743,7 @@ function BackendChoiceCard({
     <button
       aria-pressed={selected}
       className={cn(
-        "group flex min-h-36 w-full items-start gap-4 rounded-md border p-5 text-left transition-colors",
+        "group flex min-h-24 w-full items-start gap-3 rounded-md border p-4 text-left transition-colors",
         "hover:border-foreground/30 hover:bg-muted/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         selected && "border-blue-500/70 bg-blue-500/5",
         status === "active" &&
@@ -782,27 +785,9 @@ function BackendChoiceCard({
         <p className="mt-1 break-words text-xs leading-5 text-muted-foreground">
           {description}
         </p>
-        {meta ? (
-          <p className="mt-4 break-words text-xs leading-5 text-muted-foreground">
-            {meta}
-          </p>
-        ) : null}
+        {meta ? <p className="mt-2 text-xs text-muted-foreground">{meta}</p> : null}
       </div>
     </button>
-  );
-}
-
-function LocalEngineMeta({
-  state,
-}: {
-  state: ManagedRuntimeStatus["state"] | null;
-}) {
-  return (
-    <span className="inline-flex flex-wrap items-center gap-2">
-      <span>状态：</span>
-      <span className="size-1.5 rounded-full bg-muted-foreground/50" />
-      <span>{localServiceMetaLabel(state)}</span>
-    </span>
   );
 }
 
@@ -810,7 +795,7 @@ function localServiceStatusLabel(state: ManagedRuntimeStatus["state"] | null) {
   if (state === "starting") return "启动中";
   if (state === "installed" || state === "stopped") return "已停止";
   if (state === "not-installed") return "未下载";
-  if (state === "failed") return "需检查";
+  if (state === "failed") return "启动失败";
   if (state === "unsupported") return "不支持";
   return "检测中";
 }
@@ -821,7 +806,7 @@ function localServiceSelectedProblemLabel(
   if (state === "starting") return "正在启动";
   if (state === "installed" || state === "stopped") return "需启动";
   if (state === "not-installed") return "需下载";
-  if (state === "failed") return "需检查";
+  if (state === "failed") return "启动失败";
   if (state === "unsupported") return "不支持";
   return "检测中";
 }
@@ -833,7 +818,7 @@ function localServiceDescription(
   if (isManagedRuntimeReady(status)) {
     return status?.process.baseUrl
       ? `正在本机运行：${status.process.baseUrl}`
-      : "本地模型已运行。";
+      : "本地模型正在运行。";
   }
   if (state === "installed" || state === "stopped") {
     return "模型已安装但未启动。";
@@ -845,7 +830,7 @@ function localServiceDescription(
     return "尚未下载本地模型。";
   }
   if (state === "failed") {
-    return "本地模型启动失败，请打开管理面板查看原因。";
+    return "本地模型启动失败。打开管理面板查看日志。";
   }
   if (state === "unsupported") {
     return "当前设备不能运行 Rosetta 管理的本地模型。";
@@ -853,19 +838,9 @@ function localServiceDescription(
   return "正在读取本地模型状态。";
 }
 
-function localServiceMetaLabel(state: ManagedRuntimeStatus["state"] | null) {
-  if (state === "ready") return "已启动";
-  if (state === "starting") return "启动中";
-  if (state === "installed" || state === "stopped") return "已安装，未启动";
-  if (state === "not-installed") return "未下载";
-  if (state === "failed") return "启动失败";
-  if (state === "unsupported") return "当前设备不支持";
-  return "检测中";
-}
-
 function remoteApiFallbackLabel(status: "connected" | "failed" | "not-tested") {
-  if (status === "connected") return "可备用";
-  if (status === "failed") return "需检查";
+  if (status === "connected") return "测试通过";
+  if (status === "failed") return "测试失败";
   return "未测试";
 }
 
@@ -873,7 +848,7 @@ function displayRemoteApiUrl(rwkv: RwkvConnectionConfig) {
   const baseUrl = rwkv.baseUrl.trim();
   const endpoint = rwkv.endpoint.trim();
   if (!baseUrl || !endpoint) {
-    return "远程 API 尚未填写完整。";
+    return "远程服务尚未填写完整。";
   }
   return `${baseUrl.replace(/\/+$/, "")}/${endpoint.replace(/^\/+/, "")}`;
 }
@@ -889,7 +864,7 @@ function AppearanceSettingsSection({
     <Card id="appearance">
       <CardContent className="grid gap-5 py-5 md:grid-cols-[minmax(16rem,0.42fr)_minmax(0,1fr)] md:items-center">
         <SettingsRowHeader
-          description="自定义应用的外观风格。"
+          description="选择窗口主题。"
           icon={<Palette />}
           title="外观"
         />
@@ -924,39 +899,47 @@ function DocumentHandlingSection() {
   return (
     <section className="flex flex-col gap-3" id="document-handling">
       <Card>
-        <CardContent className="grid gap-5 py-5 md:grid-cols-[minmax(16rem,0.42fr)_minmax(0,1fr)_auto] md:items-center">
-          <SettingsRowHeader
-            description="配置与文档处理相关的功能。"
-            icon={<FileText />}
-            title="文档处理"
-          />
+        <CardContent className="flex flex-col gap-5 py-5">
+          <div className="grid gap-5 md:grid-cols-[minmax(16rem,0.42fr)_minmax(0,1fr)_auto] md:items-center">
+            <SettingsRowHeader
+              description="配置与文档处理相关的功能。"
+              icon={<FileText />}
+              title="文档处理"
+            />
 
-          <div className="min-w-0">
-            <p className="text-sm font-medium">PDF 支持</p>
-            <p className="mt-1 text-sm text-muted-foreground">
-              仅在处理 PDF 文档时需要。
-            </p>
+            <div className="min-w-0">
+              <p className="text-sm font-medium">PDF 处理组件</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                处理 PDF 时用于读取版面并导出译文 PDF。
+              </p>
+            </div>
+
+            <Button
+              aria-expanded={pdfOpen}
+              className="justify-self-start md:justify-self-end"
+              onClick={() => setPdfOpen((open) => !open)}
+              type="button"
+              variant="outline"
+            >
+              管理 PDF 组件
+              <ChevronDown
+                className={cn(
+                  "ml-1 size-3.5 transition-transform",
+                  pdfOpen && "rotate-180"
+                )}
+              />
+            </Button>
           </div>
 
-          <Button
-            aria-expanded={pdfOpen}
-            className="justify-self-start md:justify-self-end"
-            onClick={() => setPdfOpen((open) => !open)}
-            type="button"
-            variant="outline"
-          >
-            配置 PDF 支持
-            <ChevronDown
-              className={cn(
-                "ml-1 size-3.5 transition-transform",
-                pdfOpen && "rotate-180"
-              )}
-            />
-          </Button>
+          <Collapsible open={pdfOpen} onOpenChange={setPdfOpen}>
+            <CollapsibleContent>
+              <div className="border-t pt-5">
+                <Pdf2zhPanel />
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
         </CardContent>
       </Card>
-
-      {pdfOpen ? <Pdf2zhPanel /> : null}
     </section>
   );
 }
@@ -985,7 +968,7 @@ function AboutSettingsSection({
       <Card>
         <CardContent className="grid gap-5 py-5 md:grid-cols-[minmax(16rem,0.42fr)_minmax(0,1fr)_auto] md:items-start">
           <SettingsRowHeader
-            description="查看应用版本信息与更新状态。"
+            description="查看当前版本并检查更新。"
             icon={<Info />}
             title="关于"
           />
@@ -997,22 +980,9 @@ function AboutSettingsSection({
                   <Label>Rosetta {appVersion}</Label>
                   <UpdateStatusBadge status={updateStatus} />
                 </div>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  {updateStatus === "latest"
-                    ? "当前已是最新版本。"
-                    : "手动检查新版本。"}
-                </p>
               </div>
             </div>
 
-            {/*
-              Always show the current version's highlights, regardless of
-              update state. Driven by `src/data/releaseNotes.ts`, not the
-              updater plugin's response — these are bundled with the build
-              so they render offline + instantly. If the lookup misses
-              (e.g. dev builds with a version string we haven't added yet),
-              the card just doesn't render the section.
-            */}
             <CurrentVersionHighlights
               note={getReleaseNote(appVersion)}
             />
@@ -1042,13 +1012,13 @@ function AboutSettingsSection({
                 }
                 data-icon="inline-start"
               />
-              检查更新
+              检查应用更新
             </Button>
 
             {updateStatus === "available" && availableUpdate ? (
               <Button onClick={onInstallUpdate} type="button">
                 <Download data-icon="inline-start" />
-                下载并安装
+                下载并安装更新
               </Button>
             ) : null}
 
@@ -1160,7 +1130,7 @@ function StatusBadge({
     return (
       <SemanticBadge tone="success">
         <CheckCircle2 data-icon="inline-start" />
-        可用
+        测试通过
       </SemanticBadge>
     );
   }
@@ -1168,11 +1138,11 @@ function StatusBadge({
     return (
       <SemanticBadge tone="danger">
         <XCircle data-icon="inline-start" />
-        需检查
+        测试失败
       </SemanticBadge>
     );
   }
-  return <SemanticBadge tone="neutral">未测试</SemanticBadge>;
+  return <SemanticBadge tone="neutral">尚未测试</SemanticBadge>;
 }
 
 function UpdateStatusBadge({ status }: { status: UpdateStatus }) {
@@ -1197,7 +1167,7 @@ function UpdateStatusBadge({ status }: { status: UpdateStatus }) {
     return (
       <SemanticBadge tone="warning">
         <LoaderCircle className="animate-spin" data-icon="inline-start" />
-        处理中
+        正在处理
       </SemanticBadge>
     );
   }
@@ -1206,7 +1176,7 @@ function UpdateStatusBadge({ status }: { status: UpdateStatus }) {
     return (
       <SemanticBadge tone="success">
         <CheckCircle2 data-icon="inline-start" />
-        等待重启
+        需要重启
       </SemanticBadge>
     );
   }
@@ -1215,7 +1185,7 @@ function UpdateStatusBadge({ status }: { status: UpdateStatus }) {
     return (
       <SemanticBadge tone="danger">
         <XCircle data-icon="inline-start" />
-        失败
+        更新失败
       </SemanticBadge>
     );
   }
@@ -1232,20 +1202,36 @@ function UpdateStatusBadge({ status }: { status: UpdateStatus }) {
  * added to `RELEASE_NOTES`).
  */
 function CurrentVersionHighlights({ note }: { note: ReleaseNote | null }) {
+  const [open, setOpen] = useState(false);
+
   if (!note || note.highlights.length === 0) {
     return null;
   }
+
   return (
-    <div className="flex flex-col gap-2 rounded-md border bg-background p-3">
-      <p className="text-xs font-medium text-muted-foreground">
-        当前版本特性
-      </p>
-      <ul className="ml-4 list-disc space-y-1 text-sm leading-6 text-muted-foreground marker:text-muted-foreground/50">
-        {note.highlights.map((line, index) => (
-          <li key={index}>{line}</li>
-        ))}
-      </ul>
-    </div>
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <CollapsibleTrigger asChild>
+        <button
+          type="button"
+          className="flex h-8 w-fit items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <ChevronDown
+            className={cn(
+              "size-3.5 transition-transform",
+              open && "rotate-180"
+            )}
+          />
+          当前版本特性
+        </button>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <ul className="ml-4 mt-2 list-disc space-y-1 text-sm leading-6 text-muted-foreground marker:text-muted-foreground/50">
+          {note.highlights.map((line, index) => (
+            <li key={index}>{line}</li>
+          ))}
+        </ul>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
 
@@ -1263,7 +1249,7 @@ function UpdateStatusMessage({
   if (status === "failed") {
     return (
       <p className="text-sm text-destructive">
-        {error ?? "更新失败，请稍后重试。"}
+        {error ?? "无法完成更新。请稍后再次检查。"}
       </p>
     );
   }
@@ -1271,7 +1257,7 @@ function UpdateStatusMessage({
   if (status === "latest") {
     return (
       <p className="text-sm text-muted-foreground">
-        当前已经是最新版本，可以继续使用。
+        当前已经是最新版本。
       </p>
     );
   }
@@ -1280,7 +1266,7 @@ function UpdateStatusMessage({
     return (
       <div className="flex flex-col gap-2 rounded-md border border-primary/30 bg-primary/5 p-3">
         <div className="flex flex-wrap items-center gap-2 text-xs font-medium text-muted-foreground">
-          <span>新版本特性</span>
+        <span>新版本包含</span>
           <span className="rounded-sm bg-primary/10 px-1.5 py-0.5 text-primary">
             {update.version}
           </span>
@@ -1298,7 +1284,7 @@ function UpdateStatusMessage({
           </p>
         ) : (
           <p className="text-sm text-muted-foreground">
-            这个版本没有填写更新说明。
+            这个版本没有更新说明。
           </p>
         )}
       </div>
@@ -1325,7 +1311,7 @@ function UpdateStatusMessage({
     return (
       <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
         <LoaderCircle className="size-3.5 shrink-0 animate-spin" />
-        正在安装更新，请不要关闭 Rosetta。
+        正在安装更新。请保持 Rosetta 打开。
       </p>
     );
   }
@@ -1333,7 +1319,7 @@ function UpdateStatusMessage({
   if (status === "ready-to-restart") {
     return (
       <p className="text-sm text-muted-foreground">
-        更新已安装，重启后会进入新版本。
+        更新已安装。重启 Rosetta 后会进入新版本。
       </p>
     );
   }
@@ -1349,7 +1335,7 @@ function UpdateStatusMessage({
 
   return (
     <p className="text-sm text-muted-foreground">
-      点击"检查更新"即可查看是否有新版本可用。
+      点击“检查应用更新”查看是否有新版本。
     </p>
   );
 }
@@ -1373,7 +1359,7 @@ function ApiProbeResult({
           <XCircle className="text-destructive" />
         )}
         <span className="font-medium">
-          {result.ok ? "连接正常" : "连接失败"}
+          {result.ok ? "远程服务可用" : "远程服务不可用"}
         </span>
         <span className="text-muted-foreground">{result.message}</span>
       </div>
@@ -1391,7 +1377,7 @@ function ApiProbeResult({
           {result.translations.map((translation, index) => (
             <div className="rounded-md bg-muted/40 p-2 text-sm" key={index}>
               <p className="text-xs text-muted-foreground">
-                样例译文 {index + 1}
+                测试译文 {index + 1}
               </p>
               <p className="mt-1 leading-6">{translation}</p>
             </div>
