@@ -240,6 +240,24 @@ beta.7 用户升完后 onboarding 打开，看到大大的"Rosetta"标题 + "在
 
 **Future-proof 约定**：**onboarding 窗口里的所有"首次使用"措辞都必须配 returning user 分支**。理论上 onboarding 只该在两种情况出现 —— 新用户、升级后模型没了的老用户。后者不该被当成前者。
 
+### PDF 版面处理组件的"本地文件导入"兜底
+
+**背景**：pdf2zh pack（281 MB）只放在 `LeoLin4258/rosetta-assets` 的 GitHub Release，没有国内镜像（跟 RWKV 模型不同——后者有 hf-mirror 兜底）。大陆裸网用户基本下不下来。
+
+**设计**：复用现有的 `Pdf2zhInstallOptions::pack_url` 字段（早期为 dogfood 留的口子），它已经支持 `file://...` URL，install 流水线里 `copy_file_url(...)` 跟 `download_http(...)` 是平行分支，**SHA256 校验、体积校验、解压、写 manifest 这些后续步骤全部共用**。所以：
+
+- **后端：零改动。**
+- **前端：加一个文件选择器 + 把路径包成 `file://` 传给 install 命令。**
+
+**实现位置**：
+
+- `useManagedPdf2zhRuntime.importFromFile()` —— 调 `@tauri-apps/plugin-dialog` 的 `open()` 拿到绝对路径，转成 `file://...` 调 `install({ repair: true, packUrl })`。`repair: true` 是关键——保证之前失败的下载残留先被清掉，免得用户带着脏状态走二次导入。
+- `PdfSetupStep`（onboarding）和 `Pdf2zhPanel`（设置）各加一个"已下载？从本地文件导入"按钮，款式选 ghost / 二级链接，不抢主 CTA 视线。
+
+**Future-proof 约定**：**任何用户需要从网络拿的大文件，UI 都该配一个"本地文件导入"兜底**。包括以后给 RWKV 模型也加一个（虽然 hf-mirror 解决了 95%，但还是有 5% 全死）。后端 install pipeline 只要遵守"`file://` 走 `copy_file_url`，HTTP 走 `download_http`，校验环节统一"这个分支，前端那一个文件选择器就能复用。
+
+**Tauri 配置注意**：`capabilities/default.json` 必须加 `dialog:default` 和 `dialog:allow-open`，否则 plugin-dialog 在主窗口拿不到权限，picker 不会弹。这条非常容易漏，bug 表现是"按钮点了没反应"，要去 devtools console 才能看到 `IPC: not allowed by capability` 之类的错。
+
 ## Cross-references
 
 - Plan：[`plans/2026-06-10-mlx-backend-switch.md`](../plans/2026-06-10-mlx-backend-switch.md)

@@ -137,6 +137,41 @@ export function OnboardingApp() {
     }
   }, [pdfRuntime]);
 
+  /**
+   * Local-file import path: same goal as `beginPdfInstall` (end up on the
+   * "done" step with the runtime ready) but the bytes come from a file the
+   * user picked instead of the GitHub Release. Mostly the same control flow,
+   * factored separately because we route through `importFromFile()` which
+   * shows a native file picker first; if the user cancels the picker we
+   * stay on the pdf-setup step rather than entering the installing UI.
+   */
+  const beginPdfImportFromFile = useCallback(async () => {
+    setPdfErrorMessage(null);
+    try {
+      const result = await pdfRuntime.importFromFile();
+      // Cancelled picker — silently return to the pdf-setup step.
+      if (result == null) {
+        return;
+      }
+      setStep("installing-pdf");
+      const refreshed = await pdfRuntime.refreshStatus();
+      if (!isPdf2zhReady(refreshed)) {
+        throw new Error(
+          refreshed?.message ??
+            "PDF 版面处理组件安装完成后仍未就绪，请稍后在设置中检查。"
+        );
+      }
+      setDoneVariant("local");
+      setStep("done");
+    } catch (error) {
+      // Import failures (bad archive, SHA mismatch, etc.) flow through the
+      // same installing-pdf step so the user sees the inline error UI rather
+      // than getting bounced back to pdf-setup with no context.
+      setStep("installing-pdf");
+      setPdfErrorMessage(toMessage(error));
+    }
+  }, [pdfRuntime]);
+
   const handleBeginInstall = useCallback(() => {
     setErrorMessage(null);
     setPdfErrorMessage(null);
@@ -246,6 +281,7 @@ export function OnboardingApp() {
         {step === "pdf-setup" && (
           <PdfSetupStep
             onBeginInstall={beginPdfInstall}
+            onImportFromFile={() => void beginPdfImportFromFile()}
             onSkip={handleSkipPdf}
             isInstalling={pdfRuntime.isInstalling}
           />

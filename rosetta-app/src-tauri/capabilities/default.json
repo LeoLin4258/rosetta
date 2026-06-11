@@ -12,6 +12,8 @@
     "core:window:allow-set-theme",
     "core:window:allow-toggle-maximize",
     "process:default",
-    "updater:default"
+    "updater:default",
+    "dialog:default",
+    "dialog:allow-open"
   ]
 }

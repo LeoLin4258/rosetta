@@ -4,12 +4,21 @@ import { Button } from "@/components/ui/button";
 
 type PdfSetupStepProps = {
   onBeginInstall: () => void;
+  /**
+   * Open a file picker and import a locally-downloaded pack archive.
+   * Provided as a "我已经下载好了" escape hatch — mainland China users who
+   * can't reach GitHub Releases often grab the archive via a side channel
+   * (browser through proxy, friend's USB stick, etc) and need a way to
+   * feed it back to the app.
+   */
+  onImportFromFile: () => void;
   onSkip: () => void;
   isInstalling: boolean;
 };
 
 export function PdfSetupStep({
   onBeginInstall,
+  onImportFromFile,
   onSkip,
   isInstalling,
 }: PdfSetupStepProps) {
@@ -34,6 +43,19 @@ export function PdfSetupStep({
           >
             安装 PDF 版面处理组件
           </Button>
+          {/*
+            Secondary action: import a locally-downloaded archive. Styled
+            quieter than skip so it doesn't compete with the main CTA, but
+            visible enough that a user blocked on GitHub can find it.
+          */}
+          <button
+            type="button"
+            onClick={onImportFromFile}
+            disabled={isInstalling}
+            className="text-xs text-muted-foreground/60 transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            已下载？导入本地文件 →
+          </button>
           <button
             type="button"
             onClick={onSkip}

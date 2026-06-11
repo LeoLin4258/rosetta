@@ -5,6 +5,7 @@ import {
   ChevronDown,
   Download,
   FileText,
+  FolderInput,
   LoaderCircle,
   RefreshCw,
   X,
@@ -140,6 +141,7 @@ export function Pdf2zhPanel({ className }: { className?: string }) {
                     isInstalling={rt.isInstalling}
                     onInstall={() => void rt.install({ repair: false })}
                     onRepair={() => void rt.install({ repair: true })}
+                    onImportFromFile={() => void rt.importFromFile()}
                   />
                   {rt.status && <Pdf2zhInfoRows status={rt.status} />}
                 </div>
@@ -227,42 +229,75 @@ function RepairActions({
   isInstalling,
   onInstall,
   onRepair,
+  onImportFromFile,
 }: {
   state: Pdf2zhStatus["state"] | null;
   isInstallActive: boolean;
   isInstalling: boolean;
   onInstall: () => void;
   onRepair: () => void;
+  /** Manual-import escape hatch — see `useManagedPdf2zhRuntime.importFromFile`
+   *  for why this exists (mainland China users blocked on GitHub Releases). */
+  onImportFromFile: () => void;
 }) {
   if (isInstallActive) return null;
   if (state === "installed") {
     return (
-      <Button
-        variant="outline"
-        size="sm"
-        onClick={onRepair}
-        disabled={isInstalling}
-        className="w-fit"
-      >
-        <RefreshCw className="size-4" /> 重新安装 / 修复
-      </Button>
+      <div className="flex flex-wrap gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={onRepair}
+          disabled={isInstalling}
+          className="w-fit"
+        >
+          <RefreshCw className="size-4" /> 重新安装 / 修复
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={onImportFromFile}
+          disabled={isInstalling}
+          className="w-fit text-muted-foreground"
+        >
+          <FolderInput className="size-4" /> 从本地文件导入
+        </Button>
+      </div>
     );
   }
   return (
-    <Button
-      size="sm"
-      variant="outline"
-      onClick={onInstall}
-      disabled={isInstalling}
-      className="w-fit"
-    >
-      {isInstalling ? (
-        <LoaderCircle className="size-4 animate-spin" />
-      ) : (
-        <Download className="size-4" />
-      )}
-      安装 PDF 版面处理组件
-    </Button>
+    <div className="flex flex-col gap-2">
+      <Button
+        size="sm"
+        variant="outline"
+        onClick={onInstall}
+        disabled={isInstalling}
+        className="w-fit"
+      >
+        {isInstalling ? (
+          <LoaderCircle className="size-4 animate-spin" />
+        ) : (
+          <Download className="size-4" />
+        )}
+        安装 PDF 版面处理组件
+      </Button>
+      {/*
+        Secondary action positioned right below the primary download button.
+        We use a quiet ghost variant so it doesn't compete visually, but the
+        label is direct ("从本地文件导入") so a user blocked on the network
+        path can find it without reading docs. Always rendered in the
+        not-installed state because that's when fallback matters most.
+      */}
+      <Button
+        size="sm"
+        variant="ghost"
+        onClick={onImportFromFile}
+        disabled={isInstalling}
+        className="w-fit text-muted-foreground"
+      >
+        <FolderInput className="size-4" /> 已下载？从本地文件导入
+      </Button>
+    </div>
   );
 }
 
