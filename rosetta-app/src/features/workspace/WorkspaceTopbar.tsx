@@ -39,6 +39,7 @@ type WorkspaceTopbarProps = {
     percent: number | null;
     currentPage: number | null;
     totalPages: number | null;
+    translatedChars?: number | null;
   } | null;
   sourceLang: string;
   targetLang: string;
@@ -222,14 +223,15 @@ export function WorkspaceTopbar({
               {isPdf ? (
                 <>
                   {/*
-                    PDF layout: "[phase label] · 第 X/Y 页 · 00:23 · 45%"
+                    PDF layout: "[phase label] · 第 X/Y 页 · 已翻译 N 字 · 00:23 · 45%"
                     Sections are separated by " · " and any of them can be
-                    absent. `currentPage` / `totalPages` come from the
-                    backend's per-page invocation loop. Before the first
-                    progress event lands we show 准备翻译引擎 instead of the
-                    misleading segment-count fallback (PDF runs aren't
-                    segment-based). The elapsed timer always shows because
-                    we tick locally.
+                    absent. Page numbers track pdf2zh's live tqdm output; the
+                    character counter comes from the RWKV shim and updates as
+                    each batch returns, so the bar visibly moves even between
+                    page boundaries. Before the first progress event lands we
+                    show 准备翻译引擎 instead of the misleading segment-count
+                    fallback (PDF runs aren't segment-based). The elapsed
+                    timer always shows because we tick locally.
                   */}
                   {pdfProgress
                     ? PDF_PHASE_LABELS[pdfProgress.phase] ?? pdfProgress.phase
@@ -237,6 +239,9 @@ export function WorkspaceTopbar({
                   {pdfProgress?.currentPage != null &&
                     pdfProgress?.totalPages != null &&
                     ` · 第 ${pdfProgress.currentPage}/${pdfProgress.totalPages} 页`}
+                  {pdfProgress?.translatedChars
+                    ? ` · 已翻译 ${pdfProgress.translatedChars.toLocaleString()} 字`
+                    : ""}
                   {" · "}
                   {elapsedLabel}
                   {pdfProgress?.percent != null ? ` · ${pdfProgress.percent}%` : ""}

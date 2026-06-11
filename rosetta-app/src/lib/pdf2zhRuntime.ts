@@ -90,3 +90,11 @@ export function subscribePdf2zhInstallProgress(
     (event) => handler(event.payload)
   );
 }
+
+/// Start the persistent pdf2zh worker so its heavy Python import (~13 s) is
+/// already paid by the time the user clicks 翻译. Idempotent; resolves true
+/// when the worker is warm. Fire-and-forget — failure just means the next
+/// translate falls back to a cold start.
+export function prewarmPdf2zhWorker() {
+  return invoke<boolean>("prewarm_pdf2zh_worker");
+}

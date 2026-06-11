@@ -18,6 +18,7 @@ pub fn run() {
         .manage(managed_rwkv::Registry::default())
         .manage(managed_rwkv::InstallStateRegistry::default())
         .manage(managed_pdf2zh::InstallStateRegistry::default())
+        .manage(managed_pdf2zh::Pdf2zhWorkerState::default())
         .manage(rosetta_jobs::PdfTranslationCancelState::default())
         .manage(rosetta_jobs::PdfPngCache::default())
         .plugin(tauri_plugin_dialog::init())
@@ -173,6 +174,7 @@ pub fn run() {
             managed_pdf2zh::get_pdf2zh_install_progress,
             managed_pdf2zh::get_pdf2zh_status,
             managed_pdf2zh::install_pdf2zh_pack,
+            managed_pdf2zh::prewarm_pdf2zh_worker,
             local_data_reset::clear_rosetta_local_data,
             onboarding::complete_onboarding_and_open_main,
             onboarding::get_onboarding_decision,

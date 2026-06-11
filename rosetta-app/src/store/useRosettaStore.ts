@@ -64,6 +64,8 @@ export type PdfRunProgress = {
   percent: number | null;
   currentPage: number | null;
   totalPages: number | null;
+  /** Cumulative characters returned by RWKV in the current run. */
+  translatedChars: number | null;
 };
 
 type RosettaState = {

@@ -29,7 +29,10 @@ import {
   isPdf2zhReady,
   useManagedPdf2zhRuntime,
 } from "@/lib/useManagedPdf2zhRuntime";
-import type { Pdf2zhInstallProgress } from "@/lib/pdf2zhRuntime";
+import {
+  prewarmPdf2zhWorker,
+  type Pdf2zhInstallProgress,
+} from "@/lib/pdf2zhRuntime";
 
 import { WorkspaceEmpty } from "./WorkspaceEmpty";
 import { WorkspaceTopbar } from "./WorkspaceTopbar";
@@ -136,6 +139,16 @@ export function WorkspacePage() {
   const isPdfJob = sourceFile?.format === "pdf";
   const pdfProgress =
     isPdfJob && activeJobId ? pdfRunProgressByJobId[activeJobId] ?? null : null;
+
+  // Prewarm the persistent pdf2zh worker as soon as a PDF document is open,
+  // so its ~13 s Python import overlaps with the user picking pages instead
+  // of delaying the first translate click. The backend command checks pack
+  // readiness itself (this hook's `status` is only populated lazily, so
+  // gating on it here would never fire). Idempotent and fire-and-forget.
+  useEffect(() => {
+    if (!isPdfJob) return;
+    void prewarmPdf2zhWorker().catch(() => {});
+  }, [isPdfJob, activeJobId]);
 
   // After a document is loaded (or switched), restore translation segments if
   // there's a known active translation file but no segments in memory yet.

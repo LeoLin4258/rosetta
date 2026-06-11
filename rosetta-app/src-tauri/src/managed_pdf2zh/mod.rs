@@ -3,12 +3,22 @@ pub mod layout;
 pub mod openai_shim;
 pub mod profile;
 pub mod status;
+pub mod worker;
 
 use serde::Serialize;
 use tauri::{AppHandle, State};
 
 pub use install::Pdf2zhInstallRegistry as InstallStateRegistry;
 pub use status::build_static_status;
+pub use worker::WorkerState as Pdf2zhWorkerState;
+
+/// Warm up the persistent pdf2zh worker (heavy Python imports + layout model)
+/// so the first translate click doesn't pay the ~13 s import. Fire-and-forget
+/// from the frontend when a PDF document becomes active.
+#[tauri::command]
+pub async fn prewarm_pdf2zh_worker(app: AppHandle) -> Result<bool, String> {
+    worker::prewarm_worker(&app).await
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

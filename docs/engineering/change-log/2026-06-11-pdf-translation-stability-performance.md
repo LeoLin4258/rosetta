@@ -76,6 +76,56 @@ root causes found in code.
   first-run welcome no longer depends on event timing between the onboarding
   and main windows.
 
+## Persistent worker + MPS (second pass, same day)
+
+Profile data from real runs (3-page and 18-page documents) pinned the
+remaining non-model cost: ~13.3 s per invocation is `import doclayout_yolo`
+(torch chain) — the model load itself is 0.07 s — plus ~4 s pdf2zh startup
+and ~1.1 s/page parse+layout (CPU YOLO ≈ 0.5 s of it).
+
+- Added a persistent pdf2zh worker (ADR 0005): one warm Python process per
+  session, jobs over stdin/stdout JSON, pdf2zh logs still on stderr feeding
+  the same progress parsing. Worker script is embedded in the app binary and
+  written to `pdf2zh-sidecar/worker/` at spawn — works with already-installed
+  packs, no pack rebuild. CLI invocation remains as fallback.
+- `prewarm_pdf2zh_worker` command + frontend prewarm when a PDF document
+  becomes active, hiding the first import behind page selection.
+- Cancellation kills the worker process group and respawns next run; idle
+  reaper stops the worker after 10 min.
+- MPS layout inference: probe-gated `YOLOv10.predict` monkeypatch in the
+  worker (`PYTORCH_ENABLE_MPS_FALLBACK=1`); falls back to stock CPU when the
+  probe fails. Pack source untouched.
+
+Measured on the same 18-page document: 137.7 s → 113.2 s with the worker warm
+(non-model time 58 s → 36.6 s; RWKV is now 67% of the run).
+
+MPS verdict (measured, then reverted to CPU default): with the probe fixed to
+use a page-sized image, MPS enabled cleanly but the run came back ~14 s
+SLOWER (non-model 36.6 s → 50.9 s). The DocLayout YOLO model is small enough
+that per-call transfer + dispatch + fallback-op bouncing outweighs the GPU
+win on M-series CPUs. MPS is now opt-in via `ROSETTA_PDF2ZH_ENABLE_MPS=1`.
+
+`PDF_PAGES_PER_INVOCATION` raised 10 → 25: with the worker warm the remaining
+per-invocation cost is pdf2zh's whole-document pymupdf preprocess (~5 s),
+so typical papers should run as a single invocation.
+
+## Live status bar (third pass, same day)
+
+Final measured result after worker + prewarm + chunk 25: 18-page run 93.7 s
+(RWKV 74%; baseline was 137.7 s chunked / ~8 min per-page).
+
+Two fixes so long runs no longer read as "frozen":
+
+- pdf2zh's tqdm progress redraws with `\r` and never newlines, so the
+  line-based stderr reader delivered the whole bar only when it finished —
+  page progress was frozen for the entire invocation. The worker's stderr
+  reader now splits on `\r` too, and `parse_tqdm_fraction` (denominator must
+  match the chunk size) turns each redraw into a live "第 X/Y 页" update.
+- The shim's RWKV metrics now feed a 已翻译 N 字 counter: every progress
+  event carries the cumulative translated character count, and a 500 ms
+  heartbeat task emits it even while pdf2zh's own output is quiet. The count
+  is offset across chunks so it's monotonic for the whole run.
+
 ## Not done (deliberate)
 
 - Roadmap Phase 1's full "PDF run as first-class durable object" — the store

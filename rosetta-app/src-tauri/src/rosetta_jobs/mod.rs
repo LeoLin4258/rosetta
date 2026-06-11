@@ -331,12 +331,14 @@ pub fn get_rosetta_pdf_page_status(
 
 /// How many selected pages to hand to one `pdf2zh --pages` invocation.
 ///
-/// Each invocation pays a fixed overhead (Python startup, shim spawn, RWKV
-/// role setup, whole-document parse) of several seconds. The old code paid it
-/// once per page, which dominated runtime; batching amortizes it while still
-/// keeping partial progress (each completed chunk is persisted, so cancel and
-/// retry stay page-level).
-const PDF_PAGES_PER_INVOCATION: usize = 10;
+/// Each invocation pays a fixed overhead: with the persistent worker that is
+/// mainly pdf2zh's whole-document pymupdf preprocess (~5 s on a 15 MB doc);
+/// the CLI fallback additionally pays the ~15 s Python import. The old code
+/// paid the full overhead once per page, which dominated runtime. 25 makes
+/// typical papers a single invocation; chunking still bounds the blast
+/// radius of a failure/cancel on long documents, and each completed chunk is
+/// persisted so retry stays page-level.
+const PDF_PAGES_PER_INVOCATION: usize = 25;
 
 #[tauri::command]
 pub async fn translate_rosetta_pdf_pages(
@@ -527,7 +529,12 @@ async fn translate_pdf_pages_inner(
                 timeout_ms: timeout,
                 ignore_cache: false,
                 pages: Some(chunk.to_vec()),
-                page_progress: Some((completed_in_run + 1, total_pages_to_process)),
+                page_progress: Some(pdf2zh_invoke::PageProgressContext {
+                    completed_before: completed_in_run,
+                    chunk_len: chunk.len() as u32,
+                    total: total_pages_to_process,
+                }),
+                translated_chars_offset: rwkv_aggregate.total_output_chars,
             },
             cancel_rx,
         )
@@ -872,6 +879,7 @@ pub async fn generate_rosetta_translated_pdf(
             pages: None,
             // Whole-document fallback: no per-page progress to report.
             page_progress: None,
+            translated_chars_offset: 0,
         },
         cancel_rx,
     )
