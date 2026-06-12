@@ -1,6 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import { Download, Loader2, Play, RefreshCw, Square, X } from "lucide-react";
+import {
+  ArrowRight,
+  Download,
+  Loader2,
+  Play,
+  RefreshCw,
+  Square,
+} from "lucide-react";
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -181,204 +189,128 @@ export function WorkspaceTopbar({
     isPdf && pdfPageCount > 0 && pdfSelectedPageCount === pdfPageCount
       ? "全部"
       : "所选页";
+  const pdfSelectionReady = isPdf && pdfSelectedPageCount > 0;
+  const pageSelectionLabel =
+    pdfPageCount > 0 ? `${pdfSelectedPageCount} / ${pdfPageCount} 页` : "等待页数";
 
   return (
-    <div className="flex items-center justify-between border-b border-border/40 px-6 py-2.5">
-      {isPdf ? (
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-medium text-foreground">页面</span>
-          <span className="text-xs text-muted-foreground">
-            已选 {pdfSelectedPageCount} / {pdfPageCount} 页
-          </span>
-          <Button
-            size="sm"
-            variant="ghost"
-            className="h-7 px-2 text-xs"
-            onClick={onSelectAllPages}
-            disabled={isTranslating}
-          >
-            全选
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            className="h-7 px-2 text-xs"
-            onClick={onDeselectAllPages}
-            disabled={isTranslating}
-          >
-            取消选择
-          </Button>
-          <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
-            <input
-              type="checkbox"
-              checked={pdfForceRetranslate}
-              onChange={(e) => onPdfForceRetranslateChange?.(e.target.checked)}
-              disabled={isTranslating}
-            />
-            强制重翻
-          </label>
-        </div>
-      ) : (
-        <div />
-      )}
-      <div className="flex shrink-0 items-center gap-2">
-        {isTranslating ? (
-          <>
-            <Loader2 className="size-3.5 animate-spin text-muted-foreground/50" />
-            <span className="text-xs tabular-nums text-muted-foreground/60">
-              {isPdf ? (
-                <>
-                  {/*
-                    PDF layout: "[phase label] · 第 X/Y 页 · 已翻译 N 字 · 00:23 · 45%"
-                    Sections are separated by " · " and any of them can be
-                    absent. Page numbers track pdf2zh's live tqdm output; the
-                    character counter comes from the RWKV shim and updates as
-                    each batch returns, so the bar visibly moves even between
-                    page boundaries. Before the first progress event lands we
-                    show 准备翻译引擎 instead of the misleading segment-count
-                    fallback (PDF runs aren't segment-based). The elapsed
-                    timer always shows because we tick locally.
-                  */}
-                  {pdfProgress
-                    ? PDF_PHASE_LABELS[pdfProgress.phase] ?? pdfProgress.phase
-                    : PDF_PHASE_LABELS.warmup}
-                  {pdfProgress?.currentPage != null &&
-                    pdfProgress?.totalPages != null &&
-                    ` · 第 ${pdfProgress.currentPage}/${pdfProgress.totalPages} 页`}
-                  {pdfProgress?.translatedChars
-                    ? ` · 已翻译 ${pdfProgress.translatedChars.toLocaleString()} 字`
-                    : ""}
-                  {" · "}
-                  {elapsedLabel}
-                  {pdfProgress?.percent != null ? ` · ${pdfProgress.percent}%` : ""}
-                </>
-              ) : (
-                <>
-                  {translatedCount} / {totalCount} · {progressPercent}% · {elapsedLabel}
-                </>
-              )}
-            </span>
-            {confirmingCancel ? (
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-muted-foreground/60">确认取消？</span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    onCancelTranslation();
-                    setConfirmingCancel(false);
-                  }}
-                  className="text-xs text-destructive/70 transition-colors hover:text-destructive"
-                >
-                  确定
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setConfirmingCancel(false)}
-                  className="text-xs text-muted-foreground/40 transition-colors hover:text-muted-foreground"
-                >
-                  继续
-                </button>
-              </div>
-            ) : (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => setConfirmingCancel(true)}
-                className="gap-1.5"
+    <div className="border-b border-border/60 bg-background/95 px-5 py-3" data-window-no-drag>
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+          {isPdf ? (
+            <div className="flex h-9 max-w-full items-center gap-2 rounded-lg border border-border/70 bg-muted/30 px-2.5">
+              <span className="text-xs font-medium text-foreground">页面范围</span>
+              <Badge
+                variant={pdfSelectionReady ? "secondary" : "outline"}
+                className="h-5 rounded-md px-1.5 font-normal tabular-nums"
               >
-                <Square className="size-3" /> 取消
-              </Button>
-            )}
-          </>
-        ) : (
-          <>
-            {hasTranslation && (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => onExport("translation")}
-                className="gap-1.5"
-              >
-                <Download className="size-3.5" /> 导出译文
-              </Button>
-            )}
-
-            {/* Source language */}
-            <Select value={sourceLang} onValueChange={onSourceLangChange}>
-              <SelectTrigger className="h-8 w-28 text-xs">
-                <SelectValue placeholder="原文语言" />
-              </SelectTrigger>
-              <SelectContent>
-                {SOURCE_LANGS.map((lang) => (
-                  <SelectItem key={lang.value} value={lang.value} className="text-xs">
-                    {lang.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-
-            {/* Target language + translate */}
-            <Select value={targetLang} onValueChange={onTargetLangChange}>
-              <SelectTrigger className="h-8 w-24 text-xs">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {TARGET_LANGS.map((lang) => (
-                  <SelectItem key={lang.value} value={lang.value} className="text-xs">
-                    {lang.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-
-            {isPdfEngineInstalling ? (
-              <Button size="sm" disabled className="gap-1.5">
-                <Loader2 className="size-3.5 animate-spin" />
-                {pdfEngineProgressMessage ?? "正在准备 PDF 引擎…"}
-              </Button>
-            ) : isPdf && isPdfEngineWarming ? (
-              <Button size="sm" disabled className="gap-1.5">
-                <Loader2 className="size-3.5 animate-spin" />
-                PDF 引擎预热中…
-              </Button>
-            ) : isRuntimeStarting ? (
-              <Button size="sm" disabled className="gap-1.5">
-                <Loader2 className="size-3.5 animate-spin" />
-                正在启动模型…
-              </Button>
-            ) : selectedBlockCount > 0 ? (
-              <div className="flex items-center gap-1">
+                {pageSelectionLabel}
+              </Badge>
+              <div className="flex items-center gap-1 border-l border-border/70 pl-1.5">
                 <Button
-                  size="sm"
-                  disabled={translateDisabled}
-                  onClick={onRetranslateSelected}
-                  className="gap-1.5"
-                  title={translateTitle}
+                  size="xs"
+                  variant="ghost"
+                  className="h-6 px-1.5 text-[0.6875rem] font-normal leading-none"
+                  onClick={onSelectAllPages}
+                  disabled={isTranslating || pdfSelectedPageCount === pdfPageCount}
                 >
-                  <RefreshCw className="size-3.5" />
-                  重翻选中 {selectedBlockCount} 段
+                  全选
                 </Button>
-                <button
-                  type="button"
-                  onClick={onClearSelection}
-                  className="flex size-5 items-center justify-center rounded text-muted-foreground/50 transition-colors hover:text-muted-foreground"
-                  title="取消选中"
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  className="h-6 px-1.5 text-[0.6875rem] font-normal leading-none"
+                  onClick={onDeselectAllPages}
+                  disabled={isTranslating || pdfSelectedPageCount === 0}
                 >
-                  <X className="size-3.5" />
-                </button>
+                  清空
+                </Button>
               </div>
-            ) : allTranslated ? (
-              confirmingRetranslateAll ? (
+              <label className="ml-1 flex h-6 cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-[0.6875rem] leading-none text-muted-foreground transition-colors hover:bg-background/80 hover:text-foreground has-disabled:cursor-not-allowed has-disabled:opacity-50">
+                <input
+                  type="checkbox"
+                  checked={pdfForceRetranslate}
+                  onChange={(e) => onPdfForceRetranslateChange?.(e.target.checked)}
+                  disabled={isTranslating}
+                  className="size-3 accent-primary"
+                />
+                强制重翻
+              </label>
+            </div>
+          ) : selectedBlockCount > 0 ? (
+            <div className="flex h-9 items-center gap-2 rounded-lg border border-border/70 bg-muted/30 px-2.5">
+              <span className="text-xs font-medium text-foreground">已选段落</span>
+              <Badge
+                variant="secondary"
+                className="h-5 rounded-md px-1.5 font-normal tabular-nums"
+              >
+                {selectedBlockCount} 段
+              </Badge>
+              <Button
+                size="xs"
+                variant="ghost"
+                className="h-6 px-1.5 text-[0.6875rem] font-normal leading-none"
+                onClick={onClearSelection}
+                disabled={isTranslating}
+              >
+                清空
+              </Button>
+            </div>
+          ) : (
+            <div className="flex h-9 items-center gap-2 rounded-lg border border-transparent px-2.5">
+              <span className="text-xs font-medium text-foreground">整篇文档</span>
+              <Badge variant="outline" className="h-5 rounded-md px-1.5 font-normal tabular-nums">
+                {totalCount} 段
+              </Badge>
+            </div>
+          )}
+        </div>
+
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+          {isTranslating ? (
+            <>
+              <Loader2 className="size-3.5 animate-spin text-muted-foreground/50" />
+              <span className="text-xs tabular-nums text-muted-foreground/60">
+                {isPdf ? (
+                  <>
+                    {/*
+                      PDF layout: "[phase label] · 第 X/Y 页 · 已翻译 N 字 · 00:23 · 45%"
+                      Sections are separated by " · " and any of them can be
+                      absent. Page numbers track pdf2zh's live tqdm output; the
+                      character counter comes from the RWKV shim and updates as
+                      each batch returns, so the bar visibly moves even between
+                      page boundaries. Before the first progress event lands we
+                      show 准备翻译引擎 instead of the misleading segment-count
+                      fallback (PDF runs aren't segment-based). The elapsed
+                      timer always shows because we tick locally.
+                    */}
+                    {pdfProgress
+                      ? PDF_PHASE_LABELS[pdfProgress.phase] ?? pdfProgress.phase
+                      : PDF_PHASE_LABELS.warmup}
+                    {pdfProgress?.currentPage != null &&
+                      pdfProgress?.totalPages != null &&
+                      ` · 第 ${pdfProgress.currentPage}/${pdfProgress.totalPages} 页`}
+                    {pdfProgress?.translatedChars
+                      ? ` · 已翻译 ${pdfProgress.translatedChars.toLocaleString()} 字`
+                      : ""}
+                    {" · "}
+                    {elapsedLabel}
+                    {pdfProgress?.percent != null ? ` · ${pdfProgress.percent}%` : ""}
+                  </>
+                ) : (
+                  <>
+                    {translatedCount} / {totalCount} · {progressPercent}% · {elapsedLabel}
+                  </>
+                )}
+              </span>
+              {confirmingCancel ? (
                 <div className="flex items-center gap-2">
-                  <span className="text-xs text-muted-foreground/60">
-                    {isPdf ? `确认重翻${selectedPdfLabel}？` : "确认重翻全部？"}
-                  </span>
+                  <span className="text-xs text-muted-foreground/60">确认取消？</span>
                   <button
                     type="button"
                     onClick={() => {
-                      if (isPdf) onTranslate(targetLang, sourceLang);
-                      else onRetranslateAll();
-                      setConfirmingRetranslateAll(false);
+                      onCancelTranslation();
+                      setConfirmingCancel(false);
                     }}
                     className="text-xs text-destructive/70 transition-colors hover:text-destructive"
                   >
@@ -386,38 +318,160 @@ export function WorkspaceTopbar({
                   </button>
                   <button
                     type="button"
-                    onClick={() => setConfirmingRetranslateAll(false)}
+                    onClick={() => setConfirmingCancel(false)}
                     className="text-xs text-muted-foreground/40 transition-colors hover:text-muted-foreground"
                   >
-                    取消
+                    继续
                   </button>
                 </div>
               ) : (
                 <Button
                   size="sm"
+                  variant="outline"
+                  onClick={() => setConfirmingCancel(true)}
+                  className="h-7 gap-1.5 px-2 text-[0.75rem] font-normal leading-none"
+                >
+                  <Square className="size-3" /> 取消
+                </Button>
+              )}
+            </>
+          ) : (
+            <>
+              {hasTranslation && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => onExport("translation")}
+                  className="h-7 gap-1.5 px-2 text-[0.75rem] font-normal leading-none"
+                >
+                  <Download className="size-3" /> 导出译文
+                </Button>
+              )}
+
+              <div className="flex h-9 items-center gap-1 rounded-lg border border-border/70 bg-background px-1 shadow-xs">
+                <Select value={sourceLang} onValueChange={onSourceLangChange}>
+                  <SelectTrigger
+                    aria-label="原文语言"
+                    className="h-7 w-28 border-0 bg-transparent px-2 text-xs shadow-none focus:ring-0"
+                  >
+                    <SelectValue placeholder="原文语言" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {SOURCE_LANGS.map((lang) => (
+                      <SelectItem key={lang.value} value={lang.value} className="text-xs">
+                        {lang.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <ArrowRight className="size-3.5 text-muted-foreground/50" aria-hidden="true" />
+                <Select value={targetLang} onValueChange={onTargetLangChange}>
+                  <SelectTrigger
+                    aria-label="译文语言"
+                    className="h-7 w-28 border-0 bg-transparent px-2 text-xs shadow-none focus:ring-0"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {TARGET_LANGS.map((lang) => (
+                      <SelectItem key={lang.value} value={lang.value} className="text-xs">
+                        {lang.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {isPdfEngineInstalling ? (
+                <Button
+                  size="sm"
+                  disabled
+                  className="h-7 gap-1.5 px-2 text-[0.75rem] font-normal leading-none"
+                >
+                  <Loader2 className="size-3 animate-spin" />
+                  {pdfEngineProgressMessage ?? "正在准备 PDF 引擎…"}
+                </Button>
+              ) : isPdf && isPdfEngineWarming ? (
+                <Button
+                  size="sm"
+                  disabled
+                  className="h-7 gap-1.5 px-2 text-[0.75rem] font-normal leading-none"
+                >
+                  <Loader2 className="size-3 animate-spin" />
+                  PDF 引擎预热中…
+                </Button>
+              ) : isRuntimeStarting ? (
+                <Button
+                  size="sm"
+                  disabled
+                  className="h-7 gap-1.5 px-2 text-[0.75rem] font-normal leading-none"
+                >
+                  <Loader2 className="size-3 animate-spin" />
+                  正在启动模型…
+                </Button>
+              ) : selectedBlockCount > 0 ? (
+                <Button
+                  size="sm"
                   disabled={translateDisabled}
-                  onClick={() => setConfirmingRetranslateAll(true)}
-                  className="gap-1.5"
+                  onClick={onRetranslateSelected}
+                  className="h-7 gap-1.5 px-2 text-[0.75rem] font-normal leading-none"
                   title={translateTitle}
                 >
-                  <RefreshCw className="size-3.5" />
-                  {isPdf ? `重翻${selectedPdfLabel}` : "重翻全部"}
+                  <RefreshCw className="size-3" />
+                  重翻选中 {selectedBlockCount} 段
                 </Button>
-              )
-            ) : (
-              <Button
-                size="sm"
-                disabled={translateDisabled}
-                onClick={() => onTranslate(targetLang, sourceLang)}
-                className="gap-1.5"
-                title={translateTitle}
-              >
-                <Play className="size-3.5" />
-                {isPdf ? `翻译${selectedPdfLabel}` : "翻译"}
-              </Button>
-            )}
-          </>
-        )}
+              ) : allTranslated ? (
+                confirmingRetranslateAll ? (
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-muted-foreground/60">
+                      {isPdf ? `确认重翻${selectedPdfLabel}？` : "确认重翻全部？"}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (isPdf) onTranslate(targetLang, sourceLang);
+                        else onRetranslateAll();
+                        setConfirmingRetranslateAll(false);
+                      }}
+                      className="text-xs text-destructive/70 transition-colors hover:text-destructive"
+                    >
+                      确定
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmingRetranslateAll(false)}
+                      className="text-xs text-muted-foreground/40 transition-colors hover:text-muted-foreground"
+                    >
+                      取消
+                    </button>
+                  </div>
+                ) : (
+                  <Button
+                    size="sm"
+                    disabled={translateDisabled}
+                    onClick={() => setConfirmingRetranslateAll(true)}
+                    className="h-7 gap-1.5 px-2 text-[0.75rem] font-normal leading-none"
+                    title={translateTitle}
+                  >
+                    <RefreshCw className="size-3" />
+                    {isPdf ? `重翻${selectedPdfLabel}` : "重翻全部"}
+                  </Button>
+                )
+              ) : (
+                <Button
+                  size="sm"
+                  disabled={translateDisabled}
+                  onClick={() => onTranslate(targetLang, sourceLang)}
+                  className="h-7 gap-1.5 px-2 text-[0.75rem] font-normal leading-none"
+                  title={translateTitle}
+                >
+                  <Play className="size-3" />
+                  {isPdf ? `翻译${selectedPdfLabel}` : "翻译"}
+                </Button>
+              )}
+            </>
+          )}
+        </div>
       </div>
     </div>
   );

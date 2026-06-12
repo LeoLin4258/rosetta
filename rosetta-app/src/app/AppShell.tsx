@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, type Theme } from "@tauri-apps/api/window";
-import { Loader2 } from "lucide-react";
+import { FileText, Loader2 } from "lucide-react";
 import { AppSidebar } from "@/components/app-sidebar";
 import { WindowTitleBar } from "@/components/window-title-bar";
 import { Separator } from "@/components/ui/separator";
@@ -200,7 +200,7 @@ function Pdf2zhWorkerBadge({ status }: { status: Pdf2zhWorkerStatus | null }) {
     <Tooltip>
       <TooltipTrigger asChild>
         <div
-          className="flex h-7 items-center gap-1.5 rounded-full border border-border/40 bg-background/60 px-2.5 text-xs text-muted-foreground"
+          className="flex h-7 items-center gap-1.5 rounded-lg border border-border/60 bg-muted/35 px-2.5 text-xs text-muted-foreground"
           data-window-no-drag
         >
           {spinning ? (
@@ -238,7 +238,7 @@ function AppHeader({
   return (
     <header
       className={cn(
-        "flex h-14 shrink-0 select-none items-center justify-between px-4",
+        "flex h-12 shrink-0 select-none items-center justify-between bg-background/95 px-4",
         isMacPlatform && "cursor-default"
       )}
       data-tauri-drag-region={isMacPlatform ? true : undefined}
@@ -246,15 +246,18 @@ function AppHeader({
     >
       <div
         className={cn(
-          "flex items-center justify-center gap-3 transition-transform duration-300 ease-out will-change-transform",
+          "flex min-w-0 flex-1 items-center justify-start gap-3 transition-transform duration-300 ease-out will-change-transform",
           shouldAvoidMacTrafficLights && "translate-x-20"
         )}
       >
         <SidebarTrigger />
-        <Separator className="h-6" orientation="vertical" />
-        <h1 className="text-lg font-semibold">{title}</h1>
+        <Separator className="h-5" orientation="vertical" />
+        <div className="flex min-w-0 items-center gap-2">
+          <FileText className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+          <h1 className="truncate text-sm font-semibold leading-none tracking-normal">{title}</h1>
+        </div>
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex shrink-0 items-center gap-2">
         <Pdf2zhWorkerBadge status={pdf2zhWorker} />
       </div>
     </header>
