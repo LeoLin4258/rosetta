@@ -21,7 +21,7 @@ pub mod profile;
 pub mod status;
 
 use serde::Serialize;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 use install::{install_model, InstallOptions, InstallProgress, InstallResult};
 use layout::RuntimeLayout;
@@ -178,6 +178,38 @@ pub async fn stop_managed_rwkv_runtime(
         Some(model),
     )
     .await
+}
+
+pub async fn shutdown_managed_rwkv_runtime_for_exit(app: &AppHandle) {
+    let Some(registry) = app.try_state::<Registry>() else {
+        return;
+    };
+
+    let static_status = build_static_status(app);
+    let result = match static_status {
+        Ok(status) => {
+            let sidecar = status.sidecar_path.as_deref();
+            let tokenizer = status.tokenizer_path.as_deref();
+            let model = status
+                .layout
+                .model_extracted_dir
+                .as_deref()
+                .unwrap_or(status.layout.model_file.as_path());
+            stop_sidecar(
+                &registry,
+                Some(status.profile),
+                sidecar,
+                tokenizer,
+                Some(model),
+            )
+            .await
+        }
+        Err(_) => stop_sidecar(&registry, None, None, None, None).await,
+    };
+
+    if let Err(error) = result {
+        eprintln!("[managed-rwkv] app-exit cleanup failed: {error}");
+    }
 }
 
 #[tauri::command]

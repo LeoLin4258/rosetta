@@ -8,11 +8,18 @@ mod rwkv_providers;
 #[allow(dead_code)]
 mod rwkv_runtime;
 
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{Emitter, Manager};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let exit_cleanup_started = Arc::new(AtomicBool::new(false));
+
     tauri::Builder::default()
         .manage(rwkv_api::RwkvTranslationRunRegistry::default())
         .manage(managed_rwkv::Registry::default())
@@ -230,7 +237,23 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app_handle, event| {
+        .run(move |app_handle, event| {
+            if let tauri::RunEvent::ExitRequested { code, api, .. } = &event {
+                if exit_cleanup_started.swap(true, Ordering::SeqCst) {
+                    return;
+                }
+
+                let exit_code = code.unwrap_or(0);
+                api.prevent_exit();
+                let app = app_handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    managed_rwkv::shutdown_managed_rwkv_runtime_for_exit(&app).await;
+                    managed_pdf2zh::shutdown_worker_for_exit(&app).await;
+                    app.exit(exit_code);
+                });
+                return;
+            }
+
             // macOS: clicking the dock icon while all windows are closed
             // fires Reopen. Without handling it, the app sits in the dock
             // with the running-dot but no way to surface the window short

@@ -42,6 +42,12 @@ pub fn prewarm_in_background(app: &AppHandle) {
     });
 }
 
+pub async fn shutdown_worker_for_exit(app: &AppHandle) {
+    if worker::shutdown_worker(app).await {
+        eprintln!("[pdf2zh-worker] stopped during app exit");
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Pdf2zhCancelInstallResult {

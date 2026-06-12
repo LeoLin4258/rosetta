@@ -504,3 +504,18 @@ pub(crate) async fn prewarm_worker(app: &AppHandle) -> Result<bool, String> {
     *guard = Some(worker);
     Ok(true)
 }
+
+pub(crate) async fn shutdown_worker(app: &AppHandle) -> bool {
+    let Some(state) = app.try_state::<WorkerState>() else {
+        return false;
+    };
+
+    let mut guard = state.inner.lock().await;
+    let Some(mut worker) = guard.take() else {
+        return false;
+    };
+
+    kill_process_tree(&mut worker.child).await;
+    set_worker_status(app, "idle", None, None);
+    true
+}

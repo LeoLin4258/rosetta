@@ -790,4 +790,40 @@ mod tests {
         // Length should be exactly 20: YYYY-MM-DDTHH:MM:SSZ.
         assert_eq!(s.len(), 20, "got {s}");
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_sidecar_kills_registered_child() {
+        tauri::async_runtime::block_on(async {
+            let registry = ManagedRwkvRuntimeRegistry::default();
+            let child = TokioCommand::new("sleep")
+                .arg("60")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .kill_on_drop(true)
+                .spawn()
+                .expect("spawn sleep child");
+            let pid = child.id().expect("child pid");
+
+            {
+                let mut guard = registry.inner.lock().await;
+                guard.child = Some(child);
+                guard.pid = Some(pid);
+                guard.state = Some(ManagedRuntimeState::Ready);
+            }
+
+            let result = stop_sidecar(&registry, None, None, None, None)
+                .await
+                .expect("stop sidecar");
+
+            assert_eq!(result, "本地 RWKV 运行时已停止。");
+            assert!(!process_exists(pid), "child process {pid} should be gone");
+        });
+    }
+
+    #[cfg(unix)]
+    fn process_exists(pid: u32) -> bool {
+        unsafe { libc::kill(pid as i32, 0) == 0 }
+    }
 }
