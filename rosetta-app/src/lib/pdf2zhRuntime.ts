@@ -98,3 +98,37 @@ export function subscribePdf2zhInstallProgress(
 export function prewarmPdf2zhWorker() {
   return invoke<boolean>("prewarm_pdf2zh_worker");
 }
+
+/// Lifecycle states the backend broadcasts for the header indicator.
+/// - `idle`: never started this session (transient)
+/// - `not-installed`: pdf2zh pack missing — indicator hides itself
+/// - `starting`: handshake in flight (~13 s torch import)
+/// - `ready`: warm worker, accepting jobs immediately
+/// - `translating`: a job is running; flips back to `ready` when it returns
+/// - `failed`: last spawn errored; `message` carries the user-facing reason
+export type Pdf2zhWorkerStatusState =
+  | "idle"
+  | "not-installed"
+  | "starting"
+  | "ready"
+  | "translating"
+  | "failed";
+
+export type Pdf2zhWorkerStatus = {
+  state: Pdf2zhWorkerStatusState;
+  message: string | null;
+  importMs: number | null;
+};
+
+export function getPdf2zhWorkerStatus() {
+  return invoke<Pdf2zhWorkerStatus>("get_pdf2zh_worker_status");
+}
+
+export function subscribePdf2zhWorkerStatus(
+  handler: (status: Pdf2zhWorkerStatus) => void
+): Promise<UnlistenFn> {
+  return listen<Pdf2zhWorkerStatus>(
+    "rosetta-pdf2zh-worker-status",
+    (event) => handler(event.payload)
+  );
+}

@@ -12,20 +12,21 @@
 //! when the worker can't be started.
 //!
 //! Cancellation kills the worker's whole process group (translation threads
-//! and any descendants); the next run pays one re-import. An idle reaper
-//! shuts the worker down after [`IDLE_SHUTDOWN`] to reclaim the few hundred
-//! MB of resident torch memory.
+//! and any descendants); the next run pays one re-import. There is no idle
+//! reaper — the worker stays warm for the lifetime of the app process so the
+//! header indicator can stay "已就绪" and translate clicks are always cheap.
+//! At ~600 MB resident torch memory that's a deliberate trade.
 
 use std::{
     path::PathBuf,
     process::Stdio,
-    sync::atomic::{AtomicBool, Ordering},
-    time::{Duration, Instant},
+    sync::Mutex as StdMutex,
+    time::Duration,
 };
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, Command},
@@ -38,13 +39,82 @@ const WORKER_SCRIPT: &str = include_str!("rosetta_pdf2zh_worker.py");
 /// First spawn includes the ~13 s torch import plus, on a fresh machine, the
 /// layout-model download — be generous.
 const READY_TIMEOUT: Duration = Duration::from_secs(300);
-const IDLE_SHUTDOWN: Duration = Duration::from_secs(10 * 60);
-const REAPER_INTERVAL: Duration = Duration::from_secs(60);
 
-#[derive(Default)]
+/// Status broadcast to the frontend so the header can show a live "PDF 引擎"
+/// indicator. Updated by [`set_worker_status`] which both stores the latest
+/// snapshot in [`WorkerState::status`] and emits a Tauri event so every
+/// window sees the change immediately.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Pdf2zhWorkerStatus {
+    /// One of: "idle" (never started this session), "starting" (importing
+    /// torch + handshake in flight), "ready" (warm, idle, accepting jobs),
+    /// "translating" (a job is running), "failed" (last spawn errored),
+    /// "not-installed" (pdf2zh pack missing — the indicator will hide
+    /// itself in this state).
+    pub state: String,
+    pub message: Option<String>,
+    /// Import wall time on the last successful spawn, surfaced for the
+    /// status tooltip ("预热耗时 X.X s").
+    #[serde(rename = "importMs")]
+    pub import_ms: Option<u64>,
+}
+
+impl Default for Pdf2zhWorkerStatus {
+    fn default() -> Self {
+        Self {
+            state: "idle".to_string(),
+            message: None,
+            import_ms: None,
+        }
+    }
+}
+
+const WORKER_STATUS_EVENT: &str = "rosetta-pdf2zh-worker-status";
+
 pub struct WorkerState {
     inner: Mutex<Option<WorkerProcess>>,
-    reaper_started: AtomicBool,
+    status: StdMutex<Pdf2zhWorkerStatus>,
+}
+
+impl Default for WorkerState {
+    fn default() -> Self {
+        Self {
+            inner: Mutex::new(None),
+            status: StdMutex::new(Pdf2zhWorkerStatus::default()),
+        }
+    }
+}
+
+impl WorkerState {
+    pub fn status_snapshot(&self) -> Pdf2zhWorkerStatus {
+        self.status
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default()
+    }
+}
+
+/// Update the public worker status and broadcast it to every window. Called
+/// from spawn / handshake / kill paths so the header indicator tracks the
+/// real worker lifecycle without polling.
+fn set_worker_status(
+    app: &AppHandle,
+    state: &str,
+    message: Option<String>,
+    import_ms: Option<u64>,
+) {
+    let next = Pdf2zhWorkerStatus {
+        state: state.to_string(),
+        message,
+        import_ms,
+    };
+    if let Some(worker_state) = app.try_state::<WorkerState>() {
+        if let Ok(mut guard) = worker_state.status.lock() {
+            *guard = next.clone();
+        }
+    }
+    let _ = app.emit(WORKER_STATUS_EVENT, next);
 }
 
 #[derive(Debug)]
@@ -94,7 +164,6 @@ pub struct WorkerProcess {
     events: mpsc::UnboundedReceiver<WorkerEvent>,
     stderr_lines: mpsc::UnboundedReceiver<String>,
     stderr_open: bool,
-    last_used: Instant,
     next_job: u64,
 }
 
@@ -124,15 +193,21 @@ pub(crate) async fn kill_process_tree(child: &mut Child) {
 async fn spawn_worker(app: &AppHandle) -> Result<WorkerProcess, String> {
     let status = build_static_status(app)?;
     if !status.install_plan.ready {
+        set_worker_status(
+            app,
+            "not-installed",
+            Some(status.install_plan.message.clone()),
+            None,
+        );
         return Err(status.install_plan.message);
     }
     let python = status.layout.pack_dir.join("python").join("bin").join("python");
     if !python.is_file() {
-        return Err(format!(
-            "pdf2zh pack 中找不到 Python 解释器: {}",
-            python.display()
-        ));
+        let msg = format!("pdf2zh pack 中找不到 Python 解释器: {}", python.display());
+        set_worker_status(app, "failed", Some(msg.clone()), None);
+        return Err(msg);
     }
+    set_worker_status(app, "starting", None, None);
     status.layout.ensure_dirs()?;
     let worker_dir = status.layout.root_dir.join("worker");
     std::fs::create_dir_all(&worker_dir)
@@ -240,7 +315,6 @@ async fn spawn_worker(app: &AppHandle) -> Result<WorkerProcess, String> {
         events,
         stderr_lines,
         stderr_open: true,
-        last_used: Instant::now(),
         next_job: 0,
     };
 
@@ -249,13 +323,14 @@ async fn spawn_worker(app: &AppHandle) -> Result<WorkerProcess, String> {
         while let Some(event) = worker.events.recv().await {
             match event.event.as_str() {
                 "ready" => {
+                    let import_ms = event.import_ms.unwrap_or(0);
                     eprintln!(
                         "[pdf2zh-worker] ready (import {} ms, mps={}, reason={})",
-                        event.import_ms.unwrap_or(0),
+                        import_ms,
                         event.mps.unwrap_or(false),
                         event.mps_reason.as_deref().unwrap_or("-")
                     );
-                    return Ok(());
+                    return Ok(import_ms);
                 }
                 "fatal" => {
                     return Err(event
@@ -270,14 +345,21 @@ async fn spawn_worker(app: &AppHandle) -> Result<WorkerProcess, String> {
     .await;
 
     match ready {
-        Ok(Ok(())) => Ok(worker),
+        Ok(Ok(import_ms)) => {
+            set_worker_status(app, "ready", None, Some(import_ms));
+            Ok(worker)
+        }
         Ok(Err(message)) => {
             kill_process_tree(&mut worker.child).await;
-            Err(format!("pdf2zh worker 启动失败: {message}"))
+            let msg = format!("pdf2zh worker 启动失败: {message}");
+            set_worker_status(app, "failed", Some(msg.clone()), None);
+            Err(msg)
         }
         Err(_) => {
             kill_process_tree(&mut worker.child).await;
-            Err("pdf2zh worker 启动超时。".to_string())
+            let msg = "pdf2zh worker 启动超时。".to_string();
+            set_worker_status(app, "failed", Some(msg.clone()), None);
+            Err(msg)
         }
     }
 }
@@ -322,14 +404,12 @@ impl WorkerProcess {
                             }
                         }
                         "done" if event.id.as_deref() == Some(job_id.as_str()) => {
-                            self.last_used = Instant::now();
                             if let Some(timings) = event.timings {
                                 on_stderr(&format!("[pdf2zh-worker] timings {timings}"));
                             }
                             return WorkerTranslateOutcome::Completed;
                         }
                         "error" => {
-                            self.last_used = Instant::now();
                             return WorkerTranslateOutcome::JobFailed(
                                 event.message.unwrap_or_else(|| "未知 worker 错误".to_string()),
                             );
@@ -369,7 +449,6 @@ pub(crate) async fn translate_via_worker(
     cancel_rx: &mut oneshot::Receiver<()>,
 ) -> WorkerTranslateOutcome {
     let state = app.state::<WorkerState>();
-    start_reaper_once(app, &state);
 
     let mut guard = state.inner.lock().await;
     if guard.is_none() {
@@ -379,6 +458,7 @@ pub(crate) async fn translate_via_worker(
         }
     }
     let worker = guard.as_mut().expect("worker present after ensure");
+    set_worker_status(app, "translating", None, None);
     let outcome = worker.run_translate(payload, on_stderr, on_page, cancel_rx).await;
 
     if matches!(
@@ -388,45 +468,39 @@ pub(crate) async fn translate_via_worker(
         if let Some(mut dead) = guard.take() {
             kill_process_tree(&mut dead.child).await;
         }
+        // Worker is gone — drop guard before respawning so the lock is
+        // available to the next caller, then trigger an async respawn so the
+        // header indicator bounces back to "已就绪" without waiting for the
+        // next translate click.
+        drop(guard);
+        set_worker_status(app, "idle", None, None);
+        let app_clone = app.clone();
+        tokio::spawn(async move {
+            let _ = prewarm_worker(&app_clone).await;
+        });
+    } else {
+        // Healthy worker stays warm.
+        set_worker_status(app, "ready", None, None);
     }
     outcome
 }
 
-/// Start (or confirm) the warm worker without running a job. Called when the
-/// user opens a PDF document so the ~13 s import overlaps with page
-/// selection instead of the first translate click.
+/// Start (or confirm) the warm worker without running a job. Called once at
+/// app startup so the ~13 s import is paid before the user has a chance to
+/// click translate, and re-called whenever a kill (cancel / process loss)
+/// has left the slot empty so the header indicator returns to "已就绪".
 pub(crate) async fn prewarm_worker(app: &AppHandle) -> Result<bool, String> {
     let state = app.state::<WorkerState>();
-    start_reaper_once(app, &state);
 
     let mut guard = state.inner.lock().await;
     if guard.is_some() {
+        // Already warm — make sure the broadcast status reflects it (the
+        // frontend may have just connected and missed the original "ready"
+        // event).
+        set_worker_status(app, "ready", None, None);
         return Ok(true);
     }
     let worker = spawn_worker(app).await?;
     *guard = Some(worker);
     Ok(true)
-}
-
-fn start_reaper_once(app: &AppHandle, state: &WorkerState) {
-    if state.reaper_started.swap(true, Ordering::SeqCst) {
-        return;
-    }
-    let app = app.clone();
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(REAPER_INTERVAL).await;
-            let state = app.state::<WorkerState>();
-            let mut guard = state.inner.lock().await;
-            let idle = guard
-                .as_ref()
-                .is_some_and(|worker| worker.last_used.elapsed() >= IDLE_SHUTDOWN);
-            if idle {
-                if let Some(mut worker) = guard.take() {
-                    eprintln!("[pdf2zh-worker] idle shutdown");
-                    kill_process_tree(&mut worker.child).await;
-                }
-            }
-        }
-    });
 }

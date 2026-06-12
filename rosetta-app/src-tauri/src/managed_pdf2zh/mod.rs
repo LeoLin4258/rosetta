@@ -10,14 +10,36 @@ use tauri::{AppHandle, State};
 
 pub use install::Pdf2zhInstallRegistry as InstallStateRegistry;
 pub use status::build_static_status;
-pub use worker::WorkerState as Pdf2zhWorkerState;
+pub use worker::{Pdf2zhWorkerStatus, WorkerState as Pdf2zhWorkerState};
 
 /// Warm up the persistent pdf2zh worker (heavy Python imports + layout model)
-/// so the first translate click doesn't pay the ~13 s import. Fire-and-forget
-/// from the frontend when a PDF document becomes active.
+/// so the first translate click doesn't pay the ~13 s import. Fire-and-forget;
+/// the worker stays warm for the rest of the session (no idle reaper).
 #[tauri::command]
 pub async fn prewarm_pdf2zh_worker(app: AppHandle) -> Result<bool, String> {
     worker::prewarm_worker(&app).await
+}
+
+/// Snapshot of the worker lifecycle for the header indicator. The frontend
+/// also listens for `rosetta-pdf2zh-worker-status` events for live updates;
+/// this command is the one-shot fetch the UI uses on mount before any event
+/// has fired.
+#[tauri::command]
+pub fn get_pdf2zh_worker_status(
+    state: State<'_, Pdf2zhWorkerState>,
+) -> Result<Pdf2zhWorkerStatus, String> {
+    Ok(state.status_snapshot())
+}
+
+/// Kick off prewarm in the background. Called once from lib.rs setup after
+/// the main window is shown so the user never waits for the import.
+pub fn prewarm_in_background(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        // Skip noisily if the pack isn't installed yet — spawn_worker emits
+        // "not-installed" status on its own, but we don't need to log here.
+        let _ = worker::prewarm_worker(&app).await;
+    });
 }
 
 #[derive(Debug, Clone, Serialize)]

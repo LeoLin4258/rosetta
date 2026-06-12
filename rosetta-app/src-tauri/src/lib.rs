@@ -51,6 +51,13 @@ pub fn run() {
                 window.set_focus().ok();
             }
 
+            // Start prewarming the pdf2zh worker as soon as the window is up
+            // so the ~13 s torch import finishes in the background while the
+            // user is still reading the welcome page. The worker stays warm
+            // for the whole session (no idle reaper) — translate clicks
+            // never pay the import cost.
+            managed_pdf2zh::prewarm_in_background(handle);
+
             // macOS native menu bar
             #[cfg(target_os = "macos")]
             {
@@ -175,6 +182,7 @@ pub fn run() {
             managed_pdf2zh::get_pdf2zh_status,
             managed_pdf2zh::install_pdf2zh_pack,
             managed_pdf2zh::prewarm_pdf2zh_worker,
+            managed_pdf2zh::get_pdf2zh_worker_status,
             local_data_reset::clear_rosetta_local_data,
             onboarding::complete_onboarding_and_open_main,
             onboarding::get_onboarding_decision,

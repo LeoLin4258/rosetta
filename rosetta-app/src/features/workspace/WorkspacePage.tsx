@@ -56,6 +56,7 @@ export function WorkspacePage() {
   const jobs = useRosettaStore((s) => s.jobs);
   const rwkv = useRosettaStore((s) => s.rwkv);
   const managedRuntimeStatus = useRosettaStore((s) => s.managedRuntime.status);
+  const pdf2zhWorkerStatus = useRosettaStore((s) => s.pdf2zhWorker);
   const defaultTargetLang = useRosettaStore((s) => s.defaultTargetLang);
   const langByJobId = useRosettaStore((s) => s.langByJobId);
   const setJobLangs = useRosettaStore((s) => s.setJobLangs);
@@ -777,6 +778,10 @@ export function WorkspacePage() {
             isTranslationBusyElsewhere={isTranslationBusyElsewhere}
             isRuntimeStarting={managedRuntimeStatus?.state === "starting"}
             isPdfEngineInstalling={pdf2zhRuntime.isInstalling}
+            isPdfEngineWarming={
+              pdf2zhWorkerStatus?.state === "starting" ||
+              pdf2zhWorkerStatus?.state === "idle"
+            }
             pdfEngineProgressMessage={pdfEngineProgressMessage}
             translatedCount={completedCount}
             totalCount={totalCount}

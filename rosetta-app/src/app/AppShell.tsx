@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, type Theme } from "@tauri-apps/api/window";
+import { Loader2 } from "lucide-react";
 import { AppSidebar } from "@/components/app-sidebar";
 import { WindowTitleBar } from "@/components/window-title-bar";
 import { Separator } from "@/components/ui/separator";
@@ -11,8 +12,18 @@ import {
   SidebarTrigger,
   useSidebar,
 } from "@/components/ui/sidebar";
-import { TooltipProvider } from "@/components/ui/tooltip";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { createWelcomeDocument, listRosettaJobs, loadRosettaJob } from "@/lib/rosettaJobs";
+import {
+  getPdf2zhWorkerStatus,
+  subscribePdf2zhWorkerStatus,
+  type Pdf2zhWorkerStatus,
+} from "@/lib/pdf2zhRuntime";
 import { getManagedRwkvRuntimeStatus, startManagedRwkvRuntime } from "@/lib/rwkvRuntime";
 import { useMenuEvents } from "@/lib/useMenuEvents";
 import { useRosettaStore } from "@/store/useRosettaStore";
@@ -102,12 +113,113 @@ function usePdfRunProgressEvents() {
   }, [setPdfRunProgress]);
 }
 
+/// Mirror the persistent pdf2zh worker lifecycle into the store. Fires an
+/// initial fetch (covers the case where the backend emitted "ready" before
+/// this listener attached) plus subscribes to live updates from
+/// `rosetta-pdf2zh-worker-status` events.
+function usePdf2zhWorkerStatusEvents() {
+  const setPdf2zhWorkerStatus = useRosettaStore((s) => s.setPdf2zhWorkerStatus);
+
+  useEffect(() => {
+    let unmounted = false;
+    let unlisten: (() => void) | null = null;
+
+    void getPdf2zhWorkerStatus()
+      .then((status) => {
+        if (!unmounted) setPdf2zhWorkerStatus(status);
+      })
+      .catch(() => {});
+
+    subscribePdf2zhWorkerStatus((status) => {
+      setPdf2zhWorkerStatus(status);
+    })
+      .then((fn) => {
+        if (unmounted) fn();
+        else unlisten = fn;
+      })
+      .catch(console.error);
+
+    return () => {
+      unmounted = true;
+      unlisten?.();
+    };
+  }, [setPdf2zhWorkerStatus]);
+}
+
 function MenuEventHandler() {
   const { toggleSidebar } = useSidebar();
   useMenuEvents(toggleSidebar);
   useOnboardingCompleted();
   usePdfRunProgressEvents();
+  usePdf2zhWorkerStatusEvents();
   return null;
+}
+
+/// Small status pill shown on the right side of the app header. Hidden when
+/// the pack isn't installed (no point nagging) and once the user is mid-
+/// translate the runtime page already conveys "翻译中" state. Tooltip carries
+/// the long-form message + import wall time for debugging.
+function Pdf2zhWorkerBadge({ status }: { status: Pdf2zhWorkerStatus | null }) {
+  if (!status || status.state === "not-installed" || status.state === "idle") {
+    return null;
+  }
+
+  let dotClass = "";
+  let label = "";
+  let spinning = false;
+  switch (status.state) {
+    case "starting":
+      dotClass = "bg-amber-500";
+      label = "PDF 引擎预热中";
+      spinning = true;
+      break;
+    case "ready":
+      dotClass = "bg-emerald-500";
+      label = "PDF 引擎已就绪";
+      break;
+    case "translating":
+      dotClass = "bg-blue-500";
+      label = "PDF 引擎工作中";
+      spinning = true;
+      break;
+    case "failed":
+      dotClass = "bg-rose-500";
+      label = "PDF 引擎启动失败";
+      break;
+    default:
+      return null;
+  }
+
+  const tooltipLines = [label];
+  if (status.message) tooltipLines.push(status.message);
+  if (typeof status.importMs === "number" && status.importMs > 0) {
+    tooltipLines.push(`预热耗时 ${(status.importMs / 1000).toFixed(1)} s`);
+  }
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <div
+          className="flex h-7 items-center gap-1.5 rounded-full border border-border/40 bg-background/60 px-2.5 text-xs text-muted-foreground"
+          data-window-no-drag
+        >
+          {spinning ? (
+            <Loader2 className={cn("size-3 animate-spin", dotClass.replace("bg-", "text-"))} />
+          ) : (
+            <span className={cn("size-2 rounded-full", dotClass)} />
+          )}
+          <span className="tabular-nums">{label}</span>
+        </div>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" align="end">
+        {tooltipLines.map((line, idx) => (
+          <div key={idx} className={idx === 0 ? "font-medium" : "text-xs opacity-80"}>
+            {line}
+          </div>
+        ))}
+      </TooltipContent>
+    </Tooltip>
+  );
 }
 
 function AppHeader({
@@ -121,6 +233,7 @@ function AppHeader({
 }) {
   const { state } = useSidebar();
   const shouldAvoidMacTrafficLights = isMacPlatform && state === "collapsed";
+  const pdf2zhWorker = useRosettaStore((s) => s.pdf2zhWorker);
 
   return (
     <header
@@ -140,6 +253,9 @@ function AppHeader({
         <SidebarTrigger />
         <Separator className="h-6" orientation="vertical" />
         <h1 className="text-lg font-semibold">{title}</h1>
+      </div>
+      <div className="flex items-center gap-2">
+        <Pdf2zhWorkerBadge status={pdf2zhWorker} />
       </div>
     </header>
   );

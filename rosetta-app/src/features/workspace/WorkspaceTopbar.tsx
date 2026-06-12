@@ -28,6 +28,10 @@ type WorkspaceTopbarProps = {
   isTranslationBusyElsewhere?: boolean;
   isRuntimeStarting: boolean;
   isPdfEngineInstalling?: boolean;
+  /// True while the persistent pdf2zh worker is paying its ~13 s torch
+  /// import. Only meaningful for PDF jobs; gates the translate button so
+  /// the user can't click before the engine is warm.
+  isPdfEngineWarming?: boolean;
   pdfEngineProgressMessage?: string | null;
   translatedCount: number;
   totalCount: number;
@@ -116,6 +120,7 @@ export function WorkspaceTopbar({
   isTranslationBusyElsewhere = false,
   isRuntimeStarting,
   isPdfEngineInstalling = false,
+  isPdfEngineWarming = false,
   pdfEngineProgressMessage = null,
   translatedCount,
   totalCount,
@@ -330,6 +335,11 @@ export function WorkspaceTopbar({
               <Button size="sm" disabled className="gap-1.5">
                 <Loader2 className="size-3.5 animate-spin" />
                 {pdfEngineProgressMessage ?? "正在准备 PDF 引擎…"}
+              </Button>
+            ) : isPdf && isPdfEngineWarming ? (
+              <Button size="sm" disabled className="gap-1.5">
+                <Loader2 className="size-3.5 animate-spin" />
+                PDF 引擎预热中…
               </Button>
             ) : isRuntimeStarting ? (
               <Button size="sm" disabled className="gap-1.5">

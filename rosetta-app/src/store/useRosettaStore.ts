@@ -16,6 +16,7 @@ import type {
   TranslationRevision,
   TranslationMode,
 } from "../types/rosetta";
+import type { Pdf2zhWorkerStatus } from "../lib/pdf2zhRuntime";
 
 /**
  * Persisted proxy config used **only for remote downloads** of managed runtime
@@ -86,10 +87,18 @@ type RosettaState = {
   translationRevisions: TranslationRevision[];
   activeTranslationRun: ActiveTranslationRun | null;
   pdfRunProgressByJobId: Record<string, PdfRunProgress>;
+  /**
+   * Lifecycle of the persistent pdf2zh worker, shown in the app header so the
+   * user can see whether the engine is warm. Updated by AppShell from the
+   * `rosetta-pdf2zh-worker-status` Tauri event + a one-shot fetch on mount.
+   * `null` until the first probe lands.
+   */
+  pdf2zhWorker: Pdf2zhWorkerStatus | null;
   managedRuntime: ManagedRuntimeSlice;
   downloadProxy: DownloadProxyConfig;
   defaultTargetLang: string;
   langByJobId: Record<string, { sourceLang: string; targetLang: string }>;
+  setPdf2zhWorkerStatus: (status: Pdf2zhWorkerStatus | null) => void;
   setManagedRuntimeStatus: (status: ManagedRuntimeStatus | null) => void;
   setManagedRuntimeProgress: (
     progress: ManagedRuntimeInstallProgress | null
@@ -258,6 +267,7 @@ export const useRosettaStore = create<RosettaState>()(
       translationRevisions: [],
       activeTranslationRun: null,
       pdfRunProgressByJobId: {},
+      pdf2zhWorker: null,
       managedRuntime: {
         status: null,
         progress: null,
@@ -280,6 +290,7 @@ export const useRosettaStore = create<RosettaState>()(
             [jobId]: { sourceLang, targetLang },
           },
         })),
+      setPdf2zhWorkerStatus: (status) => set({ pdf2zhWorker: status }),
       setManagedRuntimeStatus: (status) =>
         set((state) => ({
           managedRuntime: {
