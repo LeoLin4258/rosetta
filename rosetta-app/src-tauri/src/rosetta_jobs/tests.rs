@@ -12,6 +12,7 @@ use crate::rosetta_jobs::{
     formats::pdf::page_state::*,
     formats::pdf::test_helpers::fixture_path,
     formats::{markdown::parse_markdown, txt::parse_txt},
+    import::{build_blank_txt_bundle, rebuild_txt_source_file},
     model::*,
     path::*,
     revisions::*,
@@ -29,6 +30,41 @@ fn txt_parser_splits_blank_line_paragraphs() {
     assert_eq!(segments[1].source_text, "Two.\nStill two.");
     assert_eq!(segments[0].order, 1);
     assert_eq!(segments[1].order, 2);
+}
+
+#[test]
+fn blank_txt_bundle_uses_txt_format_and_starts_empty() {
+    let bundle = build_blank_txt_bundle("job-txt-1", "1700000000000", "临时文本")
+        .expect("build blank txt bundle");
+
+    assert_eq!(bundle.document.format, "txt");
+    assert_eq!(bundle.job.format, "txt");
+    assert_eq!(bundle.job.source_kind, "file");
+    assert_eq!(bundle.job.source_path, None);
+    assert_eq!(bundle.document.files[0].format, "txt");
+    assert_eq!(bundle.document.files[0].relative_path, "临时文本.txt");
+    assert!(bundle.document.blocks.is_empty());
+    assert!(bundle.segments.is_empty());
+}
+
+#[test]
+fn txt_source_edit_rebuilds_blocks_and_segments() {
+    let mut bundle = build_blank_txt_bundle("job-txt-1", "1700000000000", "临时文本")
+        .expect("build blank txt bundle");
+
+    rebuild_txt_source_file(
+        &mut bundle.document,
+        &mut bundle.segments,
+        "file-1",
+        "First paragraph.\n\nSecond paragraph.",
+    )
+    .expect("rebuild txt source");
+
+    assert_eq!(bundle.document.blocks.len(), 2);
+    assert_eq!(bundle.segments.len(), 2);
+    assert_eq!(bundle.segments[0].source_text, "First paragraph.");
+    assert_eq!(bundle.segments[1].source_text, "Second paragraph.");
+    assert_eq!(bundle.document.files[0].block_ids.len(), 2);
 }
 
 #[test]

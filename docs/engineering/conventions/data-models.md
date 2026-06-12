@@ -138,9 +138,10 @@ AppData/Rosetta/jobs/
 
 导入约定：
 
-- v1 目标支持 TXT、Markdown 和文字型 PDF。当前已实现 TXT、Markdown；PDF 支持必须作为 importer 接入同一套 Rosetta IR，不应另起独立任务模型或预览模型。
+- v1 目标支持 TXT、Markdown 和文字型 PDF。PDF 支持必须作为 importer 接入同一套 Rosetta IR，不应另起独立任务模型或预览模型。
 - 文件由 Tauri command 读取，前端不直接获得宽泛文件系统权限。
 - “新项目”可以导入单个文件，也可以导入文件夹。文件夹导入递归收集受支持格式，跳过隐藏目录，并限制项目文件数量，避免原型阶段一次塞入过大项目。
+- 空白 TXT 文件由窄 Tauri command 在 Rosetta 本地缓存中创建，持久化为普通 `format: "txt"` 单文件 job，不设置 `sourcePath`。后续原文编辑仍按 TXT 规则重新切分 blocks 和 segments。
 - 文件夹项目的 `RosettaJobSummary.sourceKind` 为 `directory`，`fileCount` 记录导入文件数。`format` 是轻量 summary 字段，混合项目只用它作为总体显示和兼容字段，每个文件的真实格式以 `RosettaSourceFile.format` 为准。
 - TXT 按空行切分为段落。
 - Markdown 使用轻量 block parser，首版只保留标题、段落、列表、引用、代码块和空行等基础结构。

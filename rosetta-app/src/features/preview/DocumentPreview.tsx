@@ -5,6 +5,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { languageLabel } from "@/lib/languages";
@@ -42,6 +43,14 @@ export function DocumentPreview({
   pdfProgress,
   pdfError,
   pdfSelectedPages = [],
+  sourceEditing = false,
+  sourceEditText = "",
+  sourceEditSaving = false,
+  sourceEditEnabled = false,
+  onSourceEditCancel,
+  onSourceEditChange,
+  onSourceEditSave,
+  onSourceEditStart,
   onPdfPageCountChange,
   onPdfSelectedPagesChange,
 }: {
@@ -80,6 +89,14 @@ export function DocumentPreview({
   /// PDF-specific: error message from the last failed PDF generation.
   pdfError?: string | null;
   pdfSelectedPages?: number[];
+  sourceEditing?: boolean;
+  sourceEditText?: string;
+  sourceEditSaving?: boolean;
+  sourceEditEnabled?: boolean;
+  onSourceEditCancel?: () => void;
+  onSourceEditChange?: (value: string) => void;
+  onSourceEditSave?: () => void;
+  onSourceEditStart?: () => void;
   onPdfPageCountChange?: (count: number) => void;
   onPdfSelectedPagesChange?: (pages: number[]) => void;
 }) {
@@ -136,26 +153,38 @@ export function DocumentPreview({
   if (layout === "source") {
     return (
       <Card className="flex h-full min-h-0 flex-col gap-0 overflow-hidden py-0">
-        <div className="border-b bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
-          原文
-        </div>
+        <SourcePaneHeader
+          canEdit={sourceEditEnabled}
+          editing={sourceEditing}
+          saving={sourceEditSaving}
+          onCancel={onSourceEditCancel}
+          onEdit={onSourceEditStart}
+          onSave={onSourceEditSave}
+        />
         <div className="min-h-0 flex-1">
-          <PreviewPane
-            document={document}
-            file={sourceFile}
-            hoveredBlockId={hoveredBlockId ?? null}
-            onBlockHover={onBlockHover}
-            onBlockLeave={onBlockLeave}
-            onToggleBlockSelection={onToggleBlockSelection}
-            onScroll={() => {}}
-            paneRef={sourceRef}
-            selectedBlockIds={selectedBlockIds}
-            selectionEnabled={selectionEnabled}
-            side="source"
-            sourceSegments={sourceSegments}
-            translationSegments={translationSegments}
-            isTranslating={isTranslating}
-          />
+          {sourceEditing ? (
+            <SourceEditPane
+              value={sourceEditText}
+              onChange={onSourceEditChange}
+            />
+          ) : (
+            <PreviewPane
+              document={document}
+              file={sourceFile}
+              hoveredBlockId={hoveredBlockId ?? null}
+              onBlockHover={onBlockHover}
+              onBlockLeave={onBlockLeave}
+              onToggleBlockSelection={onToggleBlockSelection}
+              onScroll={() => {}}
+              paneRef={sourceRef}
+              selectedBlockIds={selectedBlockIds}
+              selectionEnabled={selectionEnabled}
+              side="source"
+              sourceSegments={sourceSegments}
+              translationSegments={translationSegments}
+              isTranslating={isTranslating}
+            />
+          )}
         </div>
       </Card>
     );
@@ -192,7 +221,14 @@ export function DocumentPreview({
   return (
     <Card className="flex h-full min-h-0 flex-col gap-0 overflow-hidden py-0">
       <div className="grid grid-cols-2 border-b bg-muted/40 text-sm text-muted-foreground">
-        <div className="border-r px-4 py-3">原文</div>
+        <SourcePaneHeader
+          canEdit={sourceEditEnabled}
+          editing={sourceEditing}
+          saving={sourceEditSaving}
+          onCancel={onSourceEditCancel}
+          onEdit={onSourceEditStart}
+          onSave={onSourceEditSave}
+        />
         <div className="flex items-center justify-between gap-3 px-4 py-3">
           <span>译文</span>
           {translationFile ? (
@@ -201,22 +237,29 @@ export function DocumentPreview({
         </div>
       </div>
       <div className="grid min-h-0 flex-1 grid-cols-2">
-        <PreviewPane
-          document={document}
-          file={sourceFile}
-          hoveredBlockId={hoveredBlockId ?? null}
-          onBlockHover={onBlockHover}
-          onBlockLeave={onBlockLeave}
-          onToggleBlockSelection={onToggleBlockSelection}
-          onScroll={() => syncScroll("source")}
-          paneRef={sourceRef}
-          selectedBlockIds={selectedBlockIds}
-          selectionEnabled={selectionEnabled}
-          side="source"
-          sourceSegments={sourceSegments}
-          translationSegments={translationSegments}
-          isTranslating={isTranslating}
-        />
+        {sourceEditing ? (
+          <SourceEditPane
+            value={sourceEditText}
+            onChange={onSourceEditChange}
+          />
+        ) : (
+          <PreviewPane
+            document={document}
+            file={sourceFile}
+            hoveredBlockId={hoveredBlockId ?? null}
+            onBlockHover={onBlockHover}
+            onBlockLeave={onBlockLeave}
+            onToggleBlockSelection={onToggleBlockSelection}
+            onScroll={() => syncScroll("source")}
+            paneRef={sourceRef}
+            selectedBlockIds={selectedBlockIds}
+            selectionEnabled={selectionEnabled}
+            side="source"
+            sourceSegments={sourceSegments}
+            translationSegments={translationSegments}
+            isTranslating={isTranslating}
+          />
+        )}
         {translationFile ? (
           <PreviewPane
             document={document}
@@ -241,6 +284,74 @@ export function DocumentPreview({
         )}
       </div>
     </Card>
+  );
+}
+
+function SourcePaneHeader({
+  canEdit,
+  editing,
+  saving,
+  onCancel,
+  onEdit,
+  onSave,
+}: {
+  canEdit: boolean;
+  editing: boolean;
+  saving: boolean;
+  onCancel?: () => void;
+  onEdit?: () => void;
+  onSave?: () => void;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3 border-r px-4 py-3">
+      <span>原文</span>
+      {canEdit ? (
+        editing ? (
+          <div className="flex items-center gap-1.5">
+            <Button
+              size="xs"
+              variant="ghost"
+              onClick={onCancel}
+              disabled={saving}
+            >
+              取消
+            </Button>
+            <Button
+              size="xs"
+              variant="secondary"
+              onClick={onSave}
+              disabled={saving}
+            >
+              {saving ? "保存中" : "保存"}
+            </Button>
+          </div>
+        ) : (
+          <Button size="xs" variant="ghost" onClick={onEdit}>
+            编辑
+          </Button>
+        )
+      ) : null}
+    </div>
+  );
+}
+
+function SourceEditPane({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange?: (value: string) => void;
+}) {
+  return (
+    <div className="flex min-h-0 border-r bg-background">
+      <textarea
+        value={value}
+        onChange={(event) => onChange?.(event.target.value)}
+        placeholder="输入原文。空行会作为段落分隔。"
+        className="min-h-0 flex-1 resize-none bg-background px-6 py-6 text-sm leading-7 outline-none placeholder:text-muted-foreground"
+        spellCheck={false}
+      />
+    </div>
   );
 }
 

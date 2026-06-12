@@ -16,9 +16,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import {
   deleteRosettaJob,
-  importRosettaDocumentFromPath,
   loadRosettaJob,
-  pickRosettaImportPath,
 } from "@/lib/rosettaJobs";
 import { useRosettaStore } from "@/store/useRosettaStore";
 import {
@@ -224,16 +222,9 @@ export function AppSidebar({
   );
   const isSettingsRoute = location.pathname.startsWith("/settings");
 
-  async function addNewDocument() {
-    try {
-      const path = await pickRosettaImportPath();
-      if (!path) return;
-      const bundle = await importRosettaDocumentFromPath(path);
-      setActiveBundle(bundle);
-      navigate("/");
-    } catch {
-      // silent — picker cancel or import error
-    }
+  function addNewDocument() {
+    clearActiveJob();
+    navigate("/");
   }
 
   async function openJob(job: RosettaJobSummary) {
@@ -272,8 +263,9 @@ export function AppSidebar({
           <SidebarMenu>
             <SidebarMenuItem>
               <SidebarMenuButton
-                onClick={() => void addNewDocument()}
-                tooltip="打开文件"
+                onClick={addNewDocument}
+                isActive={location.pathname === "/" && !activeJobId}
+                tooltip="新建文档"
               >
                 <PlusIcon />
                 <span>新建文档</span>

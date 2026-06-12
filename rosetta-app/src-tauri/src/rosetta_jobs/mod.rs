@@ -185,6 +185,24 @@ pub fn create_welcome_document(app: AppHandle) -> Result<RosettaJobBundle, Strin
     import::create_welcome_document(&app)
 }
 
+#[tauri::command]
+pub fn create_blank_txt_document(
+    app: AppHandle,
+    filename: String,
+) -> Result<RosettaJobBundle, String> {
+    import::create_blank_txt_document(&app, filename)
+}
+
+#[tauri::command]
+pub fn update_txt_source_file(
+    app: AppHandle,
+    job_id: String,
+    file_id: String,
+    contents: String,
+) -> Result<RosettaJobBundle, String> {
+    import::update_txt_source_file(&app, &job_id, &file_id, contents)
+}
+
 /// Smoke test: confirm the bundled pdfium dylib and CJK font can be located
 /// and that pdfium binds successfully. Phase 2 frontend uses this to surface
 /// "PDF support unavailable" early before the user tries to import a PDF.

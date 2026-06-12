@@ -569,22 +569,27 @@ export const useRosettaStore = create<RosettaState>()(
           if (selectedFileId) {
             activeFileIdByJobId[bundle.job.id] = selectedFileId;
           }
+          const selectedTranslationFile =
+            selectedFileId != null
+              ? bundle.translationFiles.find(
+                  (file) =>
+                    file.id ===
+                    state.activeTranslationFileIdBySourceKey[
+                      sourceSelectionKey(bundle.job.id, selectedFileId)
+                    ]
+                ) ??
+                bundle.translationFiles.find(
+                  (file) => file.sourceFileId === selectedFileId
+                ) ??
+                null
+              : null;
 
           return {
             jobs: replaceJob(state.jobs, syncedJob),
             activeJobId: syncedJob.id,
             activeFileId: selectedFileId,
             activeSourceFileId: selectedFileId,
-            activeTranslationFileId:
-              selectedFileId != null
-                ? state.activeTranslationFileIdBySourceKey[
-                    sourceSelectionKey(bundle.job.id, selectedFileId)
-                  ] ??
-                  bundle.translationFiles.find(
-                    (file) => file.sourceFileId === selectedFileId
-                  )?.id ??
-                  null
-                : null,
+            activeTranslationFileId: selectedTranslationFile?.id ?? null,
             activeFileIdByJobId,
             activeDocument: bundle.document,
             previewSegments: bundle.segments,
@@ -617,21 +622,26 @@ export const useRosettaStore = create<RosettaState>()(
           } else {
             delete activeFileIdByJobId[bundle.job.id];
           }
+          const selectedTranslationFile =
+            selectedFileId != null
+              ? bundle.translationFiles.find(
+                  (file) =>
+                    file.id ===
+                    state.activeTranslationFileIdBySourceKey[
+                      sourceSelectionKey(bundle.job.id, selectedFileId)
+                    ]
+                ) ??
+                bundle.translationFiles.find(
+                  (file) => file.sourceFileId === selectedFileId
+                ) ??
+                null
+              : null;
 
           return {
             jobs,
             activeFileId: selectedFileId,
             activeSourceFileId: selectedFileId,
-            activeTranslationFileId:
-              selectedFileId != null
-                ? state.activeTranslationFileIdBySourceKey[
-                    sourceSelectionKey(bundle.job.id, selectedFileId)
-                  ] ??
-                  bundle.translationFiles.find(
-                    (file) => file.sourceFileId === selectedFileId
-                  )?.id ??
-                  null
-                : null,
+            activeTranslationFileId: selectedTranslationFile?.id ?? null,
             activeFileIdByJobId,
             activeDocument: bundle.document,
             previewSegments: bundle.segments,

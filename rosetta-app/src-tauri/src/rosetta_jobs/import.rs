@@ -28,6 +28,8 @@ use crate::rosetta_jobs::{
     translation_files::{read_or_migrate_translation_files, translation_segments_path},
 };
 
+const BLANK_TXT_DEFAULT_TITLE: &str = "未命名文档";
+
 /// Fast path for PDF imports: synchronously creates the job directory + copies
 /// the source PDF + writes a skeleton `document.json` (no blocks). Phase 3
 /// delegates extraction + translation to pdf2zh when the user clicks translate.
@@ -384,6 +386,200 @@ pub(crate) fn import_project_from_directory(
     };
     write_job_bundle_sources(app, &bundle, &source_snapshots)?;
     Ok(bundle)
+}
+
+pub(crate) fn create_blank_txt_document(
+    app: &AppHandle,
+    filename: String,
+) -> Result<RosettaJobBundle, String> {
+    let now = timestamp_ms_string();
+    let job_id = format!("job-{now}-txt");
+    let bundle = build_blank_txt_bundle(&job_id, &now, &filename)?;
+    write_job_bundle(app, &bundle, "")?;
+    Ok(bundle)
+}
+
+pub(crate) fn build_blank_txt_bundle(
+    job_id: &str,
+    now: &str,
+    title: &str,
+) -> Result<RosettaJobBundle, String> {
+    let display_title = sanitize_txt_filename_stem(title);
+    let filename = format!("{display_title}.txt");
+    let document_id = format!("document-{job_id}");
+    let mut document = RosettaDocument {
+        schema_version: SCHEMA_VERSION,
+        id: document_id,
+        filename: filename.clone(),
+        format: "txt".to_string(),
+        source_lang: Some("en".to_string()),
+        target_lang: "zh-CN".to_string(),
+        files: vec![RosettaSourceFile {
+            id: "file-1".to_string(),
+            filename: filename.clone(),
+            relative_path: filename.clone(),
+            format: "txt".to_string(),
+            source_lang: Some("en".to_string()),
+            target_lang: Some("zh-CN".to_string()),
+            translation_status: default_file_translation_status(),
+            segment_count: 0,
+            completed_segments: 0,
+            failed_segments: 0,
+            translating_segments: 0,
+            block_ids: vec![],
+        }],
+        blocks: vec![],
+        extraction_status: Some("done".to_string()),
+    };
+    let source_files = document.files.clone();
+    let mut job = RosettaJobSummary {
+        schema_version: SCHEMA_VERSION,
+        id: job_id.to_string(),
+        filename: filename.clone(),
+        format: "txt".to_string(),
+        source_path: None,
+        source_filename: filename,
+        source_kind: "file".to_string(),
+        file_count: 1,
+        source_files,
+        status: "ready".to_string(),
+        created_at: now.to_string(),
+        updated_at: now.to_string(),
+        exported_at: None,
+        last_error: None,
+        target_lang: "zh-CN".to_string(),
+        segment_count: 0,
+        completed_segments: 0,
+        failed_segments: 0,
+    };
+    let segments = Vec::new();
+    sync_document_file_statuses(&mut document, &segments);
+    sync_job_counts(&mut job, &segments);
+    sync_job_source_files(&mut job, &document);
+
+    Ok(RosettaJobBundle {
+        schema_version: SCHEMA_VERSION,
+        job,
+        document,
+        segments,
+        translation_files: Vec::new(),
+        translation_revisions: Vec::new(),
+    })
+}
+
+pub(crate) fn rebuild_txt_source_file(
+    document: &mut RosettaDocument,
+    segments: &mut Vec<Segment>,
+    file_id: &str,
+    contents: &str,
+) -> Result<(), String> {
+    let Some(file_index) = document.files.iter().position(|file| file.id == file_id) else {
+        return Err("当前文件不存在，无法编辑原文。".to_string());
+    };
+    if document.files[file_index].format != "txt" {
+        return Err("只有 TXT 文件支持直接编辑原文。".to_string());
+    }
+    if contents.len() as u64 > MAX_IMPORT_BYTES {
+        return Err("文本超过 5 MB，当前原型暂不保存超长文本。".to_string());
+    }
+
+    document
+        .blocks
+        .retain(|block| block.file_id.as_deref().unwrap_or("file-1") != file_id);
+    segments.retain(|segment| segment.file_id.as_deref().unwrap_or("file-1") != file_id);
+
+    let parser_document_id = format!("{}-{file_id}", document.id);
+    let parsed = if contents.trim().is_empty() {
+        crate::rosetta_jobs::formats::ParsedSource {
+            blocks: Vec::new(),
+            segments: Vec::new(),
+        }
+    } else {
+        parse_source(SourceFormat::Txt, &parser_document_id, contents)
+    };
+    let (mut next_blocks, mut next_segments) = (parsed.blocks, parsed.segments);
+    apply_file_id(&mut next_blocks, &mut next_segments, file_id);
+
+    document.blocks.extend(next_blocks);
+    segments.extend(next_segments);
+    let mut next_block_order = 1;
+    let mut next_segment_order = 1;
+    renumber_blocks_and_segments(
+        &mut document.blocks,
+        segments,
+        &mut next_block_order,
+        &mut next_segment_order,
+    );
+    document.files[file_index].block_ids = document
+        .blocks
+        .iter()
+        .filter(|block| (block.file_id.as_deref().unwrap_or("file-1")) == file_id)
+        .map(|block| block.id.clone())
+        .collect();
+    sync_document_file_statuses(document, segments);
+    Ok(())
+}
+
+pub(crate) fn update_txt_source_file(
+    app: &AppHandle,
+    job_id: &str,
+    file_id: &str,
+    contents: String,
+) -> Result<RosettaJobBundle, String> {
+    let root = jobs_root(app)?;
+    let dir = checked_job_dir(&root, job_id)?;
+    let index = read_index(&root)?;
+    let mut job = index
+        .jobs
+        .iter()
+        .find(|job| job.id == job_id)
+        .cloned()
+        .ok_or_else(|| "项目不存在，无法编辑原文。".to_string())?;
+    let mut document: RosettaDocument = read_json(&dir.join("document.json"))?;
+    ensure_document_files(&mut document);
+    if document.files.len() != 1 {
+        return Err("当前只支持编辑单文件 TXT 文档。".to_string());
+    }
+    let mut segments: Vec<Segment> = read_json(&dir.join("segments.json"))?;
+
+    rebuild_txt_source_file(&mut document, &mut segments, file_id, &contents)?;
+    sync_job_counts(&mut job, &segments);
+    sync_job_source_files(&mut job, &document);
+    job.updated_at = timestamp_ms_string();
+    job.last_error = None;
+
+    let bundle = RosettaJobBundle {
+        schema_version: SCHEMA_VERSION,
+        job,
+        document,
+        segments,
+        translation_files: Vec::new(),
+        translation_revisions: Vec::new(),
+    };
+    write_job_bundle(app, &bundle, &contents)?;
+    Ok(bundle)
+}
+
+fn sanitize_txt_filename_stem(title: &str) -> String {
+    let title = title.trim().trim_end_matches(".txt").trim();
+    let sanitized = title
+        .chars()
+        .map(|character| match character {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => ' ',
+            character if character.is_control() => ' ',
+            character => character,
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    let clipped = sanitized.chars().take(80).collect::<String>();
+    if clipped.is_empty() {
+        BLANK_TXT_DEFAULT_TITLE.to_string()
+    } else {
+        clipped
+    }
 }
 
 pub(crate) fn save_segments(

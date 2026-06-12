@@ -14,6 +14,7 @@ import {
   loadRosettaTranslationFile,
   pickRosettaExportPath,
   translateRosettaPdfPages,
+  updateTxtSourceFile,
 } from "@/lib/rosettaJobs";
 import { selectProvider } from "@/lib/providers";
 import { isManagedRuntimeReady } from "@/lib/useManagedRwkvRuntime";
@@ -79,6 +80,9 @@ export function WorkspacePage() {
   const [pdfSelectedPages, setPdfSelectedPages] = useState<number[]>([]);
   const [pdfForceRetranslate, setPdfForceRetranslate] = useState(false);
   const [hoveredBlockId, setHoveredBlockId] = useState<string | null>(null);
+  const [isEditingSource, setIsEditingSource] = useState(false);
+  const [sourceDraft, setSourceDraft] = useState("");
+  const [isSavingSource, setIsSavingSource] = useState(false);
   // Live pdf2zh phase/page progress. Subscribed app-level in AppShell and
   // keyed by jobId, so it survives switching files mid-run.
   const pdfRunProgressByJobId = useRosettaStore((s) => s.pdfRunProgressByJobId);
@@ -128,7 +132,14 @@ export function WorkspacePage() {
     setPdfPageCount(0);
     setPdfSelectedPages([]);
     setPdfForceRetranslate(false);
+    setIsEditingSource(false);
+    setSourceDraft("");
   }, [activeDocument?.id]);
+
+  useEffect(() => {
+    setIsEditingSource(false);
+    setSourceDraft("");
+  }, [activeSourceFileId]);
 
   const handlePdfPageCountChange = useCallback((count: number) => {
     setPdfPageCount(count);
@@ -769,7 +780,45 @@ export function WorkspacePage() {
     );
   }
 
+  function sourceTextForEditing() {
+    if (!activeDocument || !sourceFile) return "";
+    return activeDocument.blocks
+      .filter((block) => (block.fileId ?? "file-1") === sourceFile.id)
+      .sort((left, right) => left.order - right.order)
+      .map((block) => block.sourceText)
+      .join("\n\n");
+  }
+
+  function startSourceEdit() {
+    setPageError(null);
+    setSourceDraft(sourceTextForEditing());
+    setIsEditingSource(true);
+  }
+
+  async function saveSourceEdit() {
+    if (!activeJobId || !sourceFile || isSavingSource) return;
+    setIsSavingSource(true);
+    setPageError(null);
+    try {
+      const bundle = await updateTxtSourceFile(activeJobId, sourceFile.id, sourceDraft);
+      setActiveBundle(bundle);
+      setSelectedBlockIds([]);
+      setIsEditingSource(false);
+      setSourceDraft("");
+    } catch (err) {
+      setPageError(errorMessage(err, "保存原文失败。"));
+    } finally {
+      setIsSavingSource(false);
+    }
+  }
+
   const hasActiveDocument = !!activeJobId && !!activeDocument;
+  const canEditSource =
+    !!sourceFile &&
+    sourceFile.format === "txt" &&
+    activeDocument?.files.length === 1 &&
+    !isTranslating &&
+    !isTranslationBusyElsewhere;
 
   return (
     <div className="flex h-full flex-col">
@@ -833,11 +882,22 @@ export function WorkspacePage() {
               }
               onBlockHover={setHoveredBlockId}
               onBlockLeave={() => setHoveredBlockId(null)}
-              selectionEnabled={!isTranslating}
+              selectionEnabled={!isTranslating && !isEditingSource}
               selectedBlockIds={selectedBlockIds}
               onToggleBlockSelection={handleBlockSelect}
               sourceFile={sourceFile}
               sourceSegments={previewSegments}
+              sourceEditing={isEditingSource}
+              sourceEditText={sourceDraft}
+              sourceEditSaving={isSavingSource}
+              sourceEditEnabled={canEditSource}
+              onSourceEditCancel={() => {
+                setIsEditingSource(false);
+                setSourceDraft("");
+              }}
+              onSourceEditChange={setSourceDraft}
+              onSourceEditSave={() => void saveSourceEdit()}
+              onSourceEditStart={startSourceEdit}
               translationFile={activeTranslationFile}
               translationSegments={translationSegments}
               pdfProgress={pdfProgress}

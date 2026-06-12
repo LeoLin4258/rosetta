@@ -45,6 +45,22 @@ export function createWelcomeDocument() {
   return invoke<RosettaJobBundle>("create_welcome_document");
 }
 
+export function createBlankTxtDocument(filename: string) {
+  return invoke<RosettaJobBundle>("create_blank_txt_document", { filename });
+}
+
+export function updateTxtSourceFile(
+  jobId: string,
+  fileId: string,
+  contents: string
+) {
+  return invoke<RosettaJobBundle>("update_txt_source_file", {
+    jobId,
+    fileId,
+    contents,
+  });
+}
+
 export function clearRosettaLocalData() {
   return invoke<LocalDataResetResult>("clear_rosetta_local_data");
 }

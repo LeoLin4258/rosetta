@@ -95,7 +95,7 @@ Tailwind CSS 和 shadcn/ui 是默认样式方式。全局样式只放入 `src/st
 - 通用按钮、卡片、表格、输入框、选择器、徽标等优先使用 `src/components/ui/` 中的 shadcn 组件。
 - 新增 shadcn 组件时使用 `pnpm dlx shadcn@latest add <component>`。
 - 主应用侧边栏基于 shadcn sidebar block 和 `src/components/ui/sidebar.tsx`，业务入口在 `src/components/app-sidebar.tsx` 中定制。
-- 侧边栏信息架构固定为：顶部 `新项目`，中间项目列表，底部 `设置`。`新项目` 指向 `/new`，应用启动默认进入 `/` 空白首页。不要把导入、任务、设置作为同一层工作台导航混放。
+- 侧边栏信息架构固定为：顶部 `新建文档`，中间项目列表，底部 `设置`。`新建文档` 打开 `/` 空工作台，空工作台提供 `导入文件`、`导入文件夹`、`新建文件` 三个入口。不要把导入、任务、设置作为同一层工作台导航混放。
 - 桌面侧边栏宽度为 `14.4rem`，即 shadcn 默认 `16rem` 的 90%。不允许通过中间 rail 调整宽度，`SidebarRail` 当前不渲染。
 - 侧边栏展开/合并动画使用 CSS width/position transition，当前为 `duration-300 ease-out`，菜单文本使用 opacity transition 辅助隐藏。
 - Windows 桌面端使用 Tauri `windowEffects.mica` 和自绘标题栏。主题模式支持 `light`、`dark`、`system`，并同步到 Tauri window theme。注意：`tauri.conf.json` 的默认窗口 theme 使用 `Dark` / `Light`，前端运行时 `setTheme` API 使用 `"dark"` / `"light"` / `null`。外层 app wrapper 和 `body` 必须保持透明，标题栏与侧边栏通过半透明 `--sidebar` token 露出系统材质，主内容区保持 `bg-background` 以保证长文本阅读对比度。
