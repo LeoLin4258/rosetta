@@ -329,16 +329,6 @@ pub fn get_rosetta_pdf_page_status(
     formats::pdf::page_state::read_pdf_page_translation_state(&dir, page_count, &target_lang)
 }
 
-/// How many selected pages to hand to one `pdf2zh --pages` invocation.
-///
-/// Each invocation pays a fixed overhead: with the persistent worker that is
-/// mainly pdf2zh's whole-document pymupdf preprocess (~5 s on a 15 MB doc);
-/// the CLI fallback additionally pays the ~15 s Python import. The old code
-/// paid the full overhead once per page, which dominated runtime. 25 makes
-/// typical papers a single invocation; chunking still bounds the blast
-/// radius of a failure/cancel on long documents, and each completed chunk is
-/// persisted so retry stays page-level.
-const PDF_PAGES_PER_INVOCATION: usize = 25;
 
 #[tauri::command]
 pub async fn translate_rosetta_pdf_pages(
@@ -487,184 +477,204 @@ async fn translate_pdf_pages_inner(
         diagnostics::write_profile(&dir, profile);
     };
 
-    let mut completed_in_run: u32 = 0;
     let mut cancelled = false;
 
-    for chunk in pages_to_process.chunks(PDF_PAGES_PER_INVOCATION) {
-        if cancel_state.is_cancelled() {
-            cancelled = true;
-            break;
+    // Mark every targeted page as "translating" up front so the sidebar and
+    // page grid flip to the spinner the moment the user clicks translate,
+    // not when the first worker event lands.
+    for page_number in &pages_to_process {
+        page_state::upsert_pdf_page(&mut state, *page_number, "translating", None, None);
+        emit_pdf_page_progress(app, job_id, *page_number, "translating");
+    }
+    page_state::write_pdf_page_translation_state(&dir, &state)?;
+
+    // One invocation, all selected pages. The worker streams a `page` event
+    // and a single-page PDF as each page finishes translating, so the UI
+    // sees pages appear one by one without paying the per-invocation
+    // overhead (model load + pymupdf preprocess + dual-PDF generation) more
+    // than once. The previous "pre-split into single-page PDFs and invoke N
+    // times" approach paid that overhead N times and ran ~5× slower.
+    let invocation_output_dir = dir.join("pdf2zh-output");
+    if invocation_output_dir.exists() {
+        fs::remove_dir_all(&invocation_output_dir)
+            .map_err(|error| format!("无法清理旧 PDF 输出: {error}"))?;
+    }
+    fs::create_dir_all(&invocation_output_dir)
+        .map_err(|error| format!("无法创建 PDF 输出目录: {error}"))?;
+
+    pdf2zh_invoke::emit_progress_phase(
+        app,
+        job_id,
+        "warmup",
+        Some(0),
+        "正在准备翻译引擎…",
+        total_pages_to_process,
+    );
+
+    let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
+    cancel_state.register_sender(cancel_tx);
+
+    // The streaming callback owns the per-page artifact pipeline: copy the
+    // worker's single-page output into the page cache, flip status to
+    // translated, persist state, and fire the UI event. Anything that
+    // mutates `state` flows through here, which is why the failure branches
+    // in invoke_result below don't have to second-guess per-page status —
+    // pages we never heard about stay in "translating" until the cancel /
+    // error sweep at the end runs.
+    let dir_for_cb = dir.clone();
+    let app_for_cb = app.clone();
+    let job_id_for_cb = job_id.to_string();
+    let state_for_cb: &mut formats::pdf::page_state::PdfPageTranslationState = &mut state;
+    let mut on_page_done = move |page_number: u32, worker_file: std::path::PathBuf| {
+        let assembly_started = std::time::Instant::now();
+        let target_path = dir_for_cb.join(page_state::pdf_page_relative_path(page_number));
+        if let Some(parent) = target_path.parent() {
+            fs::create_dir_all(parent).ok();
         }
+        let outcome = fs::copy(&worker_file, &target_path)
+            .map_err(|error| format!("无法缓存译文页: {error}"));
+        let _ = assembly_started.elapsed();
 
-        for page_number in chunk {
-            page_state::upsert_pdf_page(&mut state, *page_number, "translating", None, None);
-            emit_pdf_page_progress(app, job_id, *page_number, "translating");
-        }
-        page_state::write_pdf_page_translation_state(&dir, &state)?;
-
-        let first = chunk[0];
-        let last = *chunk.last().expect("chunk is non-empty");
-        let output_dir = dir
-            .join("pdf2zh-output")
-            .join(format!("pages-{first:04}-{last:04}"));
-        if output_dir.exists() {
-            fs::remove_dir_all(&output_dir)
-                .map_err(|error| format!("无法清理旧 PDF 页输出: {error}"))?;
-        }
-        fs::create_dir_all(&output_dir)
-            .map_err(|error| format!("无法创建 PDF 页输出目录: {error}"))?;
-
-        let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
-        cancel_state.register_sender(cancel_tx);
-
-        let invoke_result = pdf2zh_invoke::invoke_pdf2zh(
-            app,
-            &source_path,
-            &output_dir,
-            pdf2zh_invoke::Pdf2zhInvokeOptions {
-                job_id: job_id.to_string(),
-                provider: provider.clone(),
-                source_lang: source_lang.clone(),
-                target_lang: target_lang.to_string(),
-                timeout_ms: timeout,
-                ignore_cache: false,
-                pages: Some(chunk.to_vec()),
-                page_progress: Some(pdf2zh_invoke::PageProgressContext {
-                    completed_before: completed_in_run,
-                    chunk_len: chunk.len() as u32,
-                    total: total_pages_to_process,
-                }),
-                translated_chars_offset: rwkv_aggregate.total_output_chars,
-            },
-            cancel_rx,
-        )
-        .await;
-
-        cancel_state.clear_sender();
-        profile.invocation_count += 1;
-
-        match invoke_result {
-            Ok(output) => {
-                profile.durations_ms.pdf2zh_warmup += output.warmup_ms;
-                profile.durations_ms.pdf2zh_process += output.process_ms;
-                rwkv_aggregate.add(&output.rwkv_metrics);
-
-                let assembly_started = std::time::Instant::now();
-                let split_result = split_chunk_output(&dir, &output.mono_pdf, chunk, page_count);
-                profile.durations_ms.page_artifact_assembly +=
-                    assembly_started.elapsed().as_millis() as u64;
-
-                match split_result {
-                    Ok(()) => {
-                        for page_number in chunk {
-                            page_state::upsert_pdf_page(
-                                &mut state,
-                                *page_number,
-                                "translated",
-                                Some(page_state::pdf_page_relative_path(*page_number)),
-                                None,
-                            );
-                            emit_pdf_page_progress(app, job_id, *page_number, "translated");
-                        }
-                        completed_in_run += chunk.len() as u32;
-                        profile.pages_translated += chunk.len() as u32;
-                    }
-                    Err(error) => {
-                        for page_number in chunk {
-                            page_state::upsert_pdf_page(
-                                &mut state,
-                                *page_number,
-                                "failed",
-                                None,
-                                Some(error.clone()),
-                            );
-                            emit_pdf_page_progress(app, job_id, *page_number, "failed");
-                        }
-                        profile.pages_failed += chunk.len() as u32;
-                    }
-                }
-                page_state::write_pdf_page_translation_state(&dir, &state)?;
-            }
-            Err(formats::pdf::errors::PdfError::Cancelled) => {
-                for page_number in chunk {
-                    page_state::upsert_pdf_page(&mut state, *page_number, "pending", None, None);
-                    emit_pdf_page_progress(app, job_id, *page_number, "pending");
-                }
-                page_state::write_pdf_page_translation_state(&dir, &state)?;
-                cancelled = true;
-                break;
+        match outcome {
+            Ok(_) => {
+                page_state::upsert_pdf_page(
+                    state_for_cb,
+                    page_number,
+                    "translated",
+                    Some(page_state::pdf_page_relative_path(page_number)),
+                    None,
+                );
+                let _ =
+                    page_state::write_pdf_page_translation_state(&dir_for_cb, state_for_cb);
+                let _ = app_for_cb.emit(
+                    PDF_PAGE_PROGRESS_EVENT,
+                    PdfPageProgressPayload {
+                        job_id: job_id_for_cb.clone(),
+                        page_number,
+                        status: "translated".to_string(),
+                    },
+                );
             }
             Err(error) => {
-                let message = error.user_message();
-                for page_number in chunk {
-                    page_state::upsert_pdf_page(
-                        &mut state,
-                        *page_number,
-                        "failed",
-                        None,
-                        Some(message.clone()),
-                    );
-                    emit_pdf_page_progress(app, job_id, *page_number, "failed");
-                }
-                page_state::write_pdf_page_translation_state(&dir, &state)?;
-                profile.pages_failed += chunk.len() as u32;
+                page_state::upsert_pdf_page(
+                    state_for_cb,
+                    page_number,
+                    "failed",
+                    None,
+                    Some(error),
+                );
+                let _ =
+                    page_state::write_pdf_page_translation_state(&dir_for_cb, state_for_cb);
+                let _ = app_for_cb.emit(
+                    PDF_PAGE_PROGRESS_EVENT,
+                    PdfPageProgressPayload {
+                        job_id: job_id_for_cb.clone(),
+                        page_number,
+                        status: "failed".to_string(),
+                    },
+                );
             }
+        }
+    };
+
+    let invoke_result = pdf2zh_invoke::invoke_pdf2zh(
+        app,
+        &source_path,
+        &invocation_output_dir,
+        pdf2zh_invoke::Pdf2zhInvokeOptions {
+            job_id: job_id.to_string(),
+            provider: provider.clone(),
+            source_lang: source_lang.clone(),
+            target_lang: target_lang.to_string(),
+            timeout_ms: timeout,
+            ignore_cache: false,
+            pages: Some(pages_to_process.clone()),
+            page_progress: Some(pdf2zh_invoke::PageProgressContext {
+                completed_before: 0,
+                chunk_len: total_pages_to_process,
+                total: total_pages_to_process,
+            }),
+            translated_chars_offset: 0,
+        },
+        cancel_rx,
+        Some(&mut on_page_done),
+    )
+    .await;
+
+    cancel_state.clear_sender();
+    drop(on_page_done);
+    profile.invocation_count = 1;
+
+    let mut failure_message: Option<String> = None;
+    match invoke_result {
+        Ok(output) => {
+            profile.durations_ms.pdf2zh_warmup = output.warmup_ms;
+            profile.durations_ms.pdf2zh_process = output.process_ms;
+            rwkv_aggregate.add(&output.rwkv_metrics);
+        }
+        Err(formats::pdf::errors::PdfError::Cancelled) => {
+            cancelled = true;
+        }
+        Err(error) => {
+            failure_message = Some(error.user_message());
         }
     }
 
+    // Any page still flagged "translating" after the invocation finishes
+    // never produced a worker event — pending on cancel, failed on error.
+    let resolved_status = if cancelled || failure_message.is_some() {
+        if failure_message.is_some() {
+            "failed"
+        } else {
+            "pending"
+        }
+    } else {
+        // Successful completion with no event for a page means the worker
+        // silently skipped it; mark failed so the UI surfaces it.
+        "failed"
+    };
+    let mut state_dirty = false;
+    for page in state.pages.iter_mut() {
+        if page.status == "translating" {
+            page.status = resolved_status.to_string();
+            if resolved_status == "failed" {
+                page.error = Some(
+                    failure_message
+                        .clone()
+                        .unwrap_or_else(|| "翻译未完成".to_string()),
+                );
+            }
+            emit_pdf_page_progress(app, job_id, page.page_number, resolved_status);
+            state_dirty = true;
+        }
+    }
+    if state_dirty {
+        page_state::write_pdf_page_translation_state(&dir, &state)?;
+    }
+
+    profile.pages_translated = state
+        .pages
+        .iter()
+        .filter(|page| page.status == "translated")
+        .count() as u32;
+    profile.pages_failed = state
+        .pages
+        .iter()
+        .filter(|page| page.status == "failed")
+        .count() as u32;
+
     sync_pdf_page_translation_summary(app, job_id, target_lang, &state)?;
 
+    if let Some(message) = failure_message {
+        finish_profile(&mut profile, "failed", &rwkv_aggregate);
+        return Err(message);
+    }
     if cancelled {
         finish_profile(&mut profile, "cancelled", &rwkv_aggregate);
         return Err("已取消 PDF 翻译。".to_string());
     }
     finish_profile(&mut profile, "completed", &rwkv_aggregate);
     Ok(state)
-}
-
-/// Split one pdf2zh batch output into per-page cached PDFs under `pdf-pages/`.
-///
-/// pdf2zh's `--pages` output layout isn't contractual, so map defensively by
-/// page count: a full-document output keeps original page numbers, an output
-/// with exactly the selected pages is positional.
-fn split_chunk_output(
-    job_dir: &Path,
-    mono_pdf: &Path,
-    chunk: &[u32],
-    source_page_count: u32,
-) -> Result<(), String> {
-    use formats::pdf::{page_assemble, page_state};
-
-    let output_page_count = page_assemble::count_pdf_pages_lopdf(mono_pdf)?;
-    let extractions: Vec<(u32, std::path::PathBuf)> = if output_page_count == source_page_count {
-        chunk
-            .iter()
-            .map(|page_number| {
-                (
-                    *page_number,
-                    job_dir.join(page_state::pdf_page_relative_path(*page_number)),
-                )
-            })
-            .collect()
-    } else if output_page_count as usize == chunk.len() {
-        chunk
-            .iter()
-            .enumerate()
-            .map(|(index, page_number)| {
-                (
-                    (index + 1) as u32,
-                    job_dir.join(page_state::pdf_page_relative_path(*page_number)),
-                )
-            })
-            .collect()
-    } else {
-        return Err(format!(
-            "pdf2zh 输出页数（{output_page_count}）与请求页数（{}）和源 PDF 页数（{source_page_count}）都不一致，无法对应页码。",
-            chunk.len()
-        ));
-    };
-
-    page_assemble::extract_pages_pdf(mono_pdf, &extractions)
 }
 
 #[tauri::command]
@@ -882,13 +892,17 @@ pub async fn generate_rosetta_translated_pdf(
             translated_chars_offset: 0,
         },
         cancel_rx,
+        None, // no streaming callback — this path is whole-doc only
     )
     .await;
 
     cancel_state.end_run();
 
     let output = invoke_result.map_err(|error| error.user_message())?;
-    std::fs::copy(&output.mono_pdf, &output_path)
+    let mono_pdf = output
+        .mono_pdf
+        .ok_or_else(|| "翻译完成但未生成完整 PDF。".to_string())?;
+    std::fs::copy(&mono_pdf, &output_path)
         .map_err(|error| format!("无法缓存 pdf2zh 译文 PDF: {error}"))?;
     mark_pdf_translation_ready(&app, &job_id, &target_lang)?;
     Ok(output_path.to_string_lossy().to_string())

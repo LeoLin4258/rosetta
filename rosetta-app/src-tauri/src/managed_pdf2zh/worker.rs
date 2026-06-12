@@ -17,6 +17,7 @@
 //! MB of resident torch memory.
 
 use std::{
+    path::PathBuf,
     process::Stdio,
     sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant},
@@ -73,6 +74,18 @@ struct WorkerEvent {
     mps: Option<bool>,
     #[serde(default, rename = "mpsReason")]
     mps_reason: Option<String>,
+    /// 1-based absolute page number announced after a single page finishes
+    /// translating. Paired with `file` (the single-page translated PDF
+    /// written by the worker).
+    #[serde(default, rename = "pageNumber")]
+    page_number: Option<u32>,
+    #[serde(default)]
+    file: Option<String>,
+    /// Per-stage timings attached to the final `done` event (preprocessMs,
+    /// translateMs, yoloMs, processPageMs, perPageSaveMs, …). Surfaced via
+    /// stderr for the diagnostics log; not parsed structurally.
+    #[serde(default)]
+    timings: Option<serde_json::Value>,
 }
 
 pub struct WorkerProcess {
@@ -274,6 +287,7 @@ impl WorkerProcess {
         &mut self,
         mut payload: serde_json::Value,
         on_stderr: &mut (dyn FnMut(&str) + Send),
+        on_page: Option<&mut (dyn FnMut(u32, PathBuf) + Send)>,
         cancel_rx: &mut oneshot::Receiver<()>,
     ) -> WorkerTranslateOutcome {
         self.next_job += 1;
@@ -290,6 +304,7 @@ impl WorkerProcess {
             return WorkerTranslateOutcome::WorkerLost(format!("写入 worker 任务失败: {error}"));
         }
 
+        let mut on_page = on_page;
         loop {
             tokio::select! {
                 event = self.events.recv() => {
@@ -299,8 +314,18 @@ impl WorkerProcess {
                         );
                     };
                     match event.event.as_str() {
+                        "page" if event.id.as_deref() == Some(job_id.as_str()) => {
+                            if let (Some(cb), Some(page), Some(file)) =
+                                (on_page.as_deref_mut(), event.page_number, event.file)
+                            {
+                                cb(page, PathBuf::from(file));
+                            }
+                        }
                         "done" if event.id.as_deref() == Some(job_id.as_str()) => {
                             self.last_used = Instant::now();
+                            if let Some(timings) = event.timings {
+                                on_stderr(&format!("[pdf2zh-worker] timings {timings}"));
+                            }
                             return WorkerTranslateOutcome::Completed;
                         }
                         "error" => {
@@ -340,6 +365,7 @@ pub(crate) async fn translate_via_worker(
     app: &AppHandle,
     payload: serde_json::Value,
     on_stderr: &mut (dyn FnMut(&str) + Send),
+    on_page: Option<&mut (dyn FnMut(u32, PathBuf) + Send)>,
     cancel_rx: &mut oneshot::Receiver<()>,
 ) -> WorkerTranslateOutcome {
     let state = app.state::<WorkerState>();
@@ -353,7 +379,7 @@ pub(crate) async fn translate_via_worker(
         }
     }
     let worker = guard.as_mut().expect("worker present after ensure");
-    let outcome = worker.run_translate(payload, on_stderr, cancel_rx).await;
+    let outcome = worker.run_translate(payload, on_stderr, on_page, cancel_rx).await;
 
     if matches!(
         outcome,

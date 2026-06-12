@@ -66,6 +66,7 @@ type WorkspaceTopbarProps = {
 /// it the UI used to sit silently on "翻译中" for the whole startup gap,
 /// which is the biggest contributor to the "feels frozen" perception.
 const PDF_PHASE_LABELS: Record<string, string> = {
+  split: "正在准备页面",
   warmup: "准备翻译引擎",
   parse: "解析版面",
   translate: "翻译中",

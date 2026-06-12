@@ -81,7 +81,10 @@ pub(crate) struct Pdf2zhInvokeOptions {
 
 #[derive(Debug, Clone)]
 pub(crate) struct Pdf2zhOutput {
-    pub mono_pdf: PathBuf,
+    /// Final mono PDF on disk. `None` when the worker streamed per-page
+    /// outputs directly (the caller already consumed them via the page
+    /// callback and there's no single combined PDF to point at).
+    pub mono_pdf: Option<PathBuf>,
     #[allow(dead_code)]
     pub dual_pdf: Option<PathBuf>,
     /// Time from invocation start to pdf2zh process spawn (status resolution,
@@ -99,16 +102,11 @@ pub(crate) async fn invoke_pdf2zh(
     output_dir: &Path,
     options: Pdf2zhInvokeOptions,
     cancel_rx: oneshot::Receiver<()>,
+    on_page_done: Option<&mut (dyn FnMut(u32, PathBuf) + Send)>,
 ) -> Result<Pdf2zhOutput, PdfError> {
-    // Shared live-progress state for this invocation:
-    // - `pages_done` is updated from pdf2zh's tqdm output (now delivered in
-    //   real time because the stderr reader splits on `\r`),
-    // - `last_percent` keeps the most recent tqdm percent so the chars ticker
-    //   doesn't blank it,
-    // - translated chars come from the shim metrics once the shim exists.
     let page_progress = options.page_progress;
     let pages_done = Arc::new(AtomicU32::new(0));
-    let last_percent = Arc::new(AtomicU32::new(0)); // 0 = none, else percent+1
+    let last_percent = Arc::new(AtomicU32::new(0));
     let emit = |phase: &str, percent: Option<u8>, message: &str| {
         emit_progress(
             app,
@@ -123,14 +121,13 @@ pub(crate) async fn invoke_pdf2zh(
     };
     let invoke_started = std::time::Instant::now();
 
-    // Phase: warmup — covers the time from "user clicked translate" to
-    // "pdf2zh.py has actually started parsing". This is non-trivial (status
-    // resolution, shim listener bind, in some runs `set_chat_roles_for_pair`
-    // hitting the RWKV server) and used to be the silent gap that made the
-    // UI feel frozen. Emit early so the topbar's elapsed timer has something
-    // to count against from the start.
-    emit("warmup", Some(0), "正在准备 PDF 翻译引擎…");
+    std::fs::create_dir_all(output_dir)
+        .map_err(|error| PdfError::Read(format!("无法创建 pdf2zh 输出目录: {error}")))?;
+    let temp_dir = output_dir.join("tmp");
+    std::fs::create_dir_all(&temp_dir)
+        .map_err(|error| PdfError::Read(format!("无法创建 pdf2zh 临时目录: {error}")))?;
 
+    emit("warmup", Some(0), "正在准备 PDF 翻译引擎…");
     let status = managed_pdf2zh::build_static_status(app).map_err(PdfError::RuntimeMissing)?;
     if !status.install_plan.ready {
         return Err(PdfError::RuntimeMissing(status.install_plan.message));
@@ -142,36 +139,27 @@ pub(crate) async fn invoke_pdf2zh(
         .layout
         .ensure_dirs()
         .map_err(PdfError::RuntimeMissing)?;
-    std::fs::create_dir_all(output_dir)
-        .map_err(|error| PdfError::Read(format!("无法创建 pdf2zh 输出目录: {error}")))?;
-    let temp_dir = output_dir.join("tmp");
-    std::fs::create_dir_all(&temp_dir)
-        .map_err(|error| PdfError::Read(format!("无法创建 pdf2zh 临时目录: {error}")))?;
     let debug = pdf2zh_debug_enabled();
-
     emit("warmup", Some(20), "正在启动本地翻译 shim…");
     let shim_log_file = output_dir.join("rosetta-pdf2zh-shim.log");
     let shim = managed_pdf2zh::openai_shim::spawn_shim(
         options.provider.clone(),
         options.source_lang.clone(),
         options.target_lang.clone(),
-        shim_log_file.clone(),
+        shim_log_file,
         debug,
     )
     .await
     .map_err(PdfError::Pdf2zhFailed)?;
     emit("warmup", Some(60), "翻译 shim 已就绪，启动 PDF 解析进程…");
+    let shim_ref = &shim;
 
-    let openai_base_url = shim.base_url();
-    // NOT `shim.batch_size`: that follows the RWKV server's reported batch
-    // ceiling (16 on MLX, 12 on WebRWKV). Reusing it as pdf2zh's `--thread`
-    // arg blows up pdf2zh.py's Python multiprocessing pool on small inputs.
-    // See `PDF2ZH_THREAD_CEILING` in `openai_shim.rs`.
-    let thread_count = shim.pdf2zh_thread_count;
+    let openai_base_url = shim_ref.base_url();
+    let thread_count = shim_ref.pdf2zh_thread_count;
     std::fs::write(
         output_dir.join("rosetta-pdf2zh-command.log"),
         format!(
-            "bin={}\nsource={}\noutput_dir={}\ntemp_dir={}\nopenai_base_url={}\nservice=openai:rwkv\nsource_lang={}\ntarget_lang={}\nthreads={}\ndebug={}\nshim_log={}\n",
+            "bin={}\nsource={}\noutput_dir={}\ntemp_dir={}\nopenai_base_url={}\nservice=openai:rwkv\nsource_lang={}\ntarget_lang={}\nthreads={}\ndebug={}\n",
             bin.display(),
             source_path.display(),
             output_dir.display(),
@@ -181,7 +169,6 @@ pub(crate) async fn invoke_pdf2zh(
             options.target_lang,
             thread_count,
             debug,
-            shim_log_file.display(),
         ),
     )
     .ok();
@@ -196,7 +183,7 @@ pub(crate) async fn invoke_pdf2zh(
     // every 500 ms while RWKV batches return, so the status bar visibly moves
     // even when pdf2zh's own output is between updates. Aborted on drop, so
     // every exit path (success, failure, cancel) stops it.
-    let metrics = Arc::clone(&shim.metrics);
+    let metrics = Arc::clone(&shim_ref.metrics);
     let chars_offset = options.translated_chars_offset;
     let _chars_ticker = AbortOnDrop(tokio::spawn({
         let app = app.clone();
@@ -264,6 +251,7 @@ pub(crate) async fn invoke_pdf2zh(
             "OPENAI_MODEL": "rwkv",
         },
     });
+    let streaming_used = on_page_done.is_some();
     let worker_outcome = {
         let mut on_stderr = |line: &str| {
             remember_line(&output_lines, line);
@@ -282,6 +270,7 @@ pub(crate) async fn invoke_pdf2zh(
             app,
             worker_payload,
             &mut on_stderr,
+            on_page_done,
             &mut cancel_rx,
         )
         .await
@@ -469,13 +458,20 @@ pub(crate) async fn invoke_pdf2zh(
     }
 
     let process_ms = process_started.elapsed().as_millis() as u64;
-    let rwkv_metrics = shim.metrics.snapshot();
-    drop(shim);
+    let rwkv_metrics = shim_ref.metrics.snapshot();
 
     emit("render", Some(95), "正在整理译文 PDF…");
-    let mono_pdf = find_pdf2zh_output(output_dir, source_path, "zh")
-        .or_else(|| find_pdf2zh_output(output_dir, source_path, "mono"))
-        .ok_or_else(|| PdfError::Pdf2zhFailed("未生成译文 PDF。".to_string()))?;
+    // Streaming worker path emits per-page outputs through the callback and
+    // intentionally skips writing the combined mono/dual PDFs. CLI fallback
+    // and whole-doc workers still produce them, so look both ways.
+    let mono_pdf = if streaming_used && worker_completed {
+        None
+    } else {
+        let resolved = find_pdf2zh_output(output_dir, source_path, "zh")
+            .or_else(|| find_pdf2zh_output(output_dir, source_path, "mono"))
+            .ok_or_else(|| PdfError::Pdf2zhFailed("未生成译文 PDF。".to_string()))?;
+        Some(resolved)
+    };
     let dual_pdf = find_pdf2zh_output(output_dir, source_path, "dual");
     emit("render", Some(100), "译文 PDF 已生成。");
     Ok(Pdf2zhOutput {
@@ -673,6 +669,34 @@ fn pdf2zh_lang(lang: &str) -> &str {
         "en" => "en",
         other => other,
     }
+}
+
+/// Emit a phase-only progress event from the run loop (outside of an
+/// invocation). Used for the "split" and initial "warmup" phases.
+pub(crate) fn emit_progress_phase(
+    app: &AppHandle,
+    job_id: &str,
+    phase: &str,
+    percent: Option<u8>,
+    message: &str,
+    total_pages: u32,
+) {
+    let _ = app.emit(
+        PDF2ZH_PROGRESS_EVENT,
+        Pdf2zhProgressPayload {
+            job_id: job_id.to_string(),
+            phase: phase.to_string(),
+            percent,
+            message: message.to_string(),
+            current_page: None,
+            total_pages: if total_pages > 0 {
+                Some(total_pages)
+            } else {
+                None
+            },
+            translated_chars: None,
+        },
+    );
 }
 
 fn pdf2zh_debug_enabled() -> bool {
