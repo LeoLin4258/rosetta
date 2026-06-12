@@ -215,7 +215,8 @@ function replaceJob(
   job: RosettaJobSummary
 ): RosettaJobSummary[] {
   return [job, ...jobs.filter((candidate) => candidate.id !== job.id)].sort(
-    (left, right) => right.updatedAt.localeCompare(left.updatedAt)
+    (left, right) =>
+      right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id)
   );
 }
 
@@ -233,6 +234,81 @@ function applySegments(
     jobs,
     previewSegments: segments,
   };
+}
+
+function syncJobWithTranslationFile(
+  job: RosettaJobSummary,
+  translationFile: RosettaTranslationFile
+): RosettaJobSummary {
+  if (!job.sourceFiles.some((file) => file.id === translationFile.sourceFileId)) {
+    return job;
+  }
+
+  const updatedSourceFiles = job.sourceFiles.map((file) =>
+    file.id === translationFile.sourceFileId
+      ? {
+          ...file,
+          translationStatus: translationFile.status,
+          segmentCount: translationFile.segmentCount,
+          completedSegments: translationFile.completedSegments,
+          failedSegments: translationFile.failedSegments,
+          translatingSegments: translationFile.status === "translating" ? 1 : 0,
+        }
+      : file
+  );
+  const canAggregate =
+    updatedSourceFiles.length > 0 &&
+    updatedSourceFiles.every((file) => typeof file.segmentCount === "number");
+
+  if (!canAggregate && updatedSourceFiles.length > 1) {
+    return {
+      ...job,
+      sourceFiles: updatedSourceFiles,
+    };
+  }
+
+  const segmentCount = canAggregate
+    ? updatedSourceFiles.reduce((sum, file) => sum + (file.segmentCount ?? 0), 0)
+    : translationFile.segmentCount;
+  const completedSegments = canAggregate
+    ? updatedSourceFiles.reduce((sum, file) => sum + (file.completedSegments ?? 0), 0)
+    : translationFile.completedSegments;
+  const failedSegments = canAggregate
+    ? updatedSourceFiles.reduce((sum, file) => sum + (file.failedSegments ?? 0), 0)
+    : translationFile.failedSegments;
+  const translatingSegments = canAggregate
+    ? updatedSourceFiles.reduce((sum, file) => sum + (file.translatingSegments ?? 0), 0)
+    : translationFile.status === "translating"
+      ? 1
+      : 0;
+  const status =
+    translatingSegments > 0
+      ? "translating"
+      : failedSegments > 0
+        ? "failed"
+        : segmentCount > 0 && completedSegments >= segmentCount
+          ? "completed"
+          : "ready";
+
+  return {
+    ...job,
+    sourceFiles: updatedSourceFiles,
+    status,
+    segmentCount,
+    completedSegments,
+    failedSegments,
+  };
+}
+
+function syncJobWithTranslationFiles(
+  job: RosettaJobSummary,
+  translationFiles: RosettaTranslationFile[]
+): RosettaJobSummary {
+  return translationFiles.reduce(
+    (syncedJob, translationFile) =>
+      syncJobWithTranslationFile(syncedJob, translationFile),
+    job
+  );
 }
 
 function sourceSelectionKey(jobId: string, sourceFileId: string) {
@@ -479,6 +555,10 @@ export const useRosettaStore = create<RosettaState>()(
         }),
       setActiveBundle: (bundle) =>
         set((state) => {
+          const syncedJob = syncJobWithTranslationFiles(
+            bundle.job,
+            bundle.translationFiles ?? []
+          );
           const fileIds = bundle.document.files.map((file) => file.id);
           const mappedFileId = state.activeFileIdByJobId[bundle.job.id];
           const selectedFileId =
@@ -491,8 +571,8 @@ export const useRosettaStore = create<RosettaState>()(
           }
 
           return {
-            jobs: replaceJob(state.jobs, bundle.job),
-            activeJobId: bundle.job.id,
+            jobs: replaceJob(state.jobs, syncedJob),
+            activeJobId: syncedJob.id,
             activeFileId: selectedFileId,
             activeSourceFileId: selectedFileId,
             activeTranslationFileId:
@@ -515,9 +595,13 @@ export const useRosettaStore = create<RosettaState>()(
         }),
       refreshJobBundle: (bundle) =>
         set((state) => {
-          const jobs = replaceJob(state.jobs, bundle.job);
+          const syncedJob = syncJobWithTranslationFiles(
+            bundle.job,
+            bundle.translationFiles ?? []
+          );
+          const jobs = replaceJob(state.jobs, syncedJob);
 
-          if (state.activeJobId !== bundle.job.id) {
+          if (state.activeJobId !== syncedJob.id) {
             return { jobs };
           }
 
@@ -585,12 +669,21 @@ export const useRosettaStore = create<RosettaState>()(
           };
         }),
       upsertTranslationFile: (translationFile) =>
-        set((state) => ({
-          translationFiles: [
+        set((state) => {
+          const translationFiles = [
             translationFile,
             ...state.translationFiles.filter((file) => file.id !== translationFile.id),
-          ].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)),
-        })),
+          ].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+          const activeJob = state.jobs.find((job) => job.id === state.activeJobId);
+          const jobs = activeJob
+            ? replaceJob(state.jobs, syncJobWithTranslationFile(activeJob, translationFile))
+            : state.jobs;
+
+          return {
+            jobs,
+            translationFiles,
+          };
+        }),
       clearActiveJob: () =>
         set({
           activeJobId: null,

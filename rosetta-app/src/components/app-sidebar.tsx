@@ -1,9 +1,13 @@
 import { useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
+  AlertCircleIcon,
+  CheckCircle2Icon,
+  CircleIcon,
   FileCodeIcon,
   FileTextIcon,
   FileTypeIcon,
+  Loader2Icon,
   PlusIcon,
   SettingsIcon,
   Trash2Icon,
@@ -16,7 +20,6 @@ import {
   loadRosettaJob,
   pickRosettaImportPath,
 } from "@/lib/rosettaJobs";
-import { formatRelativeTime } from "@/lib/formatRelativeTime";
 import { useRosettaStore } from "@/store/useRosettaStore";
 import {
   AlertDialog,
@@ -55,6 +58,118 @@ function DocumentFormatIcon({ format }: { format: RosettaJobSummary["format"] })
   return <FileTextIcon />;
 }
 
+type SidebarJobTranslationState =
+  | "running"
+  | "completed"
+  | "untranslated"
+  | "failed"
+  | "partial";
+
+function getSidebarJobTranslationState(
+  job: RosettaJobSummary,
+  isRunning: boolean
+): SidebarJobTranslationState {
+  if (isRunning) return "running";
+  if (job.failedSegments > 0 || job.status === "failed") return "failed";
+  if (
+    job.status === "completed" ||
+    (job.segmentCount > 0 && job.completedSegments >= job.segmentCount)
+  ) {
+    return "completed";
+  }
+  if (job.completedSegments > 0) return "partial";
+  return "untranslated";
+}
+
+function sidebarJobStatusLabel(
+  state: SidebarJobTranslationState,
+  completed: number,
+  total: number
+) {
+  if (state === "running") {
+    return total > 0 ? `正在翻译，${completed}/${total}` : "正在翻译";
+  }
+  if (state === "completed") return "已完成";
+  if (state === "failed") return "翻译失败";
+  if (state === "partial") return total > 0 ? `已翻译 ${completed}/${total}` : "部分已翻译";
+  return "未翻译";
+}
+
+function SidebarJobStatusIndicator({
+  state,
+  completed,
+  total,
+}: {
+  state: SidebarJobTranslationState;
+  completed: number;
+  total: number;
+}) {
+  const label = sidebarJobStatusLabel(state, completed, total);
+
+  if (state === "running") {
+    return (
+      <span
+        className="inline-flex size-5 shrink-0 items-center justify-center rounded-md bg-blue-500/10 text-blue-700 ring-1 ring-blue-500/25 dark:text-blue-300"
+        aria-label={label}
+        role="img"
+        title={label}
+      >
+        <Loader2Icon className="size-3 animate-spin motion-reduce:animate-none" />
+      </span>
+    );
+  }
+
+  if (state === "completed") {
+    return (
+      <span
+        className="inline-flex size-5 shrink-0 items-center justify-center rounded-md text-emerald-700 dark:text-emerald-300"
+        aria-label={label}
+        role="img"
+        title={label}
+      >
+        <CheckCircle2Icon className="size-4" />
+      </span>
+    );
+  }
+
+  if (state === "failed") {
+    return (
+      <span
+        className="inline-flex size-5 shrink-0 items-center justify-center rounded-md text-rose-700 dark:text-rose-300"
+        aria-label={label}
+        role="img"
+        title={label}
+      >
+        <AlertCircleIcon className="size-4" />
+      </span>
+    );
+  }
+
+  if (state === "partial") {
+    return (
+      <span
+        className="inline-flex size-5 shrink-0 items-center justify-center rounded-md text-amber-700 dark:text-amber-300"
+        aria-label={label}
+        role="img"
+        title={label}
+      >
+        <CircleIcon className="size-3.5 fill-current" />
+      </span>
+    );
+  }
+
+  return (
+    <span
+      className="inline-flex size-5 shrink-0 items-center justify-center rounded-md text-sidebar-foreground/45"
+      aria-label={label}
+      role="img"
+      title={label}
+    >
+      <CircleIcon className="size-3.5" />
+    </span>
+  );
+}
+
 export function AppSidebar({
   hasMacTitlebarOverlay = false,
   ...props
@@ -63,6 +178,7 @@ export function AppSidebar({
   const location = useLocation();
   const jobs = useRosettaStore((s) => s.jobs);
   const activeJobId = useRosettaStore((s) => s.activeJobId);
+  const activeTranslationRun = useRosettaStore((s) => s.activeTranslationRun);
   const setJobList = useRosettaStore((s) => s.setJobList);
   const clearActiveJob = useRosettaStore((s) => s.clearActiveJob);
   const setActiveBundle = useRosettaStore((s) => s.setActiveBundle);
@@ -103,8 +219,9 @@ export function AppSidebar({
     };
   }, []);
 
-  const recentJobs = [...jobs]
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const recentJobs = [...jobs].sort(
+    (a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id)
+  );
   const isSettingsRoute = location.pathname.startsWith("/settings");
 
   async function addNewDocument() {
@@ -176,35 +293,69 @@ export function AppSidebar({
             <SidebarGroupLabel>文档</SidebarGroupLabel>
             <SidebarGroupContent>
               <SidebarMenu>
-                {recentJobs.map((job) => (
-                  <SidebarMenuItem key={job.id}>
-                    <SidebarMenuButton
-                      className="gap-1 !pr-2"
-                      isActive={!isSettingsRoute && activeJobId === job.id}
-                      onClick={() => void openJob(job)}
-                      tooltip={job.filename}
-                    >
-                      <DocumentFormatIcon format={job.format} />
-                      <span className="min-w-0 flex-1 truncate">{job.filename}</span>
-                      <span className="min-w-[2.25ch] shrink-0 text-right text-xs tabular-nums text-muted-foreground/45 transition-opacity duration-150 group-hover/menu-item:opacity-0 group-focus-within/menu-item:opacity-0 group-data-active/menu-button:text-sidebar-accent-foreground/65">
-                        {formatRelativeTime(job.updatedAt)}
-                      </span>
-                    </SidebarMenuButton>
-                    <SidebarMenuAction
-                      className="right-1.5 bg-sidebar/90 text-sidebar-foreground/65 shadow-sm backdrop-blur hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        setPendingDeleteJob(job);
-                      }}
-                      showOnHover
-                      title="删除"
-                      type="button"
-                    >
-                      <Trash2Icon />
-                    </SidebarMenuAction>
-                  </SidebarMenuItem>
-                ))}
+                {recentJobs.map((job) => {
+                  const isRunning = activeTranslationRun?.jobId === job.id;
+                  const translationState = getSidebarJobTranslationState(job, isRunning);
+                  const completed = isRunning
+                    ? activeTranslationRun.completedSegmentIds.length
+                    : job.completedSegments;
+                  const total = isRunning
+                    ? activeTranslationRun.targetSegmentIds.length
+                    : job.segmentCount;
+                  const progressPercent =
+                    total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : 0;
+                  const isActive = !isSettingsRoute && activeJobId === job.id;
+                  const emphasizeRunning = translationState === "running" && isActive;
+
+                  return (
+                    <SidebarMenuItem key={job.id}>
+                      <SidebarMenuButton
+                        className={cn(
+                          "relative h-9 gap-1.5 !pr-2 text-[0.8125rem]",
+                          emphasizeRunning &&
+                            "bg-blue-500/10 text-sidebar-foreground ring-1 ring-blue-500/25 hover:bg-blue-500/15 data-active:bg-blue-500/15 data-active:text-sidebar-foreground"
+                        )}
+                        isActive={isActive}
+                        onClick={() => void openJob(job)}
+                        tooltip={job.filename}
+                      >
+                        <DocumentFormatIcon format={job.format} />
+                        <span className="min-w-0 flex-1 truncate">{job.filename}</span>
+                        <span className="flex shrink-0 items-center transition-opacity duration-150 group-hover/menu-item:opacity-0 group-focus-within/menu-item:opacity-0">
+                          <SidebarJobStatusIndicator
+                            state={translationState}
+                            completed={completed}
+                            total={total}
+                          />
+                          {translationState === "running" && (
+                            <span
+                              className="pointer-events-none absolute right-2 bottom-1 left-7 h-0.5 overflow-hidden rounded-full bg-blue-500/15"
+                              aria-hidden="true"
+                            >
+                              <span
+                                className="block h-full rounded-full bg-blue-500/70 transition-[width] duration-300 ease-out motion-reduce:transition-none"
+                                style={{ width: `${progressPercent}%` }}
+                              />
+                            </span>
+                          )}
+                        </span>
+                      </SidebarMenuButton>
+                      <SidebarMenuAction
+                        className="right-1.5 bg-sidebar/90 text-sidebar-foreground/65 shadow-sm backdrop-blur hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setPendingDeleteJob(job);
+                        }}
+                        showOnHover
+                        title="删除"
+                        type="button"
+                      >
+                        <Trash2Icon />
+                      </SidebarMenuAction>
+                    </SidebarMenuItem>
+                  );
+                })}
 
                 {recentJobs.length === 0 && (
                   <SidebarMenuItem>

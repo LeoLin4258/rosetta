@@ -1,6 +1,10 @@
 use std::{collections::HashMap, fs, path::PathBuf};
 
 use crate::rosetta_jobs::{
+    document::{
+        sync_document_file_statuses, sync_document_file_translation_statuses,
+        sync_job_counts_from_source_files, sync_job_source_files,
+    },
     export::*,
     formats::pdf::page_assemble::{
         assemble_pdf_with_page_translations, count_pdf_pages_lopdf, extract_pages_pdf,
@@ -296,6 +300,59 @@ fn legacy_segments_migrate_to_translation_file() {
     let restored = read_translation_segments(&dir, &file_one.id).expect("read migrated segments");
     assert_eq!(restored[0].translated_text.as_deref(), Some("你好。"));
     fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn translation_file_status_drives_job_sidebar_summary() {
+    let mut document = test_document();
+    let segments = vec![
+        test_segment_with("segment-1", "block-1", "file-1", "pending", None),
+        test_segment_with("segment-2", "block-2", "file-1", "pending", None),
+        test_segment_with("segment-3", "block-3", "file-2", "pending", None),
+    ];
+    let translation_files = vec![RosettaTranslationFile {
+        id: translation_file_id("file-1", "zh-CN"),
+        source_file_id: "file-1".to_string(),
+        target_lang: "zh-CN".to_string(),
+        status: "translated".to_string(),
+        segment_count: 2,
+        completed_segments: 2,
+        failed_segments: 0,
+        updated_at: "2000".to_string(),
+        exported_at: None,
+    }];
+    let mut job = RosettaJobSummary {
+        schema_version: SCHEMA_VERSION,
+        id: "job-1".to_string(),
+        filename: "fixture".to_string(),
+        format: "txt".to_string(),
+        source_path: None,
+        source_filename: "fixture".to_string(),
+        source_kind: default_source_kind(),
+        file_count: 2,
+        source_files: document.files.clone(),
+        status: "ready".to_string(),
+        created_at: "1000".to_string(),
+        updated_at: "1000".to_string(),
+        exported_at: None,
+        last_error: None,
+        target_lang: "zh-CN".to_string(),
+        segment_count: 0,
+        completed_segments: 0,
+        failed_segments: 0,
+    };
+
+    sync_document_file_statuses(&mut document, &segments);
+    sync_document_file_translation_statuses(&mut document, &translation_files);
+    sync_job_source_files(&mut job, &document);
+    sync_job_counts_from_source_files(&mut job);
+
+    assert_eq!(job.source_files[0].translation_status, "translated");
+    assert_eq!(job.source_files[0].completed_segments, 2);
+    assert_eq!(job.source_files[1].translation_status, "untranslated");
+    assert_eq!(job.status, "ready");
+    assert_eq!(job.segment_count, 3);
+    assert_eq!(job.completed_segments, 2);
 }
 
 #[test]

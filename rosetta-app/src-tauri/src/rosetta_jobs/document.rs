@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::rosetta_jobs::model::{
     default_file_translation_status, RosettaBlock, RosettaDocument, RosettaJobSummary,
-    RosettaSourceFile, Segment,
+    RosettaSourceFile, RosettaTranslationFile, Segment,
 };
 
 pub(crate) fn document_files(document: &RosettaDocument) -> Vec<RosettaSourceFile> {
@@ -118,6 +118,30 @@ pub(crate) fn sync_document_file_statuses(document: &mut RosettaDocument, segmen
         } else {
             "untranslated".to_string()
         };
+    }
+}
+
+pub(crate) fn sync_document_file_translation_statuses(
+    document: &mut RosettaDocument,
+    translation_files: &[RosettaTranslationFile],
+) {
+    for source_file in &mut document.files {
+        let target_lang = source_file
+            .target_lang
+            .clone()
+            .unwrap_or_else(|| document.target_lang.clone());
+        let Some(translation_file) = translation_files
+            .iter()
+            .find(|file| file.source_file_id == source_file.id && file.target_lang == target_lang)
+        else {
+            continue;
+        };
+
+        source_file.translation_status = translation_file.status.clone();
+        source_file.segment_count = translation_file.segment_count;
+        source_file.completed_segments = translation_file.completed_segments;
+        source_file.failed_segments = translation_file.failed_segments;
+        source_file.translating_segments = usize::from(translation_file.status == "translating");
     }
 }
 
@@ -239,6 +263,42 @@ pub(crate) fn sync_job_counts(job: &mut RosettaJobSummary, segments: &[Segment])
     } else if job.failed_segments > 0 {
         "failed".to_string()
     } else if job.completed_segments == job.segment_count {
+        "completed".to_string()
+    } else {
+        "ready".to_string()
+    };
+}
+
+pub(crate) fn sync_job_counts_from_source_files(job: &mut RosettaJobSummary) {
+    if job.source_files.is_empty() {
+        return;
+    }
+
+    let translating_segments = job
+        .source_files
+        .iter()
+        .map(|file| file.translating_segments)
+        .sum::<usize>();
+    job.segment_count = job
+        .source_files
+        .iter()
+        .map(|file| file.segment_count)
+        .sum::<usize>();
+    job.completed_segments = job
+        .source_files
+        .iter()
+        .map(|file| file.completed_segments)
+        .sum::<usize>();
+    job.failed_segments = job
+        .source_files
+        .iter()
+        .map(|file| file.failed_segments)
+        .sum::<usize>();
+    job.status = if translating_segments > 0 {
+        "translating".to_string()
+    } else if job.failed_segments > 0 {
+        "failed".to_string()
+    } else if job.segment_count > 0 && job.completed_segments == job.segment_count {
         "completed".to_string()
     } else {
         "ready".to_string()

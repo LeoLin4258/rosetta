@@ -64,6 +64,7 @@ export function WorkspacePage() {
   const setActiveBundle = useRosettaStore((s) => s.setActiveBundle);
   const refreshJobBundle = useRosettaStore((s) => s.refreshJobBundle);
   const setActiveTranslationFileBundle = useRosettaStore((s) => s.setActiveTranslationFileBundle);
+  const upsertTranslationFile = useRosettaStore((s) => s.upsertTranslationFile);
   const updateActiveTranslationSegments = useRosettaStore((s) => s.updateActiveTranslationSegments);
   const startTranslationRun = useRosettaStore((s) => s.startTranslationRun);
   const markTranslationRunCompleted = useRosettaStore((s) => s.markTranslationRunCompleted);
@@ -350,6 +351,7 @@ export function WorkspacePage() {
         onBatchCompleted: (ids) => markTranslationRunCompleted(runId!, ids),
         onBatchFailed: (ids) => markTranslationRunFailed(runId!, ids),
         onTranslationFileSaved: (saved) => {
+          upsertTranslationFile(saved.translationFile);
           if (
             isViewingTranslationFile(
               activeJobId,
@@ -536,6 +538,7 @@ export function WorkspacePage() {
         onBatchCompleted: (ids) => markTranslationRunCompleted(runId!, ids),
         onBatchFailed: (ids) => markTranslationRunFailed(runId!, ids),
         onTranslationFileSaved: (saved) => {
+          upsertTranslationFile(saved.translationFile);
           if (
             isViewingTranslationFile(
               activeJobId,
@@ -679,6 +682,7 @@ export function WorkspacePage() {
         onBatchCompleted: (ids) => markTranslationRunCompleted(runId!, ids),
         onBatchFailed: (ids) => markTranslationRunFailed(runId!, ids),
         onTranslationFileSaved: (saved) => {
+          upsertTranslationFile(saved.translationFile);
           if (
             isViewingTranslationFile(
               activeJobId,
