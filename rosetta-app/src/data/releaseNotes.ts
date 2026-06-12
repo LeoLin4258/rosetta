@@ -34,6 +34,16 @@ export type ReleaseNote = {
  * appearing in `package.json` (e.g. `"0.1.0-beta.8"`), not semver tuples.
  */
 export const RELEASE_NOTES: Record<string, ReleaseNote> = {
+  "0.1.0-beta.11": {
+    version: "0.1.0-beta.11",
+    highlights: [
+      "空状态页新增新建文件入口，可输入文件名创建空白 TXT 文档",
+      "TXT 原文区域支持进入编辑模式，保存后会重新按段落切分原文",
+      "新建 TXT 文件沿用导入 TXT 的翻译流程，可直接选择段落并开始翻译",
+      "原文编辑保存后会清空旧译文状态，避免新原文显示旧译文",
+      "空状态页入口简化为导入文件、导入文件夹、新建文件",
+    ],
+  },
   "0.1.0-beta.9": {
     version: "0.1.0-beta.9",
     highlights: [
