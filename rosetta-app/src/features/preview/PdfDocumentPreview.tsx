@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 
 import { Card } from "@/components/ui/card";
@@ -46,15 +46,14 @@ type PdfDocumentPreviewProps = {
   onSelectedPagesChange: (pages: number[]) => void;
 };
 
-/// Default rasterize width per pane. Backed by pdfium on the Rust side at
-/// ~1.5x the source page width so retina screens stay crisp.
-const DEFAULT_RASTER_WIDTH = 1200;
-
-/// Upper bound on requested raster width. Matches the backend clamp
-/// (MAX_TARGET_WIDTH in rasterize.rs) so the frontend cache key and the
-/// actually-rendered width never diverge, and bounds PNG memory use on very
-/// large/high-DPI displays.
-const MAX_RASTER_WIDTH = 1800;
+/// Single rasterize width, used for every page regardless of pane size. We
+/// used to track the container width with a ResizeObserver and re-rasterize
+/// on > 10% changes, but that made every sidebar toggle / window resize
+/// flash the entire stack as PNGs got re-fetched. The backend clamps to
+/// MAX_TARGET_WIDTH (rasterize.rs) anyway, so just asking for that width
+/// once gives the sharpest result the renderer will produce and lets CSS
+/// scale it down to whatever the pane currently is.
+const RASTER_WIDTH = 1800;
 
 /// Side-by-side PDF preview. Both panes are rasterized server-side via
 /// pdfium and shipped as PNG bytes per page. This component is a pure
@@ -79,44 +78,10 @@ export function PdfDocumentPreview({
   const scrollDriverTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [sourcePageCount, setSourcePageCount] = useState<number | null>(null);
-  const [paneWidth, setPaneWidth] = useState<number>(DEFAULT_RASTER_WIDTH);
   // Bumping forces PdfPane to re-fetch all pages — used after regeneration so
   // the user immediately sees the new translated PDF.
   const [translatedCacheKey, setTranslatedCacheKey] = useState(0);
   const [pdfPageState, setPdfPageState] = useState<PdfPageTranslationState | null>(null);
-  const paneContainerRef = useRef<HTMLDivElement | null>(null);
-
-  // Track the pane container width so rasterization matches display. A
-  // debounced ResizeObserver keeps large screens sharp after window resizes /
-  // sidebar toggles; the debounce plus a 10% change threshold avoids
-  // re-rasterizing every page while the user is mid-drag.
-  useLayoutEffect(() => {
-    const el = paneContainerRef.current;
-    if (!el) return;
-
-    const computeWidth = () => {
-      const halfWidth = el.clientWidth / 2;
-      const dpr = window.devicePixelRatio || 1;
-      return Math.round(Math.min(Math.max(400, halfWidth * dpr), MAX_RASTER_WIDTH));
-    };
-    setPaneWidth(computeWidth());
-
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const observer = new ResizeObserver(() => {
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => {
-        const next = computeWidth();
-        setPaneWidth((current) =>
-          Math.abs(next - current) / current > 0.1 ? next : current,
-        );
-      }, 300);
-    });
-    observer.observe(el);
-    return () => {
-      if (timer) clearTimeout(timer);
-      observer.disconnect();
-    };
-  }, [jobId]);
 
   const refreshPageState = useCallback(async () => {
     try {
@@ -278,13 +243,13 @@ export function PdfDocumentPreview({
 
   return (
     <Card className="flex h-full min-h-0 flex-col gap-0 overflow-hidden py-0">
-      <div ref={paneContainerRef} className="grid min-h-0 flex-1 grid-cols-2">
+      <div className="grid min-h-0 flex-1 grid-cols-2">
         <div className="min-h-0 border-r">
           <PdfPane
             jobId={jobId}
             kind="source"
             pageCount={sourcePageCount}
-            targetWidth={paneWidth}
+            targetWidth={RASTER_WIDTH}
             placeholder="加载源 PDF…"
             scrollRef={sourceScrollRef}
             onScroll={() => syncScroll("source")}
@@ -309,7 +274,7 @@ export function PdfDocumentPreview({
             kind="translated"
             cacheKey={translatedCacheKey}
             pageCount={sourcePageCount}
-            targetWidth={paneWidth}
+            targetWidth={RASTER_WIDTH}
             placeholder={translationPlaceholder}
             placeholderLoading={translationPlaceholderLoading}
             scrollRef={translationScrollRef}

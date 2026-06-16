@@ -122,11 +122,16 @@ export function PdfPane({
           key={`${jobId}-${kind}-${cacheKey ?? "v0"}-${pageIndex}`}
           className="flex min-w-0 items-start gap-3"
         >
-          {pageControls ? (
-            <div className="sticky top-2 z-10 flex w-8 shrink-0 justify-center pt-2">
-              {pageControls(pageIndex)}
-            </div>
-          ) : null}
+          {/*
+            The control gutter is rendered unconditionally so the two panes
+            line up — the source pane fills it with a per-page checkbox while
+            the translated pane leaves it empty. Without this, the source
+            image area is ~44 px narrower (w-8 + gap-3), making the same
+            translated PDF page visually larger than its source counterpart.
+          */}
+          <div className="sticky top-2 z-10 flex w-8 shrink-0 justify-center pt-2">
+            {pageControls ? pageControls(pageIndex) : null}
+          </div>
           <div className="min-w-0 flex-1">
             <PdfPageImage
               jobId={jobId}
@@ -205,11 +210,14 @@ function PdfPageImage({
   }, [canRender, jobId, kind, pageIndex, renderPage, targetWidth]);
 
   if (!canRender) {
-    const placeholderHeight = Math.max(targetWidth, 200) * 1.41;
     return (
       <div
-        className="rosetta-pdf-page-frame rosetta-pdf-page-frame--placeholder"
-        style={{ minHeight: `${placeholderHeight}px` }}
+        className="rosetta-pdf-page-frame rosetta-pdf-page-frame--placeholder w-full"
+        // A4 portrait aspect ratio (~1:1.41) keeps the placeholder height
+        // matched to the actual pane width — much better than a fixed pixel
+        // height tied to the raster width, which is now a constant 1800 px
+        // and would otherwise reserve absurd vertical space.
+        style={{ aspectRatio: "1 / 1.41" }}
       >
         {kind === "translated" ? (
           <PdfPageSkeleton active={activity === "translating"} status={status} />
@@ -231,14 +239,14 @@ function PdfPageImage({
   }
 
   if (!src) {
-    // Placeholder reserves visual space approximating an A4 aspect ratio so
-    // the stack height doesn't snap as PNGs stream in. Backend clamps width
-    // to MIN_TARGET_WIDTH=200, so we use that as a minimum here too.
-    const placeholderHeight = Math.max(targetWidth, 200) * 1.41;
+    // Placeholder reserves an A4-ratio space so the stack height doesn't snap
+    // as PNGs stream in. aspect-ratio: 1/1.41 keeps it pane-width sized — a
+    // pixel-based height tied to the raster width would over-reserve since
+    // the raster is rendered at MAX (1800 px) and CSS scales it down.
     return (
       <div
-        className="flex items-center justify-center rounded border border-border bg-background text-xs text-muted-foreground"
-        style={{ minHeight: `${placeholderHeight}px` }}
+        className="flex w-full items-center justify-center rounded border border-border bg-background text-xs text-muted-foreground"
+        style={{ aspectRatio: "1 / 1.41" }}
       >
         {status ?? `加载第 ${pageIndex + 1} 页…`}
       </div>
