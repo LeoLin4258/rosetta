@@ -34,6 +34,16 @@ export type ReleaseNote = {
  * appearing in `package.json` (e.g. `"0.1.0-beta.8"`), not semver tuples.
  */
 export const RELEASE_NOTES: Record<string, ReleaseNote> = {
+  "0.1.0-beta.12": {
+    version: "0.1.0-beta.12",
+    highlights: [
+      "PDF 组件内置版面模型，首次预热不再访问 Hugging Face",
+      "旧版 PDF 组件会被识别为需要更新，可在设置页重新安装",
+      "PDF 组件安装入口集中到设置页，并支持 GitHub 镜像下载与本地安装包导入",
+      "缺少 PDF 组件时不会自动下载，PDF 翻译按钮会禁用并提示先安装组件",
+      "PDF 引擎状态只在打开 PDF 文件时显示，减少非 PDF 场景干扰",
+    ],
+  },
   "0.1.0-beta.11": {
     version: "0.1.0-beta.11",
     highlights: [
