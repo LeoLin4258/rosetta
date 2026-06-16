@@ -36,11 +36,13 @@ type WorkspaceTopbarProps = {
   isTranslationBusyElsewhere?: boolean;
   isRuntimeStarting: boolean;
   isPdfEngineInstalling?: boolean;
+  isPdfEngineUnavailable?: boolean;
   /// True while the persistent pdf2zh worker is paying its ~13 s torch
   /// import. Only meaningful for PDF jobs; gates the translate button so
   /// the user can't click before the engine is warm.
   isPdfEngineWarming?: boolean;
   pdfEngineProgressMessage?: string | null;
+  pdfEngineUnavailableMessage?: string | null;
   translatedCount: number;
   totalCount: number;
   /// Epoch ms when the active run started. Anchors the elapsed timer so it
@@ -128,8 +130,10 @@ export function WorkspaceTopbar({
   isTranslationBusyElsewhere = false,
   isRuntimeStarting,
   isPdfEngineInstalling = false,
+  isPdfEngineUnavailable = false,
   isPdfEngineWarming = false,
   pdfEngineProgressMessage = null,
+  pdfEngineUnavailableMessage = null,
   translatedCount,
   totalCount,
   runStartedAtMs = null,
@@ -177,11 +181,16 @@ export function WorkspaceTopbar({
   const sameLanguage = sourceLang === targetLang;
   const noPdfPagesSelected = isPdf && pdfSelectedPageCount === 0;
   const translateDisabled =
-    sameLanguage || noPdfPagesSelected || isTranslationBusyElsewhere;
+    sameLanguage ||
+    noPdfPagesSelected ||
+    isTranslationBusyElsewhere ||
+    (isPdf && isPdfEngineUnavailable);
   const translateTitle = sameLanguage
     ? "原文与译文语言不能相同"
     : isTranslationBusyElsewhere
       ? "另一个文件正在翻译"
+    : isPdf && isPdfEngineUnavailable
+      ? (pdfEngineUnavailableMessage ?? "PDF 组件未安装，请在设置中安装后再翻译。")
     : noPdfPagesSelected
       ? "请选择页面"
       : undefined;
@@ -429,11 +438,14 @@ export function WorkspaceTopbar({
                     <button
                       type="button"
                       onClick={() => {
+                        if (translateDisabled) return;
                         if (isPdf) onTranslate(targetLang, sourceLang);
                         else onRetranslateAll();
                         setConfirmingRetranslateAll(false);
                       }}
-                      className="text-xs text-destructive/70 transition-colors hover:text-destructive"
+                      disabled={translateDisabled}
+                      title={translateTitle}
+                      className="text-xs text-destructive/70 transition-colors hover:text-destructive disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:text-destructive/70"
                     >
                       确定
                     </button>

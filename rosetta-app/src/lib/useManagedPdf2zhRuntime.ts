@@ -109,7 +109,7 @@ export function useManagedPdf2zhRuntime() {
   const importFromFile = useCallback(
     async (): Promise<Pdf2zhInstallResult | null> => {
       const selection = await openFileDialog({
-        title: "选择 PDF 版面处理组件压缩包",
+        title: "选择 PDF 组件压缩包",
         multiple: false,
         directory: false,
         // macOS / Windows file pickers look at the LAST extension only, so
@@ -118,7 +118,7 @@ export function useManagedPdf2zhRuntime() {
         // Fall back to `*` so a user with a renamed file (or unexpected
         // double-extension behavior on some Linux DEs) isn't locked out.
         filters: [
-          { name: "PDF 版面处理组件 (.tar.gz / .tgz)", extensions: ["gz", "tgz"] },
+          { name: "PDF 组件 (.tar.gz / .tgz)", extensions: ["gz", "tgz"] },
           { name: "全部文件", extensions: ["*"] },
         ],
       });

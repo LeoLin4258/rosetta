@@ -29,6 +29,7 @@
 
 import json
 import os
+from pathlib import Path
 import sys
 import tempfile
 import time
@@ -332,14 +333,15 @@ def main():
     try:
         import torch
         import doclayout_yolo
-        from huggingface_hub import hf_hub_download
         from pdf2zh import pdf2zh as cli
 
         cli.setup_log()
-        model_path = hf_hub_download(
-            repo_id="juliozhao/DocLayout-YOLO-DocStructBench",
-            filename="doclayout_yolo_docstructbench_imgsz1024.pt",
-        )
+        model_path = os.environ.get("ROSETTA_DOCLAYOUT_MODEL")
+        if not model_path or not Path(model_path).is_file():
+            raise RuntimeError(
+                "ROSETTA_DOCLAYOUT_MODEL is missing or does not point to a file; "
+                "update the Rosetta PDF component so the DocLayout-YOLO model is bundled."
+            )
     except Exception:
         emit(
             proto,

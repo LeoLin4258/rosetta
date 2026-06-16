@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Outlet, useLocation } from "react-router-dom";
+import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, type Theme } from "@tauri-apps/api/window";
 import { FileText, Loader2 } from "lucide-react";
@@ -155,19 +155,31 @@ function MenuEventHandler() {
   return null;
 }
 
-/// Small status pill shown on the right side of the app header. Hidden when
-/// the pack isn't installed (no point nagging) and once the user is mid-
-/// translate the runtime page already conveys "翻译中" state. Tooltip carries
-/// the long-form message + import wall time for debugging.
-function Pdf2zhWorkerBadge({ status }: { status: Pdf2zhWorkerStatus | null }) {
-  if (!status || status.state === "not-installed" || status.state === "idle") {
+/// Small status pill shown on the right side of the app header. Missing or
+/// stale packs stay visible as a route into Settings; active translation state
+/// is still owned by the workspace page. Tooltip carries the long-form message
+/// + import wall time for debugging.
+function Pdf2zhWorkerBadge({
+  status,
+  onOpenSettings,
+}: {
+  status: Pdf2zhWorkerStatus | null;
+  onOpenSettings: () => void;
+}) {
+  if (!status || status.state === "idle") {
     return null;
   }
 
   let dotClass = "";
   let label = "";
   let spinning = false;
+  let actionLabel: string | null = null;
   switch (status.state) {
+    case "not-installed":
+      dotClass = "bg-amber-500";
+      label = status.message?.includes("需要更新") ? "PDF 组件需更新" : "PDF 组件未安装";
+      actionLabel = "去设置";
+      break;
     case "starting":
       dotClass = "bg-amber-500";
       label = "PDF 引擎预热中";
@@ -195,25 +207,53 @@ function Pdf2zhWorkerBadge({ status }: { status: Pdf2zhWorkerStatus | null }) {
   if (typeof status.importMs === "number" && status.importMs > 0) {
     tooltipLines.push(`预热耗时 ${(status.importMs / 1000).toFixed(1)} s`);
   }
+  const [tooltipTitle, ...tooltipDetails] = tooltipLines;
+
+  const badgeContent = (
+    <>
+      {spinning ? (
+        <Loader2 className={cn("size-3 animate-spin", dotClass.replace("bg-", "text-"))} />
+      ) : (
+        <span className={cn("size-2 rounded-full", dotClass)} />
+      )}
+      <span className="tabular-nums">{label}</span>
+      {actionLabel ? (
+        <span className="ml-1 border-l border-border/70 pl-1.5 text-foreground">
+          {actionLabel}
+        </span>
+      ) : null}
+    </>
+  );
 
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <div
-          className="flex h-7 items-center gap-1.5 rounded-lg border border-border/60 bg-muted/35 px-2.5 text-xs text-muted-foreground"
-          data-window-no-drag
-        >
-          {spinning ? (
-            <Loader2 className={cn("size-3 animate-spin", dotClass.replace("bg-", "text-"))} />
-          ) : (
-            <span className={cn("size-2 rounded-full", dotClass)} />
-          )}
-          <span className="tabular-nums">{label}</span>
-        </div>
+        {actionLabel ? (
+          <button
+            type="button"
+            onClick={onOpenSettings}
+            className="flex h-7 items-center gap-1.5 rounded-lg border border-border/60 bg-muted/35 px-2.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            data-window-no-drag
+          >
+            {badgeContent}
+          </button>
+        ) : (
+          <div
+            className="flex h-7 items-center gap-1.5 rounded-lg border border-border/60 bg-muted/35 px-2.5 text-xs text-muted-foreground"
+            data-window-no-drag
+          >
+            {badgeContent}
+          </div>
+        )}
       </TooltipTrigger>
-      <TooltipContent side="bottom" align="end">
-        {tooltipLines.map((line, idx) => (
-          <div key={idx} className={idx === 0 ? "font-medium" : "text-xs opacity-80"}>
+      <TooltipContent
+        side="bottom"
+        align="end"
+        className="!flex !w-80 max-w-[calc(100vw-1rem)] !flex-col !items-stretch !gap-1 text-left leading-5"
+      >
+        <div className="whitespace-nowrap font-medium">{tooltipTitle}</div>
+        {tooltipDetails.map((line, idx) => (
+          <div key={idx} className="whitespace-normal text-xs opacity-80 [overflow-wrap:anywhere]">
             {line}
           </div>
         ))}
@@ -232,8 +272,28 @@ function AppHeader({
   title: string;
 }) {
   const { state } = useSidebar();
+  const location = useLocation();
+  const navigate = useNavigate();
   const shouldAvoidMacTrafficLights = isMacPlatform && state === "collapsed";
   const pdf2zhWorker = useRosettaStore((s) => s.pdf2zhWorker);
+  const activeDocument = useRosettaStore((s) => s.activeDocument);
+  const activeSourceFileId = useRosettaStore((s) => s.activeSourceFileId);
+  const activeSourceFile =
+    activeDocument?.files.find((file) => file.id === activeSourceFileId) ??
+    activeDocument?.files[0] ??
+    null;
+  const isWorkspacePdfFile =
+    location.pathname === "/" && activeSourceFile?.format === "pdf";
+
+  function openPdfSettings() {
+    navigate("/settings");
+    window.setTimeout(() => {
+      document.getElementById("pdf2zh")?.scrollIntoView({
+        block: "start",
+        behavior: "smooth",
+      });
+    }, 0);
+  }
 
   return (
     <header
@@ -258,7 +318,9 @@ function AppHeader({
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-2">
-        <Pdf2zhWorkerBadge status={pdf2zhWorker} />
+        {isWorkspacePdfFile ? (
+          <Pdf2zhWorkerBadge status={pdf2zhWorker} onOpenSettings={openPdfSettings} />
+        ) : null}
       </div>
     </header>
   );

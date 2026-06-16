@@ -913,50 +913,28 @@ function AppearanceSettingsSection({
 }
 
 function DocumentHandlingSection() {
-  const [pdfOpen, setPdfOpen] = useState(false);
-
   return (
     <section className="flex flex-col gap-3" id="document-handling">
       <Card>
         <CardContent className="flex flex-col gap-5 py-5">
-          <div className="grid gap-5 md:grid-cols-[minmax(16rem,0.42fr)_minmax(0,1fr)_auto] md:items-center">
+          <div className="grid gap-5 md:grid-cols-[minmax(16rem,0.42fr)_minmax(0,1fr)] md:items-center">
             <SettingsRowHeader
-              description="配置与文档处理相关的功能。"
+              description="安装本地 PDF 组件。"
               icon={<FileText />}
-              title="文档处理"
+              title="PDF 组件"
             />
 
             <div className="min-w-0">
-              <p className="text-sm font-medium">PDF 处理组件</p>
+              <p className="text-sm font-medium">翻译 PDF 前需要先安装组件</p>
               <p className="mt-1 text-sm text-muted-foreground">
-                处理 PDF 时用于读取版面并导出译文 PDF。
+                组件只在本机运行，用于读取 PDF 版面并生成译文 PDF。
               </p>
             </div>
-
-            <Button
-              aria-expanded={pdfOpen}
-              className="justify-self-start md:justify-self-end"
-              onClick={() => setPdfOpen((open) => !open)}
-              type="button"
-              variant="outline"
-            >
-              管理 PDF 组件
-              <ChevronDown
-                className={cn(
-                  "ml-1 size-3.5 transition-transform",
-                  pdfOpen && "rotate-180"
-                )}
-              />
-            </Button>
           </div>
 
-          <Collapsible open={pdfOpen} onOpenChange={setPdfOpen}>
-            <CollapsibleContent>
-              <div className="border-t pt-5">
-                <Pdf2zhPanel />
-              </div>
-            </CollapsibleContent>
-          </Collapsible>
+          <div className="border-t pt-5">
+            <Pdf2zhPanel />
+          </div>
         </CardContent>
       </Card>
     </section>
@@ -1107,7 +1085,7 @@ function DangerSettingsSection({
             <div>
               <p className="text-sm font-medium">清除本机数据</p>
               <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                删除任务历史、本地模型、PDF 处理组件和本机设置。不会删除原始文件、手动导出的文件或 Rosetta 应用本身。
+                删除任务历史、本地模型、PDF 组件和本机设置。不会删除原始文件、手动导出的文件或 Rosetta 应用本身。
               </p>
             </div>
 
@@ -1157,7 +1135,7 @@ function DangerSettingsSection({
               <AlertDialogHeader>
                 <AlertDialogTitle>清除 Rosetta 本机数据？</AlertDialogTitle>
                 <AlertDialogDescription className="text-left leading-6">
-                  这会停止正在运行的本地模型，并删除任务历史、本地模型文件、PDF 处理组件和本机设置。原始文件、手动导出的文件和 Rosetta 应用不会被删除。
+                  这会停止正在运行的本地模型，并删除任务历史、本地模型文件、PDF 组件和本机设置。原始文件、手动导出的文件和 Rosetta 应用不会被删除。
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <div className="rounded-md bg-muted/50 p-3 text-xs leading-6 text-muted-foreground">
@@ -1416,7 +1394,7 @@ function UpdateStatusMessage({
   if (status === "latest") {
     return (
       <p className="text-sm text-muted-foreground">
-        当前已经是最新版本。
+        {/* 当前已经是最新版本。 */}
       </p>
     );
   }

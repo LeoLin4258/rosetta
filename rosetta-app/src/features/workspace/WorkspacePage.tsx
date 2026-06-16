@@ -152,6 +152,14 @@ export function WorkspacePage() {
   const isPdfJob = sourceFile?.format === "pdf";
   const pdfProgress =
     isPdfJob && activeJobId ? pdfRunProgressByJobId[activeJobId] ?? null : null;
+  const pdfEngineUnavailable =
+    isPdfJob &&
+    (pdf2zhWorkerStatus?.state === "not-installed" ||
+      pdf2zhRuntime.status?.state === "not-installed");
+  const pdfEngineUnavailableMessage =
+    pdf2zhWorkerStatus?.message ??
+    pdf2zhRuntime.status?.message ??
+    "PDF 组件未安装，请在设置中安装后再翻译。";
 
   // Prewarm the persistent pdf2zh worker as soon as a PDF document is open,
   // so its ~13 s Python import overlaps with the user picking pages instead
@@ -162,6 +170,11 @@ export function WorkspacePage() {
     if (!isPdfJob) return;
     void prewarmPdf2zhWorker().catch(() => {});
   }, [isPdfJob, activeJobId]);
+
+  useEffect(() => {
+    if (!isPdfJob) return;
+    void pdf2zhRuntime.refreshStatus();
+  }, [isPdfJob, activeJobId, pdf2zhRuntime.refreshStatus]);
 
   // After a document is loaded (or switched), restore translation segments if
   // there's a known active translation file but no segments in memory yet.
@@ -283,14 +296,10 @@ export function WorkspacePage() {
       throw new Error(current.message);
     }
 
-    await pdf2zhRuntime.install({ repair: false });
-    const refreshed = await pdf2zhRuntime.refreshStatus();
-    if (!isPdf2zhReady(refreshed)) {
-      throw new Error(
-        refreshed?.message ??
-          "PDF 版面处理组件安装完成后仍未就绪，请在设置中检查状态。"
-      );
-    }
+    throw new Error(
+      current?.message ??
+        "PDF 组件未安装。请先在设置中安装 PDF 组件，再返回翻译。"
+    );
   }
 
   async function handleTranslate(targetLang: string, srcLang: string) {
@@ -831,9 +840,12 @@ export function WorkspacePage() {
             isTranslationBusyElsewhere={isTranslationBusyElsewhere}
             isRuntimeStarting={managedRuntimeStatus?.state === "starting"}
             isPdfEngineInstalling={pdf2zhRuntime.isInstalling}
+            isPdfEngineUnavailable={pdfEngineUnavailable}
+            pdfEngineUnavailableMessage={pdfEngineUnavailableMessage}
             isPdfEngineWarming={
-              pdf2zhWorkerStatus?.state === "starting" ||
-              pdf2zhWorkerStatus?.state === "idle"
+              !pdfEngineUnavailable &&
+              (pdf2zhWorkerStatus?.state === "starting" ||
+                pdf2zhWorkerStatus?.state === "idle")
             }
             pdfEngineProgressMessage={pdfEngineProgressMessage}
             translatedCount={completedCount}

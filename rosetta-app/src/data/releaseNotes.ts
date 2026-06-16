@@ -61,7 +61,7 @@ export const RELEASE_NOTES: Record<string, ReleaseNote> = {
       "PDF 翻译并发并行度提升到与 markdown 一致，单页翻译速度显著提升",
       "PDF 翻译进度新增「第 X/Y 页 · 00:23 · N%」实时显示，长时间任务不再像卡死",
       "修复多个 PDF 翻译可能卡在「翻译中」的问题（含系统代理拦截 loopback 的兼容问题）",
-      "PDF 版面处理组件支持从本地文件导入安装（大陆用户可绕过 GitHub 下载）",
+      "PDF 组件支持从本地文件导入安装（大陆用户可绕过 GitHub 下载）",
     ],
   },
   "0.1.0-beta.7": {

@@ -16,7 +16,10 @@ use tokio::{
     sync::Mutex,
 };
 
-use super::{layout::Pdf2zhLayout, profile::Pdf2zhProfile};
+use super::{
+    layout::{Pdf2zhLayout, DOCLAYOUT_MODEL_FILENAME},
+    profile::Pdf2zhProfile,
+};
 
 const PROGRESS_EVENT_NAME: &str = "managed-pdf2zh://install-progress";
 const PROGRESS_EMIT_INTERVAL_MS: u128 = 100;
@@ -205,7 +208,7 @@ async fn install_inner(
 ) -> Result<Pdf2zhInstallResult, String> {
     layout.ensure_dirs()?;
 
-    if layout.bin_path(profile).is_file() && !options.repair {
+    if layout.managed_pack_ready(profile) && !options.repair {
         set_done(registry, "PDF 版面处理已就绪。".to_string()).await;
         emit_progress(app, registry).await;
         return Ok(Pdf2zhInstallResult {
@@ -562,6 +565,12 @@ async fn extract_pack(
         return Err(format!(
             "PDF 版面处理组件结构不正确，缺少 {}",
             profile.bin_relative_path
+        ));
+    }
+    let model = candidate.join("models").join(DOCLAYOUT_MODEL_FILENAME);
+    if !model.is_file() {
+        return Err(format!(
+            "PDF 版面处理组件结构不正确，缺少 models/{DOCLAYOUT_MODEL_FILENAME}"
         ));
     }
 

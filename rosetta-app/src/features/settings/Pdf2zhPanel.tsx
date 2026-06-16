@@ -50,7 +50,7 @@ export function Pdf2zhPanel({ className }: { className?: string }) {
 
   return (
     <section
-      className={cn("flex flex-col gap-4 rounded-md bg-muted/20 p-4", className)}
+      className={cn("flex flex-col gap-4", className)}
       id="pdf2zh"
     >
       <div className="flex items-start justify-between gap-4">
@@ -60,10 +60,10 @@ export function Pdf2zhPanel({ className }: { className?: string }) {
           isRefreshing={rt.isRefreshing}
           isInstallActive={isInstallActive}
         />
-        <Pdf2zhBadge state={state} isInstallActive={isInstallActive} />
+        <Pdf2zhBadge state={state} isInstallActive={isInstallActive} className="shrink-0" />
       </div>
 
-      <div className="flex flex-col gap-4 border-t pt-4">
+      <div className="flex flex-col gap-4">
         {isInstallActive && (
           <InstallProgressRow
             percent={installPercent(rt.progress)}
@@ -73,11 +73,24 @@ export function Pdf2zhPanel({ className }: { className?: string }) {
         )}
 
         <div className="flex flex-wrap items-center gap-2">
+          {!isUnsupported && (
+            <RepairActions
+              state={state}
+              isInstallActive={isInstallActive}
+              isInstalling={rt.isInstalling}
+              onCancelInstall={() => void rt.cancelInstall()}
+              onInstall={() => void rt.install({ repair: false })}
+              onRepair={() => void rt.install({ repair: true })}
+              onImportFromFile={() => void rt.importFromFile()}
+            />
+          )}
+
           <Button
             size="sm"
-            variant="outline"
+            variant="ghost"
             onClick={() => void rt.refreshStatus()}
             disabled={rt.isRefreshing || isInstallActive}
+            className="text-muted-foreground"
           >
             {rt.isRefreshing ? (
               <LoaderCircle className="size-4 animate-spin" />
@@ -86,16 +99,6 @@ export function Pdf2zhPanel({ className }: { className?: string }) {
             )}
             重新检查
           </Button>
-
-          {isInstallActive ? (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => void rt.cancelInstall()}
-            >
-              <X className="size-4" /> 取消安装
-            </Button>
-          ) : null}
         </div>
 
         {showProxyInput(state, isInstallActive) && (
@@ -122,19 +125,11 @@ export function Pdf2zhPanel({ className }: { className?: string }) {
                     detailsOpen && "rotate-180"
                   )}
                 />
-                维护与技术信息
+                技术信息
               </button>
             </CollapsibleTrigger>
             <CollapsibleContent>
               <div className="mt-2 flex flex-col gap-4 border-t pt-4">
-                <RepairActions
-                  state={state}
-                  isInstallActive={isInstallActive}
-                  isInstalling={rt.isInstalling}
-                  onInstall={() => void rt.install({ repair: false })}
-                  onRepair={() => void rt.install({ repair: true })}
-                  onImportFromFile={() => void rt.importFromFile()}
-                />
                 {rt.status && <Pdf2zhInfoRows status={rt.status} />}
               </div>
             </CollapsibleContent>
@@ -158,16 +153,20 @@ function StatusRow({
 }) {
   const { dot, label, sub, spinning } = resolveStatus(state, status, isRefreshing, isInstallActive);
   return (
-    <div className="flex flex-col gap-1">
-      <div className="flex items-center gap-2.5">
-        {spinning ? (
-          <LoaderCircle className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
-        ) : (
-          <div className={cn("size-2 shrink-0 rounded-full", dot)} />
+    <div className="flex min-w-0 flex-1 items-start gap-2.5">
+      {spinning ? (
+        <LoaderCircle className="mt-0.5 size-3.5 shrink-0 animate-spin text-muted-foreground" />
+      ) : (
+        <div className={cn("mt-1.5 size-2 shrink-0 rounded-full", dot)} />
+      )}
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-medium leading-5">{label}</p>
+        {sub && (
+          <p className="mt-0.5 max-w-[72ch] text-xs leading-5 text-muted-foreground">
+            {sub}
+          </p>
         )}
-        <span className="text-sm font-medium">{label}</span>
       </div>
-      {sub && <p className="pl-4 text-xs text-muted-foreground">{sub}</p>}
     </div>
   );
 }
@@ -181,34 +180,41 @@ function resolveStatus(
   if (isInstallActive) {
     return {
       dot: "bg-blue-500",
-      label: "正在安装 PDF 处理组件",
-      sub: "安装完成后，PDF 文档可以保留版面并导出译文 PDF。",
+      label: "正在安装 PDF 组件",
+      sub: "安装完成后即可翻译 PDF。",
       spinning: true,
     };
   }
   if (isRefreshing || state === null) {
     return {
       dot: "bg-muted-foreground/30",
-      label: "正在检查 PDF 处理组件",
+      label: "正在检查 PDF 组件",
       spinning: true,
     };
   }
   if (state === "installed") {
     return {
       dot: "bg-emerald-500",
-      label: "PDF 处理组件已安装",
+      label: "PDF 组件已就绪",
     };
   }
   if (state === "unsupported") {
     return {
       dot: "bg-muted-foreground/40",
-      label: "当前设备暂不支持 PDF 版面处理",
+      label: "当前设备暂不支持 PDF 组件",
       sub: status?.message,
+    };
+  }
+  if (status?.message.includes("需要更新")) {
+    return {
+      dot: "bg-amber-500",
+      label: "PDF 组件需要更新",
+      sub: "重新安装后即可使用新版内置版面模型。",
     };
   }
   return {
     dot: "bg-muted-foreground/30",
-    label: "PDF 处理组件尚未安装",
+    label: "PDF 组件尚未安装",
     sub: status?.message,
   };
 }
@@ -217,6 +223,7 @@ function RepairActions({
   state,
   isInstallActive,
   isInstalling,
+  onCancelInstall,
   onInstall,
   onRepair,
   onImportFromFile,
@@ -224,13 +231,20 @@ function RepairActions({
   state: Pdf2zhStatus["state"] | null;
   isInstallActive: boolean;
   isInstalling: boolean;
+  onCancelInstall: () => void;
   onInstall: () => void;
   onRepair: () => void;
   /** Manual-import escape hatch — see `useManagedPdf2zhRuntime.importFromFile`
    *  for why this exists (mainland China users blocked on GitHub Releases). */
   onImportFromFile: () => void;
 }) {
-  if (isInstallActive) return null;
+  if (isInstallActive) {
+    return (
+      <Button size="sm" variant="outline" onClick={onCancelInstall}>
+        <X className="size-4" /> 取消安装
+      </Button>
+    );
+  }
   if (state === "installed") {
     return (
       <div className="flex flex-wrap gap-2">
@@ -241,7 +255,7 @@ function RepairActions({
           disabled={isInstalling}
           className="w-fit"
         >
-          <RefreshCw className="size-4" /> 重新安装组件
+          <RefreshCw className="size-4" /> 重新安装 PDF 组件
         </Button>
         <Button
           variant="ghost"
@@ -256,10 +270,9 @@ function RepairActions({
     );
   }
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-wrap gap-2">
       <Button
         size="sm"
-        variant="outline"
         onClick={onInstall}
         disabled={isInstalling}
         className="w-fit"
@@ -269,21 +282,14 @@ function RepairActions({
         ) : (
           <Download className="size-4" />
         )}
-        安装 PDF 处理组件
+        安装 PDF 组件
       </Button>
-      {/*
-        Secondary action positioned right below the primary download button.
-        We use a quiet ghost variant so it doesn't compete visually, but the
-        label is direct ("从本地文件导入") so a user blocked on the network
-        path can find it without reading docs. Always rendered in the
-        not-installed state because that's when fallback matters most.
-      */}
       <Button
         size="sm"
-        variant="ghost"
+        variant="outline"
         onClick={onImportFromFile}
         disabled={isInstalling}
-        className="w-fit text-muted-foreground"
+        className="w-fit"
       >
         <FolderInput className="size-4" /> 从本地安装包导入
       </Button>
@@ -294,15 +300,20 @@ function RepairActions({
 function Pdf2zhBadge({
   state,
   isInstallActive,
+  className,
 }: {
   state: Pdf2zhStatus["state"] | null;
   isInstallActive: boolean;
+  className?: string;
 }) {
   if (isInstallActive) {
     return (
       <Badge
         variant="outline"
-        className="gap-1 border-transparent bg-amber-500/15 text-amber-800 dark:text-amber-300"
+        className={cn(
+          "gap-1 border-transparent bg-amber-500/15 text-amber-800 dark:text-amber-300",
+          className
+        )}
       >
         <LoaderCircle className="size-3 animate-spin" /> 安装中
       </Badge>
@@ -312,7 +323,10 @@ function Pdf2zhBadge({
     return (
       <Badge
         variant="outline"
-        className="gap-1 border-transparent bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+        className={cn(
+          "gap-1 border-transparent bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
+          className
+        )}
       >
         <CheckCircle2 className="size-3" /> 已就绪
       </Badge>
@@ -322,7 +336,10 @@ function Pdf2zhBadge({
     return (
       <Badge
         variant="outline"
-        className="border-transparent bg-sky-500/15 text-sky-700 dark:text-sky-300"
+        className={cn(
+          "border-transparent bg-sky-500/15 text-sky-700 dark:text-sky-300",
+          className
+        )}
       >
         未安装
       </Badge>
@@ -347,9 +364,9 @@ function DownloadProxyField({ disabled }: { disabled: boolean }) {
     <div className="flex flex-col gap-1.5 rounded-md border bg-muted/30 p-3">
       <div className="flex items-baseline justify-between gap-3">
         <Label htmlFor="pdf2zh-download-proxy" className="text-xs font-medium">
-          下载代理（可选）
+          组件下载代理（可选）
         </Label>
-        <span className="text-[11px] text-muted-foreground">只影响组件下载</span>
+        <span className="text-[11px] text-muted-foreground">只影响 PDF 组件下载</span>
       </div>
       <Input
         id="pdf2zh-download-proxy"

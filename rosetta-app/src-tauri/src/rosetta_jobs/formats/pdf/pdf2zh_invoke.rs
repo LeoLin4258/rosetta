@@ -135,6 +135,11 @@ pub(crate) async fn invoke_pdf2zh(
     let bin = status
         .bin_path
         .ok_or_else(|| PdfError::RuntimeMissing("找不到 PDF 版面处理组件。".to_string()))?;
+    let doclayout_model = status.doclayout_model_path.clone().ok_or_else(|| {
+        PdfError::RuntimeMissing(
+            "PDF 版面处理组件缺少内置 DocLayout-YOLO 模型，请更新 PDF 组件。".to_string(),
+        )
+    })?;
     status
         .layout
         .ensure_dirs()
@@ -328,6 +333,7 @@ pub(crate) async fn invoke_pdf2zh(
             .env("TMPDIR", &temp_dir)
             .env("TEMP", &temp_dir)
             .env("TMP", &temp_dir)
+            .env("ROSETTA_DOCLAYOUT_MODEL", &doclayout_model)
             // Tell pdf2zh (and the OpenAI Python SDK underneath) to bypass any
             // system / shell proxy for the loopback shim. Without this, users
             // running Clash/Surge or with HTTP_PROXY set get every shim request

@@ -40,6 +40,11 @@ if [[ ! -x "$PACK_DIR/bin/pdf2zh" ]]; then
   echo "::error::staged pdf2zh binary is missing or not executable: $PACK_DIR/bin/pdf2zh" >&2
   exit 2
 fi
+DOCLAYOUT_MODEL_PATH="$PACK_DIR/models/doclayout_yolo_docstructbench_imgsz1024.pt"
+if [[ ! -s "$DOCLAYOUT_MODEL_PATH" ]]; then
+  echo "::error::staged DocLayout-YOLO model is missing: $DOCLAYOUT_MODEL_PATH" >&2
+  exit 2
+fi
 
 echo "[pdf2zh-pack] removing Python bytecode caches from staged pack" >&2
 find "$PACK_DIR" \( -name '__pycache__' -type d -prune -exec rm -rf {} + \) -o \( -name '*.pyc' -type f -delete \)

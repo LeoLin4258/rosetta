@@ -201,6 +201,10 @@ async fn spawn_worker(app: &AppHandle) -> Result<WorkerProcess, String> {
         );
         return Err(status.install_plan.message);
     }
+    let doclayout_model = status
+        .doclayout_model_path
+        .clone()
+        .ok_or_else(|| "pdf2zh pack 缺少内置 DocLayout-YOLO 模型，请更新 PDF 组件。".to_string())?;
     let python = status.layout.pack_dir.join("python").join("bin").join("python");
     if !python.is_file() {
         let msg = format!("pdf2zh pack 中找不到 Python 解释器: {}", python.display());
@@ -222,6 +226,7 @@ async fn spawn_worker(app: &AppHandle) -> Result<WorkerProcess, String> {
         .current_dir(&worker_dir)
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .env("PYTHONUNBUFFERED", "1")
+        .env("ROSETTA_DOCLAYOUT_MODEL", &doclayout_model)
         // Probe-gated MPS use in the worker; unsupported ops fall back to CPU
         // instead of erroring. Must be set before torch is imported.
         .env("PYTORCH_ENABLE_MPS_FALLBACK", "1")

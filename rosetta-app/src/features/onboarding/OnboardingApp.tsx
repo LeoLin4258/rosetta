@@ -11,15 +11,9 @@ import { cn } from "@/lib/utils";
 
 import { DoneStep } from "./DoneStep";
 import { InstallStep } from "./InstallStep";
-import { PdfSetupStep } from "./PdfSetupStep";
 import { WelcomeStep } from "./WelcomeStep";
 
-type OnboardingStep =
-  | "welcome"
-  | "installing-runtime"
-  | "pdf-setup"
-  | "installing-pdf"
-  | "done";
+type OnboardingStep = "welcome" | "installing-runtime" | "done";
 
 const appWindow = getCurrentWindow();
 
@@ -58,7 +52,6 @@ export function OnboardingApp() {
   const [doneVariant, setDoneVariant] =
     useState<"local" | "local-pdf-skipped" | "external">("local");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [pdfErrorMessage, setPdfErrorMessage] = useState<string | null>(null);
   const [isFinishing, setIsFinishing] = useState(false);
   // Pull the decision once to feed Welcome step the model size + "are we
   // upgrading" flag. `null` while loading and on errors — Welcome falls
@@ -99,82 +92,23 @@ export function OnboardingApp() {
       runtime.status?.state === "installed" ||
       runtime.status?.state === "ready"
     ) {
-      void enterPdfSetup();
+      void finishLocalOnboarding();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, runtime.isInstalling, runtime.lastError, runtime.status?.state]);
 
-  const enterPdfSetup = useCallback(async () => {
-    setPdfErrorMessage(null);
+  const finishLocalOnboarding = useCallback(async () => {
     const status = await pdfRuntime.refreshStatus();
     if (isPdf2zhReady(status)) {
       setDoneVariant("local");
-      setStep("done");
-      return;
+    } else {
+      setDoneVariant("local-pdf-skipped");
     }
-    setStep("pdf-setup");
-  }, [pdfRuntime]);
-
-  const beginPdfInstall = useCallback(async () => {
-    setPdfErrorMessage(null);
-    setStep("installing-pdf");
-    try {
-      const status = await pdfRuntime.refreshStatus();
-      if (!isPdf2zhReady(status)) {
-        await pdfRuntime.install({ repair: false });
-        const refreshed = await pdfRuntime.refreshStatus();
-        if (!isPdf2zhReady(refreshed)) {
-          throw new Error(
-            refreshed?.message ??
-              "PDF 版面处理组件安装完成后仍未就绪，请稍后在设置中检查。"
-          );
-        }
-      }
-      setDoneVariant("local");
-      setStep("done");
-    } catch (error) {
-      setPdfErrorMessage(toMessage(error));
-    }
-  }, [pdfRuntime]);
-
-  /**
-   * Local-file import path: same goal as `beginPdfInstall` (end up on the
-   * "done" step with the runtime ready) but the bytes come from a file the
-   * user picked instead of the GitHub Release. Mostly the same control flow,
-   * factored separately because we route through `importFromFile()` which
-   * shows a native file picker first; if the user cancels the picker we
-   * stay on the pdf-setup step rather than entering the installing UI.
-   */
-  const beginPdfImportFromFile = useCallback(async () => {
-    setPdfErrorMessage(null);
-    try {
-      const result = await pdfRuntime.importFromFile();
-      // Cancelled picker — silently return to the pdf-setup step.
-      if (result == null) {
-        return;
-      }
-      setStep("installing-pdf");
-      const refreshed = await pdfRuntime.refreshStatus();
-      if (!isPdf2zhReady(refreshed)) {
-        throw new Error(
-          refreshed?.message ??
-            "PDF 版面处理组件安装完成后仍未就绪，请稍后在设置中检查。"
-        );
-      }
-      setDoneVariant("local");
-      setStep("done");
-    } catch (error) {
-      // Import failures (bad archive, SHA mismatch, etc.) flow through the
-      // same installing-pdf step so the user sees the inline error UI rather
-      // than getting bounced back to pdf-setup with no context.
-      setStep("installing-pdf");
-      setPdfErrorMessage(toMessage(error));
-    }
+    setStep("done");
   }, [pdfRuntime]);
 
   const handleBeginInstall = useCallback(() => {
     setErrorMessage(null);
-    setPdfErrorMessage(null);
     setStep("installing-runtime");
     // useManagedRwkvRuntime.install() reads `downloadProxy.url` from store
     // and merges into the options automatically (see useManagedRwkvRuntime),
@@ -188,28 +122,11 @@ export function OnboardingApp() {
     void runtime.install({ repair: false });
   }, [runtime]);
 
-  const handleRetryPdf = useCallback(() => {
-    void beginPdfInstall();
-  }, [beginPdfInstall]);
-
   const handleCancel = useCallback(() => {
     void runtime.cancelInstall();
     setStep("welcome");
     setErrorMessage(null);
   }, [runtime]);
-
-  const handleCancelPdf = useCallback(() => {
-    void pdfRuntime.cancelInstall();
-    setStep("done");
-    setDoneVariant("local-pdf-skipped");
-    setPdfErrorMessage(null);
-  }, [pdfRuntime]);
-
-  const handleSkipPdf = useCallback(() => {
-    setDoneVariant("local-pdf-skipped");
-    setStep("done");
-    setPdfErrorMessage(null);
-  }, []);
 
   const handleSkipToExternal = useCallback(async () => {
     setIsFinishing(true);
@@ -278,33 +195,6 @@ export function OnboardingApp() {
             onSkip={handleSkipToExternal}
           />
         )}
-        {step === "pdf-setup" && (
-          <PdfSetupStep
-            onBeginInstall={beginPdfInstall}
-            onImportFromFile={() => void beginPdfImportFromFile()}
-            onSkip={handleSkipPdf}
-            isInstalling={pdfRuntime.isInstalling}
-          />
-        )}
-        {step === "installing-pdf" && (
-          <InstallStep
-            title="正在准备 PDF 版面处理"
-            errorTitle="PDF 版面处理没有安装完成"
-            retryLabel="重新准备"
-            cancelLabel="稍后再装"
-            confirmCancelText="确认稍后再准备 PDF 版面处理？"
-            continueLabel="继续准备"
-            defaultCaption="用于保留 PDF 排版并生成译文 PDF"
-            downloadingCaption="下载完成后，PDF 翻译可以保留原文排版"
-            skipLabel="暂时跳过 PDF 版面处理"
-            skipHint="之后可在设置中安装"
-            progress={pdfRuntime.progress}
-            errorMessage={pdfErrorMessage}
-            onCancel={handleCancelPdf}
-            onRetry={handleRetryPdf}
-            onSkip={handleSkipPdf}
-          />
-        )}
         {step === "done" && (
           <DoneStep
             variant={doneVariant}
@@ -315,10 +205,4 @@ export function OnboardingApp() {
       </div>
     </div>
   );
-}
-
-function toMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  if (typeof error === "string") return error;
-  return JSON.stringify(error);
 }

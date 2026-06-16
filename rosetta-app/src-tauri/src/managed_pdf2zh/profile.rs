@@ -29,10 +29,11 @@ pub const MACOS_ARM64_PDF2ZH: Pdf2zhProfile = Pdf2zhProfile {
     pack_directory_name: "macos-arm64",
     bin_relative_path: "bin/pdf2zh",
     pack_filename: "rosetta-pdf2zh-macos-arm64.tar.gz",
-    pack_size_bytes: Some(281_010_698),
-    pack_sha256: Some("78d5045e8739e381d3dc9548df0be24ce12994547842a21ce39bc536214780c4"),
+    pack_size_bytes: Some(318_454_908),
+    pack_sha256: Some("35fcbc1485a3133008a3f556bd7a4303859a6edac8cfac959a5e3d6b2644be8c"),
     pack_download_urls: &[
-        "https://github.com/LeoLin4258/rosetta-assets/releases/download/pdf-layout-pack-macos-arm64-v2026.05.21.1/rosetta-pdf2zh-macos-arm64.tar.gz",
+        "https://github.com/LeoLin4258/rosetta-assets/releases/download/pdf-layout-pack-macos-arm64-v2026.06.16.1/rosetta-pdf2zh-macos-arm64.tar.gz",
+        "https://githubdog.com/https://github.com/LeoLin4258/rosetta-assets/releases/download/pdf-layout-pack-macos-arm64-v2026.06.16.1/rosetta-pdf2zh-macos-arm64.tar.gz",
     ],
 };
 
@@ -63,5 +64,28 @@ impl Pdf2zhProfileSummary {
             platform_arch: profile.platform_arch,
             pack_directory_name: profile.pack_directory_name,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MACOS_ARM64_PDF2ZH;
+
+    #[test]
+    fn macos_pdf_pack_has_mainland_download_fallback() {
+        assert!(
+            MACOS_ARM64_PDF2ZH
+                .pack_download_urls
+                .iter()
+                .any(|url| url.starts_with("https://github.com/")),
+            "primary GitHub release URL should remain available"
+        );
+        assert!(
+            MACOS_ARM64_PDF2ZH
+                .pack_download_urls
+                .iter()
+                .any(|url| url.starts_with("https://githubdog.com/https://github.com/")),
+            "githubdog mirror should be available for mainland users"
+        );
     }
 }
