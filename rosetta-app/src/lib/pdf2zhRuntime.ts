@@ -118,6 +118,12 @@ export type Pdf2zhWorkerStatus = {
   state: Pdf2zhWorkerStatusState;
   message: string | null;
   importMs: number | null;
+  /// Populated only while `state === "starting"` so the UI can show
+  /// "[N/M label]" — without this, a 30 s+ first-launch warmup sits on a
+  /// single static "PDF 引擎预热中" label and looks frozen.
+  warmupStep: number | null;
+  warmupTotalSteps: number | null;
+  warmupLabel: string | null;
 };
 
 export function getPdf2zhWorkerStatus() {

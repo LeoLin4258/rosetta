@@ -38,8 +38,9 @@ type WorkspaceTopbarProps = {
   isPdfEngineInstalling?: boolean;
   isPdfEngineUnavailable?: boolean;
   /// True while the persistent pdf2zh worker is paying its ~13 s torch
-  /// import. Only meaningful for PDF jobs; gates the translate button so
-  /// the user can't click before the engine is warm.
+  /// import. Only meaningful for PDF jobs; disables the translate button so
+  /// the user can't click before the engine is warm. The granular warmup
+  /// progress is shown by the header badge, not here, to avoid duplication.
   isPdfEngineWarming?: boolean;
   pdfEngineProgressMessage?: string | null;
   pdfEngineUnavailableMessage?: string | null;
@@ -184,13 +185,16 @@ export function WorkspaceTopbar({
     sameLanguage ||
     noPdfPagesSelected ||
     isTranslationBusyElsewhere ||
-    (isPdf && isPdfEngineUnavailable);
+    (isPdf && isPdfEngineUnavailable) ||
+    (isPdf && isPdfEngineWarming);
   const translateTitle = sameLanguage
     ? "原文与译文语言不能相同"
     : isTranslationBusyElsewhere
       ? "另一个文件正在翻译"
     : isPdf && isPdfEngineUnavailable
       ? (pdfEngineUnavailableMessage ?? "PDF 组件未安装，请在设置中安装后再翻译。")
+    : isPdf && isPdfEngineWarming
+      ? "PDF 引擎预热中，请稍候"
     : noPdfPagesSelected
       ? "请选择页面"
       : undefined;
@@ -399,15 +403,6 @@ export function WorkspaceTopbar({
                 >
                   <Loader2 className="size-3 animate-spin" />
                   {pdfEngineProgressMessage ?? "正在准备 PDF 引擎…"}
-                </Button>
-              ) : isPdf && isPdfEngineWarming ? (
-                <Button
-                  size="sm"
-                  disabled
-                  className="h-7 gap-1.5 px-2 text-[0.75rem] font-normal leading-none"
-                >
-                  <Loader2 className="size-3 animate-spin" />
-                  PDF 引擎预热中…
                 </Button>
               ) : isRuntimeStarting ? (
                 <Button

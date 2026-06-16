@@ -326,15 +326,44 @@ def run_translate(job, proto, model_path):
     return translate_streaming(job, proto, model_path)
 
 
+def emit_warming(proto, step, total, label):
+    """Announce the next phase of the warmup before paying its cost.
+
+    The Rust side mirrors {step,totalSteps,label} into the worker status so
+    the header badge / topbar pill can show "[N/M label]" — without this, a
+    fresh reinstall sits on a single "PDF 引擎预热中" label for 30 s+ and
+    looks frozen.
+    """
+    emit(
+        proto,
+        {
+            "event": "warming",
+            "step": step,
+            "totalSteps": total,
+            "label": label,
+        },
+    )
+
+
 def main():
     proto = make_protocol_channel()
 
     import_started = time.time()
     try:
+        # Phase split mirrors the import-time breakdown measured on M-series
+        # macs: torch dominates (~70%), the CV stack pulled in by
+        # doclayout_yolo (~20%), pdf2zh itself (~8%), then the model-path
+        # check. The labels are user-facing so keep them plain.
+        emit_warming(proto, 1, 4, "加载 PyTorch")
         import torch
+
+        emit_warming(proto, 2, 4, "加载文档版面模型库")
         import doclayout_yolo
+
+        emit_warming(proto, 3, 4, "加载 pdf2zh")
         from pdf2zh import pdf2zh as cli
 
+        emit_warming(proto, 4, 4, "完成准备")
         cli.setup_log()
         model_path = os.environ.get("ROSETTA_DOCLAYOUT_MODEL")
         if not model_path or not Path(model_path).is_file():

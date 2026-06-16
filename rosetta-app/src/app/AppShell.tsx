@@ -155,6 +155,52 @@ function MenuEventHandler() {
   return null;
 }
 
+/// Format the warmup label as "[N/M label · 12s]" when granular progress is
+/// available, falling back to a static string otherwise. Exported (via the
+/// re-export at the bottom of this file) so the workspace topbar can render
+/// the same string in its in-flight warming pill.
+export function formatWarmupLabel(
+  status: Pdf2zhWorkerStatus,
+  elapsedSec?: number,
+): string {
+  const base = "PDF 引擎预热中";
+  const { warmupStep, warmupTotalSteps, warmupLabel } = status;
+  const detailParts: string[] = [];
+  if (
+    typeof warmupStep === "number" &&
+    typeof warmupTotalSteps === "number" &&
+    warmupLabel
+  ) {
+    detailParts.push(`${warmupStep}/${warmupTotalSteps} ${warmupLabel}`);
+  }
+  if (typeof elapsedSec === "number" && elapsedSec > 0) {
+    detailParts.push(`${elapsedSec}s`);
+  }
+  return detailParts.length > 0 ? `${base} [${detailParts.join(" · ")}]` : base;
+}
+
+/// Tick a wall-clock counter while the worker is in `starting`. Resets when
+/// the state leaves "starting" so the next cold spawn starts from 0.
+export function useWarmupElapsedSeconds(state: string | undefined): number {
+  const [elapsed, setElapsed] = useState(0);
+  const startedAtRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (state !== "starting") {
+      startedAtRef.current = null;
+      setElapsed(0);
+      return;
+    }
+    startedAtRef.current = Date.now();
+    setElapsed(0);
+    const id = window.setInterval(() => {
+      if (startedAtRef.current == null) return;
+      setElapsed(Math.floor((Date.now() - startedAtRef.current) / 1000));
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [state]);
+  return elapsed;
+}
+
 /// Small status pill shown on the right side of the app header. Missing or
 /// stale packs stay visible as a route into Settings; active translation state
 /// is still owned by the workspace page. Tooltip carries the long-form message
@@ -166,6 +212,7 @@ function Pdf2zhWorkerBadge({
   status: Pdf2zhWorkerStatus | null;
   onOpenSettings: () => void;
 }) {
+  const warmupElapsed = useWarmupElapsedSeconds(status?.state);
   if (!status || status.state === "idle") {
     return null;
   }
@@ -182,7 +229,7 @@ function Pdf2zhWorkerBadge({
       break;
     case "starting":
       dotClass = "bg-amber-500";
-      label = "PDF 引擎预热中";
+      label = formatWarmupLabel(status, warmupElapsed);
       spinning = true;
       break;
     case "ready":

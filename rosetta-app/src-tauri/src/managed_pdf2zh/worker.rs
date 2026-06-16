@@ -58,6 +58,16 @@ pub struct Pdf2zhWorkerStatus {
     /// status tooltip ("预热耗时 X.X s").
     #[serde(rename = "importMs")]
     pub import_ms: Option<u64>,
+    /// 1-based phase within the warmup handshake, populated only while
+    /// `state == "starting"`. Drives the "[N/M label]" detail string the
+    /// frontend renders so a 30 s+ first-launch warm-up doesn't sit on a
+    /// single static label.
+    #[serde(rename = "warmupStep")]
+    pub warmup_step: Option<u32>,
+    #[serde(rename = "warmupTotalSteps")]
+    pub warmup_total_steps: Option<u32>,
+    #[serde(rename = "warmupLabel")]
+    pub warmup_label: Option<String>,
 }
 
 impl Default for Pdf2zhWorkerStatus {
@@ -66,6 +76,9 @@ impl Default for Pdf2zhWorkerStatus {
             state: "idle".to_string(),
             message: None,
             import_ms: None,
+            warmup_step: None,
+            warmup_total_steps: None,
+            warmup_label: None,
         }
     }
 }
@@ -97,7 +110,8 @@ impl WorkerState {
 
 /// Update the public worker status and broadcast it to every window. Called
 /// from spawn / handshake / kill paths so the header indicator tracks the
-/// real worker lifecycle without polling.
+/// real worker lifecycle without polling. Warmup fields default to None;
+/// use [`set_warmup_progress`] to populate them while `starting`.
 fn set_worker_status(
     app: &AppHandle,
     state: &str,
@@ -108,6 +122,29 @@ fn set_worker_status(
         state: state.to_string(),
         message,
         import_ms,
+        warmup_step: None,
+        warmup_total_steps: None,
+        warmup_label: None,
+    };
+    if let Some(worker_state) = app.try_state::<WorkerState>() {
+        if let Ok(mut guard) = worker_state.status.lock() {
+            *guard = next.clone();
+        }
+    }
+    let _ = app.emit(WORKER_STATUS_EVENT, next);
+}
+
+/// Push a "starting" status update carrying the current warmup phase so the
+/// header / topbar can render "[N/M label]" while torch is loading. State
+/// stays "starting" until the worker emits its terminal `ready`/`fatal`.
+fn set_warmup_progress(app: &AppHandle, step: u32, total: u32, label: String) {
+    let next = Pdf2zhWorkerStatus {
+        state: "starting".to_string(),
+        message: None,
+        import_ms: None,
+        warmup_step: Some(step),
+        warmup_total_steps: Some(total),
+        warmup_label: Some(label),
     };
     if let Some(worker_state) = app.try_state::<WorkerState>() {
         if let Ok(mut guard) = worker_state.status.lock() {
@@ -151,6 +188,14 @@ struct WorkerEvent {
     page_number: Option<u32>,
     #[serde(default)]
     file: Option<String>,
+    /// 1-based phase index on `warming` events emitted during the import
+    /// handshake. Paired with `total_steps` and `label`.
+    #[serde(default)]
+    step: Option<u32>,
+    #[serde(default, rename = "totalSteps")]
+    total_steps: Option<u32>,
+    #[serde(default)]
+    label: Option<String>,
     /// Per-stage timings attached to the final `done` event (preprocessMs,
     /// translateMs, yoloMs, processPageMs, perPageSaveMs, …). Surfaced via
     /// stderr for the diagnostics log; not parsed structurally.
@@ -327,6 +372,13 @@ async fn spawn_worker(app: &AppHandle) -> Result<WorkerProcess, String> {
     let ready = tokio::time::timeout(READY_TIMEOUT, async {
         while let Some(event) = worker.events.recv().await {
             match event.event.as_str() {
+                "warming" => {
+                    if let (Some(step), Some(total), Some(label)) =
+                        (event.step, event.total_steps, event.label)
+                    {
+                        set_warmup_progress(app, step, total, label);
+                    }
+                }
                 "ready" => {
                     let import_ms = event.import_ms.unwrap_or(0);
                     eprintln!(
