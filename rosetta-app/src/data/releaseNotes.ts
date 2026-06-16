@@ -34,6 +34,15 @@ export type ReleaseNote = {
  * appearing in `package.json` (e.g. `"0.1.0-beta.8"`), not semver tuples.
  */
 export const RELEASE_NOTES: Record<string, ReleaseNote> = {
+  "0.1.0-beta.13": {
+    version: "0.1.0-beta.13",
+    highlights: [
+      "PDF 引擎预热显示具体阶段（如「加载 PyTorch」「加载文档版面模型库」）和已用秒数，长等待不再像卡死",
+      "PDF 引擎预热时翻译按钮显示为禁用而不是另起一个进度提示，工作台不再与 Header 状态重复",
+      "PDF 译文预览不再随窗口缩放重新生成图片，调整窗口、切换侧栏不再闪烁",
+      "PDF 源文与译文预览的图片严格等宽，两边页面尺寸保持一致",
+    ],
+  },
   "0.1.0-beta.12": {
     version: "0.1.0-beta.12",
     highlights: [

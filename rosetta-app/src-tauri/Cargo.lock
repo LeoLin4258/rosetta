@@ -3079,7 +3079,7 @@ dependencies = [
 
 [[package]]
 name = "rosetta-app"
-version = "0.1.0-beta.12"
+version = "0.1.0-beta.13"
 dependencies = [
  "axum",
  "futures-util",
