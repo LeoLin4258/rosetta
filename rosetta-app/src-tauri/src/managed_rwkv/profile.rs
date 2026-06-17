@@ -196,7 +196,10 @@ pub const WINDOWS_AMD64_CUDA: RuntimeProfile = RuntimeProfile {
     runtime_archive_sha256: Some(
         "454a41ad215d4adf156c261991f0732ed22e64e7eed9780321848050435d7a7c",
     ),
-    runtime_download_urls: &[],
+    runtime_download_urls: &[
+        "https://github.com/Alic-Li/rwkv_lightning_cuda/releases/download/V1.0.0/RWKV_lightning_CUDA_sm75+_Win_MSVC.7z",
+        "https://githubdog.com/https://github.com/Alic-Li/rwkv_lightning_cuda/releases/download/V1.0.0/RWKV_lightning_CUDA_sm75+_Win_MSVC.7z",
+    ],
     runtime_library_dir_name: Some("lib"),
     tokenizer_filename: "rwkv_vocab_v20230424.txt",
     model_directory_name: "rwkv7-0.4b-translate-windows-pth",
@@ -207,6 +210,7 @@ pub const WINDOWS_AMD64_CUDA: RuntimeProfile = RuntimeProfile {
     model_download_urls: &[
         "https://huggingface.co/Alic-Li/RWKV_v7_G1_Translate/resolve/main/RWKV_v7_G1d_0.4B_Translate_ctx4096_20260607.pth",
         "https://hf-mirror.com/Alic-Li/RWKV_v7_G1_Translate/resolve/main/RWKV_v7_G1d_0.4B_Translate_ctx4096_20260607.pth",
+        "https://modelscope.cn/models/AlicLi/RWKV_v7_G1_Translate/resolve/master/RWKV_v7_G1d_0.4B_Translate_ctx4096_20260607.pth",
     ],
     supported_directions: &["en-zh", "zh-en"],
     model_name_arg: "rwkv-translate",

@@ -518,7 +518,7 @@ async fn request_translations(
         body_password,
         "en",
         "zh-CN",
-        StopTokenMode::TextBoundary,
+        stop_token_mode_for_endpoint(endpoint),
     );
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_millis(timeout_ms))

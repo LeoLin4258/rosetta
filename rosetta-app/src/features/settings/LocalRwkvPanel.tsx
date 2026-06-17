@@ -144,7 +144,6 @@ export function LocalRwkvPanel({ className }: { className?: string }) {
                     isInstallActive={isInstallActive}
                     isInstalling={rt.isInstalling}
                     onInstall={() => void rt.install({ repair: false })}
-                    onImportModel={() => void rt.importModelFromFile()}
                     onRepair={() => void rt.install({ repair: true })}
                   />
                   {status && <ModelInfoRows status={status} />}
@@ -351,7 +350,6 @@ function RepairActions({
   isInstallActive,
   isInstalling,
   onInstall,
-  onImportModel,
   onRepair,
 }: {
   state: ManagedRuntimeState | null;
@@ -359,7 +357,6 @@ function RepairActions({
   isInstallActive: boolean;
   isInstalling: boolean;
   onInstall: () => void;
-  onImportModel: () => void;
   onRepair: () => void;
 }) {
   if (isInstallActive) return null;
@@ -383,15 +380,6 @@ function RepairActions({
           )}
           准备本地模型组件
         </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={onImportModel}
-          disabled={isInstalling || installPhase === "preflight"}
-        >
-          <Download className="size-4" />
-          导入 .pth 模型
-        </Button>
       </div>
     );
   }
@@ -412,15 +400,6 @@ function RepairActions({
           className="w-fit"
         >
           <RefreshCw className="size-4" /> 校验并修复模型
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={onImportModel}
-          disabled={isInstalling}
-          className="w-fit"
-        >
-          <Download className="size-4" /> 导入 .pth 模型
         </Button>
       </div>
     );

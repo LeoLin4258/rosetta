@@ -681,7 +681,6 @@ export type ManagedRuntimeInstallOptions = {
   repair?: boolean;
   proxyUrl?: string | null;
   runtimePackPath?: string | null;
-  modelFilePath?: string | null;
 };
 
 /**

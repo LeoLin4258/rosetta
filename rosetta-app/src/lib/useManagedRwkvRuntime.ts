@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-
 import {
   cancelManagedRwkvInstall,
   exportManagedRwkvDebugBundle,
@@ -120,28 +118,6 @@ export function useManagedRwkvRuntime() {
     [refreshStatus, setError, proxyUrl]
   );
 
-  const importModelFromFile = useCallback(
-    async (): Promise<ManagedRuntimeInstallResult | null> => {
-      const selection = await openFileDialog({
-        title: "选择 RWKV .pth 模型文件",
-        multiple: false,
-        directory: false,
-        filters: [
-          { name: "RWKV 模型 (.pth)", extensions: ["pth"] },
-          { name: "全部文件", extensions: ["*"] },
-        ],
-      });
-      if (selection == null) {
-        return null;
-      }
-      return await install({
-        repair: false,
-        modelFilePath: selection,
-      });
-    },
-    [install]
-  );
-
   const cancelInstall = useCallback(async (): Promise<boolean> => {
     try {
       const result = await cancelManagedRwkvInstall();
@@ -225,7 +201,6 @@ export function useManagedRwkvRuntime() {
     isProbing,
     refreshStatus,
     install,
-    importModelFromFile,
     cancelInstall,
     start,
     stop,
