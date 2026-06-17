@@ -41,6 +41,7 @@ export type SelectProviderInput = {
    * without extra wiring.
    */
   managedRuntimeBaseUrl?: string;
+  managedRuntimeProviderId?: RwkvProviderId;
 };
 
 /**
@@ -58,11 +59,13 @@ export function selectProvider({
   override,
   managedRuntimeReady,
   managedRuntimeBaseUrl,
+  managedRuntimeProviderId,
 }: SelectProviderInput): RwkvProviderHandle {
   const providerId = resolveProviderId(
     override,
     config.providerPreference,
-    managedRuntimeReady
+    managedRuntimeReady,
+    managedRuntimeProviderId
   );
   if (providerId === "rwkv-mobile-batch-chat") {
     return {
@@ -73,10 +76,12 @@ export function selectProvider({
   }
   return {
     id: "rwkv-lightning-contents",
-    baseUrl: config.baseUrl,
-    endpoint: config.endpoint,
-    internalToken: config.internalToken,
-    bodyPassword: config.bodyPassword,
+    baseUrl: providerId === "rwkv-lightning-contents" && config.providerPreference === "local"
+      ? managedRuntimeBaseUrl ?? DEFAULT_MANAGED_RUNTIME_BASE_URL
+      : config.baseUrl,
+    endpoint: config.providerPreference === "local" ? "/v1/chat/completions" : config.endpoint,
+    internalToken: config.providerPreference === "local" ? "" : config.internalToken,
+    bodyPassword: config.providerPreference === "local" ? "" : config.bodyPassword,
     timeoutMs: config.timeoutMs,
   };
 }
@@ -84,19 +89,20 @@ export function selectProvider({
 function resolveProviderId(
   override: RwkvProviderId | undefined,
   preference: RwkvProviderPreference | undefined,
-  managedRuntimeReady: boolean | undefined
+  managedRuntimeReady: boolean | undefined,
+  managedRuntimeProviderId: RwkvProviderId | undefined
 ): RwkvProviderId {
   if (override) {
     return override;
   }
   if (preference === "local") {
-    return "rwkv-mobile-batch-chat";
+    return managedRuntimeProviderId ?? "rwkv-mobile-batch-chat";
   }
   if (preference === "remote-api") {
     return "rwkv-lightning-contents";
   }
   if (managedRuntimeReady) {
-    return "rwkv-mobile-batch-chat";
+    return managedRuntimeProviderId ?? "rwkv-mobile-batch-chat";
   }
   return "rwkv-lightning-contents";
 }

@@ -291,11 +291,12 @@ export function TranslationPreviewPage() {
           config: rwkv,
           override:
             rwkv.providerPreference === "local"
-              ? "rwkv-mobile-batch-chat"
+              ? managedRuntimeStatus?.profile?.providerId
               : "rwkv-lightning-contents",
           managedRuntimeReady: isManagedRuntimeReady(managedRuntimeStatus),
           managedRuntimeBaseUrl:
             managedRuntimeStatus?.process.baseUrl ?? undefined,
+          managedRuntimeProviderId: managedRuntimeStatus?.profile?.providerId,
         }),
         request: {
           baseUrl: rwkv.baseUrl,

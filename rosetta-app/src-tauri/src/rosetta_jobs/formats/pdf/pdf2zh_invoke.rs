@@ -298,7 +298,10 @@ pub(crate) async fn invoke_pdf2zh(
                 .map(|lines| lines.join("\n"))
                 .unwrap_or_default();
             let output_log = output_dir.join("rosetta-pdf2zh-output.log");
-            let _ = std::fs::write(&output_log, format!("{tail}\n--- worker error ---\n{message}"));
+            let _ = std::fs::write(
+                &output_log,
+                format!("{tail}\n--- worker error ---\n{message}"),
+            );
             return Err(PdfError::Pdf2zhFailed(format!(
                 "PDF 版面处理没有完成。请重试；若持续失败，可查看日志：{}",
                 output_log.display()

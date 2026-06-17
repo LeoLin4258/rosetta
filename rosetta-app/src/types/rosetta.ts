@@ -243,6 +243,7 @@ export type RwkvProviderPreference = "local" | "remote-api";
 export type RwkvProviderId =
   | "rwkv-lightning-contents"
   | "rwkv-mobile-batch-chat"
+  | "rwkv-openai-chat"
   | "custom-rwkv-api";
 
 export type RwkvLightningContentsProviderHandle = {
@@ -550,7 +551,12 @@ export type ManagedRuntimeState =
   | "failed"
   | "stopped";
 
-export type ManagedRuntimeInstallItemKind = "sidecar" | "tokenizer" | "model";
+export type ManagedRuntimeInstallItemKind =
+  | "runtime"
+  | "sidecar"
+  | "tokenizer"
+  | "model"
+  | "metallib";
 
 export type ManagedRuntimeInstallItemState = "missing" | "present";
 
@@ -570,7 +576,7 @@ export type ManagedRuntimeInstallPlan = {
 
 export type ManagedRuntimeProfileSummary = {
   id: string;
-  providerId: string;
+  providerId: RwkvProviderId;
   platformOs: string;
   platformArch: string;
   backend: string;
@@ -637,6 +643,7 @@ export type ManagedRuntimeInstallPhase =
   | "preflight"
   | "downloading"
   | "verifying"
+  | "extracting"
   | "writing-manifest"
   | "done"
   | "failed"
@@ -667,6 +674,7 @@ export type ManagedRuntimeInstallProgress = {
 export type ManagedRuntimeInstallOptions = {
   repair?: boolean;
   proxyUrl?: string | null;
+  runtimePackPath?: string | null;
 };
 
 /**

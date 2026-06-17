@@ -347,7 +347,6 @@ pub fn get_rosetta_pdf_page_status(
     formats::pdf::page_state::read_pdf_page_translation_state(&dir, page_count, &target_lang)
 }
 
-
 #[tauri::command]
 pub async fn translate_rosetta_pdf_pages(
     app: AppHandle,
@@ -484,8 +483,8 @@ async fn translate_pdf_pages_inner(
     );
     let mut rwkv_aggregate = diagnostics::RwkvAggregate::default();
     let finish_profile = |profile: &mut diagnostics::PdfTranslationProfile,
-                              status: &str,
-                              rwkv: &diagnostics::RwkvAggregate| {
+                          status: &str,
+                          rwkv: &diagnostics::RwkvAggregate| {
         profile.status = status.to_string();
         profile.ended_at = path::timestamp_ms_string();
         profile.durations_ms.total = run_started.elapsed().as_millis() as u64;
@@ -562,8 +561,7 @@ async fn translate_pdf_pages_inner(
                     Some(page_state::pdf_page_relative_path(page_number)),
                     None,
                 );
-                let _ =
-                    page_state::write_pdf_page_translation_state(&dir_for_cb, state_for_cb);
+                let _ = page_state::write_pdf_page_translation_state(&dir_for_cb, state_for_cb);
                 let _ = app_for_cb.emit(
                     PDF_PAGE_PROGRESS_EVENT,
                     PdfPageProgressPayload {
@@ -574,15 +572,8 @@ async fn translate_pdf_pages_inner(
                 );
             }
             Err(error) => {
-                page_state::upsert_pdf_page(
-                    state_for_cb,
-                    page_number,
-                    "failed",
-                    None,
-                    Some(error),
-                );
-                let _ =
-                    page_state::write_pdf_page_translation_state(&dir_for_cb, state_for_cb);
+                page_state::upsert_pdf_page(state_for_cb, page_number, "failed", None, Some(error));
+                let _ = page_state::write_pdf_page_translation_state(&dir_for_cb, state_for_cb);
                 let _ = app_for_cb.emit(
                     PDF_PAGE_PROGRESS_EVENT,
                     PdfPageProgressPayload {

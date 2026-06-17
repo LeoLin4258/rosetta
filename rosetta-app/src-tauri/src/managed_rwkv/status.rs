@@ -52,6 +52,7 @@ pub enum ManagedRuntimeState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum InstallItemKind {
+    Runtime,
     Sidecar,
     Tokenizer,
     Model,
@@ -122,8 +123,8 @@ pub fn build_static_status(app: &AppHandle) -> Result<StaticStatus, String> {
     };
 
     let layout = RuntimeLayout::from_app(app, profile)?;
-    let sidecar_path = locate_sidecar(app, profile);
-    let tokenizer_path = locate_tokenizer(app, profile);
+    let sidecar_path = locate_sidecar(app, profile, &layout);
+    let tokenizer_path = locate_tokenizer(app, profile, &layout);
     let metallib_path = if profile.backend == "mlx" {
         locate_metallib(app, sidecar_path.as_deref())
     } else {
@@ -180,8 +181,7 @@ impl StaticStatus {
             install_plan: ManagedRuntimeInstallPlan {
                 ready: false,
                 items: Vec::new(),
-                message: "当前平台暂不支持本地 RWKV 运行时（仅支持 macOS Apple Silicon）。"
-                    .to_string(),
+                message: "当前平台暂不支持 Rosetta 管理的本地 RWKV 运行时。".to_string(),
             },
             initial_state: ManagedRuntimeState::Unsupported,
         }
@@ -242,13 +242,28 @@ fn build_install_plan(
 ) -> ManagedRuntimeInstallPlan {
     let mut items = Vec::with_capacity(4);
 
+    if profile.managed_runtime_directory_name.is_some() {
+        let runtime_ready = layout
+            .runtime_dir
+            .as_deref()
+            .filter(|_| layout.is_runtime_pack_installed(profile));
+        items.push(make_item(
+            InstallItemKind::Runtime,
+            runtime_ready,
+            format!(
+                "Windows RWKV CUDA 运行包尚未安装（{}）。",
+                profile
+                    .runtime_archive_filename
+                    .unwrap_or("runtime archive")
+            ),
+            "Windows RWKV CUDA 运行包已就绪。".to_string(),
+        ));
+    }
+
     items.push(make_item(
         InstallItemKind::Sidecar,
         sidecar_path.as_deref(),
-        format!(
-            "Sidecar 二进制 ({}) 未在应用包内找到。请运行 src-tauri/scripts/fetch-rwkv-sidecar.sh。",
-            profile.sidecar_binary_name
-        ),
+        format!("Sidecar 二进制 ({}) 未找到。", profile.sidecar_binary_name),
         "Sidecar 二进制已就绪。".to_string(),
     ));
 
@@ -282,10 +297,7 @@ fn build_install_plan(
     items.push(make_item(
         InstallItemKind::Model,
         model_ready_path,
-        format!(
-            "翻译模型尚未下载 ({})。下次进入 Phase 4 后会从 UI 一键下载。",
-            profile.model_filename
-        ),
+        format!("翻译模型尚未安装 ({})。", profile.model_filename),
         format!("翻译模型 {} 已就绪。", profile.model_filename),
     ));
 
@@ -344,7 +356,17 @@ fn make_item(
 ///
 /// We probe both names in each location so the resolver doesn't care which
 /// mode we're running under.
-fn locate_sidecar(app: &AppHandle, profile: &RuntimeProfile) -> Option<PathBuf> {
+fn locate_sidecar(
+    app: &AppHandle,
+    profile: &RuntimeProfile,
+    layout: &RuntimeLayout,
+) -> Option<PathBuf> {
+    if let Some(path) = layout.runtime_executable_path(profile) {
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+
     let full_name = profile.sidecar_binary_name;
     // Strip the `-aarch64-apple-darwin` (or whichever) suffix that Tauri's
     // bundler removes in production. Look up dynamically rather than
@@ -455,7 +477,17 @@ fn locate_metallib(app: &AppHandle, sidecar_path: Option<&Path>) -> Option<PathB
 /// Our `tauri.macos.conf.json` declares `resources/rwkv-sidecar/*`, so the
 /// tokenizer lands at `Contents/Resources/resources/rwkv-sidecar/<name>` in
 /// bundle and `src-tauri/resources/rwkv-sidecar/<name>` in dev.
-fn locate_tokenizer(app: &AppHandle, profile: &RuntimeProfile) -> Option<PathBuf> {
+fn locate_tokenizer(
+    app: &AppHandle,
+    profile: &RuntimeProfile,
+    layout: &RuntimeLayout,
+) -> Option<PathBuf> {
+    if let Some(path) = layout.runtime_tokenizer_path(profile) {
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+
     let name = profile.tokenizer_filename;
 
     // Bundle path (Tauri 2): Contents/Resources/resources/rwkv-sidecar/<name>.

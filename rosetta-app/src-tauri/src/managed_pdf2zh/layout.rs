@@ -43,9 +43,7 @@ impl Pdf2zhLayout {
     }
 
     pub fn doclayout_model_path(&self) -> PathBuf {
-        self.pack_dir
-            .join("models")
-            .join(DOCLAYOUT_MODEL_FILENAME)
+        self.pack_dir.join("models").join(DOCLAYOUT_MODEL_FILENAME)
     }
 
     pub fn managed_pack_ready(&self, profile: &Pdf2zhProfile) -> bool {

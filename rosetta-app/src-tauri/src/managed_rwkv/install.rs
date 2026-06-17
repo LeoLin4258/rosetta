@@ -27,6 +27,7 @@
 //! command also returns a snapshot for UIs that prefer polling.
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -55,6 +56,7 @@ pub enum InstallPhase {
     Preflight,
     Downloading,
     Verifying,
+    Extracting,
     WritingManifest,
     Done,
     Failed,
@@ -102,6 +104,9 @@ pub struct InstallOptions {
     /// Loopback traffic to the local sidecar bypasses this entirely
     /// (see `rwkv_providers::mobile_batch_chat::loopback_client`).
     pub proxy_url: Option<String>,
+    /// Optional local runtime pack path. Windows dogfood uses this for the
+    /// engineer-provided `RWKV_lightning_CUDA_sm75+_Win_MSVC.7z`.
+    pub runtime_pack_path: Option<String>,
 }
 
 impl InstallOptions {
@@ -125,6 +130,18 @@ pub struct ModelManifest {
     pub sha256: String,
     pub size_bytes: u64,
     pub source_url: String,
+    pub installed_at: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeManifest {
+    pub schema_version: u32,
+    pub profile_id: String,
+    pub archive_filename: String,
+    pub sha256: String,
+    pub size_bytes: u64,
+    pub source_path: String,
     pub installed_at: String,
 }
 
@@ -235,6 +252,7 @@ pub async fn install_model(
         registry,
         profile,
         layout,
+        &options,
         &cancel,
         proxy_url.as_deref(),
     )
@@ -254,9 +272,47 @@ async fn install_inner(
     registry: &InstallRegistry,
     profile: &'static RuntimeProfile,
     layout: &RuntimeLayout,
+    options: &InstallOptions,
     cancel: &Arc<AtomicBool>,
     proxy_url: Option<&str>,
 ) -> Result<InstallResult, String> {
+    if profile.managed_runtime_directory_name.is_some()
+        && !layout.is_runtime_pack_installed(profile)
+    {
+        install_runtime_pack(app, registry, profile, layout, options, cancel).await?;
+        if profile.model_download_urls.is_empty() && !layout.is_model_installed() {
+            set_done(
+                registry,
+                profile,
+                "Windows RWKV 运行包已安装；翻译模型尚未配置。".to_string(),
+            )
+            .await;
+            emit_progress(app, registry).await;
+            return Ok(InstallResult {
+                ready: false,
+                installed: true,
+                phase: InstallPhase::Done,
+                bytes_done: profile.runtime_archive_size_bytes.unwrap_or(0),
+                bytes_total: profile.runtime_archive_size_bytes.unwrap_or(0),
+                source_url: None,
+                message: "Windows RWKV 运行包已安装。还需要提供并校验默认 .pth 模型后才能启动。"
+                    .to_string(),
+                manifest_path: layout
+                    .runtime_manifest_file
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default(),
+            });
+        }
+    }
+
+    if profile.model_download_urls.is_empty() && !layout.is_model_installed() {
+        return Err(format!(
+            "翻译模型尚未配置下载地址或本地文件：{}。",
+            profile.model_filename
+        ));
+    }
+
     // Already installed? Re-verify SHA256 to be safe and short-circuit.
     // Uses the same zip-vs-file detection helper as `onboarding::decide`
     // and `status.rs::build_install_plan` — keep them aligned, breaking any
@@ -264,10 +320,35 @@ async fn install_inner(
     // loop.
     let already_installed = layout.is_model_installed();
     if already_installed {
+        let manifest_source_url = profile
+            .model_download_urls
+            .first()
+            .copied()
+            .unwrap_or("manual-model-file");
+        if profile.model_sha256.is_empty() || profile.model_size_bytes == 0 {
+            let manifest_path = write_manifest(layout, profile, manifest_source_url)?;
+            set_done(
+                registry,
+                profile,
+                "模型文件已存在（未配置校验值）。".to_string(),
+            )
+            .await;
+            emit_progress(app, registry).await;
+            return Ok(InstallResult {
+                ready: true,
+                installed: false,
+                phase: InstallPhase::Done,
+                bytes_done: profile.model_size_bytes,
+                bytes_total: profile.model_size_bytes,
+                source_url: None,
+                message: "模型文件已存在；当前 profile 尚未配置校验值。".to_string(),
+                manifest_path,
+            });
+        }
         // For zip profiles the zip is gone after extraction; skip re-hash
         // (the extracted dir is the source of truth) and go straight to manifest.
         if profile.model_is_zip {
-            let manifest_path = write_manifest(layout, profile, profile.model_download_urls[0])?;
+            let manifest_path = write_manifest(layout, profile, manifest_source_url)?;
             set_done(registry, profile, "模型已就绪。".to_string()).await;
             emit_progress(app, registry).await;
             return Ok(InstallResult {
@@ -283,8 +364,7 @@ async fn install_inner(
         }
         match verify_existing_model(&layout.model_file, profile, cancel).await {
             Ok(()) => {
-                let manifest_path =
-                    write_manifest(layout, profile, profile.model_download_urls[0])?;
+                let manifest_path = write_manifest(layout, profile, manifest_source_url)?;
                 set_done(registry, profile, "模型已就绪。".to_string()).await;
                 emit_progress(app, registry).await;
                 return Ok(InstallResult {
@@ -506,6 +586,212 @@ async fn install_inner(
         message: "本地 RWKV 模型已下载并校验完成。".to_string(),
         manifest_path,
     })
+}
+
+async fn install_runtime_pack(
+    app: &AppHandle,
+    registry: &InstallRegistry,
+    profile: &'static RuntimeProfile,
+    layout: &RuntimeLayout,
+    options: &InstallOptions,
+    cancel: &Arc<AtomicBool>,
+) -> Result<(), String> {
+    let archive = resolve_runtime_pack_source(profile, options)?;
+    let expected_size = profile
+        .runtime_archive_size_bytes
+        .ok_or_else(|| "runtime profile 缺少 archive size。".to_string())?;
+    let expected_sha = profile
+        .runtime_archive_sha256
+        .ok_or_else(|| "runtime profile 缺少 archive sha256。".to_string())?;
+
+    update_progress(registry, |p| {
+        p.phase = InstallPhase::Verifying;
+        p.bytes_done = 0;
+        p.bytes_total = expected_size;
+        p.source_url = Some(archive.display().to_string());
+        p.message = "正在校验 Windows RWKV 运行包…".to_string();
+    })
+    .await;
+    emit_progress(app, registry).await;
+
+    verify_file_size_and_sha(&archive, expected_size, expected_sha, cancel).await?;
+
+    update_progress(registry, |p| {
+        p.phase = InstallPhase::Extracting;
+        p.message = "正在解压 Windows RWKV 运行包…".to_string();
+    })
+    .await;
+    emit_progress(app, registry).await;
+
+    extract_runtime_pack(&archive, layout, profile)?;
+    write_runtime_manifest(layout, profile, &archive, expected_size, expected_sha)?;
+    Ok(())
+}
+
+fn resolve_runtime_pack_source(
+    profile: &RuntimeProfile,
+    options: &InstallOptions,
+) -> Result<PathBuf, String> {
+    let filename = profile
+        .runtime_archive_filename
+        .ok_or_else(|| "runtime profile 缺少 archive filename。".to_string())?;
+
+    let mut candidates = Vec::new();
+    if let Some(path) = options
+        .runtime_pack_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        candidates.push(PathBuf::from(path));
+    }
+    if let Ok(path) = std::env::var("ROSETTA_RWKV_RUNTIME_PACK") {
+        if !path.trim().is_empty() {
+            candidates.push(PathBuf::from(path.trim()));
+        }
+    }
+    if cfg!(target_os = "windows") {
+        if let Ok(user_profile) = std::env::var("USERPROFILE") {
+            candidates.push(PathBuf::from(user_profile).join("Downloads").join(filename));
+        }
+    }
+
+    candidates
+        .into_iter()
+        .find(|path| path.is_file())
+        .ok_or_else(|| {
+            format!(
+                "找不到 Windows RWKV 运行包 {filename}。请放到 Downloads，或设置 ROSETTA_RWKV_RUNTIME_PACK。"
+            )
+        })
+}
+
+async fn verify_file_size_and_sha(
+    path: &Path,
+    expected_size: u64,
+    expected_sha: &str,
+    cancel: &Arc<AtomicBool>,
+) -> Result<(), String> {
+    let actual_size = std::fs::metadata(path)
+        .map_err(|error| format!("无法读取运行包大小: {error}"))?
+        .len();
+    if actual_size != expected_size {
+        return Err(format!(
+            "运行包大小不匹配（预期 {expected_size}，实际 {actual_size}）。"
+        ));
+    }
+    let mut hasher = Sha256::new();
+    let _ = rehash_existing_part(path, &mut hasher, cancel)
+        .await
+        .map_err(|error| format!("读取运行包失败: {error}"))?;
+    let actual_sha = hex_lower(&hasher.finalize());
+    if actual_sha != expected_sha {
+        return Err(format!(
+            "运行包 SHA256 不匹配（预期 {expected_sha}，实际 {actual_sha}）。"
+        ));
+    }
+    Ok(())
+}
+
+fn extract_runtime_pack(
+    archive: &Path,
+    layout: &RuntimeLayout,
+    profile: &RuntimeProfile,
+) -> Result<(), String> {
+    let runtime_dir = layout
+        .runtime_dir
+        .as_ref()
+        .ok_or_else(|| "runtime layout 缺少 runtime_dir。".to_string())?;
+    let staging = layout.runtimes_dir.join("extract-staging");
+    let _ = std::fs::remove_dir_all(&staging);
+    std::fs::create_dir_all(&staging)
+        .map_err(|error| format!("无法创建运行包解压目录: {error}"))?;
+
+    let status = Command::new("tar")
+        .arg("-xf")
+        .arg(archive)
+        .arg("-C")
+        .arg(&staging)
+        .status()
+        .map_err(|error| format!("启动 tar 解压运行包失败: {error}"))?;
+    if !status.success() {
+        return Err(format!("解压 Windows RWKV 运行包失败: {status}"));
+    }
+
+    let candidate = if staging.join("rwkv_lighting_cuda").is_dir() {
+        staging.join("rwkv_lighting_cuda")
+    } else {
+        staging.clone()
+    };
+    if !candidate.join(profile.sidecar_binary_name).is_file() {
+        return Err(format!(
+            "运行包结构不正确，缺少 {}。",
+            profile.sidecar_binary_name
+        ));
+    }
+    if !candidate.join(profile.tokenizer_filename).is_file() {
+        return Err(format!(
+            "运行包结构不正确，缺少 {}。",
+            profile.tokenizer_filename
+        ));
+    }
+    if let Some(lib_dir) = profile.runtime_library_dir_name {
+        if !candidate.join(lib_dir).is_dir() {
+            return Err(format!("运行包结构不正确，缺少 {lib_dir}/。"));
+        }
+    }
+
+    let _ = std::fs::remove_dir_all(runtime_dir);
+    copy_dir_all(&candidate, runtime_dir)?;
+    let _ = std::fs::remove_dir_all(&staging);
+    Ok(())
+}
+
+fn copy_dir_all(source: &Path, target: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(target).map_err(|error| format!("无法创建目录: {error}"))?;
+    for entry in std::fs::read_dir(source).map_err(|error| format!("无法读取目录: {error}"))?
+    {
+        let entry = entry.map_err(|error| format!("无法读取目录项: {error}"))?;
+        let source_path = entry.path();
+        let target_path = target.join(entry.file_name());
+        let file_type = entry
+            .file_type()
+            .map_err(|error| format!("无法读取目录项类型: {error}"))?;
+        if file_type.is_dir() {
+            copy_dir_all(&source_path, &target_path)?;
+        } else if file_type.is_file() {
+            std::fs::copy(&source_path, &target_path)
+                .map_err(|error| format!("复制 {} 失败: {error}", source_path.display()))?;
+        }
+    }
+    Ok(())
+}
+
+fn write_runtime_manifest(
+    layout: &RuntimeLayout,
+    profile: &RuntimeProfile,
+    source_path: &Path,
+    size_bytes: u64,
+    sha256: &str,
+) -> Result<String, String> {
+    let manifest_path = layout
+        .runtime_manifest_file
+        .as_ref()
+        .ok_or_else(|| "runtime layout 缺少 manifest 路径。".to_string())?;
+    let manifest = RuntimeManifest {
+        schema_version: 1,
+        profile_id: profile.id.to_string(),
+        archive_filename: profile.runtime_archive_filename.unwrap_or("").to_string(),
+        sha256: sha256.to_string(),
+        size_bytes,
+        source_path: source_path.display().to_string(),
+        installed_at: iso_now(),
+    };
+    let json = serde_json::to_string_pretty(&manifest)
+        .map_err(|error| format!("runtime manifest 序列化失败: {error}"))?;
+    std::fs::write(manifest_path, json)
+        .map_err(|error| format!("写入 runtime manifest 失败: {error}"))?;
+    Ok(manifest_path.display().to_string())
 }
 
 enum DownloadError {
@@ -880,7 +1166,11 @@ async fn emit_progress(app: &AppHandle, registry: &InstallRegistry) {
 
 async fn set_done(registry: &InstallRegistry, profile: &RuntimeProfile, message: String) {
     let mut guard = registry.inner.lock().await;
-    let total = profile.model_size_bytes;
+    let total = if profile.model_size_bytes > 0 {
+        profile.model_size_bytes
+    } else {
+        profile.runtime_archive_size_bytes.unwrap_or(0)
+    };
     if guard.progress.is_none() {
         guard.progress = Some(InstallProgress::idle());
     }
@@ -989,6 +1279,7 @@ fn detect_system_proxy() -> Option<String> {
 /// Pure parser split out for unit testing. Accepts the verbatim stdout of
 /// `scutil --proxy`. Returns the strongest proxy declared (HTTPS > HTTP >
 /// SOCKS), prefixed with the right URL scheme for reqwest.
+#[allow(dead_code)]
 fn parse_scutil_proxy_output(text: &str) -> Option<String> {
     let mut https_enable = false;
     let mut https_host: Option<String> = None;

@@ -97,10 +97,13 @@ impl ShimRwkvMetrics {
         if !ok {
             self.failed_request_count.fetch_add(1, Ordering::Relaxed);
         }
-        self.total_request_ms.fetch_add(elapsed_ms, Ordering::Relaxed);
+        self.total_request_ms
+            .fetch_add(elapsed_ms, Ordering::Relaxed);
         self.max_request_ms.fetch_max(elapsed_ms, Ordering::Relaxed);
-        self.total_input_chars.fetch_add(input_chars, Ordering::Relaxed);
-        self.total_output_chars.fetch_add(output_chars, Ordering::Relaxed);
+        self.total_input_chars
+            .fetch_add(input_chars, Ordering::Relaxed);
+        self.total_output_chars
+            .fetch_add(output_chars, Ordering::Relaxed);
     }
 
     pub fn snapshot(&self) -> ShimRwkvMetricsSnapshot {
@@ -411,12 +414,7 @@ async fn lightning_batch_processor(
             source_texts.iter().map(|t| t.chars().count() as u64).sum(),
             result
                 .as_ref()
-                .map(|translations| {
-                    translations
-                        .iter()
-                        .map(|t| t.chars().count() as u64)
-                        .sum()
-                })
+                .map(|translations| translations.iter().map(|t| t.chars().count() as u64).sum())
                 .unwrap_or(0),
         );
         match result {

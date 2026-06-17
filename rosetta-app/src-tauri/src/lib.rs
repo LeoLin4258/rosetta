@@ -13,6 +13,7 @@ use std::sync::{
     Arc,
 };
 
+#[cfg(target_os = "macos")]
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{Emitter, Manager};
 
@@ -162,10 +163,12 @@ pub fn run() {
             let payload = event.id.as_ref().to_string();
             app.emit("rosetta-menu-event", payload).ok();
         })
-        .on_window_event(|window, event| {
+        .on_window_event(|_window, _event| {
             // macOS: hide instead of destroy so the window can be restored
             // from the dock. Without this, close destroys the window handle,
             // Reopen can't find "main", and falls back to showing onboarding.
+            #[cfg(target_os = "macos")]
+            let (window, event) = (_window, _event);
             #[cfg(target_os = "macos")]
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {

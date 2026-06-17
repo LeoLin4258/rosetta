@@ -17,12 +17,7 @@
 //! header indicator can stay "已就绪" and translate clicks are always cheap.
 //! At ~600 MB resident torch memory that's a deliberate trade.
 
-use std::{
-    path::PathBuf,
-    process::Stdio,
-    sync::Mutex as StdMutex,
-    time::Duration,
-};
+use std::{path::PathBuf, process::Stdio, sync::Mutex as StdMutex, time::Duration};
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -250,7 +245,12 @@ async fn spawn_worker(app: &AppHandle) -> Result<WorkerProcess, String> {
         .doclayout_model_path
         .clone()
         .ok_or_else(|| "pdf2zh pack 缺少内置 DocLayout-YOLO 模型，请更新 PDF 组件。".to_string())?;
-    let python = status.layout.pack_dir.join("python").join("bin").join("python");
+    let python = status
+        .layout
+        .pack_dir
+        .join("python")
+        .join("bin")
+        .join("python");
     if !python.is_file() {
         let msg = format!("pdf2zh pack 中找不到 Python 解释器: {}", python.display());
         set_worker_status(app, "failed", Some(msg.clone()), None);
@@ -516,7 +516,9 @@ pub(crate) async fn translate_via_worker(
     }
     let worker = guard.as_mut().expect("worker present after ensure");
     set_worker_status(app, "translating", None, None);
-    let outcome = worker.run_translate(payload, on_stderr, on_page, cancel_rx).await;
+    let outcome = worker
+        .run_translate(payload, on_stderr, on_page, cancel_rx)
+        .await;
 
     if matches!(
         outcome,

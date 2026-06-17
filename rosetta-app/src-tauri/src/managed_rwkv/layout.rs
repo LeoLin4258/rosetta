@@ -8,6 +8,11 @@
 //!     <profile.model_directory_name>/
 //!       <profile.model_filename>          ← Phase 4 downloads, never committed
 //!       manifest.json                     ← Phase 4 writes after verify
+//!   runtimes/
+//!     <profile.managed_runtime_directory_name>/
+//!       rwkv_lighting_cuda.exe            ← Windows CUDA dogfood runtime
+//!       lib/
+//!       runtime-manifest.json
 //!   runtime-state/
 //!     active-runtime.json                 ← live port + pid snapshot
 //!   logs/
@@ -34,12 +39,14 @@ use super::profile::RuntimeProfile;
 
 const MANAGED_ROOT_DIR: &str = "managed-rwkv";
 const MODELS_DIR: &str = "models";
+const RUNTIMES_DIR: &str = "runtimes";
 const RUNTIME_STATE_DIR: &str = "runtime-state";
 const LOGS_DIR: &str = "logs";
 
 const ACTIVE_RUNTIME_FILE: &str = "active-runtime.json";
 const RUNTIME_LOG_FILE: &str = "runtime.log";
 const MODEL_MANIFEST_FILE: &str = "manifest.json";
+const RUNTIME_MANIFEST_FILE: &str = "runtime-manifest.json";
 
 /// Resolved paths for one profile's data on a specific install.
 ///
@@ -53,6 +60,10 @@ const MODEL_MANIFEST_FILE: &str = "manifest.json";
 pub struct RuntimeLayout {
     pub root: PathBuf,
     pub models_dir: PathBuf,
+    pub runtimes_dir: PathBuf,
+    pub runtime_dir: Option<PathBuf>,
+    pub runtime_archive_file: Option<PathBuf>,
+    pub runtime_manifest_file: Option<PathBuf>,
     pub model_dir: PathBuf,
     pub model_file: PathBuf,
     /// For zip profiles: the extracted directory (`model_filename` minus `.zip`).
@@ -71,6 +82,16 @@ impl RuntimeLayout {
     pub fn resolve(base: &Path, profile: &RuntimeProfile) -> Self {
         let root = base.join(MANAGED_ROOT_DIR);
         let models_dir = root.join(MODELS_DIR);
+        let runtimes_dir = root.join(RUNTIMES_DIR);
+        let runtime_dir = profile
+            .managed_runtime_directory_name
+            .map(|name| runtimes_dir.join(name));
+        let runtime_archive_file = profile
+            .runtime_archive_filename
+            .map(|name| runtimes_dir.join("downloads").join(name));
+        let runtime_manifest_file = runtime_dir
+            .as_ref()
+            .map(|dir| dir.join(RUNTIME_MANIFEST_FILE));
         let model_dir = models_dir.join(profile.model_directory_name);
         let model_file = model_dir.join(profile.model_filename);
         let model_extracted_dir = if profile.model_is_zip {
@@ -92,6 +113,10 @@ impl RuntimeLayout {
         Self {
             root,
             models_dir,
+            runtimes_dir,
+            runtime_dir,
+            runtime_archive_file,
+            runtime_manifest_file,
             model_dir,
             model_file,
             model_extracted_dir,
@@ -119,6 +144,16 @@ impl RuntimeLayout {
             std::fs::create_dir_all(dir)
                 .map_err(|error| format!("无法创建 {}: {error}", dir.display()))?;
         }
+        if let Some(runtime_dir) = &self.runtime_dir {
+            std::fs::create_dir_all(runtime_dir)
+                .map_err(|error| format!("无法创建 {}: {error}", runtime_dir.display()))?;
+        }
+        if let Some(archive_file) = &self.runtime_archive_file {
+            if let Some(parent) = archive_file.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|error| format!("无法创建 {}: {error}", parent.display()))?;
+            }
+        }
         Ok(())
     }
 
@@ -140,6 +175,30 @@ impl RuntimeLayout {
             Some(dir) => dir.is_dir(),
             // Non-zip profile: model_file is loaded directly.
             None => self.model_file.is_file(),
+        }
+    }
+
+    pub fn runtime_executable_path(&self, profile: &RuntimeProfile) -> Option<PathBuf> {
+        self.runtime_dir
+            .as_ref()
+            .map(|dir| dir.join(profile.sidecar_binary_name))
+    }
+
+    pub fn runtime_tokenizer_path(&self, profile: &RuntimeProfile) -> Option<PathBuf> {
+        self.runtime_dir
+            .as_ref()
+            .map(|dir| dir.join(profile.tokenizer_filename))
+    }
+
+    pub fn is_runtime_pack_installed(&self, profile: &RuntimeProfile) -> bool {
+        match (
+            profile.managed_runtime_directory_name,
+            self.runtime_executable_path(profile),
+            self.runtime_tokenizer_path(profile),
+        ) {
+            (Some(_), Some(exe), Some(vocab)) => exe.is_file() && vocab.is_file(),
+            (None, _, _) => true,
+            _ => false,
         }
     }
 }

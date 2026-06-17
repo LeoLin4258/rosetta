@@ -210,6 +210,17 @@ pub async fn start_sidecar(
 
     guard.state = Some(ManagedRuntimeState::Starting);
     let mut command = TokioCommand::new(&sidecar_path);
+    if let Some(lib_dir_name) = profile.runtime_library_dir_name {
+        let lib_dir = sidecar_dir.join(lib_dir_name);
+        if lib_dir.is_dir() {
+            let current_path = std::env::var_os("PATH").unwrap_or_default();
+            let mut paths = vec![lib_dir];
+            paths.extend(std::env::split_paths(&current_path));
+            let joined =
+                std::env::join_paths(paths).map_err(|error| format!("拼接 PATH 失败: {error}"))?;
+            command.env("PATH", joined);
+        }
+    }
     command
         .args(&args[1..]) // [0] is sidecar path itself, kept for `command` echo
         .current_dir(&working_dir)
@@ -420,6 +431,18 @@ fn build_command_args(
     model_path: &Path,
     port: u16,
 ) -> Vec<String> {
+    if profile.platform_os == "windows" && profile.backend == "cuda-openai" {
+        return vec![
+            sidecar_path.display().to_string(),
+            "--model-path".to_string(),
+            model_path.display().to_string(),
+            "--vocab-path".to_string(),
+            tokenizer_path.display().to_string(),
+            "--port".to_string(),
+            port.to_string(),
+        ];
+    }
+
     vec![
         sidecar_path.display().to_string(),
         "--model".to_string(),
@@ -570,21 +593,30 @@ async fn cleanup_stale_sidecars_if_signature_available(
 }
 
 fn list_sidecar_processes() -> Result<Vec<SidecarProcess>, String> {
-    let output = Command::new("ps")
-        .args(["-ww", "-axo", "pid=,command="])
-        .output()
-        .map_err(|error| format!("无法列出本机进程: {error}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "ps 返回失败状态: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
+    #[cfg(target_os = "windows")]
+    {
+        return list_sidecar_processes_windows();
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    Ok(stdout.lines().filter_map(parse_ps_line).collect())
+    #[cfg(not(target_os = "windows"))]
+    {
+        let output = Command::new("ps")
+            .args(["-ww", "-axo", "pid=,command="])
+            .output()
+            .map_err(|error| format!("无法列出本机进程: {error}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "ps 返回失败状态: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        Ok(stdout.lines().filter_map(parse_ps_line).collect())
+    }
 }
 
+#[allow(dead_code)]
 fn parse_ps_line(line: &str) -> Option<SidecarProcess> {
     let trimmed = line.trim_start();
     if trimmed.is_empty() {
@@ -626,23 +658,94 @@ fn is_matching_managed_sidecar(
         && command.contains(profile.model_name_arg)
 }
 
+#[allow(unused_variables)]
 fn terminate_process(pid: u32, signal: &str) -> Result<(), String> {
-    let output = Command::new("kill")
-        .args([format!("-{signal}"), pid.to_string()])
+    #[cfg(target_os = "windows")]
+    {
+        let output = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .output()
+            .map_err(|error| format!("无法停止旧 sidecar 进程 {pid}: {error}"))?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("not found") || stderr.contains("没有找到") {
+            return Ok(());
+        }
+        return Err(format!(
+            "停止旧 sidecar 进程 {pid} 失败: taskkill 返回 {} ({})",
+            output.status,
+            stderr.trim()
+        ));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let output = Command::new("kill")
+            .args([format!("-{signal}"), pid.to_string()])
+            .output()
+            .map_err(|error| format!("无法停止旧 sidecar 进程 {pid}: {error}"))?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("No such process") {
+            return Ok(());
+        }
+        Err(format!(
+            "停止旧 sidecar 进程 {pid} 失败: kill -{signal} 返回 {} ({})",
+            output.status,
+            stderr.trim()
+        ))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn list_sidecar_processes_windows() -> Result<Vec<SidecarProcess>, String> {
+    let output = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress",
+        ])
         .output()
-        .map_err(|error| format!("无法停止旧 sidecar 进程 {pid}: {error}"))?;
-    if output.status.success() {
-        return Ok(());
+        .map_err(|error| format!("无法列出 Windows 进程: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "PowerShell 进程查询失败: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
     }
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if stderr.contains("No such process") {
-        return Ok(());
+
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "PascalCase")]
+    struct WinProcess {
+        process_id: u32,
+        command_line: Option<String>,
     }
-    Err(format!(
-        "停止旧 sidecar 进程 {pid} 失败: kill -{signal} 返回 {} ({})",
-        output.status,
-        stderr.trim()
-    ))
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if stdout.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let value: serde_json::Value =
+        serde_json::from_str(&stdout).map_err(|error| format!("解析进程列表失败: {error}"))?;
+    let processes: Vec<WinProcess> = if value.is_array() {
+        serde_json::from_value(value).map_err(|error| format!("解析进程列表失败: {error}"))?
+    } else {
+        vec![serde_json::from_value(value).map_err(|error| format!("解析进程列表失败: {error}"))?]
+    };
+
+    Ok(processes
+        .into_iter()
+        .filter_map(|process| {
+            process.command_line.map(|command| SidecarProcess {
+                pid: process.process_id,
+                command,
+            })
+        })
+        .collect())
 }
 
 fn iso_now() -> String {

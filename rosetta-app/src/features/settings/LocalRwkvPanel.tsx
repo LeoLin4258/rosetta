@@ -36,6 +36,7 @@ const INSTALL_ACTIVE_PHASES: ReadonlySet<ManagedRuntimeInstallPhase> = new Set([
   "preflight",
   "downloading",
   "verifying",
+  "extracting",
   "writing-manifest",
 ]);
 
@@ -200,8 +201,8 @@ function resolveStatus(
   if (isInstallActive) {
     return {
       dot: "bg-blue-500",
-      label: "正在下载本地模型",
-      sub: "约 1.3 GB。下载完成后可离线使用。",
+      label: "正在准备本地模型组件",
+      sub: "完成后可在本机运行翻译服务。",
       spinning: true,
     };
   }
@@ -235,13 +236,13 @@ function resolveStatus(
       return {
         dot: "bg-muted-foreground/40",
         label: "当前设备不支持本地翻译",
-        sub: "本地模型仅支持 Apple 芯片 Mac。你仍可配置远程翻译服务。",
+        sub: status?.message ?? "你仍可配置远程翻译服务。",
       };
     case "not-installed":
       return {
         dot: "bg-muted-foreground/30",
-        label: "本地模型尚未下载",
-        sub: "展开技术信息可手动下载，或重启 Rosetta 进入安装向导。",
+        label: "本地模型尚未安装",
+        sub: status?.message ?? "展开技术信息可安装缺失组件。",
       };
     default:
       return {
@@ -343,7 +344,7 @@ function RepairActions({
     return (
       <div className="flex flex-col items-start gap-2">
         <p className="text-xs text-muted-foreground">
-          如果跳过了安装向导，或模型文件被删除，可以在这里重新下载。
+          如果跳过了安装向导，或本地组件被删除，可以在这里重新准备。
         </p>
         <Button
           size="sm"
@@ -356,7 +357,7 @@ function RepairActions({
           ) : (
             <Download className="size-4" />
           )}
-          下载本地模型（约 1.3 GB）
+          准备本地模型组件
         </Button>
       </div>
     );
@@ -469,8 +470,19 @@ function ModelInfoRows({ status }: { status: ManagedRuntimeStatus }) {
   const rows: Array<{ label: string; value: string }> = [];
   if (status.profile) {
     rows.push(
-      { label: "模型文件", value: `${status.profile.modelFilename} (${formatBytes(status.profile.modelSizeBytes)})` },
-      { label: "校验", value: `SHA-256 ${status.profile.modelSha256.slice(0, 16)}…` },
+      {
+        label: "模型文件",
+        value:
+          status.profile.modelSizeBytes > 0
+            ? `${status.profile.modelFilename} (${formatBytes(status.profile.modelSizeBytes)})`
+            : `${status.profile.modelFilename}（待配置）`,
+      },
+      {
+        label: "校验",
+        value: status.profile.modelSha256
+          ? `SHA-256 ${status.profile.modelSha256.slice(0, 16)}…`
+          : "待配置",
+      },
       { label: "运行后端", value: `${status.profile.backend} (${status.profile.providerId})` }
     );
   }
