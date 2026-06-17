@@ -8,6 +8,29 @@ macOS baseline. Keep that baseline conceptually sacred: Windows should add only
 platform-specific artifacts/runtime profiles, not fork Rosetta's proven macOS
 logic.
 
+## Primary Goal
+
+Ship a Windows release whose user experience matches the current stable macOS
+release.
+
+This is the central product goal. The Windows version should feel like the same
+Rosetta app with Windows-specific RWKV/PDF artifacts underneath, not a new
+implementation with different onboarding, lifecycle behavior, PDF translation
+flow, or error model. Treat the stable macOS build at
+`964788d1cae237f929fc737bb5a292ee6183747e` as the behavioral reference for:
+
+- onboarding and install guidance
+- local RWKV model/runtime startup and stop behavior
+- PDF component install/import/status UX
+- PDF worker prewarm and translation flow
+- text/PDF translation task lifecycle
+- failure messages that guide repair instead of exposing implementation details
+
+Success means a real Windows NVIDIA user can install Rosetta, prepare the local
+RWKV model/runtime and PDF component, translate text documents and PDFs, stop or
+restart the runtime, and recover from missing artifacts with the same level of
+clarity and reliability that the existing stable macOS version provides.
+
 ## Current Implementation State
 
 Implemented in the working tree:
