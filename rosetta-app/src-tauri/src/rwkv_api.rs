@@ -134,12 +134,26 @@ struct RwkvChatCompletionsRequest {
     temperature: f64,
     top_k: u32,
     top_p: f64,
-    stop_tokens: Vec<String>,
+    stop_tokens: Vec<RwkvStopToken>,
     alpha_presence: f64,
     alpha_frequency: f64,
     alpha_decay: f64,
     stream: bool,
+    chunk_size: u32,
     password: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum RwkvStopToken {
+    Text(String),
+    Id(i64),
+}
+
+#[derive(Debug, Clone, Copy)]
+enum StopTokenMode {
+    TextBoundary,
+    TokenIds,
 }
 
 #[derive(Debug, Deserialize)]
@@ -499,7 +513,13 @@ async fn request_translations(
 ) -> RwkvTranslationApiTranslateResult {
     let started_at = Instant::now();
     let url = api_url(base_url, endpoint);
-    let body = build_chat_completions_request(source_texts, body_password, "en", "zh-CN");
+    let body = build_chat_completions_request(
+        source_texts,
+        body_password,
+        "en",
+        "zh-CN",
+        StopTokenMode::TextBoundary,
+    );
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_millis(timeout_ms))
         .build()
@@ -632,8 +652,13 @@ async fn request_translations_for_language_pair_with_cancel(
 ) -> RwkvTranslationApiTranslateResult {
     let started_at = Instant::now();
     let url = api_url(base_url, endpoint);
-    let body =
-        build_chat_completions_request(source_texts, body_password, source_lang, target_lang);
+    let body = build_chat_completions_request(
+        source_texts,
+        body_password,
+        source_lang,
+        target_lang,
+        stop_token_mode_for_endpoint(endpoint),
+    );
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_millis(timeout_ms))
         .build()
@@ -777,6 +802,7 @@ fn build_chat_completions_request(
     password: &str,
     source_lang: &str,
     target_lang: &str,
+    stop_token_mode: StopTokenMode,
 ) -> RwkvChatCompletionsRequest {
     RwkvChatCompletionsRequest {
         contents: source_texts
@@ -787,12 +813,24 @@ fn build_chat_completions_request(
         temperature: 1.0,
         top_k: 1,
         top_p: 0.0,
-        stop_tokens: vec!["\n\n".to_string()],
+        stop_tokens: match stop_token_mode {
+            StopTokenMode::TextBoundary => vec![RwkvStopToken::Text("\n\n".to_string())],
+            StopTokenMode::TokenIds => vec![RwkvStopToken::Id(0)],
+        },
         alpha_presence: 0.0,
         alpha_frequency: 0.0,
         alpha_decay: 0.99,
-        stream: true,
+        stream: matches!(stop_token_mode, StopTokenMode::TextBoundary),
+        chunk_size: 1,
         password: password.to_string(),
+    }
+}
+
+fn stop_token_mode_for_endpoint(endpoint: &str) -> StopTokenMode {
+    if endpoint.trim_matches('/') == "v1/batch/completions" {
+        StopTokenMode::TokenIds
+    } else {
+        StopTokenMode::TextBoundary
     }
 }
 
@@ -1657,7 +1695,13 @@ mod tests {
     #[test]
     fn prompt_builder_wraps_english_text_for_chinese_translation() {
         let source_texts = vec!["Hello world.".to_string(), "Good morning.".to_string()];
-        let request = build_chat_completions_request(&source_texts, "secret", "en", "zh-CN");
+        let request = build_chat_completions_request(
+            &source_texts,
+            "secret",
+            "en",
+            "zh-CN",
+            StopTokenMode::TextBoundary,
+        );
 
         assert_eq!(
             request.contents,
@@ -1671,8 +1715,13 @@ mod tests {
     #[test]
     fn request_body_serializes_current_batch_shape() {
         let source_texts = vec!["Hello world.".to_string()];
-        let request =
-            build_chat_completions_request(&source_texts, "model-password", "en", "zh-CN");
+        let request = build_chat_completions_request(
+            &source_texts,
+            "model-password",
+            "en",
+            "zh-CN",
+            StopTokenMode::TextBoundary,
+        );
         let value = serde_json::to_value(request).expect("request should serialize");
 
         assert_eq!(
@@ -1689,6 +1738,25 @@ mod tests {
         assert_eq!(value["alpha_decay"], json!(0.99));
         assert_eq!(value["stream"], json!(true));
         assert_eq!(value["password"], json!("model-password"));
+    }
+
+    #[test]
+    fn windows_batch_completions_request_uses_numeric_stop_tokens() {
+        let source_texts = vec!["Hello world.".to_string()];
+        let request = build_chat_completions_request(
+            &source_texts,
+            "",
+            "en",
+            "zh-CN",
+            stop_token_mode_for_endpoint("/v1/batch/completions"),
+        );
+        let value = serde_json::to_value(request).expect("request should serialize");
+
+        assert_eq!(value["stop_tokens"], json!([0]));
+        assert!(matches!(
+            stop_token_mode_for_endpoint("/v1/chat/completions"),
+            StopTokenMode::TextBoundary
+        ));
     }
 
     #[test]

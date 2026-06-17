@@ -21,6 +21,7 @@ pub mod profile;
 pub mod status;
 
 use serde::Serialize;
+use std::io::Write;
 use tauri::{AppHandle, Manager, State};
 
 use install::{install_model, InstallOptions, InstallProgress, InstallResult};
@@ -42,6 +43,13 @@ pub use lifecycle::ManagedRwkvRuntimeRegistry as Registry;
 pub struct ManagedRuntimeLogsSummary {
     pub log_file: String,
     pub log_tail: Vec<String>,
+    pub message: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedRuntimeDebugBundle {
+    pub archive_path: String,
     pub message: String,
 }
 
@@ -244,4 +252,133 @@ pub fn get_managed_rwkv_runtime_logs_summary(
         log_tail: tail,
         message,
     })
+}
+
+#[tauri::command]
+pub async fn export_managed_rwkv_debug_bundle(
+    app: AppHandle,
+    registry: State<'_, Registry>,
+    install_registry: State<'_, InstallStateRegistry>,
+) -> Result<ManagedRuntimeDebugBundle, String> {
+    let static_status = build_static_status(&app)?;
+    static_status.layout.ensure_dirs()?;
+
+    let timestamp = debug_timestamp();
+    let archive_path = static_status
+        .layout
+        .logs_dir
+        .join(format!("rosetta-rwkv-debug-{timestamp}.zip"));
+
+    let file = std::fs::File::create(&archive_path)
+        .map_err(|error| format!("无法创建调试日志压缩包: {error}"))?;
+    let mut zip = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+
+    let (process_snapshot, lifecycle_state) = current_process_snapshot(&registry).await;
+    let layout = static_status.layout.clone();
+    let mut status = static_status.into_status(process_snapshot);
+    if let Some(live) = lifecycle_state {
+        if !matches!(status.state, ManagedRuntimeState::Unsupported) {
+            status.state = live;
+        }
+    }
+    let progress = install_registry.snapshot().await;
+
+    add_json_entry(&mut zip, options, "managed-rwkv-status.json", &status)?;
+    add_json_entry(
+        &mut zip,
+        options,
+        "managed-rwkv-install-progress.json",
+        &progress,
+    )?;
+    add_text_entry(
+        &mut zip,
+        options,
+        "README.txt",
+        "Rosetta managed RWKV debug bundle.\nUser document contents are not included.\n",
+    )?;
+
+    let profile = profile::current_profile()
+        .map(|p| format!("{p:#?}\n"))
+        .unwrap_or_else(|| "unsupported platform\n".to_string());
+    add_text_entry(&mut zip, options, "managed-rwkv-profile.txt", &profile)?;
+
+    add_file_if_exists(
+        &mut zip,
+        options,
+        &layout.runtime_log_file,
+        "managed-rwkv/runtime.log",
+    )?;
+    add_file_if_exists(
+        &mut zip,
+        options,
+        &layout.model_manifest_file,
+        "managed-rwkv/model-manifest.json",
+    )?;
+    if let Some(manifest) = layout.runtime_manifest_file.as_ref() {
+        add_file_if_exists(
+            &mut zip,
+            options,
+            manifest,
+            "managed-rwkv/runtime-manifest.json",
+        )?;
+    }
+
+    zip.finish()
+        .map_err(|error| format!("写入调试日志压缩包失败: {error}"))?;
+
+    Ok(ManagedRuntimeDebugBundle {
+        archive_path: archive_path.display().to_string(),
+        message: "已导出本地 RWKV 调试日志。".to_string(),
+    })
+}
+
+fn add_json_entry<T: Serialize>(
+    zip: &mut zip::ZipWriter<std::fs::File>,
+    options: zip::write::SimpleFileOptions,
+    name: &str,
+    value: &T,
+) -> Result<(), String> {
+    let body = serde_json::to_string_pretty(value)
+        .map_err(|error| format!("序列化 {name} 失败: {error}"))?;
+    add_text_entry(zip, options, name, &body)
+}
+
+fn add_text_entry(
+    zip: &mut zip::ZipWriter<std::fs::File>,
+    options: zip::write::SimpleFileOptions,
+    name: &str,
+    body: &str,
+) -> Result<(), String> {
+    zip.start_file(name, options)
+        .map_err(|error| format!("创建 zip 条目 {name} 失败: {error}"))?;
+    zip.write_all(body.as_bytes())
+        .map_err(|error| format!("写入 zip 条目 {name} 失败: {error}"))
+}
+
+fn add_file_if_exists(
+    zip: &mut zip::ZipWriter<std::fs::File>,
+    options: zip::write::SimpleFileOptions,
+    path: &std::path::Path,
+    name: &str,
+) -> Result<(), String> {
+    if !path.is_file() {
+        return Ok(());
+    }
+    let bytes = std::fs::read(path)
+        .map_err(|error| format!("读取日志文件 {} 失败: {error}", path.display()))?;
+    zip.start_file(name, options)
+        .map_err(|error| format!("创建 zip 条目 {name} 失败: {error}"))?;
+    zip.write_all(&bytes)
+        .map_err(|error| format!("写入 zip 条目 {name} 失败: {error}"))
+}
+
+fn debug_timestamp() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    secs.to_string()
 }

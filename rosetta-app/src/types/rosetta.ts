@@ -243,7 +243,6 @@ export type RwkvProviderPreference = "local" | "remote-api";
 export type RwkvProviderId =
   | "rwkv-lightning-contents"
   | "rwkv-mobile-batch-chat"
-  | "rwkv-openai-chat"
   | "custom-rwkv-api";
 
 export type RwkvLightningContentsProviderHandle = {
@@ -579,6 +578,8 @@ export type ManagedRuntimeProfileSummary = {
   providerId: RwkvProviderId;
   platformOs: string;
   platformArch: string;
+  runtimeLabel: string;
+  hardwareRequirement: string;
   backend: string;
   modelFilename: string;
   modelSizeBytes: number;
@@ -634,6 +635,11 @@ export type ManagedRuntimeLogsSummary = {
   message: string;
 };
 
+export type ManagedRuntimeDebugBundle = {
+  archivePath: string;
+  message: string;
+};
+
 // -----------------------------------------------------------------------------
 // Managed-runtime install (Phase 4) — model download progress + result.
 // -----------------------------------------------------------------------------
@@ -675,6 +681,7 @@ export type ManagedRuntimeInstallOptions = {
   repair?: boolean;
   proxyUrl?: string | null;
   runtimePackPath?: string | null;
+  modelFilePath?: string | null;
 };
 
 /**

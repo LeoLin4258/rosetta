@@ -79,7 +79,7 @@ export function selectProvider({
     baseUrl: providerId === "rwkv-lightning-contents" && config.providerPreference === "local"
       ? managedRuntimeBaseUrl ?? DEFAULT_MANAGED_RUNTIME_BASE_URL
       : config.baseUrl,
-    endpoint: config.providerPreference === "local" ? "/v1/chat/completions" : config.endpoint,
+    endpoint: config.providerPreference === "local" ? "/v1/batch/completions" : config.endpoint,
     internalToken: config.providerPreference === "local" ? "" : config.internalToken,
     bodyPassword: config.providerPreference === "local" ? "" : config.bodyPassword,
     timeoutMs: config.timeoutMs,

@@ -49,16 +49,28 @@ pub(crate) mod test_helpers {
     }
 
     pub(crate) fn pdfium_lib_path() -> PathBuf {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let platform_dir = "mac-arm64";
+        #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+        let platform_dir = "mac-x64";
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        let platform_dir = "win-x64";
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        let platform_dir = "linux-x64";
+
+        #[cfg(target_os = "macos")]
+        let lib_filename = "libpdfium.dylib";
+        #[cfg(target_os = "linux")]
+        let lib_filename = "libpdfium.so";
+        #[cfg(target_os = "windows")]
+        let lib_filename = "pdfium.dll";
+
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("resources")
             .join("pdf-sidecar")
             .join("pdfium")
-            .join(if cfg!(target_arch = "aarch64") {
-                "mac-arm64"
-            } else {
-                "mac-x64"
-            })
-            .join("libpdfium.dylib")
+            .join(platform_dir)
+            .join(lib_filename)
     }
 
     pub(crate) fn fixture_path(name: &str) -> PathBuf {

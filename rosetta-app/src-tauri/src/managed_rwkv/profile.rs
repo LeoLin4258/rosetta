@@ -32,6 +32,11 @@ pub struct RuntimeProfile {
     pub platform_os: &'static str,
     /// `std::env::consts::ARCH` value the profile is valid on.
     pub platform_arch: &'static str,
+    /// Human-readable runtime label for diagnostics and Settings.
+    pub runtime_label: &'static str,
+    /// Short hardware/runtime requirement shown to users. This must be
+    /// explicit for CUDA packs so AMD / Intel machines do not look supported.
+    pub hardware_requirement: &'static str,
     /// Whether this profile is part of the v1 surface. Windows profile stays
     /// `false` until Phase 8; Phase 3 reads this to skip Windows in dispatch.
     pub enabled: bool,
@@ -102,6 +107,8 @@ pub const MACOS_ARM64_MLX: RuntimeProfile = RuntimeProfile {
     provider_id: "rwkv-mobile-batch-chat",
     platform_os: "macos",
     platform_arch: "aarch64",
+    runtime_label: "RWKV Mobile MLX",
+    hardware_requirement: "Apple Silicon",
     enabled: true,
     backend: "mlx",
     sidecar_binary_name: "rwkv-server-aarch64-apple-darwin",
@@ -134,6 +141,8 @@ pub const MACOS_ARM64_WEBRWKV: RuntimeProfile = RuntimeProfile {
     provider_id: "rwkv-mobile-batch-chat",
     platform_os: "macos",
     platform_arch: "aarch64",
+    runtime_label: "RWKV Mobile WebRWKV",
+    hardware_requirement: "Apple Silicon",
     enabled: false,
     backend: "web-rwkv",
     sidecar_binary_name: "rwkv-server-aarch64-apple-darwin",
@@ -166,7 +175,7 @@ pub const MACOS_ARM64_WEBRWKV: RuntimeProfile = RuntimeProfile {
     bind_host: "127.0.0.1",
 };
 
-/// Windows CUDA profile — Alic-Li rwkv_lightning_cuda V1.0.0 dogfood.
+/// Windows NVIDIA CUDA profile — Alic-Li rwkv_lightning_cuda V1.0.0 dogfood.
 ///
 /// This intentionally replaces the old Windows libtorch placeholder. The
 /// runtime pack is managed in app data instead of bundled as a Tauri sidecar.
@@ -176,6 +185,8 @@ pub const WINDOWS_AMD64_CUDA: RuntimeProfile = RuntimeProfile {
     provider_id: "rwkv-lightning-contents",
     platform_os: "windows",
     platform_arch: "x86_64",
+    runtime_label: "RWKV Lightning NVIDIA CUDA",
+    hardware_requirement: "NVIDIA GPU with CUDA, compute capability sm75 or newer",
     enabled: true,
     backend: "cuda-openai",
     sidecar_binary_name: "rwkv_lighting_cuda.exe",
@@ -188,18 +199,19 @@ pub const WINDOWS_AMD64_CUDA: RuntimeProfile = RuntimeProfile {
     runtime_download_urls: &[],
     runtime_library_dir_name: Some("lib"),
     tokenizer_filename: "rwkv_vocab_v20230424.txt",
-    model_directory_name: "rwkv7-g1g-2.9b-20260526-ctx8192",
-    model_filename: "rwkv7-g1g-2.9b-20260526-ctx8192.pth",
+    model_directory_name: "rwkv7-0.4b-translate-windows-pth",
+    model_filename: "RWKV_v7_G1d_0.4B_Translate_ctx4096_20260607.pth",
     model_is_zip: false,
-    // The engineer supplied the runtime pack first; keep the model metadata
-    // visibly incomplete until the exact artifact is pinned.
-    model_size_bytes: 0,
-    model_sha256: "",
-    model_download_urls: &[],
+    model_size_bytes: 901_775_740,
+    model_sha256: "b9a1b013c3a938515f8b9bc23c28d815fa6f839eef77a943e92e7e70d35a0527",
+    model_download_urls: &[
+        "https://huggingface.co/Alic-Li/RWKV_v7_G1_Translate/resolve/main/RWKV_v7_G1d_0.4B_Translate_ctx4096_20260607.pth",
+        "https://hf-mirror.com/Alic-Li/RWKV_v7_G1_Translate/resolve/main/RWKV_v7_G1d_0.4B_Translate_ctx4096_20260607.pth",
+    ],
     supported_directions: &["en-zh", "zh-en"],
     model_name_arg: "rwkv-translate",
     health_path: "/v1/models",
-    batch_chat_path: "/v1/chat/completions",
+    batch_chat_path: "/v1/batch/completions",
     bind_host: "127.0.0.1",
 };
 
@@ -224,6 +236,8 @@ pub struct RuntimeProfileSummary {
     pub provider_id: &'static str,
     pub platform_os: &'static str,
     pub platform_arch: &'static str,
+    pub runtime_label: &'static str,
+    pub hardware_requirement: &'static str,
     pub backend: &'static str,
     pub model_filename: &'static str,
     pub model_size_bytes: u64,
@@ -239,6 +253,8 @@ impl RuntimeProfileSummary {
             provider_id: profile.provider_id,
             platform_os: profile.platform_os,
             platform_arch: profile.platform_arch,
+            runtime_label: profile.runtime_label,
+            hardware_requirement: profile.hardware_requirement,
             backend: profile.backend,
             model_filename: profile.model_filename,
             model_size_bytes: profile.model_size_bytes,
@@ -262,6 +278,7 @@ mod tests {
         assert_eq!(MACOS_ARM64_MLX.platform_os, "macos");
         assert_eq!(MACOS_ARM64_MLX.platform_arch, "aarch64");
         assert_eq!(MACOS_ARM64_MLX.provider_id, "rwkv-mobile-batch-chat");
+        assert_eq!(MACOS_ARM64_MLX.hardware_requirement, "Apple Silicon");
         assert_eq!(MACOS_ARM64_MLX.bind_host, "127.0.0.1");
         assert_eq!(MACOS_ARM64_MLX.backend, "mlx");
     }
@@ -276,6 +293,8 @@ mod tests {
         assert!(WINDOWS_AMD64_CUDA.enabled);
         assert_eq!(WINDOWS_AMD64_CUDA.platform_os, "windows");
         assert_eq!(WINDOWS_AMD64_CUDA.backend, "cuda-openai");
+        assert!(WINDOWS_AMD64_CUDA.hardware_requirement.contains("NVIDIA"));
+        assert!(WINDOWS_AMD64_CUDA.hardware_requirement.contains("sm75"));
         assert_eq!(WINDOWS_AMD64_CUDA.health_path, "/v1/models");
         assert!(WINDOWS_AMD64_CUDA.managed_runtime_directory_name.is_some());
     }

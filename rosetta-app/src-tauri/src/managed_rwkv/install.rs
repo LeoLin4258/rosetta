@@ -107,6 +107,9 @@ pub struct InstallOptions {
     /// Optional local runtime pack path. Windows dogfood uses this for the
     /// engineer-provided `RWKV_lightning_CUDA_sm75+_Win_MSVC.7z`.
     pub runtime_pack_path: Option<String>,
+    /// Optional local model file path. Windows dogfood uses this while the
+    /// default `.pth` artifact is supplied out of band.
+    pub model_file_path: Option<String>,
 }
 
 impl InstallOptions {
@@ -280,7 +283,10 @@ async fn install_inner(
         && !layout.is_runtime_pack_installed(profile)
     {
         install_runtime_pack(app, registry, profile, layout, options, cancel).await?;
-        if profile.model_download_urls.is_empty() && !layout.is_model_installed() {
+        if profile.model_download_urls.is_empty()
+            && !layout.is_model_installed()
+            && resolve_model_file_source(profile, options).is_none()
+        {
             set_done(
                 registry,
                 profile,
@@ -295,7 +301,7 @@ async fn install_inner(
                 bytes_done: profile.runtime_archive_size_bytes.unwrap_or(0),
                 bytes_total: profile.runtime_archive_size_bytes.unwrap_or(0),
                 source_url: None,
-                message: "Windows RWKV 运行包已安装。还需要提供并校验默认 .pth 模型后才能启动。"
+                message: "Windows RWKV 运行包已安装。还需要导入默认 .pth 模型后才能启动。"
                     .to_string(),
                 manifest_path: layout
                     .runtime_manifest_file
@@ -307,10 +313,14 @@ async fn install_inner(
     }
 
     if profile.model_download_urls.is_empty() && !layout.is_model_installed() {
-        return Err(format!(
-            "翻译模型尚未配置下载地址或本地文件：{}。",
-            profile.model_filename
-        ));
+        if let Some(model_path) = resolve_model_file_source(profile, options) {
+            install_local_model_file(app, registry, profile, layout, &model_path, cancel).await?;
+        } else {
+            return Err(format!(
+                "翻译模型尚未配置下载地址或本地文件：{}。请放到 Downloads，传入 modelFilePath，或设置 ROSETTA_RWKV_MODEL_FILE。",
+                profile.model_filename
+            ));
+        }
     }
 
     // Already installed? Re-verify SHA256 to be safe and short-circuit.
@@ -664,6 +674,100 @@ fn resolve_runtime_pack_source(
                 "找不到 Windows RWKV 运行包 {filename}。请放到 Downloads，或设置 ROSETTA_RWKV_RUNTIME_PACK。"
             )
         })
+}
+
+fn resolve_model_file_source(
+    profile: &RuntimeProfile,
+    options: &InstallOptions,
+) -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(path) = options
+        .model_file_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        candidates.push(PathBuf::from(path));
+    }
+    if let Ok(path) = std::env::var("ROSETTA_RWKV_MODEL_FILE") {
+        if !path.trim().is_empty() {
+            candidates.push(PathBuf::from(path.trim()));
+        }
+    }
+    if cfg!(target_os = "windows") {
+        if let Ok(user_profile) = std::env::var("USERPROFILE") {
+            candidates.push(
+                PathBuf::from(user_profile)
+                    .join("Downloads")
+                    .join(profile.model_filename),
+            );
+        }
+    }
+
+    candidates.into_iter().find(|path| path.is_file())
+}
+
+async fn install_local_model_file(
+    app: &AppHandle,
+    registry: &InstallRegistry,
+    profile: &'static RuntimeProfile,
+    layout: &RuntimeLayout,
+    source: &Path,
+    cancel: &Arc<AtomicBool>,
+) -> Result<(), String> {
+    let actual_size = std::fs::metadata(source)
+        .map_err(|error| format!("无法读取本地模型文件大小: {error}"))?
+        .len();
+    let expected_size = if profile.model_size_bytes > 0 {
+        profile.model_size_bytes
+    } else {
+        actual_size
+    };
+
+    update_progress(registry, |p| {
+        p.phase = InstallPhase::Verifying;
+        p.bytes_done = 0;
+        p.bytes_total = expected_size;
+        p.source_url = Some(source.display().to_string());
+        p.message = "正在校验本地 RWKV 模型文件…".to_string();
+    })
+    .await;
+    emit_progress(app, registry).await;
+
+    if profile.model_size_bytes > 0 || !profile.model_sha256.is_empty() {
+        verify_file_size_and_sha(
+            source,
+            profile.model_size_bytes,
+            profile.model_sha256,
+            cancel,
+        )
+        .await?;
+    } else {
+        let mut hasher = Sha256::new();
+        let _ = rehash_existing_part(source, &mut hasher, cancel)
+            .await
+            .map_err(|error| format!("读取本地模型文件失败: {error}"))?;
+    }
+
+    std::fs::create_dir_all(&layout.model_dir)
+        .map_err(|error| format!("无法创建模型目录: {error}"))?;
+    update_progress(registry, |p| {
+        p.phase = InstallPhase::WritingManifest;
+        p.bytes_done = actual_size;
+        p.bytes_total = actual_size;
+        p.message = "正在复制本地 RWKV 模型文件…".to_string();
+    })
+    .await;
+    emit_progress(app, registry).await;
+
+    std::fs::copy(source, &layout.model_file)
+        .map_err(|error| format!("复制本地模型文件失败: {error}"))?;
+    write_manifest(
+        layout,
+        profile,
+        &format!("manual-model-file:{}", source.display()),
+    )?;
+    Ok(())
 }
 
 async fn verify_file_size_and_sha(
@@ -1372,6 +1476,31 @@ mod tests {
         assert_eq!(p.phase, InstallPhase::Idle);
         assert_eq!(p.bytes_done, 0);
         assert!(p.source_url.is_none());
+    }
+
+    #[test]
+    fn resolve_model_file_source_prefers_explicit_option() {
+        let tmp = std::env::temp_dir().join(format!(
+            "rosetta-model-source-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let explicit = tmp.join("explicit.pth");
+        std::fs::write(&explicit, b"model").unwrap();
+
+        let options = InstallOptions {
+            model_file_path: Some(explicit.display().to_string()),
+            ..InstallOptions::default()
+        };
+
+        assert_eq!(
+            resolve_model_file_source(&MACOS_ARM64_WEBRWKV, &options),
+            Some(explicit)
+        );
+        std::fs::remove_dir_all(&tmp).ok();
     }
 
     #[test]

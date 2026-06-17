@@ -179,6 +179,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             managed_rwkv::cancel_managed_rwkv_install,
+            managed_rwkv::export_managed_rwkv_debug_bundle,
             managed_rwkv::get_managed_rwkv_install_plan,
             managed_rwkv::get_managed_rwkv_install_progress,
             managed_rwkv::get_managed_rwkv_runtime_logs_summary,

@@ -8,7 +8,7 @@ Status: accepted
 Rosetta beta.13 has only shipped macOS support. The old Windows runtime
 placeholder was not validated and should not constrain the Windows path.
 
-RWKV engineering provided a Windows CUDA runtime package for
+RWKV engineering provided a Windows NVIDIA CUDA runtime package for
 `rwkv_lightning_cuda` V1.0.0 and a verified run guide. The backend executable
 is `rwkv_lighting_cuda.exe`; the package also includes `rwkv_launcher.exe`,
 `rwkv_vocab_v20230424.txt`, and a `lib/` directory with CUDA and runtime DLLs.
@@ -21,7 +21,7 @@ user-facing workbench and runtime manager.
 Add Windows support as a clean managed runtime profile:
 
 - Profile id: `windows-amd64-rwkv-lightning-cuda`.
-- Target platform: Windows x86_64 with NVIDIA CUDA.
+- Target platform: Windows x86_64 with NVIDIA CUDA, `sm75` or newer.
 - Runtime package: `RWKV_lightning_CUDA_sm75+_Win_MSVC.7z`.
 - Rosetta installs the runtime package under app-local data:
   `managed-rwkv/runtimes/rwkv-lightning-cuda-sm75-msvc/`.
@@ -31,16 +31,35 @@ Add Windows support as a clean managed runtime profile:
 - Spawn args are:
   `--model-path <model> --vocab-path <vocab> --port <ephemeral>`.
 - Health probe uses `GET /v1/models`.
+- Translation requests use the existing `rwkv-lightning-contents` adapter
+  against `/v1/batch/completions`, matching the runtime's `contents[]` batch
+  API.
 
 The runtime package is separate from the model artifact. The Windows profile
-must not report itself ready until both runtime and model are present. Until
-the default model file is pinned by filename, size, SHA256, and source URL,
-the app may install the runtime pack but must show the model as missing.
+must not report itself ready until both runtime and model are present. The
+desired Windows model target is the same small translation-model class as
+macOS, but not the same artifact: macOS uses an MLX 6-bit zip, while
+`rwkv_lighting_cuda.exe` expects a `.pth` file via `--model-path`.
+
+The pinned Windows default model is:
+
+- `RWKV_v7_G1d_0.4B_Translate_ctx4096_20260607.pth`
+- Size: `901775740` bytes
+- SHA256: `b9a1b013c3a938515f8b9bc23c28d815fa6f839eef77a943e92e7e70d35a0527`
+- Source: `Alic-Li/RWKV_v7_G1_Translate` on Hugging Face
+
+Rosetta may also import a local `.pth` file, but the default install path must
+verify against the pinned size and SHA256 above.
+
+This CUDA package is not an AMD GPU runtime. AMD / Intel Windows support needs
+a separate runtime strategy such as ROCm/HIP, DirectML, Vulkan, or CPU.
 
 ## Consequences
 
 - The old Windows libtorch placeholder is superseded and should not be
   extended.
+- Settings and diagnostics must identify this as an NVIDIA CUDA runtime so AMD
+  machines are not presented as supported by this profile.
 - macOS keeps its existing bundled sidecar path.
 - Windows process cleanup must use Windows-native process listing and
   termination, not Unix `ps` / `kill`.

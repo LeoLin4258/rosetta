@@ -45,6 +45,7 @@ export function LocalRwkvPanel({ className }: { className?: string }) {
   const status = rt.status;
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [logs, setLogs] = useState<ManagedRuntimeLogsSummary | null>(null);
+  const [debugBundlePath, setDebugBundlePath] = useState<string | null>(null);
 
   const state: ManagedRuntimeState | null = status?.state ?? null;
   const isUnsupported = state === "unsupported";
@@ -143,6 +144,7 @@ export function LocalRwkvPanel({ className }: { className?: string }) {
                     isInstallActive={isInstallActive}
                     isInstalling={rt.isInstalling}
                     onInstall={() => void rt.install({ repair: false })}
+                    onImportModel={() => void rt.importModelFromFile()}
                     onRepair={() => void rt.install({ repair: true })}
                   />
                   {status && <ModelInfoRows status={status} />}
@@ -155,6 +157,26 @@ export function LocalRwkvPanel({ className }: { className?: string }) {
                       运行日志
                     </div>
                     <LogsSummaryBlock logs={logs} />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="w-fit"
+                      onClick={async () => {
+                        const bundle = await rt.exportDebugBundle();
+                        if (bundle) {
+                          setDebugBundlePath(bundle.archivePath);
+                        }
+                      }}
+                    >
+                      <Download className="size-4" />
+                      导出调试日志
+                    </Button>
+                    {debugBundlePath && (
+                      <p className="break-all font-mono text-[11px] text-muted-foreground">
+                        {debugBundlePath}
+                      </p>
+                    )}
                   </div>
                 )}
               </div>
@@ -329,6 +351,7 @@ function RepairActions({
   isInstallActive,
   isInstalling,
   onInstall,
+  onImportModel,
   onRepair,
 }: {
   state: ManagedRuntimeState | null;
@@ -336,6 +359,7 @@ function RepairActions({
   isInstallActive: boolean;
   isInstalling: boolean;
   onInstall: () => void;
+  onImportModel: () => void;
   onRepair: () => void;
 }) {
   if (isInstallActive) return null;
@@ -359,6 +383,15 @@ function RepairActions({
           )}
           准备本地模型组件
         </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={onImportModel}
+          disabled={isInstalling || installPhase === "preflight"}
+        >
+          <Download className="size-4" />
+          导入 .pth 模型
+        </Button>
       </div>
     );
   }
@@ -370,15 +403,26 @@ function RepairActions({
     state === "ready"
   ) {
     return (
-      <Button
-        variant="outline"
-        size="sm"
-        onClick={onRepair}
-        disabled={isInstalling}
-        className="w-fit"
-      >
-        <RefreshCw className="size-4" /> 校验并修复模型
-      </Button>
+      <div className="flex flex-wrap gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={onRepair}
+          disabled={isInstalling}
+          className="w-fit"
+        >
+          <RefreshCw className="size-4" /> 校验并修复模型
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={onImportModel}
+          disabled={isInstalling}
+          className="w-fit"
+        >
+          <Download className="size-4" /> 导入 .pth 模型
+        </Button>
+      </div>
     );
   }
 
@@ -470,6 +514,14 @@ function ModelInfoRows({ status }: { status: ManagedRuntimeStatus }) {
   const rows: Array<{ label: string; value: string }> = [];
   if (status.profile) {
     rows.push(
+      {
+        label: "运行时",
+        value: status.profile.runtimeLabel,
+      },
+      {
+        label: "硬件要求",
+        value: status.profile.hardwareRequirement,
+      },
       {
         label: "模型文件",
         value:

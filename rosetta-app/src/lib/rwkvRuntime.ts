@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   ManagedRuntimeCancelInstallResult,
+  ManagedRuntimeDebugBundle,
   ManagedRuntimeInstallOptions,
   ManagedRuntimeInstallPlan,
   ManagedRuntimeInstallProgress,
@@ -97,6 +98,12 @@ export function probeManagedRwkvRuntime() {
 export function getManagedRwkvRuntimeLogsSummary() {
   return invoke<ManagedRuntimeLogsSummary>(
     "get_managed_rwkv_runtime_logs_summary"
+  );
+}
+
+export function exportManagedRwkvDebugBundle() {
+  return invoke<ManagedRuntimeDebugBundle>(
+    "export_managed_rwkv_debug_bundle"
   );
 }
 

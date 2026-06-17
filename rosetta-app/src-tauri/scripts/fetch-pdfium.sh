@@ -63,9 +63,9 @@ fi
 # To regenerate: download the file and run `shasum -a 256 <file>`.
 
 PDFIUM_SHA_mac_arm64="2b733774416de02482281c0abc7589b08dc908896ecef2bfc31a85c5b5ffd572"
-# TODO: fill these in when we add Mac x64 / Windows builds.
+# TODO: fill these in when we add Mac x64 / Linux builds.
 PDFIUM_SHA_mac_x64=""
-PDFIUM_SHA_win_x64=""
+PDFIUM_SHA_win_x64="0abfacf8aacc919f98eff2c3efa2927c3dc9faf07e31f22558a1f1cf93809612"
 PDFIUM_SHA_linux_x64=""
 
 # --- target layout -----------------------------------------------------------

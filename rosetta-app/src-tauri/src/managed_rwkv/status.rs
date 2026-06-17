@@ -251,12 +251,13 @@ fn build_install_plan(
             InstallItemKind::Runtime,
             runtime_ready,
             format!(
-                "Windows RWKV CUDA 运行包尚未安装（{}）。",
+                "{} 运行包尚未安装（{}）。",
+                profile.runtime_label,
                 profile
                     .runtime_archive_filename
                     .unwrap_or("runtime archive")
             ),
-            "Windows RWKV CUDA 运行包已就绪。".to_string(),
+            format!("{} 运行包已就绪。", profile.runtime_label),
         ));
     }
 
