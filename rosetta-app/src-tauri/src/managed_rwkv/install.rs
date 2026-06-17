@@ -105,7 +105,7 @@ pub struct InstallOptions {
     /// (see `rwkv_providers::mobile_batch_chat::loopback_client`).
     pub proxy_url: Option<String>,
     /// Optional local runtime pack path. Windows dogfood uses this for the
-    /// engineer-provided `RWKV_lightning_CUDA_sm75+_Win_MSVC.7z`.
+    /// engineer-provided `RWKV_lightning_CUDA_sm75+_Win_MSVC.zip`.
     pub runtime_pack_path: Option<String>,
     /// Optional local model file path. Windows dogfood uses this while the
     /// default `.pth` artifact is supplied out of band.
@@ -208,6 +208,7 @@ pub async fn install_model(
                 InstallPhase::Preflight
                     | InstallPhase::Downloading
                     | InstallPhase::Verifying
+                    | InstallPhase::Extracting
                     | InstallPhase::WritingManifest
             )
         }) {
@@ -811,15 +812,25 @@ fn extract_runtime_pack(
     std::fs::create_dir_all(&staging)
         .map_err(|error| format!("无法创建运行包解压目录: {error}"))?;
 
-    let status = Command::new("tar")
-        .arg("-xf")
-        .arg(archive)
-        .arg("-C")
-        .arg(&staging)
-        .status()
-        .map_err(|error| format!("启动 tar 解压运行包失败: {error}"))?;
-    if !status.success() {
-        return Err(format!("解压 Windows RWKV 运行包失败: {status}"));
+    if archive
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"))
+    {
+        extract_zip(archive, &staging).map_err(|error| {
+            format!("解压 Windows RWKV 运行包 zip 失败: {error}")
+        })?;
+    } else {
+        let status = Command::new("tar")
+            .arg("-xf")
+            .arg(archive)
+            .arg("-C")
+            .arg(&staging)
+            .status()
+            .map_err(|error| format!("启动 tar 解压运行包失败: {error}"))?;
+        if !status.success() {
+            return Err(format!("解压 Windows RWKV 运行包失败: {status}"));
+        }
     }
 
     let candidate = if staging.join("rwkv_lighting_cuda").is_dir() {

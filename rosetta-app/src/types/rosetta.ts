@@ -724,8 +724,10 @@ export type OnboardingDecision = {
   state: OnboardingState;
   /** The local model file actually exists on disk right now. */
   modelInstalled: boolean;
+  /** The full managed runtime install plan is ready (runtime + sidecar + tokenizer + model). */
+  runtimeReady: boolean;
   /** Derived: app should show the Onboarding window instead of Workspace.
-   *  True iff `!completed` OR (`!skippedLocalInstall` AND `!modelInstalled`). */
+   *  True iff `!completed` OR (`!skippedLocalInstall` AND `!runtimeReady`). */
   needsOnboarding: boolean;
   /** Size in bytes of the current profile's downloadable model. Drives the
    *  Welcome step's "约 X MB · 一次下载" subline. `null` on unsupported

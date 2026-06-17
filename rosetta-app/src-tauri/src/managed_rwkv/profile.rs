@@ -191,11 +191,10 @@ pub const WINDOWS_AMD64_CUDA: RuntimeProfile = RuntimeProfile {
     backend: "cuda-openai",
     sidecar_binary_name: "rwkv_lighting_cuda.exe",
     managed_runtime_directory_name: Some("rwkv-lightning-cuda-sm75-msvc"),
-    runtime_archive_filename: Some("RWKV_lightning_CUDA_sm75+_Win_MSVC.7z"),
-    runtime_archive_size_bytes: Some(437_910_029),
-    runtime_archive_sha256: Some(
-        "454a41ad215d4adf156c261991f0732ed22e64e7eed9780321848050435d7a7c",
-    ),
+    runtime_archive_filename: Some("RWKV_lightning_CUDA_sm75+_Win_MSVC.zip"),
+    // Fill these with the final .zip artifact values before publishing.
+    runtime_archive_size_bytes: None,
+    runtime_archive_sha256: None,
     runtime_download_urls: &[],
     runtime_library_dir_name: Some("lib"),
     tokenizer_filename: "rwkv_vocab_v20230424.txt",

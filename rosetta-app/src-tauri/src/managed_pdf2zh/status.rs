@@ -104,8 +104,10 @@ pub fn build_static_status(app: &AppHandle) -> Result<StaticStatus, String> {
     };
     let layout = Pdf2zhLayout::from_app(app, profile)?;
     let bin_path = locate_pdf2zh_bin(&layout, profile);
+    let python_path = layout.python_path(profile);
     let doclayout_model_path = locate_doclayout_model(&layout);
     let ready = bin_path.as_ref().is_some_and(|path| path.is_file())
+        && python_path.is_file()
         && doclayout_model_path
             .as_ref()
             .is_some_and(|path| path.is_file());
@@ -194,6 +196,10 @@ mod tests {
         fs::create_dir_all(bin.parent().expect("bin should have parent"))
             .expect("bin parent should be created");
         fs::write(bin, b"#!/usr/bin/env bash\n").expect("bin should be written");
+        let python = layout.python_path(profile);
+        fs::create_dir_all(python.parent().expect("python should have parent"))
+            .expect("python parent should be created");
+        fs::write(python, b"#!/usr/bin/env python\n").expect("python should be written");
     }
 
     #[test]

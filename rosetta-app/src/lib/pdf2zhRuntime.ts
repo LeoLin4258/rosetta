@@ -39,6 +39,7 @@ export type Pdf2zhInstallOptions = {
   repair?: boolean;
   proxyUrl?: string | null;
   packUrl?: string | null;
+  packPath?: string | null;
   packSha256?: string | null;
   packSizeBytes?: number | null;
 };

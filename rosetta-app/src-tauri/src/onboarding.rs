@@ -54,6 +54,7 @@ pub struct OnboardingState {
 pub struct OnboardingDecision {
     pub state: OnboardingState,
     pub model_installed: bool,
+    pub runtime_ready: bool,
     pub needs_onboarding: bool,
     /// Bytes of the current profile's downloadable model. Drives the
     /// onboarding download CTA's "约 X MB · 一次下载" subline. Hardcoding
@@ -117,6 +118,9 @@ pub fn decide(app: &AppHandle) -> OnboardingDecision {
             .unwrap_or(false),
         None => false, // unsupported platform — onboarding will route to "use external API"
     };
+    let runtime_ready = managed_rwkv::status::build_static_status(app)
+        .map(|status| status.install_plan.ready)
+        .unwrap_or(false);
     let model_size_bytes = profile.map(|p| p.model_size_bytes);
     // User who opted out of local install doesn't need a model — but we still
     // need them to have completed onboarding once. `completed` alone wins
@@ -124,7 +128,7 @@ pub fn decide(app: &AppHandle) -> OnboardingDecision {
     let needs_onboarding = if state.skipped_local_install {
         !state.completed
     } else {
-        !state.completed || !model_installed
+        !state.completed || !runtime_ready
     };
     // Returning user = previously walked through onboarding (state.completed).
     // The only reason we're showing onboarding again now is the model went
@@ -135,6 +139,7 @@ pub fn decide(app: &AppHandle) -> OnboardingDecision {
     OnboardingDecision {
         state,
         model_installed,
+        runtime_ready,
         needs_onboarding,
         model_size_bytes,
         is_returning_user,

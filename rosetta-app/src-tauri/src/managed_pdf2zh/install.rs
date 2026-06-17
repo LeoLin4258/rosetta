@@ -74,6 +74,10 @@ pub struct Pdf2zhInstallOptions {
     /// Optional archive URL for dogfood builds before the official release URL
     /// is pinned in [`Pdf2zhProfile`]. Supports `https://...` and `file://...`.
     pub pack_url: Option<String>,
+    /// Optional local archive path from the native file picker. Unlike
+    /// `file://`, this stays cross-platform because Windows drive letters are
+    /// preserved as an ordinary path string.
+    pub pack_path: Option<String>,
     pub pack_sha256: Option<String>,
     pub pack_size_bytes: Option<u64>,
 }
@@ -261,7 +265,17 @@ async fn install_inner(
         .await;
         emit_progress(app, registry).await;
 
-        let result = if url.starts_with("file://") {
+        let result = if let Some(path) = url.strip_prefix("local-file:") {
+            copy_file_url(
+                app,
+                registry,
+                path,
+                &part_path,
+                expected_size,
+                cancel,
+            )
+            .await
+        } else if url.starts_with("file://") {
             copy_file_url(
                 app,
                 registry,
@@ -543,6 +557,13 @@ async fn extract_pack(
     let staging = layout.root_dir.join("extract-staging");
     let _ = std::fs::remove_dir_all(&staging);
     std::fs::create_dir_all(&staging).map_err(|error| format!("无法创建解压目录: {error}"))?;
+    if archive
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"))
+    {
+        extract_zip_archive(archive, &staging)?;
+    } else {
     let status = tokio::process::Command::new("tar")
         .arg("-xzf")
         .arg(archive)
@@ -553,6 +574,7 @@ async fn extract_pack(
         .map_err(|error| format!("启动 tar 解压失败: {error}"))?;
     if !status.success() {
         return Err(format!("解压 PDF 版面处理组件失败: {status}"));
+    }
     }
 
     let candidate = if staging.join(profile.pack_directory_name).is_dir() {
@@ -565,6 +587,13 @@ async fn extract_pack(
         return Err(format!(
             "PDF 版面处理组件结构不正确，缺少 {}",
             profile.bin_relative_path
+        ));
+    }
+    let python = candidate.join(profile.python_relative_path);
+    if !python.is_file() {
+        return Err(format!(
+            "PDF 版面处理组件结构不正确，缺少 {}",
+            profile.python_relative_path
         ));
     }
     let model = candidate.join("models").join(DOCLAYOUT_MODEL_FILENAME);
@@ -589,6 +618,36 @@ async fn extract_pack(
         }
     }
     let _ = std::fs::remove_dir_all(&staging);
+    Ok(())
+}
+
+fn extract_zip_archive(archive: &Path, dest_dir: &Path) -> Result<(), String> {
+    let file =
+        std::fs::File::open(archive).map_err(|error| format!("无法打开 PDF 组件 zip: {error}"))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|error| format!("无法读取 PDF 组件 zip: {error}"))?;
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|error| format!("无法读取 PDF 组件 zip 条目: {error}"))?;
+        let Some(relative_path) = entry.enclosed_name().map(|path| path.to_path_buf()) else {
+            continue;
+        };
+        let out_path = dest_dir.join(relative_path);
+        if entry.is_dir() {
+            std::fs::create_dir_all(&out_path)
+                .map_err(|error| format!("无法创建 PDF 组件目录: {error}"))?;
+            continue;
+        }
+        if let Some(parent) = out_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("无法创建 PDF 组件目录: {error}"))?;
+        }
+        let mut out_file = std::fs::File::create(&out_path)
+            .map_err(|error| format!("无法写入 PDF 组件文件: {error}"))?;
+        std::io::copy(&mut entry, &mut out_file)
+            .map_err(|error| format!("无法解压 PDF 组件文件: {error}"))?;
+    }
     Ok(())
 }
 
@@ -671,6 +730,14 @@ fn effective_urls(
     profile: &Pdf2zhProfile,
     options: &Pdf2zhInstallOptions,
 ) -> Result<Vec<String>, String> {
+    if let Some(url) = options
+        .pack_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(vec![format!("local-file:{url}")]);
+    }
     if let Some(url) = options
         .pack_url
         .as_deref()
@@ -771,4 +838,69 @@ fn timestamp_ms_string() -> String {
         .unwrap_or_default()
         .as_millis()
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        io::Write,
+        path::{Path, PathBuf},
+        sync::atomic::{AtomicUsize, Ordering},
+    };
+
+    use super::*;
+    use crate::managed_pdf2zh::profile::WINDOWS_AMD64_PDF2ZH;
+
+    static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    fn temp_root(name: &str) -> PathBuf {
+        let id = TEMP_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let root = std::env::temp_dir().join(format!(
+            "rosetta-pdf2zh-install-{name}-{}-{id}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("temp root should be created");
+        root
+    }
+
+    fn write_zip(path: &Path, entries: &[(&str, &[u8])]) {
+        let file = fs::File::create(path).expect("zip should be created");
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default();
+        for (name, contents) in entries {
+            zip.start_file(name, options).expect("zip entry should start");
+            zip.write_all(contents).expect("zip entry should be written");
+        }
+        zip.finish().expect("zip should finish");
+    }
+
+    #[test]
+    fn zip_pdf_pack_extracts_windows_required_files() {
+        let root = temp_root("zip-windows");
+        let archive = root.join("pack.zip");
+        write_zip(
+            &archive,
+            &[
+                ("windows-amd64/python/python.exe", b"python"),
+                (
+                    "windows-amd64/models/doclayout_yolo_docstructbench_imgsz1024.pt",
+                    b"model",
+                ),
+            ],
+        );
+        let extract_dir = root.join("extract");
+
+        extract_zip_archive(&archive, &extract_dir).expect("zip should extract");
+
+        let pack_dir = extract_dir.join(WINDOWS_AMD64_PDF2ZH.pack_directory_name);
+        assert!(pack_dir
+            .join(WINDOWS_AMD64_PDF2ZH.python_relative_path)
+            .is_file());
+        assert!(pack_dir
+            .join("models")
+            .join(DOCLAYOUT_MODEL_FILENAME)
+            .is_file());
+    }
 }

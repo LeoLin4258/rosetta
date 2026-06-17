@@ -1,6 +1,12 @@
 use serde::Serialize;
 
 #[derive(Debug, Clone, Copy)]
+pub enum Pdf2zhCliEntrypoint {
+    Executable,
+    PythonModule(&'static str),
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct Pdf2zhProfile {
     pub id: &'static str,
     pub platform_os: &'static str,
@@ -8,6 +14,8 @@ pub struct Pdf2zhProfile {
     pub enabled: bool,
     pub pack_directory_name: &'static str,
     pub bin_relative_path: &'static str,
+    pub python_relative_path: &'static str,
+    pub cli_entrypoint: Pdf2zhCliEntrypoint,
     pub pack_filename: &'static str,
     pub pack_size_bytes: Option<u64>,
     pub pack_sha256: Option<&'static str>,
@@ -28,6 +36,8 @@ pub const MACOS_ARM64_PDF2ZH: Pdf2zhProfile = Pdf2zhProfile {
     enabled: true,
     pack_directory_name: "macos-arm64",
     bin_relative_path: "bin/pdf2zh",
+    python_relative_path: "python/bin/python",
+    cli_entrypoint: Pdf2zhCliEntrypoint::Executable,
     pack_filename: "rosetta-pdf2zh-macos-arm64.tar.gz",
     pack_size_bytes: Some(318_454_908),
     pack_sha256: Some("35fcbc1485a3133008a3f556bd7a4303859a6edac8cfac959a5e3d6b2644be8c"),
@@ -37,7 +47,23 @@ pub const MACOS_ARM64_PDF2ZH: Pdf2zhProfile = Pdf2zhProfile {
     ],
 };
 
-const ALL_PROFILES: &[Pdf2zhProfile] = &[MACOS_ARM64_PDF2ZH];
+pub const WINDOWS_AMD64_PDF2ZH: Pdf2zhProfile = Pdf2zhProfile {
+    id: "windows-amd64-pdf2zh",
+    platform_os: "windows",
+    platform_arch: "x86_64",
+    enabled: true,
+    pack_directory_name: "windows-amd64",
+    bin_relative_path: "python/python.exe",
+    python_relative_path: "python/python.exe",
+    cli_entrypoint: Pdf2zhCliEntrypoint::PythonModule("pdf2zh.pdf2zh"),
+    pack_filename: "rosetta-pdf2zh-windows-amd64.zip",
+    // Fill these with the final release artifact values before publishing.
+    pack_size_bytes: None,
+    pack_sha256: None,
+    pack_download_urls: &[],
+};
+
+const ALL_PROFILES: &[Pdf2zhProfile] = &[MACOS_ARM64_PDF2ZH, WINDOWS_AMD64_PDF2ZH];
 
 pub fn current_profile() -> Option<&'static Pdf2zhProfile> {
     let os = std::env::consts::OS;
@@ -69,7 +95,7 @@ impl Pdf2zhProfileSummary {
 
 #[cfg(test)]
 mod tests {
-    use super::MACOS_ARM64_PDF2ZH;
+    use super::{MACOS_ARM64_PDF2ZH, WINDOWS_AMD64_PDF2ZH};
 
     #[test]
     fn macos_pdf_pack_has_mainland_download_fallback() {
@@ -87,5 +113,13 @@ mod tests {
                 .any(|url| url.starts_with("https://githubdog.com/https://github.com/")),
             "githubdog mirror should be available for mainland users"
         );
+    }
+
+    #[test]
+    fn windows_pdf_profile_uses_python_module_entrypoint() {
+        assert_eq!(WINDOWS_AMD64_PDF2ZH.platform_os, "windows");
+        assert_eq!(WINDOWS_AMD64_PDF2ZH.platform_arch, "x86_64");
+        assert_eq!(WINDOWS_AMD64_PDF2ZH.pack_directory_name, "windows-amd64");
+        assert_eq!(WINDOWS_AMD64_PDF2ZH.python_relative_path, "python/python.exe");
     }
 }

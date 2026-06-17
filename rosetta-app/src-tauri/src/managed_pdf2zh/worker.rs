@@ -245,12 +245,7 @@ async fn spawn_worker(app: &AppHandle) -> Result<WorkerProcess, String> {
         .doclayout_model_path
         .clone()
         .ok_or_else(|| "pdf2zh pack 缺少内置 DocLayout-YOLO 模型，请更新 PDF 组件。".to_string())?;
-    let python = status
-        .layout
-        .pack_dir
-        .join("python")
-        .join("bin")
-        .join("python");
+    let python = status.layout.python_path(status.profile);
     if !python.is_file() {
         let msg = format!("pdf2zh pack 中找不到 Python 解释器: {}", python.display());
         set_worker_status(app, "failed", Some(msg.clone()), None);

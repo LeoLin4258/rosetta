@@ -177,7 +177,11 @@ pub async fn stop_managed_rwkv_runtime(
     let static_status = build_static_status(&app)?;
     let sidecar = static_status.sidecar_path.as_deref();
     let tokenizer = static_status.tokenizer_path.as_deref();
-    let model = static_status.layout.model_file.as_path();
+    let model = static_status
+        .layout
+        .model_extracted_dir
+        .as_deref()
+        .unwrap_or(static_status.layout.model_file.as_path());
     stop_sidecar(
         &registry,
         Some(static_status.profile),

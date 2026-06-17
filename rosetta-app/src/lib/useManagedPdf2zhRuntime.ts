@@ -95,7 +95,7 @@ export function useManagedPdf2zhRuntime() {
   /**
    * Manual-import path for users who can't reach GitHub Releases (mainland
    * China without VPN, etc). Opens a native file picker scoped to `.tar.gz`,
-   * then feeds the chosen path to the install pipeline as a `file://` URL.
+   * then feeds the chosen path to the install pipeline as a native path.
    *
    * Reuses every other invariant of the regular install flow — SHA256 check,
    * size check, extraction, manifest write. The only difference is the
@@ -118,6 +118,7 @@ export function useManagedPdf2zhRuntime() {
         // Fall back to `*` so a user with a renamed file (or unexpected
         // double-extension behavior on some Linux DEs) isn't locked out.
         filters: [
+          { name: "PDF component (.zip / .tar.gz / .tgz)", extensions: ["zip", "gz", "tgz"] },
           { name: "PDF 组件 (.tar.gz / .tgz)", extensions: ["gz", "tgz"] },
           { name: "全部文件", extensions: ["*"] },
         ],
@@ -129,10 +130,9 @@ export function useManagedPdf2zhRuntime() {
         return null;
       }
       const localPath = selection;
-      // file:// URLs need an absolute path. macOS file picker always returns
-      // absolute paths, but we sanity-check rather than letting a malformed
-      // URL silently fall through to the HTTP branch.
-      if (!localPath.startsWith("/")) {
+      // Tauri returns native absolute paths. Accept both POSIX roots and
+      // Windows drive-letter paths before sending the raw path to Rust.
+      if (!localPath.startsWith("/") && !/^[A-Za-z]:[\\/]/.test(localPath)) {
         throw new Error(`文件路径不是绝对路径: ${localPath}`);
       }
       return await install({
@@ -141,7 +141,7 @@ export function useManagedPdf2zhRuntime() {
         // previous failed attempt — we want this import to start clean,
         // because the user is here specifically because the normal download
         // path didn't work.
-        packUrl: `file://${localPath}`,
+        packPath: localPath,
       });
     },
     [install]

@@ -5,8 +5,6 @@ import type {
   RwkvProviderPreference,
 } from "@/types/rosetta";
 
-const DEFAULT_MANAGED_RUNTIME_BASE_URL = "http://127.0.0.1:8765";
-
 export type SelectProviderInput = {
   /**
    * Current external API connection config. Used directly when the chosen
@@ -67,17 +65,25 @@ export function selectProvider({
     managedRuntimeReady,
     managedRuntimeProviderId
   );
+  if (config.providerPreference === "local") {
+    if (!managedRuntimeReady || !managedRuntimeBaseUrl) {
+      throw new Error("本地 RWKV 运行时尚未就绪，请先在设置中启动或修复本地翻译模型。");
+    }
+  }
+  if (providerId === "rwkv-mobile-batch-chat" && !managedRuntimeBaseUrl) {
+    throw new Error("本地 RWKV 运行时尚未提供可用地址，请先启动本地翻译模型。");
+  }
   if (providerId === "rwkv-mobile-batch-chat") {
     return {
       id: "rwkv-mobile-batch-chat",
-      baseUrl: managedRuntimeBaseUrl ?? DEFAULT_MANAGED_RUNTIME_BASE_URL,
+      baseUrl: managedRuntimeBaseUrl!,
       timeoutMs: config.timeoutMs,
     };
   }
   return {
     id: "rwkv-lightning-contents",
     baseUrl: providerId === "rwkv-lightning-contents" && config.providerPreference === "local"
-      ? managedRuntimeBaseUrl ?? DEFAULT_MANAGED_RUNTIME_BASE_URL
+      ? managedRuntimeBaseUrl!
       : config.baseUrl,
     endpoint: config.providerPreference === "local" ? "/v1/batch/completions" : config.endpoint,
     internalToken: config.providerPreference === "local" ? "" : config.internalToken,

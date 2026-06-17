@@ -135,6 +135,18 @@ pub(crate) async fn invoke_pdf2zh(
     let bin = status
         .bin_path
         .ok_or_else(|| PdfError::RuntimeMissing("找不到 PDF 版面处理组件。".to_string()))?;
+    let (pdf2zh_program, pdf2zh_prefix_args): (PathBuf, Vec<String>) =
+        match status.profile.cli_entrypoint {
+            managed_pdf2zh::profile::Pdf2zhCliEntrypoint::Executable => (bin.clone(), Vec::new()),
+            managed_pdf2zh::profile::Pdf2zhCliEntrypoint::PythonModule(module) => (
+                status.layout.python_path(status.profile),
+                vec!["-m".to_string(), module.to_string()],
+            ),
+        };
+    let pdf2zh_command_display = std::iter::once(pdf2zh_program.display().to_string())
+        .chain(pdf2zh_prefix_args.iter().cloned())
+        .collect::<Vec<_>>()
+        .join(" ");
     let doclayout_model = status.doclayout_model_path.clone().ok_or_else(|| {
         PdfError::RuntimeMissing(
             "PDF 版面处理组件缺少内置 DocLayout-YOLO 模型，请更新 PDF 组件。".to_string(),
@@ -165,7 +177,7 @@ pub(crate) async fn invoke_pdf2zh(
         output_dir.join("rosetta-pdf2zh-command.log"),
         format!(
             "bin={}\nsource={}\noutput_dir={}\ntemp_dir={}\nopenai_base_url={}\nservice=openai:rwkv\nsource_lang={}\ntarget_lang={}\nthreads={}\ndebug={}\n",
-            bin.display(),
+            pdf2zh_command_display,
             source_path.display(),
             output_dir.display(),
             temp_dir.display(),
@@ -318,8 +330,9 @@ pub(crate) async fn invoke_pdf2zh(
 
     if !worker_completed {
         // Fallback: one-shot CLI invocation (pays the full import per call).
-        let mut command = tokio::process::Command::new(&bin);
+        let mut command = tokio::process::Command::new(&pdf2zh_program);
         command
+            .args(&pdf2zh_prefix_args)
             .arg(source_path)
             .arg("-li")
             .arg(pdf2zh_lang(&options.source_lang))
@@ -373,7 +386,7 @@ pub(crate) async fn invoke_pdf2zh(
         }
 
         let mut child = command.spawn().map_err(|error| {
-            PdfError::Pdf2zhFailed(format!("启动 {} 失败: {error}", bin.display()))
+            PdfError::Pdf2zhFailed(format!("启动 {} 失败: {error}", pdf2zh_program.display()))
         })?;
 
         let stderr = child.stderr.take();

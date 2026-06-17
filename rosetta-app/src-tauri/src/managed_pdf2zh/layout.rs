@@ -42,12 +42,18 @@ impl Pdf2zhLayout {
         self.pack_dir.join(profile.bin_relative_path)
     }
 
+    pub fn python_path(&self, profile: &Pdf2zhProfile) -> PathBuf {
+        self.pack_dir.join(profile.python_relative_path)
+    }
+
     pub fn doclayout_model_path(&self) -> PathBuf {
         self.pack_dir.join("models").join(DOCLAYOUT_MODEL_FILENAME)
     }
 
     pub fn managed_pack_ready(&self, profile: &Pdf2zhProfile) -> bool {
-        self.bin_path(profile).is_file() && self.doclayout_model_path().is_file()
+        self.bin_path(profile).is_file()
+            && self.python_path(profile).is_file()
+            && self.doclayout_model_path().is_file()
     }
 
     pub fn ensure_dirs(&self) -> Result<(), String> {

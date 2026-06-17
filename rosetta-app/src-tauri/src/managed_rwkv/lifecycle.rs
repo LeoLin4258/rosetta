@@ -189,10 +189,10 @@ pub async fn start_sidecar(
     })?;
     let base_url = format!("http://{}:{port}", profile.bind_host);
 
-    let args = build_command_args(profile, &sidecar_path, &tokenizer_path, &model_path, port);
-    if let Err(error) =
-        cleanup_stale_sidecars(profile, &sidecar_path, &tokenizer_path, &model_path).await
-    {
+    let mut launch_spec =
+        LaunchSpec::build(profile, &sidecar_path, &tokenizer_path, &model_path, port)?;
+    launch_spec.working_dir = working_dir.clone();
+    if let Err(error) = cleanup_stale_sidecars(&launch_spec).await {
         guard.last_error = Some(error.clone());
         guard.state = Some(ManagedRuntimeState::Failed);
         return Err(error);
@@ -209,12 +209,11 @@ pub async fn start_sidecar(
     let stderr = log;
 
     guard.state = Some(ManagedRuntimeState::Starting);
-    let mut command = TokioCommand::new(&sidecar_path);
-    if let Some(lib_dir_name) = profile.runtime_library_dir_name {
-        let lib_dir = sidecar_dir.join(lib_dir_name);
-        if lib_dir.is_dir() {
+    let mut command = TokioCommand::new(&launch_spec.executable);
+    if let Some(lib_dir) = launch_spec.path_prepend.as_ref() {
+        {
             let current_path = std::env::var_os("PATH").unwrap_or_default();
-            let mut paths = vec![lib_dir];
+            let mut paths = vec![lib_dir.clone()];
             paths.extend(std::env::split_paths(&current_path));
             let joined =
                 std::env::join_paths(paths).map_err(|error| format!("拼接 PATH 失败: {error}"))?;
@@ -222,8 +221,8 @@ pub async fn start_sidecar(
         }
     }
     command
-        .args(&args[1..]) // [0] is sidecar path itself, kept for `command` echo
-        .current_dir(&working_dir)
+        .args(&launch_spec.args)
+        .current_dir(&launch_spec.working_dir)
         .stdout(std::process::Stdio::from(stdout))
         .stderr(std::process::Stdio::from(stderr))
         .stdin(std::process::Stdio::null())
@@ -273,7 +272,7 @@ pub async fn start_sidecar(
         port,
         base_url,
         started_at,
-        command: args,
+        command: launch_spec.command,
         message: "本地 RWKV 运行时已就绪。".to_string(),
     })
 }
@@ -424,42 +423,6 @@ pub fn read_log_tail(log_path: &std::path::Path) -> Result<Vec<String>, String> 
 // Internals
 // -----------------------------------------------------------------------------
 
-fn build_command_args(
-    profile: &RuntimeProfile,
-    sidecar_path: &Path,
-    tokenizer_path: &Path,
-    model_path: &Path,
-    port: u16,
-) -> Vec<String> {
-    if profile.platform_os == "windows" && profile.backend == "cuda-openai" {
-        return vec![
-            sidecar_path.display().to_string(),
-            "--model-path".to_string(),
-            model_path.display().to_string(),
-            "--vocab-path".to_string(),
-            tokenizer_path.display().to_string(),
-            "--port".to_string(),
-            port.to_string(),
-        ];
-    }
-
-    vec![
-        sidecar_path.display().to_string(),
-        "--model".to_string(),
-        model_path.display().to_string(),
-        "--tokenizer".to_string(),
-        tokenizer_path.display().to_string(),
-        "--backend".to_string(),
-        profile.backend.to_string(),
-        "--host".to_string(),
-        profile.bind_host.to_string(),
-        "--port".to_string(),
-        port.to_string(),
-        "--model-name".to_string(),
-        profile.model_name_arg.to_string(),
-    ]
-}
-
 fn pick_ephemeral_port() -> std::io::Result<u16> {
     // Bind to :0, read assigned port, drop the socket. There's a tiny race
     // window before the sidecar binds, but it's acceptable for v1: the next
@@ -535,18 +498,109 @@ struct SidecarProcess {
     command: String,
 }
 
-async fn cleanup_stale_sidecars(
-    profile: &RuntimeProfile,
-    sidecar_path: &Path,
-    tokenizer_path: &Path,
-    model_path: &Path,
-) -> Result<usize, String> {
+#[derive(Debug, Clone)]
+struct LaunchSpec {
+    executable: PathBuf,
+    working_dir: PathBuf,
+    args: Vec<String>,
+    command: Vec<String>,
+    path_prepend: Option<PathBuf>,
+    match_tokens: Vec<String>,
+}
+
+impl LaunchSpec {
+    fn build(
+        profile: &RuntimeProfile,
+        sidecar_path: &Path,
+        tokenizer_path: &Path,
+        model_path: &Path,
+        port: u16,
+    ) -> Result<Self, String> {
+        let sidecar_dir = sidecar_path
+            .parent()
+            .ok_or_else(|| "sidecar 路径没有父目录。".to_string())?
+            .to_path_buf();
+        let path_prepend = profile
+            .runtime_library_dir_name
+            .map(|name| sidecar_dir.join(name))
+            .filter(|path| path.is_dir());
+
+        if profile.platform_os == "windows" && profile.backend == "cuda-openai" {
+            let args = vec![
+                "--model-path".to_string(),
+                model_path.display().to_string(),
+                "--vocab-path".to_string(),
+                tokenizer_path.display().to_string(),
+                "--port".to_string(),
+                port.to_string(),
+            ];
+            let command = command_display(sidecar_path, &args);
+            let match_tokens = vec![
+                sidecar_path.display().to_string(),
+                "--model-path".to_string(),
+                model_path.display().to_string(),
+                "--vocab-path".to_string(),
+                tokenizer_path.display().to_string(),
+            ];
+            return Ok(Self {
+                executable: sidecar_path.to_path_buf(),
+                working_dir: sidecar_dir,
+                args,
+                command,
+                path_prepend,
+                match_tokens,
+            });
+        }
+
+        let args = vec![
+            "--model".to_string(),
+            model_path.display().to_string(),
+            "--tokenizer".to_string(),
+            tokenizer_path.display().to_string(),
+            "--backend".to_string(),
+            profile.backend.to_string(),
+            "--host".to_string(),
+            profile.bind_host.to_string(),
+            "--port".to_string(),
+            port.to_string(),
+            "--model-name".to_string(),
+            profile.model_name_arg.to_string(),
+        ];
+        let command = command_display(sidecar_path, &args);
+        let match_tokens = vec![
+            sidecar_path.display().to_string(),
+            "--model".to_string(),
+            model_path.display().to_string(),
+            "--tokenizer".to_string(),
+            tokenizer_path.display().to_string(),
+            "--backend".to_string(),
+            profile.backend.to_string(),
+            "--model-name".to_string(),
+            profile.model_name_arg.to_string(),
+        ];
+        Ok(Self {
+            executable: sidecar_path.to_path_buf(),
+            working_dir: sidecar_dir,
+            args,
+            command,
+            path_prepend,
+            match_tokens,
+        })
+    }
+}
+
+fn command_display(executable: &Path, args: &[String]) -> Vec<String> {
+    let mut command = Vec::with_capacity(args.len() + 1);
+    command.push(executable.display().to_string());
+    command.extend(args.iter().cloned());
+    command
+}
+
+async fn cleanup_stale_sidecars(launch_spec: &LaunchSpec) -> Result<usize, String> {
     let processes = list_sidecar_processes()?;
     let stale = processes
         .into_iter()
-        .filter(|process| {
-            is_matching_managed_sidecar(process, profile, sidecar_path, tokenizer_path, model_path)
-        })
+        .filter(|process| is_matching_managed_sidecar(process, launch_spec))
         .collect::<Vec<_>>();
 
     if stale.is_empty() {
@@ -562,9 +616,7 @@ async fn cleanup_stale_sidecars(
     let remaining = list_sidecar_processes()?
         .into_iter()
         .filter(|process| stale.iter().any(|stale| stale.pid == process.pid))
-        .filter(|process| {
-            is_matching_managed_sidecar(process, profile, sidecar_path, tokenizer_path, model_path)
-        })
+        .filter(|process| is_matching_managed_sidecar(process, launch_spec))
         .collect::<Vec<_>>();
 
     for process in &remaining {
@@ -589,7 +641,8 @@ async fn cleanup_stale_sidecars_if_signature_available(
     else {
         return Ok(0);
     };
-    cleanup_stale_sidecars(profile, sidecar_path, tokenizer_path, model_path).await
+    let launch_spec = LaunchSpec::build(profile, sidecar_path, tokenizer_path, model_path, 0)?;
+    cleanup_stale_sidecars(&launch_spec).await
 }
 
 fn list_sidecar_processes() -> Result<Vec<SidecarProcess>, String> {
@@ -637,25 +690,17 @@ fn parse_ps_line(line: &str) -> Option<SidecarProcess> {
 
 fn is_matching_managed_sidecar(
     process: &SidecarProcess,
-    profile: &RuntimeProfile,
-    sidecar_path: &Path,
-    tokenizer_path: &Path,
-    model_path: &Path,
+    launch_spec: &LaunchSpec,
 ) -> bool {
     if process.pid == std::process::id() {
         return false;
     }
 
     let command = process.command.as_str();
-    command.contains(&sidecar_path.display().to_string())
-        && command.contains("--model")
-        && command.contains(&model_path.display().to_string())
-        && command.contains("--tokenizer")
-        && command.contains(&tokenizer_path.display().to_string())
-        && command.contains("--backend")
-        && command.contains(profile.backend)
-        && command.contains("--model-name")
-        && command.contains(profile.model_name_arg)
+    launch_spec
+        .match_tokens
+        .iter()
+        .all(|token| command.contains(token))
 }
 
 #[allow(unused_variables)]
@@ -792,7 +837,7 @@ fn days_since_epoch_to_ymd(mut days: i64) -> (u32, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::managed_rwkv::profile::MACOS_ARM64_WEBRWKV;
+    use crate::managed_rwkv::profile::{MACOS_ARM64_WEBRWKV, WINDOWS_AMD64_CUDA};
 
     #[test]
     fn pick_ephemeral_port_returns_high_port() {
@@ -801,25 +846,44 @@ mod tests {
     }
 
     #[test]
-    fn command_args_match_phase_0_validation_invocation() {
-        let args = build_command_args(
+    fn launch_spec_matches_phase_0_validation_invocation() {
+        let spec = LaunchSpec::build(
             &MACOS_ARM64_WEBRWKV,
             &PathBuf::from("/bin/rwkv-server"),
             &PathBuf::from("/data/vocab.txt"),
             &PathBuf::from("/data/model.prefab"),
             8765,
-        );
+        )
+        .expect("launch spec");
         // Spot-check the critical args that Phase 0 hand-validated.
-        assert_eq!(args[0], "/bin/rwkv-server");
-        assert!(args.iter().any(|a| a == "--backend"));
-        let backend_idx = args.iter().position(|a| a == "--backend").unwrap();
-        assert_eq!(args[backend_idx + 1], "web-rwkv");
-        let host_idx = args.iter().position(|a| a == "--host").unwrap();
-        assert_eq!(args[host_idx + 1], "127.0.0.1");
-        let port_idx = args.iter().position(|a| a == "--port").unwrap();
-        assert_eq!(args[port_idx + 1], "8765");
-        let model_idx = args.iter().position(|a| a == "--model").unwrap();
-        assert_eq!(args[model_idx + 1], "/data/model.prefab");
+        assert_eq!(spec.command[0], "/bin/rwkv-server");
+        assert!(spec.args.iter().any(|a| a == "--backend"));
+        let backend_idx = spec.args.iter().position(|a| a == "--backend").unwrap();
+        assert_eq!(spec.args[backend_idx + 1], "web-rwkv");
+        let host_idx = spec.args.iter().position(|a| a == "--host").unwrap();
+        assert_eq!(spec.args[host_idx + 1], "127.0.0.1");
+        let port_idx = spec.args.iter().position(|a| a == "--port").unwrap();
+        assert_eq!(spec.args[port_idx + 1], "8765");
+        let model_idx = spec.args.iter().position(|a| a == "--model").unwrap();
+        assert_eq!(spec.args[model_idx + 1], "/data/model.prefab");
+    }
+
+    #[test]
+    fn windows_launch_spec_uses_cuda_runtime_arguments() {
+        let spec = LaunchSpec::build(
+            &WINDOWS_AMD64_CUDA,
+            &PathBuf::from(r"C:\Rosetta\runtime\rwkv_lighting_cuda.exe"),
+            &PathBuf::from(r"C:\Rosetta\runtime\rwkv_vocab_v20230424.txt"),
+            &PathBuf::from(r"C:\Rosetta\models\RWKV_v7_G1d_0.4B_Translate_ctx4096_20260607.pth"),
+            49152,
+        )
+        .expect("launch spec");
+
+        assert!(spec.args.iter().any(|arg| arg == "--model-path"));
+        assert!(spec.args.iter().any(|arg| arg == "--vocab-path"));
+        assert!(!spec.args.iter().any(|arg| arg == "--backend"));
+        let port_idx = spec.args.iter().position(|arg| arg == "--port").unwrap();
+        assert_eq!(spec.args[port_idx + 1], "49152");
     }
 
     #[test]
@@ -857,13 +921,10 @@ mod tests {
             ),
         };
 
-        assert!(is_matching_managed_sidecar(
-            &process,
-            &MACOS_ARM64_WEBRWKV,
-            &sidecar,
-            &tokenizer,
-            &model
-        ));
+        let spec = LaunchSpec::build(&MACOS_ARM64_WEBRWKV, &sidecar, &tokenizer, &model, 64092)
+            .expect("launch spec");
+
+        assert!(is_matching_managed_sidecar(&process, &spec));
     }
 
     #[test]
@@ -876,13 +937,30 @@ mod tests {
             command: "/opt/rwkv-server --model /tmp/other.prefab --tokenizer /tmp/vocab.txt --backend web-rwkv --model-name rwkv-translate".to_string(),
         };
 
-        assert!(!is_matching_managed_sidecar(
-            &other,
-            &MACOS_ARM64_WEBRWKV,
-            &sidecar,
-            &tokenizer,
-            &model
-        ));
+        let spec = LaunchSpec::build(&MACOS_ARM64_WEBRWKV, &sidecar, &tokenizer, &model, 64092)
+            .expect("launch spec");
+
+        assert!(!is_matching_managed_sidecar(&other, &spec));
+    }
+
+    #[test]
+    fn matching_sidecar_accepts_windows_cuda_signature() {
+        let sidecar = PathBuf::from(r"C:\Rosetta\runtime\rwkv_lighting_cuda.exe");
+        let tokenizer = PathBuf::from(r"C:\Rosetta\runtime\rwkv_vocab_v20230424.txt");
+        let model = PathBuf::from(r"C:\Rosetta\models\RWKV_v7_G1d_0.4B_Translate_ctx4096_20260607.pth");
+        let process = SidecarProcess {
+            pid: 5150,
+            command: format!(
+                "{} --model-path {} --vocab-path {} --port 49200",
+                sidecar.display(),
+                model.display(),
+                tokenizer.display()
+            ),
+        };
+        let spec = LaunchSpec::build(&WINDOWS_AMD64_CUDA, &sidecar, &tokenizer, &model, 49200)
+            .expect("launch spec");
+
+        assert!(is_matching_managed_sidecar(&process, &spec));
     }
 
     #[test]
