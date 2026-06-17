@@ -129,18 +129,14 @@ export function useManagedPdf2zhRuntime() {
         return null;
       }
       const localPath = selection;
-      // file:// URLs need an absolute path. macOS file picker always returns
-      // absolute paths, but we sanity-check rather than letting a malformed
-      // URL silently fall through to the HTTP branch.
-      if (!localPath.startsWith("/")) {
+      // file:// URLs need an absolute path. macOS returns `/…`, Windows
+      // returns `C:\…`. Accept both forms.
+      const isAbsolute = localPath.startsWith("/") || /^[A-Za-z]:[/\\]/.test(localPath);
+      if (!isAbsolute) {
         throw new Error(`文件路径不是绝对路径: ${localPath}`);
       }
       return await install({
         repair: true,
-        // `repair: true` clears any partial download / mismatched cache from a
-        // previous failed attempt — we want this import to start clean,
-        // because the user is here specifically because the normal download
-        // path didn't work.
         packUrl: `file://${localPath}`,
       });
     },

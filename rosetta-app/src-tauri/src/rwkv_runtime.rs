@@ -1290,10 +1290,10 @@ fn configure_runtime_command(_command: &mut Command) {}
 
 #[cfg(windows)]
 fn is_process_running(pid: u32) -> Option<bool> {
-    let output = Command::new("tasklist")
-        .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
-        .output()
-        .ok()?;
+    let mut command = Command::new("tasklist");
+    command.args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"]);
+    configure_runtime_command(&mut command);
+    let output = command.output().ok()?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     Some(stdout.contains(&format!("\"{pid}\"")) || stdout.contains(&format!(",\"{pid}\",")))

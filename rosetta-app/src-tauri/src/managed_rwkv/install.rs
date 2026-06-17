@@ -40,6 +40,7 @@ use tokio::sync::Mutex;
 
 use super::layout::RuntimeLayout;
 use super::profile::RuntimeProfile;
+use crate::windows_process::HideConsole;
 
 const PART_SUFFIX: &str = ".part";
 const BROKEN_SUFFIX: &str = ".part.broken";
@@ -689,6 +690,7 @@ fn extract_runtime_pack(
         .arg(archive)
         .arg("-C")
         .arg(&staging)
+        .hide_console_on_windows()
         .status()
         .map_err(|error| format!("启动 tar 解压运行包失败: {error}"))?;
     if !status.success() {

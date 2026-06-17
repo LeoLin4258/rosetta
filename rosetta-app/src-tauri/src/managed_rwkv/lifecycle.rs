@@ -16,6 +16,7 @@ use tokio::sync::Mutex;
 
 use super::profile::RuntimeProfile;
 use super::status::{ManagedRuntimeProcessSnapshot, ManagedRuntimeState};
+use crate::windows_process::HideConsole;
 
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const HEALTH_INITIAL_DELAY: Duration = Duration::from_millis(150);
@@ -227,7 +228,8 @@ pub async fn start_sidecar(
         .stdout(std::process::Stdio::from(stdout))
         .stderr(std::process::Stdio::from(stderr))
         .stdin(std::process::Stdio::null())
-        .kill_on_drop(true);
+        .kill_on_drop(true)
+        .hide_console_on_windows();
 
     let child = command.spawn().map_err(|error| {
         let msg = format!("无法启动 sidecar 进程: {error}");
@@ -664,6 +666,7 @@ fn terminate_process(pid: u32, signal: &str) -> Result<(), String> {
     {
         let output = Command::new("taskkill")
             .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .hide_console_on_windows()
             .output()
             .map_err(|error| format!("无法停止旧 sidecar 进程 {pid}: {error}"))?;
         if output.status.success() {
@@ -709,6 +712,7 @@ fn list_sidecar_processes_windows() -> Result<Vec<SidecarProcess>, String> {
             "-Command",
             "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress",
         ])
+        .hide_console_on_windows()
         .output()
         .map_err(|error| format!("无法列出 Windows 进程: {error}"))?;
     if !output.status.success() {

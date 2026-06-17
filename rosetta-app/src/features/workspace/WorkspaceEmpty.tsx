@@ -16,6 +16,16 @@ type WorkspaceEmptyProps = {
   isDraggingOver: boolean;
 };
 
+// Tauri's `invoke` rejects with a plain string when a Rust command returns
+// `Err(String)`, not with an Error instance. Without this branch the UI would
+// fall back to a generic "无法导入这个文件" and hide the actual diagnostic
+// (e.g. "找不到 pdfium 库文件…", "PDF 路径包含无效字符。").
+function toImportErrorMessage(err: unknown, fallback: string): string {
+  if (err instanceof Error) return err.message || fallback;
+  if (typeof err === "string" && err.trim().length > 0) return err;
+  return fallback;
+}
+
 export function WorkspaceEmpty({ onImported, isDraggingOver }: WorkspaceEmptyProps) {
   const [isImporting, setIsImporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
@@ -31,7 +41,7 @@ export function WorkspaceEmpty({ onImported, isDraggingOver }: WorkspaceEmptyPro
       const bundle = await importRosettaDocumentFromPath(path);
       onImported(bundle);
     } catch (err) {
-      setImportError(err instanceof Error ? err.message : "无法导入这个文件。");
+      setImportError(toImportErrorMessage(err, "无法导入这个文件。"));
     } finally {
       setIsImporting(false);
     }
@@ -46,7 +56,7 @@ export function WorkspaceEmpty({ onImported, isDraggingOver }: WorkspaceEmptyPro
       const bundle = await importRosettaProjectFromDirectory(path);
       onImported(bundle);
     } catch (err) {
-      setImportError(err instanceof Error ? err.message : "无法导入这个文件夹。");
+      setImportError(toImportErrorMessage(err, "无法导入这个文件夹。"));
     } finally {
       setIsImporting(false);
     }
@@ -61,7 +71,7 @@ export function WorkspaceEmpty({ onImported, isDraggingOver }: WorkspaceEmptyPro
       onImported(bundle);
       setNewFilename("");
     } catch (err) {
-      setImportError(err instanceof Error ? err.message : "无法创建新文件。");
+      setImportError(toImportErrorMessage(err, "无法创建新文件。"));
     } finally {
       setIsImporting(false);
     }

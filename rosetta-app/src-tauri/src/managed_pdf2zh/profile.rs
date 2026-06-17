@@ -45,9 +45,12 @@ pub const WINDOWS_AMD64_PDF2ZH: Pdf2zhProfile = Pdf2zhProfile {
     pack_directory_name: "windows-x64",
     bin_relative_path: "python/python.exe",
     pack_filename: "rosetta-pdf2zh-windows-x64.tar.gz",
-    pack_size_bytes: None,
-    pack_sha256: None,
-    pack_download_urls: &[],
+    pack_size_bytes: Some(394_076_995),
+    pack_sha256: Some("fd5c2811980e1d6340f8a2f9a94da08a57bfcd2717050c8b7508547cd3a25138"),
+    pack_download_urls: &[
+        "https://github.com/LeoLin4258/rosetta-assets/releases/download/pdf-layout-pack-windows-x64-v2026.06.17.2/rosetta-pdf2zh-windows-x64.tar.gz",
+        "https://githubdog.com/https://github.com/LeoLin4258/rosetta-assets/releases/download/pdf-layout-pack-windows-x64-v2026.06.17.2/rosetta-pdf2zh-windows-x64.tar.gz",
+    ],
 };
 
 const ALL_PROFILES: &[Pdf2zhProfile] = &[MACOS_ARM64_PDF2ZH, WINDOWS_AMD64_PDF2ZH];

@@ -20,6 +20,7 @@ use super::{
     layout::{Pdf2zhLayout, DOCLAYOUT_MODEL_FILENAME},
     profile::Pdf2zhProfile,
 };
+use crate::windows_process::HideConsole;
 
 const PROGRESS_EVENT_NAME: &str = "managed-pdf2zh://install-progress";
 const PROGRESS_EMIT_INTERVAL_MS: u128 = 100;
@@ -548,6 +549,7 @@ async fn extract_pack(
         .arg(archive)
         .arg("-C")
         .arg(&staging)
+        .hide_console_on_windows()
         .status()
         .await
         .map_err(|error| format!("启动 tar 解压失败: {error}"))?;

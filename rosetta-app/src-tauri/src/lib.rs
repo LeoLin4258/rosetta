@@ -7,6 +7,7 @@ mod rwkv_api;
 mod rwkv_providers;
 #[allow(dead_code)]
 mod rwkv_runtime;
+mod windows_process;
 
 use std::sync::{
     atomic::{AtomicBool, Ordering},

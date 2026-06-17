@@ -29,6 +29,7 @@ use tokio::{
 };
 
 use super::build_static_status;
+use crate::windows_process::HideConsole;
 
 const WORKER_SCRIPT: &str = include_str!("rosetta_pdf2zh_worker.py");
 /// First spawn includes the ~13 s torch import plus, on a fresh machine, the
@@ -226,6 +227,18 @@ pub(crate) async fn kill_process_tree(child: &mut Child) {
         let _ = child.wait().await;
         return;
     }
+    #[cfg(windows)]
+    if let Some(pid) = child.id() {
+        let _ = tokio::process::Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &pid.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .hide_console_on_windows()
+            .status()
+            .await;
+        let _ = child.wait().await;
+        return;
+    }
     let _ = child.kill().await;
     let _ = child.wait().await;
 }
@@ -292,6 +305,7 @@ async fn spawn_worker(app: &AppHandle) -> Result<WorkerProcess, String> {
     #[cfg(unix)]
     command.process_group(0);
     command.kill_on_drop(true);
+    command.hide_console_on_windows();
 
     let mut child = command
         .spawn()

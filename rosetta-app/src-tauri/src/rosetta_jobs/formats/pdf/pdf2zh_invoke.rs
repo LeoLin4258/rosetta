@@ -17,6 +17,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use crate::{
     managed_pdf2zh::{self, openai_shim::ShimProviderConfig, openai_shim::ShimRwkvMetrics},
     rosetta_jobs::formats::pdf::errors::PdfError,
+    windows_process::HideConsole,
 };
 
 const PDF2ZH_PROGRESS_EVENT: &str = "rosetta-pdf2zh-progress";
@@ -318,7 +319,13 @@ pub(crate) async fn invoke_pdf2zh(
 
     if !worker_completed {
         // Fallback: one-shot CLI invocation (pays the full import per call).
+        // On macOS `bin` is a bash shim (`bin/pdf2zh`) that internally calls
+        // `python -m pdf2zh.pdf2zh "$@"`.  On Windows `bin` is the bare
+        // `python.exe` interpreter, so we must supply the module args ourselves.
         let mut command = tokio::process::Command::new(&bin);
+        if cfg!(target_os = "windows") {
+            command.arg("-m").arg("pdf2zh.pdf2zh");
+        }
         command
             .arg(source_path)
             .arg("-li")
@@ -363,6 +370,7 @@ pub(crate) async fn invoke_pdf2zh(
         // appear to do nothing on large PDFs.
         #[cfg(unix)]
         command.process_group(0);
+        command.hide_console_on_windows();
         if let Some(pages) = &options.pages {
             let pages_arg = pages
                 .iter()
