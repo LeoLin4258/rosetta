@@ -320,7 +320,6 @@ def translate_streaming(job, proto, model_path):
 def run_translate(job, proto, model_path):
     output_dir = job["outputDir"]
     os.makedirs(output_dir, exist_ok=True)
-    os.chdir(output_dir)
 
     for key, value in (job.get("env") or {}).items():
         os.environ[key] = str(value)

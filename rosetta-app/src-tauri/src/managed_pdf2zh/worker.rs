@@ -17,7 +17,15 @@
 //! header indicator can stay "已就绪" and translate clicks are always cheap.
 //! At ~600 MB resident torch memory that's a deliberate trade.
 
-use std::{path::PathBuf, process::Stdio, sync::Mutex as StdMutex, time::Duration};
+use std::{
+    path::PathBuf,
+    process::Stdio,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex as StdMutex,
+    },
+    time::Duration,
+};
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -35,6 +43,19 @@ const WORKER_SCRIPT: &str = include_str!("rosetta_pdf2zh_worker.py");
 /// First spawn includes the ~13 s torch import plus, on a fresh machine, the
 /// layout-model download — be generous.
 const READY_TIMEOUT: Duration = Duration::from_secs(300);
+
+#[cfg(test)]
+mod tests {
+    use super::WORKER_SCRIPT;
+
+    #[test]
+    fn persistent_worker_never_enters_job_output_directory() {
+        assert!(
+            !WORKER_SCRIPT.contains("os.chdir(output_dir)"),
+            "a persistent Windows worker must not hold the per-job output directory as its cwd"
+        );
+    }
+}
 
 /// Status broadcast to the frontend so the header can show a live "PDF 引擎"
 /// indicator. Updated by [`set_worker_status`] which both stores the latest
@@ -84,6 +105,7 @@ const WORKER_STATUS_EVENT: &str = "rosetta-pdf2zh-worker-status";
 pub struct WorkerState {
     inner: Mutex<Option<WorkerProcess>>,
     status: StdMutex<Pdf2zhWorkerStatus>,
+    shutdown_requested: AtomicBool,
 }
 
 impl Default for WorkerState {
@@ -91,6 +113,7 @@ impl Default for WorkerState {
         Self {
             inner: Mutex::new(None),
             status: StdMutex::new(Pdf2zhWorkerStatus::default()),
+            shutdown_requested: AtomicBool::new(false),
         }
     }
 }
@@ -101,6 +124,14 @@ impl WorkerState {
             .lock()
             .map(|guard| guard.clone())
             .unwrap_or_default()
+    }
+
+    pub fn request_shutdown(&self) {
+        self.shutdown_requested.store(true, Ordering::SeqCst);
+    }
+
+    fn should_shutdown(&self) -> bool {
+        self.shutdown_requested.load(Ordering::SeqCst)
     }
 }
 
@@ -624,10 +655,12 @@ pub(crate) async fn translate_via_worker(
         // next translate click.
         drop(guard);
         set_worker_status(app, "idle", None, None);
-        let app_clone = app.clone();
-        tokio::spawn(async move {
-            let _ = prewarm_worker(&app_clone).await;
-        });
+        if !state.should_shutdown() {
+            let app_clone = app.clone();
+            tokio::spawn(async move {
+                let _ = prewarm_worker(&app_clone).await;
+            });
+        }
     } else {
         // Healthy worker stays warm.
         set_worker_status(app, "ready", None, None);
@@ -641,8 +674,14 @@ pub(crate) async fn translate_via_worker(
 /// has left the slot empty so the header indicator returns to "已就绪".
 pub(crate) async fn prewarm_worker(app: &AppHandle) -> Result<bool, String> {
     let state = app.state::<WorkerState>();
+    if state.should_shutdown() {
+        return Ok(false);
+    }
 
     let mut guard = state.inner.lock().await;
+    if state.should_shutdown() {
+        return Ok(false);
+    }
     if guard.is_some() {
         // Already warm — make sure the broadcast status reflects it (the
         // frontend may have just connected and missed the original "ready"
@@ -659,6 +698,7 @@ pub(crate) async fn shutdown_worker(app: &AppHandle) -> bool {
     let Some(state) = app.try_state::<WorkerState>() else {
         return false;
     };
+    state.request_shutdown();
 
     let mut guard = state.inner.lock().await;
     let Some(mut worker) = guard.take() else {

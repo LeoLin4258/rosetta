@@ -104,7 +104,7 @@ elif new not in text:
     $DocLayoutPatch | & $PythonExe -
     if ($LASTEXITCODE -ne 0) { throw "Failed to apply bundled DocLayout model patch" }
 
-    & $PythonExe -c "import fitz, numpy, torch, torchvision, cv2, doclayout_yolo, pdf2zh, tqdm"
+    & $PythonExe -c "import fitz, numpy, torch, torchvision, cv2, doclayout_yolo, pdf2zh, tqdm; from pdf2zh.converter import TextConverter"
     if ($LASTEXITCODE -ne 0) { throw "PDF runtime import smoke test failed" }
     & $PythonExe -m pdf2zh.pdf2zh --version
     if ($LASTEXITCODE -ne 0) { throw "pdf2zh CLI smoke test failed" }
@@ -126,7 +126,7 @@ elif new not in text:
     # a terminating error, even with $ErrorActionPreference = "Stop". Re-run
     # the import smoke test after pruning and inspect $LASTEXITCODE explicitly
     # so an incomplete pack can never be archived and uploaded.
-    & $PythonExe -c "import fitz, numpy, torch, torchvision, cv2, doclayout_yolo, pdf2zh, tqdm; print('pdf-pack-imports-ok')"
+    & $PythonExe -c "import fitz, numpy, torch, torchvision, cv2, doclayout_yolo, pdf2zh, tqdm; from pdf2zh.converter import TextConverter; print('pdf-pack-imports-ok')"
     if ($LASTEXITCODE -ne 0) { throw "Pruned PDF runtime import smoke test failed" }
 
     if (Test-Path -LiteralPath $ArchivePath) { Remove-Item -LiteralPath $ArchivePath -Force }

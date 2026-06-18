@@ -6,7 +6,7 @@ pub mod status;
 pub mod worker;
 
 use serde::Serialize;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 pub use install::Pdf2zhInstallRegistry as InstallStateRegistry;
 pub use status::build_static_status;
@@ -42,8 +42,18 @@ pub fn prewarm_in_background(app: &AppHandle) {
     });
 }
 
+pub fn suspend_worker(app: &AppHandle) {
+    if let Some(state) = app.try_state::<Pdf2zhWorkerState>() {
+        state.request_shutdown();
+    }
+}
+
+pub async fn shutdown_worker(app: &AppHandle) -> bool {
+    worker::shutdown_worker(app).await
+}
+
 pub async fn shutdown_worker_for_exit(app: &AppHandle) {
-    if worker::shutdown_worker(app).await {
+    if shutdown_worker(app).await {
         eprintln!("[pdf2zh-worker] stopped during app exit");
     }
 }

@@ -75,6 +75,7 @@ export function OnboardingApp() {
   // back to neutral copy in that case rather than blocking the screen.
   const [decision, setDecision] = useState<{
     modelSizeBytes: number | null;
+    localInstallSizeBytes: number | null;
     isReturningUser: boolean;
   } | null>(null);
   useEffect(() => {
@@ -84,6 +85,7 @@ export function OnboardingApp() {
         if (!mounted) return;
         setDecision({
           modelSizeBytes: d.modelSizeBytes,
+          localInstallSizeBytes: d.localInstallSizeBytes,
           isReturningUser: d.isReturningUser,
         });
       })
@@ -213,7 +215,9 @@ export function OnboardingApp() {
             onBeginInstall={handleBeginInstall}
             onSkipToExternal={handleSkipToExternal}
             isInstalling={runtime.isInstalling || runtime.isRefreshing}
-            modelSizeBytes={decision?.modelSizeBytes ?? null}
+            downloadSizeBytes={
+              decision?.localInstallSizeBytes ?? decision?.modelSizeBytes ?? null
+            }
             isReturningUser={decision?.isReturningUser ?? false}
             localInstallSupported={runtime.status?.hardware?.supported ?? false}
             supportMessage={
@@ -230,6 +234,8 @@ export function OnboardingApp() {
             onSkip={handleSkipToExternal}
             defaultCaption={formatDownloadCaption(decision?.modelSizeBytes ?? null)}
             downloadingCaption={formatDownloadCaption(decision?.modelSizeBytes ?? null)}
+            title="正在准备本地翻译引擎"
+            stepLabel="步骤 1 / 2"
           />
         )}
         {step === "installing-pdf" && (
@@ -247,6 +253,7 @@ export function OnboardingApp() {
             downloadingCaption="正在下载 PDF 版面处理组件"
             skipLabel="暂时跳过 PDF 组件"
             skipHint="以后可在设置中安装"
+            stepLabel={usingExternalApi ? "可选组件" : "步骤 2 / 2"}
           />
         )}
         {step === "done" && (

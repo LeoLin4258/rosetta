@@ -3,11 +3,14 @@
 # web UI and unrelated cloud translator packages do not enter the local pack.
 albucore==0.0.24
 albumentations==2.0.8
+azure-ai-translation-text==1.0.1
 charset-normalizer==3.4.7
 cryptography==49.0.0
+deepl==1.18.0
 doclayout-yolo==0.0.4
 huggingface-hub==1.19.0
 numpy==2.4.6
+ollama==0.6.1
 openai==2.42.0
 opencv-python-headless==4.13.0.92
 pillow==12.2.0

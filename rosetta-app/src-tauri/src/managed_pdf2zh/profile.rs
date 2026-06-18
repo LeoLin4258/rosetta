@@ -45,12 +45,12 @@ pub const WINDOWS_AMD64_PDF2ZH: Pdf2zhProfile = Pdf2zhProfile {
     pack_directory_name: "windows-amd64",
     bin_relative_path: "python/python.exe",
     pack_filename: "rosetta-pdf2zh-windows-amd64.zip",
-    pack_size_bytes: Some(386_074_457),
-    pack_sha256: Some("408690d6b04ea3ed2066dce1b3b4a33b50aaadd546f1c1b8bd9a8669603d4910"),
-    // The v2026.06.18.1 asset is intentionally disabled: it was published
-    // without tqdm and cannot start the worker. Fill these URLs only after
-    // the rebuilt, verified pack above is uploaded under a new release tag.
-    pack_download_urls: &[],
+    pack_size_bytes: Some(388_779_668),
+    pack_sha256: Some("d3cad5c7a5d0faf9a06d746c9a0e0343dcb969fada0c5702c96a1a5efe93d529"),
+    pack_download_urls: &[
+        "https://github.com/LeoLin4258/rosetta-assets/releases/download/pdf-layout-pack-windows-x64-v2026.06.18.2/rosetta-pdf2zh-windows-amd64.zip",
+        "https://githubdog.com/https://github.com/LeoLin4258/rosetta-assets/releases/download/pdf-layout-pack-windows-x64-v2026.06.18.2/rosetta-pdf2zh-windows-amd64.zip",
+    ],
 };
 
 const ALL_PROFILES: &[Pdf2zhProfile] = &[MACOS_ARM64_PDF2ZH, WINDOWS_AMD64_PDF2ZH];
@@ -85,7 +85,7 @@ impl Pdf2zhProfileSummary {
 
 #[cfg(test)]
 mod tests {
-    use super::MACOS_ARM64_PDF2ZH;
+    use super::{MACOS_ARM64_PDF2ZH, WINDOWS_AMD64_PDF2ZH};
 
     #[test]
     fn macos_pdf_pack_has_mainland_download_fallback() {
@@ -103,5 +103,17 @@ mod tests {
                 .any(|url| url.starts_with("https://githubdog.com/https://github.com/")),
             "githubdog mirror should be available for mainland users"
         );
+    }
+
+    #[test]
+    fn windows_pdf_pack_has_mainland_download_fallback() {
+        assert!(WINDOWS_AMD64_PDF2ZH
+            .pack_download_urls
+            .iter()
+            .any(|url| url.starts_with("https://github.com/")));
+        assert!(WINDOWS_AMD64_PDF2ZH
+            .pack_download_urls
+            .iter()
+            .any(|url| url.starts_with("https://githubdog.com/")));
     }
 }

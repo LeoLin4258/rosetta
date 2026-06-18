@@ -1057,11 +1057,7 @@ function DangerSettingsSection({
       setResetResult(result);
       setDialogOpen(false);
     } catch (error) {
-      setResetError(
-        error instanceof Error
-          ? error.message
-          : "无法清除 Rosetta 本机数据。"
-      );
+      setResetError(errorMessage(error, "无法清除 Rosetta 本机数据。"));
     } finally {
       setIsClearing(false);
     }
@@ -1170,6 +1166,12 @@ function DangerSettingsSection({
       </Card>
     </section>
   );
+}
+
+function errorMessage(error: unknown, fallback: string) {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string" && error.trim()) return error;
+  return fallback;
 }
 
 function SettingsRowHeader({

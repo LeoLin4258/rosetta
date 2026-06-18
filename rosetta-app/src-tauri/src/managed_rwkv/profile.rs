@@ -192,7 +192,10 @@ pub const WINDOWS_AMD64_CUDA: RuntimeProfile = RuntimeProfile {
     runtime_archive_sha256: Some(
         "b2a4a08cc3c1e6caa836850acd6ba86e3d03f9b2dde4fa1b65278aa00f870499",
     ),
-    runtime_download_urls: &[],
+    runtime_download_urls: &[
+        "https://github.com/LeoLin4258/rosetta-assets/releases/download/rwkv-runtime-windows-x64-v2026.06.18.21/RWKV_lightning_CUDA_sm75+_Win_MSVC.zip",
+        "https://githubdog.com/https://github.com/LeoLin4258/rosetta-assets/releases/download/rwkv-runtime-windows-x64-v2026.06.18.21/RWKV_lightning_CUDA_sm75+_Win_MSVC.zip",
+    ],
     runtime_library_dir_name: Some("lib"),
     tokenizer_filename: "rwkv_vocab_v20230424.txt",
     model_directory_name: "rwkv7-0.4b-translate-windows-pth",
@@ -296,6 +299,14 @@ mod tests {
         assert!(WINDOWS_AMD64_CUDA.hardware_requirement.contains("SM75"));
         assert_eq!(WINDOWS_AMD64_CUDA.bind_host, "[::1]");
         assert_eq!(WINDOWS_AMD64_CUDA.batch_chat_path, "/v1/batch/completions");
+        assert!(WINDOWS_AMD64_CUDA
+            .runtime_download_urls
+            .iter()
+            .any(|url| url.starts_with("https://github.com/")));
+        assert!(WINDOWS_AMD64_CUDA
+            .runtime_download_urls
+            .iter()
+            .any(|url| url.starts_with("https://githubdog.com/")));
     }
 
     #[test]

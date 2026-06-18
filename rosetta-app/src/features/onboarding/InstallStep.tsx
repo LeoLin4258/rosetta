@@ -29,6 +29,7 @@ type InstallStepProps = {
   downloadingCaption?: string;
   skipLabel?: string;
   skipHint?: string;
+  stepLabel?: string;
 };
 
 const ACTIVE_PHASES = new Set([
@@ -55,6 +56,7 @@ export function InstallStep({
   downloadingCaption = "下载完成后无需再联网",
   skipLabel = "使用自己的翻译 API →",
   skipHint = "跳过后可在设置中配置 API",
+  stepLabel,
 }: InstallStepProps) {
   const [confirmingCancel, setConfirmingCancel] = useState(false);
   const [confirmingSkip, setConfirmingSkip] = useState(false);
@@ -120,9 +122,13 @@ export function InstallStep({
           <Download className="size-7 animate-pulse" strokeWidth={1.5} />
         </div>
         <div className="space-y-2">
+          {stepLabel && (
+            <p className="text-xs font-medium text-muted-foreground">{stepLabel}</p>
+          )}
           <h2 className="text-xl font-semibold">{title}</h2>
           <p className="text-sm text-muted-foreground">
-            {phaseCaption(progress?.phase, defaultCaption, downloadingCaption)}
+            {progress?.message ||
+              phaseCaption(progress?.phase, defaultCaption, downloadingCaption)}
           </p>
         </div>
 

@@ -734,6 +734,9 @@ export type OnboardingDecision = {
    *  Welcome step's "约 X MB · 一次下载" subline. `null` on unsupported
    *  platforms (no profile resolves). */
   modelSizeBytes: number | null;
+  /** Remaining download size for runtime + model + PDF component. Existing
+   *  verified artifacts are excluded for returning users. */
+  localInstallSizeBytes: number | null;
   /** `true` when the user previously completed onboarding (= upgrading user).
    *  Used to swap "新用户欢迎" copy for "欢迎回来 + 解释为什么要再下". */
   isReturningUser: boolean;

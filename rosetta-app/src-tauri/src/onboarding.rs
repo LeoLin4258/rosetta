@@ -26,7 +26,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::managed_rwkv;
+use crate::{managed_pdf2zh, managed_rwkv};
 
 const STATE_FILENAME: &str = "onboarding.json";
 
@@ -61,6 +61,10 @@ pub struct OnboardingDecision {
     /// beta.7 users see "1.3 GB" when the new MLX model is actually 360 MB.
     /// `None` on unsupported platforms (no profile resolves).
     pub model_size_bytes: Option<u64>,
+    /// Remaining bytes for the complete recommended first-run setup:
+    /// managed runtime (when separate), translation model, and PDF component.
+    /// Existing verified artifacts are excluded for returning users.
+    pub local_install_size_bytes: Option<u64>,
     /// `true` when the user previously completed onboarding (i.e. they're
     /// an upgrading user, not a first-time install). WelcomeStep uses this
     /// to swap the "新用户欢迎" copy for "欢迎回来 + 解释为什么要再下".
@@ -118,6 +122,30 @@ pub fn decide(app: &AppHandle) -> OnboardingDecision {
         None => false, // unsupported platform — onboarding will route to "use external API"
     };
     let model_size_bytes = profile.map(|p| p.model_size_bytes);
+    let local_install_size_bytes = profile.map(|profile| {
+        let runtime_layout = managed_rwkv::layout::RuntimeLayout::from_app(app, profile).ok();
+        let runtime_bytes = runtime_layout
+            .as_ref()
+            .filter(|layout| !layout.is_runtime_installed(profile))
+            .and(profile.runtime_archive_size_bytes)
+            .unwrap_or(0);
+        let model_bytes = runtime_layout
+            .as_ref()
+            .filter(|layout| !layout.is_model_installed())
+            .map(|_| profile.model_size_bytes)
+            .unwrap_or(0);
+        let pdf_bytes = managed_pdf2zh::profile::current_profile()
+            .and_then(|pdf_profile| {
+                managed_pdf2zh::build_static_status(app)
+                    .ok()
+                    .filter(|status| !status.install_plan.ready)
+                    .and(pdf_profile.pack_size_bytes)
+            })
+            .unwrap_or(0);
+        runtime_bytes
+            .saturating_add(model_bytes)
+            .saturating_add(pdf_bytes)
+    });
     // User who opted out of local install doesn't need a model — but we still
     // need them to have completed onboarding once. `completed` alone wins
     // for the "skipped_local" path.
@@ -137,6 +165,7 @@ pub fn decide(app: &AppHandle) -> OnboardingDecision {
         model_installed,
         needs_onboarding,
         model_size_bytes,
+        local_install_size_bytes,
         is_returning_user,
     }
 }

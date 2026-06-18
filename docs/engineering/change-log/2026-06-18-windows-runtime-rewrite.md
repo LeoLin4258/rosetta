@@ -15,33 +15,34 @@ Windows implementation.
 | 0 | Dev environment ready | **Done** |
 | 1 | RWKV runtime ZIP | **Done** |
 | 2 | PDF pack ZIP | **Done** |
-| 3 | No-GPU smoke test | In progress |
-| 4 | GPU end-to-end test | Blocked on 3 |
-| 5 | Build & release | Blocked on 4 |
+| 3 | No-GPU smoke test | Superseded by NVIDIA validation |
+| 4 | GPU end-to-end test | **Done** |
+| 5 | Build & release | Local installer done; signing/publish pending |
 
 ### Phase 0: Dev environment ready
 
 - [x] `fetch-pdfium-windows-x64.ps1` — pdfium.dll staged
 - [x] `cargo check` passes (5 warnings, 0 errors)
 - [x] Fixed `lib.rs:175` `window` → `_window` variable name bug
-- [ ] `pnpm dev` frontend starts (not yet verified)
+- [x] `pnpm dev` frontend and Tauri dev app start
 
 ### Phase 1: RWKV runtime ZIP
 
 Goal: From upstream `.7z` produce a dev ZIP, pin profile metadata.
 
 - [x] Download `.7z` from `Alic-Li/rwkv_lightning_cuda` V1.0.0 Release
-- [x] Run `build-rwkv-lightning-windows-dev-zip.ps1` → ZIP (404,232,358 bytes, SHA256 `2370dcf5...`)
+- [x] Build deterministic patched runtime ZIP (404,318,341 bytes, SHA256 `b2a4a08c...`)
 - [x] Fill `profile.rs` `WINDOWS_AMD64_CUDA`: `runtime_archive_size_bytes`, `runtime_archive_sha256`
-- [ ] After upstream publishes official ZIP tonight: swap URL + re-pin
+- [x] Publish verified ZIP to `rosetta-assets` tag `rwkv-runtime-windows-x64-v2026.06.18.21`
+- [x] Configure GitHub and githubdog download URLs
 
 ### Phase 2: PDF pack ZIP
 
 Goal: Build Windows pdf2zh embedded Python environment.
 
-- [x] Run `build-pdf2zh-pack-windows-amd64.ps1` → ZIP (355,011,264 bytes) + manifest
+- [x] Build complete Windows PDF pack ZIP (388,779,668 bytes) + manifest
 - [x] Fill `profile.rs` `WINDOWS_AMD64_PDF2ZH`: `pack_size_bytes`, `pack_sha256`
-- [x] Upload to `LeoLin4258/rosetta-assets` Release (`pdf-layout-pack-windows-x64-v2026.06.18.1`)
+- [x] Upload to `LeoLin4258/rosetta-assets` Release (`pdf-layout-pack-windows-x64-v2026.06.18.2`)
 - [x] Fill `pack_download_urls` (GitHub + githubdog mirror)
 
 ### Phase 3: No-GPU smoke test (on dev machine without NVIDIA)
@@ -58,13 +59,16 @@ Goal: Build Windows pdf2zh embedded Python environment.
 
 ### Phase 4: GPU end-to-end test (on NVIDIA Windows machine)
 
-- [ ] Hardware detection identifies GPU model + compute capability
-- [x] RWKV runtime ZIP install — fixed, re-extraction now triggered (see Known Issues #1)
+- [x] Hardware detection identifies NVIDIA GPU model + compute capability
+- [x] RWKV runtime ZIP download, verification, extraction, and manifest
 - [x] Model download + SHA256 verify — HuggingFace mirror works
-- [ ] RWKV sidecar start + /v1/models health probe — blocked by #1 (first run), should work after fix
-- [ ] Text translation (Markdown) works
-- [ ] PDF translation (OpenAI shim → Lightning CUDA) works
-- [ ] Stop runtime + process tree cleanup
+- [x] RWKV sidecar starts on IPv6 loopback and passes health probe
+- [x] Text translation works through `/v1/batch/completions`
+- [x] PDF translation works through the local OpenAI shim and Lightning CUDA
+- [x] Persistent PDF worker prewarms and remains reusable between jobs
+- [x] Stop runtime + process tree cleanup
+- [x] Local data reset stops both workers and removes managed artifacts
+- [x] Clean first-run onboarding downloads runtime, model, and PDF component
 
 **Test run 1 (build without logging):** RWKV and PDF both failed silently.
 No log file existed. No diagnostics.
@@ -86,10 +90,12 @@ No log file existed. No diagnostics.
 
 ### Phase 5: Build & release
 
-- [ ] `tauri.windows.conf.json` config verified
-- [ ] `tauri build --target x86_64-pc-windows-msvc` succeeds
-- [ ] Installer install/uninstall test
-- [ ] If upstream published official RWKV ZIP: swap profile URL + re-pin
+- [x] Windows bundle configuration verified
+- [x] Release executable and NSIS installer build successfully
+- [x] NSIS installer first-run installation and complete user flow verified
+- [x] Runtime and PDF component profiles use pinned published artifacts
+- [ ] Configure `TAURI_SIGNING_PRIVATE_KEY` for updater artifacts
+- [ ] Installer uninstall test
 - [ ] GitHub Release
 
 ## Changes (code)
@@ -111,24 +117,25 @@ No log file existed. No diagnostics.
   always returning a bare filename that bypasses the existence check.
 - Fixed all three Windows PowerShell scripts to reset PATH to system-only,
   avoiding Git Bash's `/usr/bin/tar` shadowing Windows `tar.exe`.
-- Pinned Windows PDF pack metadata: 355,011,264 bytes, SHA256 `9d64d03a...`.
+- Pinned final Windows PDF pack metadata: 388,779,668 bytes, SHA256
+  `d3cad5c7...d529`.
 
 ## Artifact state
 
-- Temporary RWKV ZIP: **built**
+- Windows RWKV runtime ZIP: **published and verified**
   `RWKV_lightning_CUDA_sm75+_Win_MSVC.zip`
-  Size: `404232358`
-  SHA256: `2370dcf5578f480be4721100bad8ff44b1de83b4cb98d17a38ba6955cd6faddf`
-- Windows PDF pack: **built**
+  Size: `404318341`
+  SHA256: `b2a4a08cc3c1e6caa836850acd6ba86e3d03f9b2dde4fa1b65278aa00f870499`
+  Release: `rwkv-runtime-windows-x64-v2026.06.18.21`
+- Windows PDF pack: **published and verified**
   `rosetta-pdf2zh-windows-amd64.zip`
-  Size: `355011264`
-  SHA256: `9d64d03abf505d67df396f8560aebd4d47478b465149dff9c295c667efd59825`
-- The runtime URL, size, and SHA must be replaced with the official upstream
-  ZIP metadata before release.
-- The Windows PDF pack download URLs remain empty — fill after uploading to
-  `LeoLin4258/rosetta-assets`.
+  Size: `388779668`
+  SHA256: `d3cad5c7a5d0faf9a06d746c9a0e0343dcb969fada0c5702c96a1a5efe93d529`
+  Release: `pdf-layout-pack-windows-x64-v2026.06.18.2`
+- Both assets return HTTP 200 from the primary GitHub URL and the githubdog
+  fallback, with server-reported sizes matching the pinned profiles.
 
-## Known Issues (Phase 4 blockers)
+## Historical blockers (resolved)
 
 ### Issue #1: RWKV install/start fails — no failure reason in log
 
@@ -163,8 +170,12 @@ cd C:\Users\rwkv\AppData\Local\com.rosetta.desktop\managed-rwkv\runtimes\rwkv-li
 .\rwkv_lighting_cuda.exe --model-path "C:\Users\rwkv\AppData\Local\com.rosetta.desktop\managed-rwkv\models\rwkv7-0.4b-translate-windows-pth\RWKV_v7_G1d_0.4B_Translate_ctx4096_20260607.pth" --vocab-path .\rwkv_vocab_v20230424.txt --port 28888
 ```
 
-**Status:** UNRESOLVED. Detection improved, but extraction and startup not
-verified. Logging still insufficient.
+**Resolution:** The runtime archive is now built deterministically, contains
+the required tokenizer and DLL set, and is validated after extraction. The
+unsupported `--host` argument was removed, the pinned runtime was patched to
+bind to IPv6 loopback, and Rosetta now uses the runtime's actual
+`/v1/batch/completions` contract. Installation, startup, health probing, and
+translation were verified on the NVIDIA Windows machine.
 
 ### Issue #2: PDF worker Python process exits immediately with no output
 
@@ -197,19 +208,19 @@ C:\Users\rwkv\AppData\Local\com.rosetta.desktop\pdf2zh-sidecar\pack\windows-amd6
 ```
 to verify the Python interpreter itself works.
 
-**Status:** Unresolved. Needs manual diagnosis on the NVIDIA test machine.
+**Resolution:** The embedded Python environment itself was healthy. The pack
+was incomplete because native `pip` failures did not stop the PowerShell
+script. All native build steps now check `$LASTEXITCODE`; the pack includes
+the modules imported unconditionally by pdf2zh and smoke-tests
+`pdf2zh.converter.TextConverter`. The persistent worker now reaches ready and
+successfully translates PDFs.
 
-### Summary: both RWKV and PDF are non-functional on Windows
+### Historical checkpoint
 
-Three test builds, three failures. The core problem is that the Codex-written
-code was never tested on an actual Windows machine — it compiled but the
-runtime behavior is unvalidated. The diagnostic logging added across these
-test iterations has improved visibility but not fixed the underlying issues.
-
-**Next steps require manual work on the NVIDIA machine** — run the diagnostic
-commands above to determine whether the components work at all outside the
-Tauri app wrapper. If they don't, the problems are in the artifacts (ZIP
-contents, Python pack structure), not the Rust orchestration code.
+The section above records the state before takeover on the NVIDIA Windows
+machine. Those failures are retained because they explain the runtime, pack,
+API-contract, and process-lifecycle fixes. They are no longer current release
+blockers.
 
 ## Diagnostic infrastructure added
 
@@ -238,10 +249,10 @@ Validated on an NVIDIA GeForce RTX 5070 (driver 596.21, CUDA 13.2):
   failed on a Chinese GBK locale while reading UTF-8 Python source. It now
   reads and writes UTF-8 explicitly.
 - The rebuilt PDF worker completed all four warmup phases and reached ready.
-  The verified replacement pack is 386,074,457 bytes with SHA256
+  That intermediate replacement pack was 386,074,457 bytes with SHA256
   `408690d6b04ea3ed2066dce1b3b4a33b50aaadd546f1c1b8bd9a8669603d4910`.
-  The broken `.1` download URLs are disabled until this replacement is
-  uploaded under a new release tag.
+  It was later superseded by the final dependency-complete `.2` pack recorded
+  in Artifact state.
 - RWKV failed because Rosetta passed `--host 127.0.0.1`, which upstream
   V1.0.0 does not support. Its uncaught unknown-argument exception terminates
   as Windows BEX64 / `0xc0000409` in `ucrtbase.dll`.
@@ -278,6 +289,61 @@ Validated on an NVIDIA GeForce RTX 5070 (driver 596.21, CUDA 13.2):
 - Rosetta requests Lightning batch translations with `stream: false`, matching
   the managed macOS translation behavior. Streaming response parsing remains
   only as compatibility handling for external APIs.
+- The persistent PDF worker no longer changes its process working directory to
+  a job's `pdf2zh-output` folder. Windows keeps a process working directory
+  locked, so the old behavior made the next translation retry partially delete
+  the folder, lose its diagnostics, and fail before the worker could start.
+- Clearing Rosetta's local data now suspends and stops the persistent PDF
+  worker before deleting `pdf2zh-sidecar`. This avoids Windows file-lock
+  failures and prevents a cancelled translation from immediately prewarming a
+  replacement worker during reset. Reset errors now show the concrete backend
+  message instead of a generic failure.
+- The Windows PDF pack now includes `deepl`, `ollama`, and
+  `azure-ai-translation-text`. `pdf2zh.translator` imports all three modules
+  unconditionally even when Rosetta selects only the local OpenAI-compatible
+  shim. Pack smoke tests now import `pdf2zh.converter.TextConverter`, which
+  exercises this real translation import path instead of only `import pdf2zh`.
+- Published the verified Windows artifacts to `LeoLin4258/rosetta-assets`:
+  - RWKV runtime tag `rwkv-runtime-windows-x64-v2026.06.18.21`
+  - PDF component tag `pdf-layout-pack-windows-x64-v2026.06.18.2`
+  Both profiles now use the GitHub Release URL with a githubdog fallback.
+- First-run onboarding reports the remaining combined download size for the
+  runtime, translation model, and PDF component, and labels the two real setup
+  stages. Returning users do not count artifacts already present on disk.
+- Windows runtime download now tries every pinned remote URL before falling
+  back to a matching ZIP in the user's Downloads directory. Explicit
+  `runtimePackPath` and environment overrides still take precedence. User
+  cancellation stops mirror retries and the Downloads fallback immediately.
 - Repair installation now stops and reaps the managed sidecar before deleting
   the Windows runtime directory. This avoids Windows error 5 when the running
   executable and DLLs are still locked.
+
+## Final acceptance validation
+
+Validated on 2026-06-19 using a clean local-data state and the generated NSIS
+installer:
+
+- Onboarding opened for a first-time user.
+- The UI reported the combined runtime, model, and PDF component download.
+- The Windows runtime, translation model, and PDF component downloaded from
+  their published profiles and installed successfully.
+- The managed RWKV process started and translated documents.
+- The PDF worker prewarmed and completed PDF translation.
+- Clearing local data stopped managed processes and removed installed
+  components, allowing the first-run flow to be repeated.
+- The complete user installation and usage flow passed.
+
+Local NSIS artifact:
+
+- File: `Rosetta_0.1.0-beta.13_x64-setup.exe`
+- Size: `13,924,576` bytes
+- SHA256:
+  `405D559B53C4AD1B081C27E1BBCC22306B9EFCDD7E87CCB4C8712BF5075E80E0`
+
+The first NSIS tool download was truncated and failed with
+`unexpected end of file`; retrying downloaded and validated NSIS 3.11
+successfully. The standard release build then stopped after installer
+generation because updater artifacts are enabled but
+`TAURI_SIGNING_PRIVATE_KEY` was not present. A local-test build with updater
+artifacts disabled completed successfully. Production publishing still
+requires the updater signing private key.

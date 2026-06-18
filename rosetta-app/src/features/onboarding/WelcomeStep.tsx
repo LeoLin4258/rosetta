@@ -9,10 +9,8 @@ type WelcomeStepProps = {
   onBeginInstall: () => void;
   onSkipToExternal: () => void;
   isInstalling: boolean;
-  /** From `OnboardingDecision.modelSizeBytes` — actual bytes of the model
-   *  the user is about to download. `null` while the decision RPC is in
-   *  flight or on unsupported platforms. */
-  modelSizeBytes: number | null;
+  /** Remaining bytes for runtime + model + PDF component. */
+  downloadSizeBytes: number | null;
   /** From `OnboardingDecision.isReturningUser` — `true` when the user
    *  previously completed onboarding and is now seeing it again because
    *  their model went missing (almost always = they upgraded to a release
@@ -42,7 +40,7 @@ export function WelcomeStep({
   onBeginInstall,
   onSkipToExternal,
   isInstalling,
-  modelSizeBytes,
+  downloadSizeBytes,
   isReturningUser,
   localInstallSupported,
   supportMessage,
@@ -52,7 +50,7 @@ export function WelcomeStep({
   const [showProxyConfig, setShowProxyConfig] = useState(false);
   const [confirmingSkip, setConfirmingSkip] = useState(false);
 
-  const sizeLabel = formatModelSize(modelSizeBytes);
+  const sizeLabel = formatModelSize(downloadSizeBytes);
 
   return (
     <div className="flex h-full flex-col justify-between px-14 py-10">
@@ -106,7 +104,7 @@ export function WelcomeStep({
         </Button>
         <p className="max-w-sm text-center text-xs text-muted-foreground/60">
           {localInstallSupported
-            ? `${sizeLabel} · 一次下载`
+            ? `${sizeLabel} · 包含翻译引擎、模型和 PDF 组件`
             : supportMessage ?? "当前设备不支持本地翻译引擎"}
         </p>
       </div>

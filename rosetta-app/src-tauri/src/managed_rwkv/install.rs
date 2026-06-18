@@ -583,7 +583,7 @@ async fn install_runtime_pack(
         .as_ref()
         .ok_or_else(|| "Windows runtime layout 缺少下载路径。".to_string())?;
 
-    let source = if let Some(local) = resolve_local_runtime_pack(filename, options) {
+    let source = if let Some(local) = resolve_explicit_runtime_pack(options) {
         update_progress(registry, |progress| {
             progress.phase = InstallPhase::Downloading;
             progress.bytes_done = 0;
@@ -598,26 +598,64 @@ async fn install_runtime_pack(
             .map_err(|error| format!("复制 Windows RWKV 运行包失败: {error}"))?;
         local.display().to_string()
     } else {
-        let url = profile
-            .runtime_download_urls
-            .first()
-            .copied()
-            .ok_or_else(|| {
-                format!(
-                    "找不到 {filename}。请将开发 ZIP 放到 Downloads，或通过 runtimePackPath 指定。"
-                )
-            })?;
-        download_runtime_pack(
-            app,
-            registry,
-            url,
-            archive_path,
-            expected_size,
-            cancel,
-            proxy_url,
-        )
-        .await?;
-        url.to_string()
+        let mut downloaded_from = None;
+        let mut failures = Vec::new();
+        for (index, url) in profile.runtime_download_urls.iter().enumerate() {
+            if cancel.load(Ordering::SeqCst) {
+                set_cancelled(registry).await;
+                emit_progress(app, registry).await;
+                return Err("安装已取消。".to_string());
+            }
+            let _ = tokio::fs::remove_file(archive_path).await;
+            update_progress(registry, |progress| {
+                progress.message = if index == 0 {
+                    "正在下载 Windows RWKV 运行包…".to_string()
+                } else {
+                    "正在尝试备用地址下载 Windows RWKV 运行包…".to_string()
+                };
+                progress.last_error = None;
+            })
+            .await;
+            emit_progress(app, registry).await;
+            match download_runtime_pack(
+                app,
+                registry,
+                url,
+                archive_path,
+                expected_size,
+                cancel,
+                proxy_url,
+            )
+            .await
+            {
+                Ok(()) => {
+                    downloaded_from = Some((*url).to_string());
+                    break;
+                }
+                Err(error) => {
+                    if cancel.load(Ordering::SeqCst) {
+                        set_cancelled(registry).await;
+                        emit_progress(app, registry).await;
+                        return Err("安装已取消。".to_string());
+                    }
+                    failures.push(format!("{url}: {error}"));
+                }
+            }
+        }
+
+        if let Some(url) = downloaded_from {
+            url
+        } else if let Some(local) = resolve_downloads_runtime_pack(filename) {
+            tokio::fs::copy(&local, archive_path)
+                .await
+                .map_err(|error| format!("复制 Windows RWKV 运行包失败: {error}"))?;
+            local.display().to_string()
+        } else {
+            return Err(format!(
+                "无法下载 Windows RWKV 运行包。{}",
+                failures.join("；")
+            ));
+        }
     };
 
     update_progress(registry, |progress| {
@@ -651,7 +689,7 @@ async fn install_runtime_pack(
     Ok(())
 }
 
-fn resolve_local_runtime_pack(filename: &str, options: &InstallOptions) -> Option<PathBuf> {
+fn resolve_explicit_runtime_pack(options: &InstallOptions) -> Option<PathBuf> {
     let mut candidates = Vec::new();
     if let Some(path) = options
         .runtime_pack_path
@@ -666,10 +704,15 @@ fn resolve_local_runtime_pack(filename: &str, options: &InstallOptions) -> Optio
             candidates.push(PathBuf::from(path.trim()));
         }
     }
-    if let Ok(home) = std::env::var("USERPROFILE") {
-        candidates.push(PathBuf::from(home).join("Downloads").join(filename));
-    }
     candidates.into_iter().find(|path| path.is_file())
+}
+
+fn resolve_downloads_runtime_pack(filename: &str) -> Option<PathBuf> {
+    std::env::var("USERPROFILE")
+        .ok()
+        .map(PathBuf::from)
+        .map(|home| home.join("Downloads").join(filename))
+        .filter(|path| path.is_file())
 }
 
 async fn download_runtime_pack(
