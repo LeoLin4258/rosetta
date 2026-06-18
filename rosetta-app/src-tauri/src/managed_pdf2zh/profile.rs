@@ -37,7 +37,23 @@ pub const MACOS_ARM64_PDF2ZH: Pdf2zhProfile = Pdf2zhProfile {
     ],
 };
 
-const ALL_PROFILES: &[Pdf2zhProfile] = &[MACOS_ARM64_PDF2ZH];
+pub const WINDOWS_AMD64_PDF2ZH: Pdf2zhProfile = Pdf2zhProfile {
+    id: "windows-amd64-pdf2zh",
+    platform_os: "windows",
+    platform_arch: "x86_64",
+    enabled: true,
+    pack_directory_name: "windows-amd64",
+    bin_relative_path: "python/python.exe",
+    pack_filename: "rosetta-pdf2zh-windows-amd64.zip",
+    pack_size_bytes: Some(355_011_264),
+    pack_sha256: Some("9d64d03abf505d67df396f8560aebd4d47478b465149dff9c295c667efd59825"),
+    pack_download_urls: &[
+        "https://github.com/LeoLin4258/rosetta-assets/releases/download/pdf-layout-pack-windows-x64-v2026.06.18.1/rosetta-pdf2zh-windows-amd64.zip",
+        "https://githubdog.com/https://github.com/LeoLin4258/rosetta-assets/releases/download/pdf-layout-pack-windows-x64-v2026.06.18.1/rosetta-pdf2zh-windows-amd64.zip",
+    ],
+};
+
+const ALL_PROFILES: &[Pdf2zhProfile] = &[MACOS_ARM64_PDF2ZH, WINDOWS_AMD64_PDF2ZH];
 
 pub fn current_profile() -> Option<&'static Pdf2zhProfile> {
     let os = std::env::consts::OS;

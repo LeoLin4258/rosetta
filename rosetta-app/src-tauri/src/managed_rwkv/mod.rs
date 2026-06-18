@@ -1,9 +1,9 @@
-//! Managed local RWKV runtime (Phase 3 — macOS-first per ADR 0003).
+//! Managed local RWKV runtime (macOS ADR 0003 + Windows ADR 0006).
 //!
 //! Public surface is the seven Tauri commands at the bottom of this file.
 //! Internals are split across:
 //!
-//! - `profile`   — RuntimeProfile + the macOS / (disabled) Windows constants
+//! - `profile`   — platform runtime and artifact contracts
 //! - `layout`    — app-data filesystem paths (models/runtime-state/logs)
 //! - `status`    — compatibility / install-plan / static status snapshot
 //! - `lifecycle` — port allocation, sidecar spawn / stop / probe, log tail
@@ -13,6 +13,7 @@
 //! flow; the command exists now so the frontend can land the install button
 //! UI in Phase 5 against a stable contract.
 
+pub mod hardware;
 pub mod install;
 pub mod layout;
 pub mod lifecycle;
@@ -50,6 +51,19 @@ pub struct ManagedRuntimeLogsSummary {
 pub struct ManagedRuntimeCancelInstallResult {
     pub cancelled: bool,
     pub message: String,
+}
+
+#[tauri::command]
+pub fn get_managed_rwkv_hardware_support() -> Result<hardware::HardwareSupport, String> {
+    let Some(profile) = profile::current_profile() else {
+        return Ok(hardware::HardwareSupport {
+            supported: false,
+            gpu_name: None,
+            compute_capability: None,
+            message: "当前平台暂不支持本地 RWKV 运行时。".to_string(),
+        });
+    };
+    Ok(hardware::inspect(profile))
 }
 
 // =============================================================================
@@ -90,6 +104,7 @@ pub async fn install_managed_rwkv_runtime(
     let Some(profile) = profile::current_profile() else {
         return Err("当前平台不支持本地 RWKV 运行时。".to_string());
     };
+    hardware::ensure_supported(profile)?;
     let layout = RuntimeLayout::from_app(&app, profile)?;
     install_model(
         &app,
@@ -128,24 +143,71 @@ pub async fn start_managed_rwkv_runtime(
     app: AppHandle,
     registry: State<'_, Registry>,
 ) -> Result<ManagedRuntimeStartResult, String> {
-    let static_status = build_static_status(&app)?;
+    eprintln!("[rwkv-start] === start_managed_rwkv_runtime ===");
+    let static_status = build_static_status(&app).map_err(|e| {
+        eprintln!("[rwkv-start] build_static_status failed: {e}");
+        e
+    })?;
+    eprintln!(
+        "[rwkv-start]   initial_state: {:?}",
+        static_status.initial_state
+    );
+    eprintln!(
+        "[rwkv-start]   install_plan.ready: {}",
+        static_status.install_plan.ready
+    );
+    for item in &static_status.install_plan.items {
+        eprintln!(
+            "[rwkv-start]   plan item: {:?} = {:?} ({})",
+            item.kind, item.state, item.message
+        );
+    }
+    eprintln!(
+        "[rwkv-start]   sidecar_path: {:?}",
+        static_status.sidecar_path
+    );
+    eprintln!(
+        "[rwkv-start]   tokenizer_path: {:?}",
+        static_status.tokenizer_path
+    );
+    eprintln!(
+        "[rwkv-start]   runtime_dir: {:?}",
+        static_status.layout.runtime_dir
+    );
+    eprintln!(
+        "[rwkv-start]   model_file: {}",
+        static_status.layout.model_file.display()
+    );
+
     if matches!(
         static_status.initial_state,
         ManagedRuntimeState::Unsupported
     ) {
-        return Err("当前平台不支持本地 RWKV 运行时。".to_string());
+        let msg = static_status.hardware.message;
+        eprintln!("[rwkv-start] ABORT: unsupported — {msg}");
+        return Err(msg);
     }
     if !static_status.install_plan.ready {
-        return Err(static_status.install_plan.message);
+        let msg = static_status.install_plan.message;
+        eprintln!("[rwkv-start] ABORT: not ready — {msg}");
+        return Err(msg);
     }
 
     let profile = static_status.profile;
     let sidecar = static_status
         .sidecar_path
-        .ok_or_else(|| "找不到 sidecar 二进制。".to_string())?;
+        .ok_or_else(|| {
+            let msg = "找不到 sidecar 二进制。".to_string();
+            eprintln!("[rwkv-start] ABORT: {msg}");
+            msg
+        })?;
     let tokenizer = static_status
         .tokenizer_path
-        .ok_or_else(|| "找不到分词表文件。".to_string())?;
+        .ok_or_else(|| {
+            let msg = "找不到分词表文件。".to_string();
+            eprintln!("[rwkv-start] ABORT: {msg}");
+            msg
+        })?;
     let model = static_status
         .layout
         .model_extracted_dir

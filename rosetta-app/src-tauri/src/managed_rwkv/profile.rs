@@ -10,6 +10,12 @@
 
 use serde::Serialize;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeLaunchKind {
+    RwkvMobile,
+    LightningCuda,
+}
+
 /// Static description of a managed sidecar runtime + its companion model.
 ///
 /// All fields are `&'static` so a profile is a `const` and can be matched
@@ -32,15 +38,24 @@ pub struct RuntimeProfile {
     pub platform_os: &'static str,
     /// `std::env::consts::ARCH` value the profile is valid on.
     pub platform_arch: &'static str,
+    pub runtime_label: &'static str,
+    pub hardware_requirement: &'static str,
     /// Whether this profile is part of the v1 surface. Windows profile stays
     /// `false` until Phase 8; Phase 3 reads this to skip Windows in dispatch.
     pub enabled: bool,
     /// Backend flag passed to `rwkv_server --backend`.
     pub backend: &'static str,
+    pub launch_kind: RuntimeLaunchKind,
     /// Sidecar filename as it appears in the Tauri bundle (Tauri externalBin
     /// convention: `<name>-<target-triple>`). On macOS the binary ends up in
     /// `<App>.app/Contents/MacOS/<filename>`.
     pub sidecar_binary_name: &'static str,
+    pub managed_runtime_directory_name: Option<&'static str>,
+    pub runtime_archive_filename: Option<&'static str>,
+    pub runtime_archive_size_bytes: Option<u64>,
+    pub runtime_archive_sha256: Option<&'static str>,
+    pub runtime_download_urls: &'static [&'static str],
+    pub runtime_library_dir_name: Option<&'static str>,
     /// Tokenizer file shipped as a Tauri bundle resource alongside the app.
     pub tokenizer_filename: &'static str,
     /// Subdirectory under `<app-local-data>/models/` where the model file lives.
@@ -86,9 +101,20 @@ pub const MACOS_ARM64_MLX: RuntimeProfile = RuntimeProfile {
     provider_id: "rwkv-mobile-batch-chat",
     platform_os: "macos",
     platform_arch: "aarch64",
+    runtime_label: "RWKV Mobile MLX",
+    hardware_requirement: "Apple Silicon",
     enabled: true,
     backend: "mlx",
+    launch_kind: RuntimeLaunchKind::RwkvMobile,
     sidecar_binary_name: "rwkv-server-aarch64-apple-darwin",
+    managed_runtime_directory_name: None,
+    runtime_archive_filename: None,
+    runtime_archive_size_bytes: Some(404_232_359),
+    runtime_archive_sha256: Some(
+        "925a24997c564bb4bbe27723ac189da56901d87cb5c5e7e6be4ca1a860f26e8b",
+    ),
+    runtime_download_urls: &[],
+    runtime_library_dir_name: None,
     tokenizer_filename: "b_rwkv_vocab_v20230424.txt",
     model_directory_name: "rwkv7-0.4b-mlx-6bit",
     model_filename: "rwkv7-0.4B-g1d-translate-20260607-ctx4096-mlx-6bit.zip",
@@ -112,9 +138,18 @@ pub const MACOS_ARM64_WEBRWKV: RuntimeProfile = RuntimeProfile {
     provider_id: "rwkv-mobile-batch-chat",
     platform_os: "macos",
     platform_arch: "aarch64",
+    runtime_label: "RWKV Mobile WebRWKV",
+    hardware_requirement: "Apple Silicon",
     enabled: false,
     backend: "web-rwkv",
+    launch_kind: RuntimeLaunchKind::RwkvMobile,
     sidecar_binary_name: "rwkv-server-aarch64-apple-darwin",
+    managed_runtime_directory_name: None,
+    runtime_archive_filename: None,
+    runtime_archive_size_bytes: None,
+    runtime_archive_sha256: None,
+    runtime_download_urls: &[],
+    runtime_library_dir_name: None,
     tokenizer_filename: "b_rwkv_vocab_v20230424.txt",
     model_directory_name: "rwkv-translate-1.5b-nf4",
     model_filename: "RWKV_v7_G1c_1.5B_Translate_ctx4096_20260118-nf4.prefab",
@@ -138,33 +173,41 @@ pub const MACOS_ARM64_WEBRWKV: RuntimeProfile = RuntimeProfile {
     bind_host: "127.0.0.1",
 };
 
-/// Windows libtorch profile — placeholder for Phase 8.
-///
-/// Kept as a const so the profile abstraction is exercised by more than one
-/// instance even before the Windows lifecycle code lands. `enabled: false`
-/// means the status command reports `unsupported` even on Windows hosts
-/// until the supporting code lands.
+/// Windows NVIDIA CUDA profile.
 #[allow(dead_code)]
-pub const WINDOWS_AMD64_LIBTORCH: RuntimeProfile = RuntimeProfile {
-    id: "windows-amd64-libtorch",
+pub const WINDOWS_AMD64_CUDA: RuntimeProfile = RuntimeProfile {
+    id: "windows-amd64-rwkv-lightning-cuda",
     provider_id: "rwkv-lightning-contents",
     platform_os: "windows",
     platform_arch: "x86_64",
-    enabled: false,
-    backend: "libtorch",
-    sidecar_binary_name: "rwkv_lightning.exe",
+    runtime_label: "RWKV Lightning NVIDIA CUDA",
+    hardware_requirement: "NVIDIA GPU, SM75 or newer",
+    enabled: true,
+    backend: "cuda-openai",
+    launch_kind: RuntimeLaunchKind::LightningCuda,
+    sidecar_binary_name: "rwkv_lighting_cuda.exe",
+    managed_runtime_directory_name: Some("rwkv-lightning-cuda-sm75-msvc"),
+    runtime_archive_filename: Some("RWKV_lightning_CUDA_sm75+_Win_MSVC.zip"),
+    runtime_archive_size_bytes: Some(404_232_358),
+    runtime_archive_sha256: Some(
+        "2370dcf5578f480be4721100bad8ff44b1de83b4cb98d17a38ba6955cd6faddf",
+    ),
+    runtime_download_urls: &[],
+    runtime_library_dir_name: Some("lib"),
     tokenizer_filename: "rwkv_vocab_v20230424.txt",
-    model_directory_name: "rwkv-v7-g1-translate-1.5b",
-    model_filename: "RWKV_v7_G1c_1.5B_Translate_ctx4096_20260118.pth",
+    model_directory_name: "rwkv7-0.4b-translate-windows-pth",
+    model_filename: "RWKV_v7_G1d_0.4B_Translate_ctx4096_20260607.pth",
     model_is_zip: false,
-    model_size_bytes: 3_055_445_546,
-    model_sha256: "b51051a35949cbd6189da3d99b2bd9ae632d5665716a8e647abbe208f21120fa",
+    model_size_bytes: 901_775_740,
+    model_sha256: "b9a1b013c3a938515f8b9bc23c28d815fa6f839eef77a943e92e7e70d35a0527",
     model_download_urls: &[
-        "https://modelscope.cn/models/AlicLi/RWKV_v7_G1_Translate/resolve/master/RWKV_v7_G1c_1.5B_Translate_ctx4096_20260118.pth",
+        "https://modelscope.cn/models/AlicLi/RWKV_v7_G1_Translate/resolve/master/RWKV_v7_G1d_0.4B_Translate_ctx4096_20260607.pth",
+        "https://huggingface.co/Alic-Li/RWKV_v7_G1_Translate/resolve/main/RWKV_v7_G1d_0.4B_Translate_ctx4096_20260607.pth",
+        "https://hf-mirror.com/Alic-Li/RWKV_v7_G1_Translate/resolve/main/RWKV_v7_G1d_0.4B_Translate_ctx4096_20260607.pth",
     ],
     supported_directions: &["en-zh", "zh-en"],
     model_name_arg: "rwkv-translate",
-    health_path: "/health",
+    health_path: "/v1/models",
     batch_chat_path: "/v1/chat/completions",
     bind_host: "127.0.0.1",
 };
@@ -190,6 +233,8 @@ pub struct RuntimeProfileSummary {
     pub provider_id: &'static str,
     pub platform_os: &'static str,
     pub platform_arch: &'static str,
+    pub runtime_label: &'static str,
+    pub hardware_requirement: &'static str,
     pub backend: &'static str,
     pub model_filename: &'static str,
     pub model_size_bytes: u64,
@@ -205,6 +250,8 @@ impl RuntimeProfileSummary {
             provider_id: profile.provider_id,
             platform_os: profile.platform_os,
             platform_arch: profile.platform_arch,
+            runtime_label: profile.runtime_label,
+            hardware_requirement: profile.hardware_requirement,
             backend: profile.backend,
             model_filename: profile.model_filename,
             model_size_bytes: profile.model_size_bytes,
@@ -215,8 +262,7 @@ impl RuntimeProfileSummary {
     }
 }
 
-const ALL_PROFILES: &[RuntimeProfile] =
-    &[MACOS_ARM64_MLX, MACOS_ARM64_WEBRWKV, WINDOWS_AMD64_LIBTORCH];
+const ALL_PROFILES: &[RuntimeProfile] = &[MACOS_ARM64_MLX, MACOS_ARM64_WEBRWKV, WINDOWS_AMD64_CUDA];
 
 #[cfg(test)]
 #[allow(clippy::assertions_on_constants)] // intentional regression guards on const values
@@ -239,8 +285,13 @@ mod tests {
     }
 
     #[test]
-    fn windows_profile_is_disabled_until_phase_8() {
-        assert!(!WINDOWS_AMD64_LIBTORCH.enabled);
+    fn windows_profile_is_cuda_sm75() {
+        assert!(WINDOWS_AMD64_CUDA.enabled);
+        assert_eq!(
+            WINDOWS_AMD64_CUDA.launch_kind,
+            RuntimeLaunchKind::LightningCuda
+        );
+        assert!(WINDOWS_AMD64_CUDA.hardware_requirement.contains("SM75"));
     }
 
     #[test]
@@ -250,6 +301,10 @@ mod tests {
             ("macos", "aarch64") => assert!(
                 resolved.is_some_and(|p| p.id == "macos-arm64-mlx"),
                 "expected macOS arm64 MLX profile"
+            ),
+            ("windows", "x86_64") => assert!(
+                resolved.is_some_and(|p| p.id == "windows-amd64-rwkv-lightning-cuda"),
+                "expected Windows CUDA profile"
             ),
             _ => assert!(
                 resolved.is_none(),

@@ -533,12 +533,11 @@ export type RwkvRuntimeTranslationProbeResult = {
 };
 
 // -----------------------------------------------------------------------------
-// Managed local RWKV runtime (Phase 3 — macOS-first per ADR 0003).
+// Managed local RWKV runtime (macOS ADR 0003 + Windows ADR 0006).
 //
 // These types mirror `src-tauri/src/managed_rwkv/` and are deliberately
-// separate from the legacy `RwkvRuntime*` types above. The legacy ones stay
-// as "paused" placeholders until the Windows path resumes (Phase 8); the new
-// names below are what `selectProvider()` and the Settings UI (Phase 5) read.
+// separate from the legacy `RwkvRuntime*` types above. The names below are
+// what `selectProvider()` and the Settings UI read on both supported platforms.
 // -----------------------------------------------------------------------------
 
 export type ManagedRuntimeState =
@@ -550,7 +549,12 @@ export type ManagedRuntimeState =
   | "failed"
   | "stopped";
 
-export type ManagedRuntimeInstallItemKind = "sidecar" | "tokenizer" | "model";
+export type ManagedRuntimeInstallItemKind =
+  | "runtime"
+  | "sidecar"
+  | "tokenizer"
+  | "model"
+  | "metallib";
 
 export type ManagedRuntimeInstallItemState = "missing" | "present";
 
@@ -573,6 +577,8 @@ export type ManagedRuntimeProfileSummary = {
   providerId: string;
   platformOs: string;
   platformArch: string;
+  runtimeLabel: string;
+  hardwareRequirement: string;
   backend: string;
   modelFilename: string;
   modelSizeBytes: number;
@@ -585,7 +591,15 @@ export type ManagedRuntimePaths = {
   sidecar: string | null;
   tokenizer: string | null;
   modelFile: string;
+  runtimeDir: string | null;
   logsDir: string;
+};
+
+export type ManagedRuntimeHardwareSupport = {
+  supported: boolean;
+  gpuName: string | null;
+  computeCapability: string | null;
+  message: string;
 };
 
 export type ManagedRuntimeProcessSnapshot = {
@@ -602,6 +616,7 @@ export type ManagedRuntimeStatus = {
   profile: ManagedRuntimeProfileSummary | null;
   paths: ManagedRuntimePaths | null;
   installPlan: ManagedRuntimeInstallPlan | null;
+  hardware: ManagedRuntimeHardwareSupport | null;
   process: ManagedRuntimeProcessSnapshot;
 };
 
@@ -637,6 +652,7 @@ export type ManagedRuntimeInstallPhase =
   | "preflight"
   | "downloading"
   | "verifying"
+  | "extracting"
   | "writing-manifest"
   | "done"
   | "failed"
@@ -667,6 +683,7 @@ export type ManagedRuntimeInstallProgress = {
 export type ManagedRuntimeInstallOptions = {
   repair?: boolean;
   proxyUrl?: string | null;
+  runtimePackPath?: string | null;
 };
 
 /**

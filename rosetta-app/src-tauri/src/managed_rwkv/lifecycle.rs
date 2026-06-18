@@ -14,8 +14,9 @@ use serde::Serialize;
 use tokio::process::{Child, Command as TokioCommand};
 use tokio::sync::Mutex;
 
-use super::profile::RuntimeProfile;
+use super::profile::{RuntimeLaunchKind, RuntimeProfile};
 use super::status::{ManagedRuntimeProcessSnapshot, ManagedRuntimeState};
+use crate::windows_process::HideConsole;
 
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const HEALTH_INITIAL_DELAY: Duration = Duration::from_millis(150);
@@ -209,21 +210,41 @@ pub async fn start_sidecar(
     let stderr = log;
 
     guard.state = Some(ManagedRuntimeState::Starting);
+    eprintln!("[rwkv-lifecycle] === sidecar launch ===");
+    eprintln!("[rwkv-lifecycle]   command: {}", args.join(" "));
+    eprintln!("[rwkv-lifecycle]   cwd:     {}", working_dir.display());
+    eprintln!("[rwkv-lifecycle]   log:     {}", log_file.display());
+    eprintln!("[rwkv-lifecycle]   port:    {port}");
+
     let mut command = TokioCommand::new(&sidecar_path);
+    if let Some(lib_dir_name) = profile.runtime_library_dir_name {
+        let lib_dir = sidecar_dir.join(lib_dir_name);
+        if lib_dir.is_dir() {
+            eprintln!("[rwkv-lifecycle]   prepend PATH: {}", lib_dir.display());
+            let current_path = std::env::var_os("PATH").unwrap_or_default();
+            let mut paths = vec![lib_dir];
+            paths.extend(std::env::split_paths(&current_path));
+            let joined =
+                std::env::join_paths(paths).map_err(|error| format!("拼接 PATH 失败: {error}"))?;
+            command.env("PATH", joined);
+        }
+    }
     command
         .args(&args[1..]) // [0] is sidecar path itself, kept for `command` echo
         .current_dir(&working_dir)
         .stdout(std::process::Stdio::from(stdout))
         .stderr(std::process::Stdio::from(stderr))
         .stdin(std::process::Stdio::null())
-        .kill_on_drop(true);
+        .kill_on_drop(true)
+        .hide_console_on_windows();
 
     let child = command.spawn().map_err(|error| {
-        let msg = format!("无法启动 sidecar 进程: {error}");
+        let msg = format!("无法启动 sidecar 进程: {error}\n日志文件: {}", log_file.display());
         guard.last_error = Some(msg.clone());
         guard.state = Some(ManagedRuntimeState::Failed);
         msg
     })?;
+    eprintln!("[rwkv-lifecycle]   pid:     {}", child.id().unwrap_or(0));
     let pid = child.id().unwrap_or(0);
     guard.child = Some(child);
     guard.port = Some(port);
@@ -236,7 +257,12 @@ pub async fn start_sidecar(
     // "starting" state we just set.
     drop(guard);
 
-    let healthy = wait_for_health(&base_url, profile.health_path).await;
+    let healthy = wait_for_health_with_process_check(
+        &base_url,
+        profile.health_path,
+        &registry.inner,
+    )
+    .await;
     let mut guard = registry.inner.lock().await;
 
     if let Err(error) = healthy {
@@ -249,9 +275,29 @@ pub async fn start_sidecar(
         guard.base_url = None;
         guard.pid = None;
         guard.started_at_iso = None;
-        guard.last_error = Some(error.clone());
+
+        let log_tail = read_log_tail(&log_file)
+            .unwrap_or_default()
+            .into_iter()
+            .rev()
+            .take(30)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>();
+        let detail = if log_tail.is_empty() {
+            format!("{error}\n日志文件: {}", log_file.display())
+        } else {
+            format!(
+                "{error}\n日志文件: {}\n--- sidecar log ---\n{}",
+                log_file.display(),
+                log_tail.join("\n")
+            )
+        };
+
+        guard.last_error = Some(detail.clone());
         guard.state = Some(ManagedRuntimeState::Failed);
-        return Err(error);
+        return Err(detail);
     }
 
     guard.state = Some(ManagedRuntimeState::Ready);
@@ -420,6 +466,20 @@ fn build_command_args(
     model_path: &Path,
     port: u16,
 ) -> Vec<String> {
+    if profile.launch_kind == RuntimeLaunchKind::LightningCuda {
+        return vec![
+            sidecar_path.display().to_string(),
+            "--model-path".to_string(),
+            model_path.display().to_string(),
+            "--vocab-path".to_string(),
+            tokenizer_path.display().to_string(),
+            "--host".to_string(),
+            profile.bind_host.to_string(),
+            "--port".to_string(),
+            port.to_string(),
+        ];
+    }
+
     vec![
         sidecar_path.display().to_string(),
         "--model".to_string(),
@@ -457,10 +517,12 @@ fn open_log_file(path: &std::path::Path) -> std::io::Result<std::fs::File> {
         .open(path)
 }
 
-async fn wait_for_health(base_url: &str, health_path: &str) -> Result<(), String> {
+async fn wait_for_health_with_process_check(
+    base_url: &str,
+    health_path: &str,
+    inner: &Arc<Mutex<RuntimeInner>>,
+) -> Result<(), String> {
     let url = format!("{base_url}{health_path}");
-    // See `probe_sidecar` for the proxy reasoning. Loopback never goes
-    // through the system / env proxy.
     let client = match reqwest::Client::builder()
         .no_proxy()
         .timeout(Duration::from_secs(2))
@@ -479,9 +541,40 @@ async fn wait_for_health(base_url: &str, health_path: &str) -> Result<(), String
                 STARTUP_TIMEOUT.as_secs()
             ));
         }
+
+        // Check if the child process has already exited — no point polling
+        // /health for 45 seconds if the sidecar crashed on launch.
+        {
+            let mut guard = inner.lock().await;
+            if let Some(child) = guard.child.as_mut() {
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        eprintln!("[rwkv-lifecycle] sidecar exited early: {status}");
+                        return Err(format!(
+                            "Sidecar 进程在就绪前退出 (exit status: {status})。"
+                        ));
+                    }
+                    Ok(None) => {} // still running
+                    Err(_) => {}
+                }
+            } else {
+                return Err("Sidecar 进程不在注册表中。".to_string());
+            }
+        }
+
         match client.get(&url).send().await {
-            Ok(resp) if (200..300).contains(&resp.status().as_u16()) => return Ok(()),
-            _ => {
+            Ok(resp) if (200..300).contains(&resp.status().as_u16()) => {
+                eprintln!("[rwkv-lifecycle] /health OK");
+                return Ok(());
+            }
+            Ok(resp) => {
+                eprintln!(
+                    "[rwkv-lifecycle] /health poll: HTTP {}",
+                    resp.status().as_u16()
+                );
+                tokio::time::sleep(HEALTH_POLL_INTERVAL).await;
+            }
+            Err(_) => {
                 tokio::time::sleep(HEALTH_POLL_INTERVAL).await;
             }
         }
@@ -570,21 +663,30 @@ async fn cleanup_stale_sidecars_if_signature_available(
 }
 
 fn list_sidecar_processes() -> Result<Vec<SidecarProcess>, String> {
-    let output = Command::new("ps")
-        .args(["-ww", "-axo", "pid=,command="])
-        .output()
-        .map_err(|error| format!("无法列出本机进程: {error}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "ps 返回失败状态: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
+    #[cfg(target_os = "windows")]
+    {
+        return list_sidecar_processes_windows();
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    Ok(stdout.lines().filter_map(parse_ps_line).collect())
+    #[cfg(not(target_os = "windows"))]
+    {
+        let output = Command::new("ps")
+            .args(["-ww", "-axo", "pid=,command="])
+            .output()
+            .map_err(|error| format!("无法列出本机进程: {error}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "ps 返回失败状态: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        Ok(stdout.lines().filter_map(parse_ps_line).collect())
+    }
 }
 
+#[allow(dead_code)]
 fn parse_ps_line(line: &str) -> Option<SidecarProcess> {
     let trimmed = line.trim_start();
     if trimmed.is_empty() {
@@ -615,34 +717,117 @@ fn is_matching_managed_sidecar(
     }
 
     let command = process.command.as_str();
-    command.contains(&sidecar_path.display().to_string())
-        && command.contains("--model")
-        && command.contains(&model_path.display().to_string())
-        && command.contains("--tokenizer")
-        && command.contains(&tokenizer_path.display().to_string())
-        && command.contains("--backend")
-        && command.contains(profile.backend)
-        && command.contains("--model-name")
-        && command.contains(profile.model_name_arg)
+    if !command.contains(&sidecar_path.display().to_string())
+        || !command.contains(&model_path.display().to_string())
+        || !command.contains(&tokenizer_path.display().to_string())
+    {
+        return false;
+    }
+    match profile.launch_kind {
+        RuntimeLaunchKind::LightningCuda => {
+            command.contains("--model-path") && command.contains("--vocab-path")
+        }
+        RuntimeLaunchKind::RwkvMobile => {
+            command.contains("--model")
+                && command.contains("--tokenizer")
+                && command.contains("--backend")
+                && command.contains(profile.backend)
+                && command.contains("--model-name")
+                && command.contains(profile.model_name_arg)
+        }
+    }
 }
 
+#[allow(unused_variables)]
 fn terminate_process(pid: u32, signal: &str) -> Result<(), String> {
-    let output = Command::new("kill")
-        .args([format!("-{signal}"), pid.to_string()])
+    #[cfg(target_os = "windows")]
+    {
+        let output = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .hide_console_on_windows()
+            .output()
+            .map_err(|error| format!("无法停止旧 sidecar 进程 {pid}: {error}"))?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("not found") || stderr.contains("没有找到") {
+            return Ok(());
+        }
+        return Err(format!(
+            "停止旧 sidecar 进程 {pid} 失败: taskkill 返回 {} ({})",
+            output.status,
+            stderr.trim()
+        ));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let output = Command::new("kill")
+            .args([format!("-{signal}"), pid.to_string()])
+            .output()
+            .map_err(|error| format!("无法停止旧 sidecar 进程 {pid}: {error}"))?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("No such process") {
+            return Ok(());
+        }
+        Err(format!(
+            "停止旧 sidecar 进程 {pid} 失败: kill -{signal} 返回 {} ({})",
+            output.status,
+            stderr.trim()
+        ))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn list_sidecar_processes_windows() -> Result<Vec<SidecarProcess>, String> {
+    let output = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress",
+        ])
+        .hide_console_on_windows()
         .output()
-        .map_err(|error| format!("无法停止旧 sidecar 进程 {pid}: {error}"))?;
-    if output.status.success() {
-        return Ok(());
+        .map_err(|error| format!("无法列出 Windows 进程: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "PowerShell 进程查询失败: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
     }
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if stderr.contains("No such process") {
-        return Ok(());
+
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "PascalCase")]
+    struct WinProcess {
+        process_id: u32,
+        command_line: Option<String>,
     }
-    Err(format!(
-        "停止旧 sidecar 进程 {pid} 失败: kill -{signal} 返回 {} ({})",
-        output.status,
-        stderr.trim()
-    ))
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if stdout.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let value: serde_json::Value =
+        serde_json::from_str(&stdout).map_err(|error| format!("解析进程列表失败: {error}"))?;
+    let processes: Vec<WinProcess> = if value.is_array() {
+        serde_json::from_value(value).map_err(|error| format!("解析进程列表失败: {error}"))?
+    } else {
+        vec![serde_json::from_value(value).map_err(|error| format!("解析进程列表失败: {error}"))?]
+    };
+
+    Ok(processes
+        .into_iter()
+        .filter_map(|process| {
+            process.command_line.map(|command| SidecarProcess {
+                pid: process.process_id,
+                command,
+            })
+        })
+        .collect())
 }
 
 fn iso_now() -> String {
@@ -689,7 +874,7 @@ fn days_since_epoch_to_ymd(mut days: i64) -> (u32, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::managed_rwkv::profile::MACOS_ARM64_WEBRWKV;
+    use crate::managed_rwkv::profile::{MACOS_ARM64_WEBRWKV, WINDOWS_AMD64_CUDA};
 
     #[test]
     fn pick_ephemeral_port_returns_high_port() {
@@ -717,6 +902,22 @@ mod tests {
         assert_eq!(args[port_idx + 1], "8765");
         let model_idx = args.iter().position(|a| a == "--model").unwrap();
         assert_eq!(args[model_idx + 1], "/data/model.prefab");
+    }
+
+    #[test]
+    fn windows_command_args_use_lightning_cuda_contract() {
+        let args = build_command_args(
+            &WINDOWS_AMD64_CUDA,
+            &PathBuf::from(r"C:\runtime\rwkv_lighting_cuda.exe"),
+            &PathBuf::from(r"C:\runtime\rwkv_vocab_v20230424.txt"),
+            &PathBuf::from(r"C:\models\translate.pth"),
+            8765,
+        );
+        assert!(args.iter().any(|arg| arg == "--model-path"));
+        assert!(args.iter().any(|arg| arg == "--vocab-path"));
+        assert!(args.iter().any(|arg| arg == "--host"));
+        assert!(!args.iter().any(|arg| arg == "--backend"));
+        assert!(!args.iter().any(|arg| arg == "--model-name"));
     }
 
     #[test]

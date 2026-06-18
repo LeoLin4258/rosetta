@@ -118,7 +118,10 @@ export function useManagedPdf2zhRuntime() {
         // Fall back to `*` so a user with a renamed file (or unexpected
         // double-extension behavior on some Linux DEs) isn't locked out.
         filters: [
-          { name: "PDF 组件 (.tar.gz / .tgz)", extensions: ["gz", "tgz"] },
+          {
+            name: "PDF 组件 (.zip / .tar.gz / .tgz)",
+            extensions: ["zip", "gz", "tgz"],
+          },
           { name: "全部文件", extensions: ["*"] },
         ],
       });
@@ -132,7 +135,9 @@ export function useManagedPdf2zhRuntime() {
       // file:// URLs need an absolute path. macOS file picker always returns
       // absolute paths, but we sanity-check rather than letting a malformed
       // URL silently fall through to the HTTP branch.
-      if (!localPath.startsWith("/")) {
+      const isAbsolutePath =
+        localPath.startsWith("/") || /^[A-Za-z]:[\\/]/.test(localPath);
+      if (!isAbsolutePath) {
         throw new Error(`文件路径不是绝对路径: ${localPath}`);
       }
       return await install({

@@ -17,12 +17,7 @@
 //! header indicator can stay "已就绪" and translate clicks are always cheap.
 //! At ~600 MB resident torch memory that's a deliberate trade.
 
-use std::{
-    path::PathBuf,
-    process::Stdio,
-    sync::Mutex as StdMutex,
-    time::Duration,
-};
+use std::{path::PathBuf, process::Stdio, sync::Mutex as StdMutex, time::Duration};
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -34,6 +29,7 @@ use tokio::{
 };
 
 use super::build_static_status;
+use crate::windows_process::HideConsole;
 
 const WORKER_SCRIPT: &str = include_str!("rosetta_pdf2zh_worker.py");
 /// First spawn includes the ~13 s torch import plus, on a fresh machine, the
@@ -231,6 +227,18 @@ pub(crate) async fn kill_process_tree(child: &mut Child) {
         let _ = child.wait().await;
         return;
     }
+    #[cfg(windows)]
+    if let Some(pid) = child.id() {
+        let _ = tokio::process::Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &pid.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .hide_console_on_windows()
+            .status()
+            .await;
+        let _ = child.wait().await;
+        return;
+    }
     let _ = child.kill().await;
     let _ = child.wait().await;
 }
@@ -250,7 +258,16 @@ async fn spawn_worker(app: &AppHandle) -> Result<WorkerProcess, String> {
         .doclayout_model_path
         .clone()
         .ok_or_else(|| "pdf2zh pack 缺少内置 DocLayout-YOLO 模型，请更新 PDF 组件。".to_string())?;
-    let python = status.layout.pack_dir.join("python").join("bin").join("python");
+    let python = if cfg!(target_os = "windows") {
+        status.layout.pack_dir.join("python").join("python.exe")
+    } else {
+        status
+            .layout
+            .pack_dir
+            .join("python")
+            .join("bin")
+            .join("python")
+    };
     if !python.is_file() {
         let msg = format!("pdf2zh pack 中找不到 Python 解释器: {}", python.display());
         set_worker_status(app, "failed", Some(msg.clone()), None);
@@ -271,6 +288,8 @@ async fn spawn_worker(app: &AppHandle) -> Result<WorkerProcess, String> {
         .current_dir(&worker_dir)
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .env("PYTHONUNBUFFERED", "1")
+        .env("PYTHONNOUSERSITE", "1")
+        .env("PYTHONPATH", "")
         .env("ROSETTA_DOCLAYOUT_MODEL", &doclayout_model)
         // Probe-gated MPS use in the worker; unsupported ops fall back to CPU
         // instead of erroring. Must be set before torch is imported.
@@ -293,10 +312,24 @@ async fn spawn_worker(app: &AppHandle) -> Result<WorkerProcess, String> {
     #[cfg(unix)]
     command.process_group(0);
     command.kill_on_drop(true);
+    command.hide_console_on_windows();
+
+    eprintln!("[pdf2zh-worker] === spawn ===");
+    eprintln!("[pdf2zh-worker]   python:  {}", python.display());
+    eprintln!("[pdf2zh-worker]   script:  {}", script_path.display());
+    eprintln!("[pdf2zh-worker]   cwd:     {}", worker_dir.display());
+    eprintln!(
+        "[pdf2zh-worker]   model:   {}",
+        doclayout_model.display()
+    );
 
     let mut child = command
         .spawn()
         .map_err(|error| format!("启动 pdf2zh worker 失败: {error}"))?;
+    eprintln!(
+        "[pdf2zh-worker]   pid:     {}",
+        child.id().unwrap_or(0)
+    );
 
     let stdin = child
         .stdin
@@ -369,35 +402,65 @@ async fn spawn_worker(app: &AppHandle) -> Result<WorkerProcess, String> {
     };
 
     // Handshake: wait for the worker to finish its heavy imports.
+    // Drain stderr alongside stdout so that if the process crashes during
+    // import (e.g. DLL load failure, missing module), we capture the real
+    // error message instead of the opaque "worker 在就绪前退出".
+    //
+    // `stderr_capture` is shared via Arc so that it survives a timeout —
+    // when READY_TIMEOUT fires the inner future is dropped but we can still
+    // read the captured lines and include them in the error message.
+    let stderr_capture = std::sync::Arc::new(StdMutex::new(Vec::<String>::new()));
+    let capture_ref = stderr_capture.clone();
     let ready = tokio::time::timeout(READY_TIMEOUT, async {
-        while let Some(event) = worker.events.recv().await {
-            match event.event.as_str() {
-                "warming" => {
-                    if let (Some(step), Some(total), Some(label)) =
-                        (event.step, event.total_steps, event.label)
-                    {
-                        set_warmup_progress(app, step, total, label);
+        loop {
+            tokio::select! {
+                event = worker.events.recv() => {
+                    let Some(event) = event else {
+                        let detail = format_stderr_tail(&capture_ref);
+                        return Err(format!("worker 在就绪前退出。{detail}"));
+                    };
+                    match event.event.as_str() {
+                        "warming" => {
+                            if let (Some(step), Some(total), Some(label)) =
+                                (event.step, event.total_steps, event.label)
+                            {
+                                set_warmup_progress(app, step, total, label);
+                            }
+                        }
+                        "ready" => {
+                            let import_ms = event.import_ms.unwrap_or(0);
+                            eprintln!(
+                                "[pdf2zh-worker] ready (import {} ms, mps={}, reason={})",
+                                import_ms,
+                                event.mps.unwrap_or(false),
+                                event.mps_reason.as_deref().unwrap_or("-")
+                            );
+                            return Ok(import_ms);
+                        }
+                        "fatal" => {
+                            let detail = format_stderr_tail(&capture_ref);
+                            return Err(format!(
+                                "{}{}",
+                                event.message.as_deref().unwrap_or("worker 启动失败。"),
+                                detail
+                            ));
+                        }
+                        _ => {}
                     }
                 }
-                "ready" => {
-                    let import_ms = event.import_ms.unwrap_or(0);
-                    eprintln!(
-                        "[pdf2zh-worker] ready (import {} ms, mps={}, reason={})",
-                        import_ms,
-                        event.mps.unwrap_or(false),
-                        event.mps_reason.as_deref().unwrap_or("-")
-                    );
-                    return Ok(import_ms);
+                line = worker.stderr_lines.recv(), if worker.stderr_open => {
+                    match line {
+                        Some(text) => {
+                            eprintln!("[pdf2zh-worker:stderr] {text}");
+                            if let Ok(mut cap) = capture_ref.lock() {
+                                cap.push(text);
+                            }
+                        }
+                        None => worker.stderr_open = false,
+                    }
                 }
-                "fatal" => {
-                    return Err(event
-                        .message
-                        .unwrap_or_else(|| "worker 启动失败。".to_string()));
-                }
-                _ => {}
             }
         }
-        Err("worker 在就绪前退出。".to_string())
     })
     .await;
 
@@ -409,16 +472,32 @@ async fn spawn_worker(app: &AppHandle) -> Result<WorkerProcess, String> {
         Ok(Err(message)) => {
             kill_process_tree(&mut worker.child).await;
             let msg = format!("pdf2zh worker 启动失败: {message}");
+            eprintln!("[pdf2zh-worker] {msg}");
             set_worker_status(app, "failed", Some(msg.clone()), None);
             Err(msg)
         }
         Err(_) => {
             kill_process_tree(&mut worker.child).await;
-            let msg = "pdf2zh worker 启动超时。".to_string();
+            let detail = format_stderr_tail(&stderr_capture);
+            let msg = format!("pdf2zh worker 启动超时 ({} 秒)。{detail}", READY_TIMEOUT.as_secs());
+            eprintln!("[pdf2zh-worker] {msg}");
             set_worker_status(app, "failed", Some(msg.clone()), None);
             Err(msg)
         }
     }
+}
+
+fn format_stderr_tail(capture: &StdMutex<Vec<String>>) -> String {
+    let lines = match capture.lock() {
+        Ok(guard) => guard.clone(),
+        Err(_) => return String::new(),
+    };
+    if lines.is_empty() {
+        return String::new();
+    }
+    let tail: Vec<&str> = lines.iter().rev().take(30).collect::<Vec<_>>()
+        .into_iter().rev().map(|s| s.as_str()).collect();
+    format!("\n--- stderr ---\n{}", tail.join("\n"))
 }
 
 impl WorkerProcess {
@@ -516,7 +595,9 @@ pub(crate) async fn translate_via_worker(
     }
     let worker = guard.as_mut().expect("worker present after ensure");
     set_worker_status(app, "translating", None, None);
-    let outcome = worker.run_translate(payload, on_stderr, on_page, cancel_rx).await;
+    let outcome = worker
+        .run_translate(payload, on_stderr, on_page, cancel_rx)
+        .await;
 
     if matches!(
         outcome,

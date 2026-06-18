@@ -27,13 +27,18 @@ export function DoneStep({ variant, onContinue, isContinuing }: DoneStepProps) {
     return () => window.clearTimeout(id);
   }, []);
 
-  const heading = variant === "local" ? "本地翻译已就绪" : "好的";
+  const heading =
+    variant === "local"
+      ? "本地翻译已就绪"
+      : variant === "external"
+        ? "PDF 组件已就绪"
+        : "翻译模型已就绪";
   const subheading =
     variant === "local"
       ? "翻译模型和 PDF 组件都已准备好。开始你的第一个文档翻译吧。"
       : variant === "local-pdf-skipped"
         ? "翻译模型已准备好。PDF 组件可在设置中安装。"
-        : "你可以在 设置 → 外部翻译 API 中填入自己的端点。";
+        : "PDF 组件已在本机准备好。进入设置后填写你的翻译 API 端点。";
   const cta = variant === "external" ? "进入 Rosetta" : "翻译我的第一个文档";
 
   return (

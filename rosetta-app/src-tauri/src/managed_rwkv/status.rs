@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
+use super::hardware::{self, HardwareSupport};
 use super::layout::RuntimeLayout;
 use super::profile::{current_profile, RuntimeProfile, RuntimeProfileSummary};
 
@@ -52,6 +53,7 @@ pub enum ManagedRuntimeState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum InstallItemKind {
+    Runtime,
     Sidecar,
     Tokenizer,
     Model,
@@ -89,6 +91,7 @@ pub struct ManagedRuntimePaths {
     pub sidecar: Option<String>,
     pub tokenizer: Option<String>,
     pub model_file: String,
+    pub runtime_dir: Option<String>,
     pub logs_dir: String,
 }
 
@@ -111,6 +114,7 @@ pub struct ManagedRuntimeStatus {
     pub profile: Option<RuntimeProfileSummary>,
     pub paths: Option<ManagedRuntimePaths>,
     pub install_plan: Option<ManagedRuntimeInstallPlan>,
+    pub hardware: Option<HardwareSupport>,
     pub process: ManagedRuntimeProcessSnapshot,
 }
 
@@ -122,8 +126,19 @@ pub fn build_static_status(app: &AppHandle) -> Result<StaticStatus, String> {
     };
 
     let layout = RuntimeLayout::from_app(app, profile)?;
-    let sidecar_path = locate_sidecar(app, profile);
-    let tokenizer_path = locate_tokenizer(app, profile);
+    let hardware = hardware::inspect(profile);
+    let sidecar_path = layout
+        .runtime_executable
+        .as_ref()
+        .filter(|path| path.is_file())
+        .cloned()
+        .or_else(|| locate_sidecar(app, profile));
+    let tokenizer_path = layout
+        .runtime_dir
+        .as_ref()
+        .map(|dir| dir.join(profile.tokenizer_filename))
+        .filter(|path| path.is_file())
+        .or_else(|| locate_tokenizer(app, profile));
     let metallib_path = if profile.backend == "mlx" {
         locate_metallib(app, sidecar_path.as_deref())
     } else {
@@ -137,7 +152,9 @@ pub fn build_static_status(app: &AppHandle) -> Result<StaticStatus, String> {
         &tokenizer_path,
         &metallib_path,
     );
-    let initial_state = if install_plan.ready {
+    let initial_state = if !hardware.supported {
+        ManagedRuntimeState::Unsupported
+    } else if install_plan.ready {
         ManagedRuntimeState::Installed
     } else {
         ManagedRuntimeState::NotInstalled
@@ -150,6 +167,7 @@ pub fn build_static_status(app: &AppHandle) -> Result<StaticStatus, String> {
         tokenizer_path,
         metallib_path,
         install_plan,
+        hardware,
         initial_state,
     })
 }
@@ -166,6 +184,7 @@ pub struct StaticStatus {
     /// it. `None` on non-MLX profiles.
     pub metallib_path: Option<PathBuf>,
     pub install_plan: ManagedRuntimeInstallPlan,
+    pub hardware: HardwareSupport,
     pub initial_state: ManagedRuntimeState,
 }
 
@@ -180,8 +199,15 @@ impl StaticStatus {
             install_plan: ManagedRuntimeInstallPlan {
                 ready: false,
                 items: Vec::new(),
-                message: "当前平台暂不支持本地 RWKV 运行时（仅支持 macOS Apple Silicon）。"
-                    .to_string(),
+                message:
+                    "当前平台暂不支持本地 RWKV 运行时。支持 macOS Apple Silicon 与 Windows NVIDIA SM75+。"
+                        .to_string(),
+            },
+            hardware: HardwareSupport {
+                supported: false,
+                gpu_name: None,
+                compute_capability: None,
+                message: "当前平台暂不支持本地 RWKV 运行时。".to_string(),
             },
             initial_state: ManagedRuntimeState::Unsupported,
         }
@@ -195,6 +221,7 @@ impl StaticStatus {
                 profile: None,
                 paths: None,
                 install_plan: None,
+                hardware: Some(self.hardware),
                 process,
             };
         }
@@ -214,6 +241,11 @@ impl StaticStatus {
             sidecar: self.sidecar_path.map(|p| p.display().to_string()),
             tokenizer: self.tokenizer_path.map(|p| p.display().to_string()),
             model_file: model_display_path,
+            runtime_dir: self
+                .layout
+                .runtime_dir
+                .as_ref()
+                .map(|path| path.display().to_string()),
             logs_dir: self.layout.logs_dir.display().to_string(),
         };
         let message = if self.install_plan.ready {
@@ -228,6 +260,7 @@ impl StaticStatus {
             profile: Some(RuntimeProfileSummary::from_profile(self.profile)),
             paths: Some(paths),
             install_plan: Some(self.install_plan),
+            hardware: Some(self.hardware),
             process,
         }
     }
@@ -240,17 +273,29 @@ fn build_install_plan(
     tokenizer_path: &Option<PathBuf>,
     metallib_path: &Option<PathBuf>,
 ) -> ManagedRuntimeInstallPlan {
-    let mut items = Vec::with_capacity(4);
+    let mut items = Vec::with_capacity(5);
 
-    items.push(make_item(
-        InstallItemKind::Sidecar,
-        sidecar_path.as_deref(),
-        format!(
-            "Sidecar 二进制 ({}) 未在应用包内找到。请运行 src-tauri/scripts/fetch-rwkv-sidecar.sh。",
-            profile.sidecar_binary_name
-        ),
-        "Sidecar 二进制已就绪。".to_string(),
-    ));
+    if profile.managed_runtime_directory_name.is_some() {
+        items.push(make_item(
+            InstallItemKind::Runtime,
+            layout
+                .runtime_dir
+                .as_deref()
+                .filter(|_| layout.is_runtime_installed(profile)),
+            format!("{} 尚未安装。", profile.runtime_label),
+            format!("{} 已就绪。", profile.runtime_label),
+        ));
+    } else {
+        items.push(make_item(
+            InstallItemKind::Sidecar,
+            sidecar_path.as_deref(),
+            format!(
+                "Sidecar 二进制 ({}) 未在应用包内找到。请运行 src-tauri/scripts/fetch-rwkv-sidecar.sh。",
+                profile.sidecar_binary_name
+            ),
+            "Sidecar 二进制已就绪。".to_string(),
+        ));
+    }
 
     items.push(make_item(
         InstallItemKind::Tokenizer,

@@ -51,8 +51,8 @@ export function InstallStep({
   cancelLabel = "取消",
   confirmCancelText = "确认取消下载？",
   continueLabel = "继续下载",
-  defaultCaption = "约 1.3 GB · 下载完成后无需再联网",
-  downloadingCaption = "约 1.3 GB · 下载完成后无需再联网",
+  defaultCaption = "下载完成后无需再联网",
+  downloadingCaption = "下载完成后无需再联网",
   skipLabel = "使用自己的翻译 API →",
   skipHint = "跳过后可在设置中配置 API",
 }: InstallStepProps) {

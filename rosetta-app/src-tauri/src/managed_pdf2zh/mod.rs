@@ -36,9 +36,9 @@ pub fn get_pdf2zh_worker_status(
 pub fn prewarm_in_background(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        // Skip noisily if the pack isn't installed yet — spawn_worker emits
-        // "not-installed" status on its own, but we don't need to log here.
-        let _ = worker::prewarm_worker(&app).await;
+        if let Err(error) = worker::prewarm_worker(&app).await {
+            eprintln!("[pdf2zh-worker] background prewarm failed: {error}");
+        }
     });
 }
 

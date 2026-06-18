@@ -34,12 +34,15 @@ use super::profile::RuntimeProfile;
 
 const MANAGED_ROOT_DIR: &str = "managed-rwkv";
 const MODELS_DIR: &str = "models";
+const RUNTIMES_DIR: &str = "runtimes";
+const DOWNLOADS_DIR: &str = "downloads";
 const RUNTIME_STATE_DIR: &str = "runtime-state";
 const LOGS_DIR: &str = "logs";
 
 const ACTIVE_RUNTIME_FILE: &str = "active-runtime.json";
 const RUNTIME_LOG_FILE: &str = "runtime.log";
 const MODEL_MANIFEST_FILE: &str = "manifest.json";
+const RUNTIME_MANIFEST_FILE: &str = "manifest.json";
 
 /// Resolved paths for one profile's data on a specific install.
 ///
@@ -53,6 +56,13 @@ const MODEL_MANIFEST_FILE: &str = "manifest.json";
 pub struct RuntimeLayout {
     pub root: PathBuf,
     pub models_dir: PathBuf,
+    pub runtimes_dir: PathBuf,
+    pub downloads_dir: PathBuf,
+    pub runtime_dir: Option<PathBuf>,
+    pub runtime_archive_file: Option<PathBuf>,
+    pub runtime_executable: Option<PathBuf>,
+    pub runtime_library_dir: Option<PathBuf>,
+    pub runtime_manifest_file: Option<PathBuf>,
     pub model_dir: PathBuf,
     pub model_file: PathBuf,
     /// For zip profiles: the extracted directory (`model_filename` minus `.zip`).
@@ -71,6 +81,23 @@ impl RuntimeLayout {
     pub fn resolve(base: &Path, profile: &RuntimeProfile) -> Self {
         let root = base.join(MANAGED_ROOT_DIR);
         let models_dir = root.join(MODELS_DIR);
+        let runtimes_dir = root.join(RUNTIMES_DIR);
+        let downloads_dir = root.join(DOWNLOADS_DIR);
+        let runtime_dir = profile
+            .managed_runtime_directory_name
+            .map(|name| runtimes_dir.join(name));
+        let runtime_archive_file = profile
+            .runtime_archive_filename
+            .map(|name| downloads_dir.join(name));
+        let runtime_executable = runtime_dir
+            .as_ref()
+            .map(|dir| dir.join(profile.sidecar_binary_name));
+        let runtime_library_dir = runtime_dir
+            .as_ref()
+            .and_then(|dir| profile.runtime_library_dir_name.map(|name| dir.join(name)));
+        let runtime_manifest_file = runtime_dir
+            .as_ref()
+            .map(|dir| dir.join(RUNTIME_MANIFEST_FILE));
         let model_dir = models_dir.join(profile.model_directory_name);
         let model_file = model_dir.join(profile.model_filename);
         let model_extracted_dir = if profile.model_is_zip {
@@ -92,6 +119,13 @@ impl RuntimeLayout {
         Self {
             root,
             models_dir,
+            runtimes_dir,
+            downloads_dir,
+            runtime_dir,
+            runtime_archive_file,
+            runtime_executable,
+            runtime_library_dir,
+            runtime_manifest_file,
             model_dir,
             model_file,
             model_extracted_dir,
@@ -115,7 +149,13 @@ impl RuntimeLayout {
     /// Create model / state / logs directories. The model file itself is
     /// produced by Phase 4 download; here we only ensure its parent exists.
     pub fn ensure_dirs(&self) -> Result<(), String> {
-        for dir in [&self.model_dir, &self.runtime_state_dir, &self.logs_dir] {
+        for dir in [
+            &self.model_dir,
+            &self.runtimes_dir,
+            &self.downloads_dir,
+            &self.runtime_state_dir,
+            &self.logs_dir,
+        ] {
             std::fs::create_dir_all(dir)
                 .map_err(|error| format!("无法创建 {}: {error}", dir.display()))?;
         }
@@ -142,12 +182,30 @@ impl RuntimeLayout {
             None => self.model_file.is_file(),
         }
     }
+
+    pub fn is_runtime_installed(&self, profile: &super::profile::RuntimeProfile) -> bool {
+        let exe_ok = self
+            .runtime_executable
+            .as_ref()
+            .is_none_or(|path| path.is_file());
+        if !exe_ok {
+            return false;
+        }
+        if let Some(dir) = self.runtime_dir.as_ref() {
+            if !dir.join(profile.tokenizer_filename).is_file() {
+                return false;
+            }
+        }
+        self.runtime_library_dir
+            .as_ref()
+            .is_none_or(|path| path.is_dir())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::managed_rwkv::profile::MACOS_ARM64_WEBRWKV;
+    use crate::managed_rwkv::profile::{MACOS_ARM64_WEBRWKV, WINDOWS_AMD64_CUDA};
 
     #[test]
     fn layout_paths_nest_under_managed_rwkv_root() {
@@ -177,6 +235,23 @@ mod tests {
         // Model file is NOT created — that's Phase 4's job.
         assert!(!layout.model_file.exists());
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn windows_runtime_layout_is_separate_from_model_layout() {
+        let layout = RuntimeLayout::resolve(Path::new(r"C:\RosettaData"), &WINDOWS_AMD64_CUDA);
+        let runtime = layout.runtime_dir.as_ref().expect("runtime dir");
+        assert!(runtime.starts_with(&layout.runtimes_dir));
+        assert_eq!(
+            layout
+                .runtime_executable
+                .as_ref()
+                .and_then(|path| path.file_name())
+                .unwrap(),
+            WINDOWS_AMD64_CUDA.sidecar_binary_name
+        );
+        assert!(layout.model_file.starts_with(&layout.models_dir));
+        assert!(!layout.model_file.starts_with(runtime));
     }
 
     fn tempdir_path() -> PathBuf {

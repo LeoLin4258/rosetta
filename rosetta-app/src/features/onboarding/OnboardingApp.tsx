@@ -6,6 +6,7 @@ import {
   isPdf2zhReady,
   useManagedPdf2zhRuntime,
 } from "@/lib/useManagedPdf2zhRuntime";
+import { prewarmPdf2zhWorker } from "@/lib/pdf2zhRuntime";
 import { useManagedRwkvRuntime } from "@/lib/useManagedRwkvRuntime";
 import { cn } from "@/lib/utils";
 
@@ -13,9 +14,24 @@ import { DoneStep } from "./DoneStep";
 import { InstallStep } from "./InstallStep";
 import { WelcomeStep } from "./WelcomeStep";
 
-type OnboardingStep = "welcome" | "installing-runtime" | "done";
+type OnboardingStep =
+  | "welcome"
+  | "installing-runtime"
+  | "installing-pdf"
+  | "done";
 
 const appWindow = getCurrentWindow();
+
+function formatDownloadCaption(modelSizeBytes: number | null): string {
+  if (modelSizeBytes == null || modelSizeBytes <= 0)
+    return "下载完成后无需再联网";
+  const mb = modelSizeBytes / (1024 * 1024);
+  const label =
+    mb >= 1024
+      ? `约 ${(mb / 1024).toFixed(1)} GB`
+      : `约 ${Math.round(mb)} MB`;
+  return `${label} · 下载完成后无需再联网`;
+}
 
 /**
  * Root of the onboarding window. Pure orchestration — each step component
@@ -51,6 +67,7 @@ export function OnboardingApp() {
   const [step, setStep] = useState<OnboardingStep>("welcome");
   const [doneVariant, setDoneVariant] =
     useState<"local" | "local-pdf-skipped" | "external">("local");
+  const [usingExternalApi, setUsingExternalApi] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isFinishing, setIsFinishing] = useState(false);
   // Pull the decision once to feed Welcome step the model size + "are we
@@ -78,77 +95,91 @@ export function OnboardingApp() {
     };
   }, []);
 
-  // React to runtime status updates that arrive after we kicked off install:
-  // success → step "done", failure → stay on "installing" with error banner.
-  useEffect(() => {
-    if (step !== "installing-runtime") return;
-    if (runtime.isInstalling) return;
-    if (runtime.lastError) {
-      setErrorMessage(runtime.lastError);
-      return;
+  const beginPdfSetup = useCallback(async (externalApi: boolean) => {
+    setErrorMessage(null);
+    setUsingExternalApi(externalApi);
+    setStep("installing-pdf");
+    try {
+      const existing = await pdfRuntime.refreshStatus();
+      if (!isPdf2zhReady(existing)) {
+        await pdfRuntime.install({ repair: false });
+      }
+      const warmed = await prewarmPdf2zhWorker();
+      if (!warmed) {
+        throw new Error("PDF 组件已安装，但预热没有完成。请重试。");
+      }
+      setDoneVariant(externalApi ? "external" : "local");
+      setStep("done");
+    } catch (error) {
+      setErrorMessage(toMessage(error));
     }
-    // Success criterion: runtime status report says model is installed.
-    if (
-      runtime.status?.state === "installed" ||
-      runtime.status?.state === "ready"
-    ) {
-      void finishLocalOnboarding();
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step, runtime.isInstalling, runtime.lastError, runtime.status?.state]);
-
-  const finishLocalOnboarding = useCallback(async () => {
-    const status = await pdfRuntime.refreshStatus();
-    if (isPdf2zhReady(status)) {
-      setDoneVariant("local");
-    } else {
-      setDoneVariant("local-pdf-skipped");
-    }
-    setStep("done");
   }, [pdfRuntime]);
 
-  const handleBeginInstall = useCallback(() => {
+  const installLocalRuntime = useCallback(async () => {
     setErrorMessage(null);
     setStep("installing-runtime");
-    // useManagedRwkvRuntime.install() reads `downloadProxy.url` from store
-    // and merges into the options automatically (see useManagedRwkvRuntime),
-    // so the proxy the user typed in WelcomeStep is honoured here without
-    // explicit threading.
-    void runtime.install({ repair: false });
-  }, [runtime]);
+    const installed = await runtime.install({ repair: false });
+    if (!installed) {
+      setErrorMessage(runtime.lastError ?? "本地翻译引擎安装没有完成。");
+      return;
+    }
+    const started = await runtime.start();
+    if (!started) {
+      setErrorMessage(runtime.lastError ?? "本地翻译引擎启动没有完成。");
+      return;
+    }
+    const probe = await runtime.probe();
+    if (!probe?.ok) {
+      setErrorMessage(probe?.message ?? "本地翻译引擎探活没有完成。");
+      return;
+    }
+    await beginPdfSetup(false);
+  }, [beginPdfSetup, runtime]);
+
+  const handleBeginInstall = useCallback(() => {
+    void installLocalRuntime();
+  }, [installLocalRuntime]);
 
   const handleRetry = useCallback(() => {
     setErrorMessage(null);
-    void runtime.install({ repair: false });
-  }, [runtime]);
+    if (step === "installing-pdf") {
+      void beginPdfSetup(usingExternalApi);
+    } else {
+      void installLocalRuntime();
+    }
+  }, [beginPdfSetup, installLocalRuntime, step, usingExternalApi]);
 
   const handleCancel = useCallback(() => {
-    void runtime.cancelInstall();
+    if (step === "installing-pdf") {
+      void pdfRuntime.cancelInstall();
+    } else {
+      void runtime.cancelInstall();
+    }
     setStep("welcome");
     setErrorMessage(null);
-  }, [runtime]);
+  }, [pdfRuntime, runtime, step]);
 
-  const handleSkipToExternal = useCallback(async () => {
-    setIsFinishing(true);
-    setDoneVariant("external");
-    try {
-      await completeOnboardingAndOpenMain({ skippedLocalInstall: true });
-      // Tauri command closes onboarding window + shows main; nothing else to do.
-    } catch (error) {
-      console.error("complete onboarding (skip) failed", error);
-      setIsFinishing(false);
-    }
-  }, []);
+  const handleSkipToExternal = useCallback(() => {
+    void beginPdfSetup(true);
+  }, [beginPdfSetup]);
+
+  const handleSkipPdf = useCallback(() => {
+    setDoneVariant(usingExternalApi ? "external" : "local-pdf-skipped");
+    setStep("done");
+    setErrorMessage(null);
+  }, [usingExternalApi]);
 
   const handleEnterWorkspace = useCallback(async () => {
     setIsFinishing(true);
     try {
-      await completeOnboardingAndOpenMain({ skippedLocalInstall: false });
+      await completeOnboardingAndOpenMain({
+        skippedLocalInstall: usingExternalApi,
+      });
     } catch (error) {
       console.error("complete onboarding failed", error);
       setIsFinishing(false);
     }
-  }, []);
+  }, [usingExternalApi]);
 
   const handleDragStripMouseDown = useCallback(
     (event: React.MouseEvent<HTMLDivElement>) => {
@@ -181,9 +212,13 @@ export function OnboardingApp() {
           <WelcomeStep
             onBeginInstall={handleBeginInstall}
             onSkipToExternal={handleSkipToExternal}
-            isInstalling={runtime.isInstalling}
+            isInstalling={runtime.isInstalling || runtime.isRefreshing}
             modelSizeBytes={decision?.modelSizeBytes ?? null}
             isReturningUser={decision?.isReturningUser ?? false}
+            localInstallSupported={runtime.status?.hardware?.supported ?? false}
+            supportMessage={
+              runtime.status?.hardware?.message ?? "正在检测本机翻译引擎支持情况…"
+            }
           />
         )}
         {step === "installing-runtime" && (
@@ -193,6 +228,25 @@ export function OnboardingApp() {
             onCancel={handleCancel}
             onRetry={handleRetry}
             onSkip={handleSkipToExternal}
+            defaultCaption={formatDownloadCaption(decision?.modelSizeBytes ?? null)}
+            downloadingCaption={formatDownloadCaption(decision?.modelSizeBytes ?? null)}
+          />
+        )}
+        {step === "installing-pdf" && (
+          <InstallStep
+            progress={pdfRuntime.progress}
+            errorMessage={errorMessage ?? pdfRuntime.lastError}
+            onCancel={handleCancel}
+            onRetry={handleRetry}
+            onSkip={handleSkipPdf}
+            title="正在准备 PDF 组件"
+            errorTitle="PDF 组件没有准备完成"
+            retryLabel="重试 PDF 安装"
+            confirmCancelText="确认取消 PDF 安装？"
+            defaultCaption="用于保留 PDF 页面结构，仅在本机运行"
+            downloadingCaption="正在下载 PDF 版面处理组件"
+            skipLabel="暂时跳过 PDF 组件"
+            skipHint="以后可在设置中安装"
           />
         )}
         {step === "done" && (
@@ -205,4 +259,10 @@ export function OnboardingApp() {
       </div>
     </div>
   );
+}
+
+function toMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  return JSON.stringify(error);
 }

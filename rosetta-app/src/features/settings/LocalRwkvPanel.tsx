@@ -36,6 +36,7 @@ const INSTALL_ACTIVE_PHASES: ReadonlySet<ManagedRuntimeInstallPhase> = new Set([
   "preflight",
   "downloading",
   "verifying",
+  "extracting",
   "writing-manifest",
 ]);
 
@@ -141,6 +142,7 @@ export function LocalRwkvPanel({ className }: { className?: string }) {
                     installPhase={installPhase}
                     isInstallActive={isInstallActive}
                     isInstalling={rt.isInstalling}
+                    modelSizeBytes={status?.profile?.modelSizeBytes ?? null}
                     onInstall={() => void rt.install({ repair: false })}
                     onRepair={() => void rt.install({ repair: true })}
                   />
@@ -200,8 +202,8 @@ function resolveStatus(
   if (isInstallActive) {
     return {
       dot: "bg-blue-500",
-      label: "正在下载本地模型",
-      sub: "约 1.3 GB。下载完成后可离线使用。",
+      label: "正在安装本地翻译引擎",
+      sub: "运行包和模型校验完成后可离线使用。",
       spinning: true,
     };
   }
@@ -235,7 +237,9 @@ function resolveStatus(
       return {
         dot: "bg-muted-foreground/40",
         label: "当前设备不支持本地翻译",
-        sub: "本地模型仅支持 Apple 芯片 Mac。你仍可配置远程翻译服务。",
+        sub:
+          status?.hardware?.message ??
+          "你仍可显式配置自己的翻译 API。",
       };
     case "not-installed":
       return {
@@ -327,6 +331,7 @@ function RepairActions({
   installPhase,
   isInstallActive,
   isInstalling,
+  modelSizeBytes,
   onInstall,
   onRepair,
 }: {
@@ -334,12 +339,16 @@ function RepairActions({
   installPhase: ManagedRuntimeInstallPhase | null;
   isInstallActive: boolean;
   isInstalling: boolean;
+  modelSizeBytes: number | null;
   onInstall: () => void;
   onRepair: () => void;
 }) {
   if (isInstallActive) return null;
 
   if (state === "not-installed") {
+    const sizeLabel = modelSizeBytes
+      ? `约 ${formatBytes(modelSizeBytes)}`
+      : "大小未知";
     return (
       <div className="flex flex-col items-start gap-2">
         <p className="text-xs text-muted-foreground">
@@ -356,7 +365,7 @@ function RepairActions({
           ) : (
             <Download className="size-4" />
           )}
-          下载本地模型（约 1.3 GB）
+          下载本地模型（{sizeLabel}）
         </Button>
       </div>
     );

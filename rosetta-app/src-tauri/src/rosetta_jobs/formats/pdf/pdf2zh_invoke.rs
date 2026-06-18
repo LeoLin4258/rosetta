@@ -17,6 +17,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use crate::{
     managed_pdf2zh::{self, openai_shim::ShimProviderConfig, openai_shim::ShimRwkvMetrics},
     rosetta_jobs::formats::pdf::errors::PdfError,
+    windows_process::HideConsole,
 };
 
 const PDF2ZH_PROGRESS_EVENT: &str = "rosetta-pdf2zh-progress";
@@ -298,7 +299,10 @@ pub(crate) async fn invoke_pdf2zh(
                 .map(|lines| lines.join("\n"))
                 .unwrap_or_default();
             let output_log = output_dir.join("rosetta-pdf2zh-output.log");
-            let _ = std::fs::write(&output_log, format!("{tail}\n--- worker error ---\n{message}"));
+            let _ = std::fs::write(
+                &output_log,
+                format!("{tail}\n--- worker error ---\n{message}"),
+            );
             return Err(PdfError::Pdf2zhFailed(format!(
                 "PDF 版面处理没有完成。请重试；若持续失败，可查看日志：{}",
                 output_log.display()
@@ -316,6 +320,9 @@ pub(crate) async fn invoke_pdf2zh(
     if !worker_completed {
         // Fallback: one-shot CLI invocation (pays the full import per call).
         let mut command = tokio::process::Command::new(&bin);
+        if cfg!(target_os = "windows") {
+            command.arg("-m").arg("pdf2zh.pdf2zh");
+        }
         command
             .arg(source_path)
             .arg("-li")
@@ -360,6 +367,7 @@ pub(crate) async fn invoke_pdf2zh(
         // appear to do nothing on large PDFs.
         #[cfg(unix)]
         command.process_group(0);
+        command.hide_console_on_windows();
         if let Some(pages) = &options.pages {
             let pages_arg = pages
                 .iter()

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Download } from "lucide-react";
+import { ArrowRight, Download } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -18,6 +18,8 @@ type WelcomeStepProps = {
    *  their model went missing (almost always = they upgraded to a release
    *  that swapped the model). Used to show "欢迎回来" copy. */
   isReturningUser: boolean;
+  localInstallSupported: boolean;
+  supportMessage: string | null;
 };
 
 /**
@@ -42,6 +44,8 @@ export function WelcomeStep({
   isInstalling,
   modelSizeBytes,
   isReturningUser,
+  localInstallSupported,
+  supportMessage,
 }: WelcomeStepProps) {
   const proxyUrl = useRosettaStore((s) => s.downloadProxy.url);
   const setProxyUrl = useRosettaStore((s) => s.setDownloadProxyUrl);
@@ -72,7 +76,7 @@ export function WelcomeStep({
             <>
               <h1 className="text-6xl font-bold tracking-tight">Rosetta</h1>
               <p className="max-w-sm text-sm leading-relaxed text-muted-foreground">
-                在本机翻译文档。文件不离开你的 Mac，不联网也能用。
+                在本机翻译文档。文件不会上传，组件安装完成后可离线使用。
               </p>
             </>
           )}
@@ -83,14 +87,28 @@ export function WelcomeStep({
       <div className="flex flex-col items-center gap-3">
         <Button
           size="lg"
-          onClick={onBeginInstall}
           disabled={isInstalling}
           className="min-w-52 gap-2"
+          onClick={
+            localInstallSupported ? onBeginInstall : () => setConfirmingSkip(true)
+          }
         >
-          <Download className="size-4" />
-          {isReturningUser ? "下载新模型" : "安装本地翻译引擎"}
+          {localInstallSupported ? (
+            <Download className="size-4" />
+          ) : (
+            <ArrowRight className="size-4" />
+          )}
+          {localInstallSupported
+            ? isReturningUser
+              ? "下载新模型"
+              : "安装本地翻译引擎"
+            : "继续使用外部翻译 API"}
         </Button>
-        <p className="text-xs text-muted-foreground/60">{sizeLabel} · 一次下载</p>
+        <p className="max-w-sm text-center text-xs text-muted-foreground/60">
+          {localInstallSupported
+            ? `${sizeLabel} · 一次下载`
+            : supportMessage ?? "当前设备不支持本地翻译引擎"}
+        </p>
       </div>
 
       {/* Group 3: Network proxy + API option */}

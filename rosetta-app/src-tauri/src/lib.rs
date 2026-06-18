@@ -1,3 +1,4 @@
+mod app_log;
 mod local_data_reset;
 mod managed_pdf2zh;
 mod managed_rwkv;
@@ -7,17 +8,21 @@ mod rwkv_api;
 mod rwkv_providers;
 #[allow(dead_code)]
 mod rwkv_runtime;
+mod windows_process;
 
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
 
+#[cfg(target_os = "macos")]
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{Emitter, Manager};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    app_log::init();
+
     let exit_cleanup_started = Arc::new(AtomicBool::new(false));
 
     tauri::Builder::default()
@@ -162,15 +167,15 @@ pub fn run() {
             let payload = event.id.as_ref().to_string();
             app.emit("rosetta-menu-event", payload).ok();
         })
-        .on_window_event(|window, event| {
+        .on_window_event(|_window, _event| {
             // macOS: hide instead of destroy so the window can be restored
             // from the dock. Without this, close destroys the window handle,
             // Reopen can't find "main", and falls back to showing onboarding.
             #[cfg(target_os = "macos")]
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() == "main" {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = _event {
+                if _window.label() == "main" {
                     api.prevent_close();
-                    let _ = window.hide();
+                    let _ = _window.hide();
                 }
             }
         })
@@ -178,6 +183,7 @@ pub fn run() {
             managed_rwkv::cancel_managed_rwkv_install,
             managed_rwkv::get_managed_rwkv_install_plan,
             managed_rwkv::get_managed_rwkv_install_progress,
+            managed_rwkv::get_managed_rwkv_hardware_support,
             managed_rwkv::get_managed_rwkv_runtime_logs_summary,
             managed_rwkv::get_managed_rwkv_runtime_status,
             managed_rwkv::install_managed_rwkv_runtime,

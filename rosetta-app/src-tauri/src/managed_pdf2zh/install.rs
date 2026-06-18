@@ -20,6 +20,7 @@ use super::{
     layout::{Pdf2zhLayout, DOCLAYOUT_MODEL_FILENAME},
     profile::Pdf2zhProfile,
 };
+use crate::windows_process::HideConsole;
 
 const PROGRESS_EVENT_NAME: &str = "managed-pdf2zh://install-progress";
 const PROGRESS_EMIT_INTERVAL_MS: u128 = 100;
@@ -543,16 +544,22 @@ async fn extract_pack(
     let staging = layout.root_dir.join("extract-staging");
     let _ = std::fs::remove_dir_all(&staging);
     std::fs::create_dir_all(&staging).map_err(|error| format!("无法创建解压目录: {error}"))?;
-    let status = tokio::process::Command::new("tar")
-        .arg("-xzf")
-        .arg(archive)
-        .arg("-C")
-        .arg(&staging)
-        .status()
-        .await
-        .map_err(|error| format!("启动 tar 解压失败: {error}"))?;
-    if !status.success() {
-        return Err(format!("解压 PDF 版面处理组件失败: {status}"));
+    if profile.pack_filename.ends_with(".zip") {
+        extract_zip(archive, &staging)
+            .map_err(|error| format!("解压 PDF 版面处理 ZIP 失败: {error}"))?;
+    } else {
+        let status = tokio::process::Command::new("tar")
+            .arg("-xzf")
+            .arg(archive)
+            .arg("-C")
+            .arg(&staging)
+            .hide_console_on_windows()
+            .status()
+            .await
+            .map_err(|error| format!("启动 tar 解压失败: {error}"))?;
+        if !status.success() {
+            return Err(format!("解压 PDF 版面处理组件失败: {status}"));
+        }
     }
 
     let candidate = if staging.join(profile.pack_directory_name).is_dir() {
@@ -589,6 +596,28 @@ async fn extract_pack(
         }
     }
     let _ = std::fs::remove_dir_all(&staging);
+    Ok(())
+}
+
+fn extract_zip(archive_path: &Path, destination: &Path) -> std::io::Result<()> {
+    let file = std::fs::File::open(archive_path)?;
+    let mut archive = zip::ZipArchive::new(file)?;
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index)?;
+        let Some(relative) = entry.enclosed_name() else {
+            continue;
+        };
+        let output = destination.join(relative);
+        if entry.is_dir() {
+            std::fs::create_dir_all(&output)?;
+            continue;
+        }
+        if let Some(parent) = output.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut file = std::fs::File::create(output)?;
+        std::io::copy(&mut entry, &mut file)?;
+    }
     Ok(())
 }
 
