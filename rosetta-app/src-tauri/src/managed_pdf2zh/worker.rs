@@ -150,6 +150,33 @@ fn set_warmup_progress(app: &AppHandle, step: u32, total: u32, label: String) {
     let _ = app.emit(WORKER_STATUS_EVENT, next);
 }
 
+fn push_tail(lines: &mut Vec<String>, line: String) {
+    let line = line.trim().to_string();
+    if line.is_empty() {
+        return;
+    }
+    lines.push(line);
+    if lines.len() > 12 {
+        lines.remove(0);
+    }
+}
+
+fn format_startup_failure(
+    reason: &str,
+    output_tail: &[String],
+    exit_status: Option<&str>,
+) -> String {
+    let mut message = reason.to_string();
+    if let Some(status) = exit_status {
+        message.push_str(&format!(" 退出状态: {status}."));
+    }
+    if !output_tail.is_empty() {
+        message.push_str(" 启动日志: ");
+        message.push_str(&output_tail.join(" | "));
+    }
+    message
+}
+
 #[derive(Debug)]
 pub enum WorkerTranslateOutcome {
     Completed,
@@ -261,7 +288,12 @@ async fn spawn_worker(app: &AppHandle) -> Result<WorkerProcess, String> {
     let python = if cfg!(target_os = "windows") {
         status.layout.pack_dir.join("python").join("python.exe")
     } else {
-        status.layout.pack_dir.join("python").join("bin").join("python")
+        status
+            .layout
+            .pack_dir
+            .join("python")
+            .join("bin")
+            .join("python")
     };
     if !python.is_file() {
         let msg = format!("pdf2zh pack 中找不到 Python 解释器: {}", python.display());
@@ -328,10 +360,23 @@ async fn spawn_worker(app: &AppHandle) -> Result<WorkerProcess, String> {
     tokio::spawn(async move {
         let mut lines = BufReader::new(stdout).lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            if let Ok(event) = serde_json::from_str::<WorkerEvent>(&line) {
-                if events_tx.send(event).is_err() {
-                    break;
-                }
+            let event =
+                serde_json::from_str::<WorkerEvent>(&line).unwrap_or_else(|_| WorkerEvent {
+                    id: None,
+                    event: "stdout".to_string(),
+                    message: Some(line),
+                    import_ms: None,
+                    mps: None,
+                    mps_reason: None,
+                    page_number: None,
+                    file: None,
+                    step: None,
+                    total_steps: None,
+                    label: None,
+                    timings: None,
+                });
+            if events_tx.send(event).is_err() {
+                break;
             }
         }
     });
@@ -383,34 +428,63 @@ async fn spawn_worker(app: &AppHandle) -> Result<WorkerProcess, String> {
 
     // Handshake: wait for the worker to finish its heavy imports.
     let ready = tokio::time::timeout(READY_TIMEOUT, async {
-        while let Some(event) = worker.events.recv().await {
-            match event.event.as_str() {
-                "warming" => {
-                    if let (Some(step), Some(total), Some(label)) =
-                        (event.step, event.total_steps, event.label)
-                    {
-                        set_warmup_progress(app, step, total, label);
+        let mut startup_output: Vec<String> = Vec::new();
+        loop {
+            tokio::select! {
+                event = worker.events.recv() => {
+                    let Some(event) = event else {
+                        let exit_status = worker
+                            .child
+                            .try_wait()
+                            .ok()
+                            .flatten()
+                            .map(|status| status.to_string())
+                            .unwrap_or_else(|| "unknown".to_string());
+                        return Err(format_startup_failure(
+                            "worker 在就绪前退出。",
+                            &startup_output,
+                            Some(&exit_status),
+                        ));
+                    };
+                    match event.event.as_str() {
+                        "warming" => {
+                            if let (Some(step), Some(total), Some(label)) =
+                                (event.step, event.total_steps, event.label)
+                            {
+                                set_warmup_progress(app, step, total, label);
+                            }
+                        }
+                        "ready" => {
+                            let import_ms = event.import_ms.unwrap_or(0);
+                            eprintln!(
+                                "[pdf2zh-worker] ready (import {} ms, mps={}, reason={})",
+                                import_ms,
+                                event.mps.unwrap_or(false),
+                                event.mps_reason.as_deref().unwrap_or("-")
+                            );
+                            return Ok(import_ms);
+                        }
+                        "fatal" => {
+                            return Err(event
+                                .message
+                                .unwrap_or_else(|| "worker 启动失败。".to_string()));
+                        }
+                        "stdout" => {
+                            if let Some(message) = event.message {
+                                push_tail(&mut startup_output, format!("[stdout] {message}"));
+                            }
+                        }
+                        _ => {}
                     }
                 }
-                "ready" => {
-                    let import_ms = event.import_ms.unwrap_or(0);
-                    eprintln!(
-                        "[pdf2zh-worker] ready (import {} ms, mps={}, reason={})",
-                        import_ms,
-                        event.mps.unwrap_or(false),
-                        event.mps_reason.as_deref().unwrap_or("-")
-                    );
-                    return Ok(import_ms);
+                stderr_line = worker.stderr_lines.recv(), if worker.stderr_open => {
+                    match stderr_line {
+                        Some(text) => push_tail(&mut startup_output, format!("[stderr] {text}")),
+                        None => worker.stderr_open = false,
+                    }
                 }
-                "fatal" => {
-                    return Err(event
-                        .message
-                        .unwrap_or_else(|| "worker 启动失败。".to_string()));
-                }
-                _ => {}
             }
         }
-        Err("worker 在就绪前退出。".to_string())
     })
     .await;
 

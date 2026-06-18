@@ -82,6 +82,7 @@ echo "[pdf2zh-release] PBS python ready: $PBS_REPORTED_VERSION" >&2
 echo "[pdf2zh-release] installing pdf2zh==$PDF2ZH_VERSION into pack python" >&2
 "$PYTHON_DIR/bin/python" -m pip install --upgrade pip --quiet
 "$PYTHON_DIR/bin/python" -m pip install "pdf2zh==$PDF2ZH_VERSION" --quiet
+"$PYTHON_DIR/bin/python" -m pip install "tqdm" --quiet
 
 echo "[pdf2zh-release] applying NumPy 2 compatibility patch" >&2
 "$PYTHON_DIR/bin/python" - <<'PY'
@@ -119,6 +120,7 @@ SH
 chmod 0755 "$BIN_DIR/pdf2zh"
 
 echo "[pdf2zh-release] in-place smoke test:" >&2
+"$PYTHON_DIR/bin/python" -c 'import tqdm; import huggingface_hub.file_download' >&2
 "$BIN_DIR/pdf2zh" --version >&2
 
 echo "[pdf2zh-release] relocation smoke test (rename pack root, re-run shim):" >&2

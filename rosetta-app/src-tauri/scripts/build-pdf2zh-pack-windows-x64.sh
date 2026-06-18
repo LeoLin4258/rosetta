@@ -74,6 +74,7 @@ echo "[pdf2zh-release] PBS python ready: $PBS_REPORTED_VERSION" >&2
 echo "[pdf2zh-release] installing pdf2zh==$PDF2ZH_VERSION into pack python" >&2
 "$PYTHON_DIR/python.exe" -m pip install --upgrade pip --quiet
 "$PYTHON_DIR/python.exe" -m pip install "pdf2zh==$PDF2ZH_VERSION" --quiet
+"$PYTHON_DIR/python.exe" -m pip install "tqdm" --quiet
 
 echo "[pdf2zh-release] applying NumPy 2 compatibility patch" >&2
 "$PYTHON_DIR/python.exe" - <<'PY'
@@ -101,6 +102,7 @@ echo "[pdf2zh-release] removing Python bytecode caches" >&2
 find "$PACK_DIR" \( -name '__pycache__' -type d -prune -exec rm -rf {} + \) -o \( -name '*.pyc' -type f -delete \)
 
 echo "[pdf2zh-release] smoke test:" >&2
+"$PYTHON_DIR/python.exe" -c 'import tqdm; import huggingface_hub.file_download' >&2
 "$PYTHON_DIR/python.exe" -m pdf2zh.pdf2zh --version >&2
 
 echo "[pdf2zh-release] verifying no stale bytecode:" >&2

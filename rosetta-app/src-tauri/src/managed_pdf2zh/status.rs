@@ -8,6 +8,8 @@ use super::{
     profile::{current_profile, Pdf2zhProfile, Pdf2zhProfileSummary, MACOS_ARM64_PDF2ZH},
 };
 
+const REQUIRED_PYTHON_PACKAGES: &[&str] = &["tqdm"];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Pdf2zhState {
@@ -104,10 +106,14 @@ pub fn build_static_status(app: &AppHandle) -> Result<StaticStatus, String> {
     let layout = Pdf2zhLayout::from_app(app, profile)?;
     let bin_path = locate_pdf2zh_bin(&layout, profile);
     let doclayout_model_path = locate_doclayout_model(&layout);
+    let missing_python_package = bin_path
+        .as_ref()
+        .and_then(|_| first_missing_python_package(&layout));
     let ready = bin_path.as_ref().is_some_and(|path| path.is_file())
         && doclayout_model_path
             .as_ref()
-            .is_some_and(|path| path.is_file());
+            .is_some_and(|path| path.is_file())
+        && missing_python_package.is_none();
     let state = if ready {
         Pdf2zhState::Installed
     } else {
@@ -117,9 +123,13 @@ pub fn build_static_status(app: &AppHandle) -> Result<StaticStatus, String> {
         ready,
         message: if ready {
             "PDF 版面处理可用。".to_string()
-        } else if bin_path.is_some() {
+        } else if bin_path.is_some() && doclayout_model_path.is_none() {
             format!(
                 "PDF 版面处理组件需要更新：缺少内置版面模型 models/{DOCLAYOUT_MODEL_FILENAME}。请重新安装 PDF 组件。"
+            )
+        } else if let Some(package) = missing_python_package {
+            format!(
+                "PDF 版面处理组件需要更新：缺少 Python 依赖 {package}。请重新安装 PDF 组件。"
             )
         } else {
             "尚未安装 PDF 版面处理组件。请先在设置中安装，或点击 PDF 翻译时自动准备。".to_string()
@@ -167,6 +177,44 @@ fn locate_doclayout_model(layout: &Pdf2zhLayout) -> Option<PathBuf> {
     None
 }
 
+fn first_missing_python_package(layout: &Pdf2zhLayout) -> Option<&'static str> {
+    REQUIRED_PYTHON_PACKAGES
+        .iter()
+        .copied()
+        .find(|package| !python_package_installed(layout, package))
+}
+
+fn python_package_installed(layout: &Pdf2zhLayout, package: &str) -> bool {
+    for site_packages in python_site_package_dirs(layout) {
+        if site_packages.join(package).is_dir() {
+            return true;
+        }
+    }
+    false
+}
+
+fn python_site_package_dirs(layout: &Pdf2zhLayout) -> Vec<PathBuf> {
+    let python_dir = layout.pack_dir.join("python");
+    let mut dirs = Vec::new();
+    dirs.push(python_dir.join("Lib").join("site-packages"));
+
+    let lib_dir = python_dir.join("lib");
+    if let Ok(entries) = std::fs::read_dir(&lib_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("python"))
+            {
+                dirs.push(path.join("site-packages"));
+            }
+        }
+    }
+
+    dirs
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -174,6 +222,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
+    use crate::managed_pdf2zh::profile::WINDOWS_AMD64_PDF2ZH;
 
     static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -221,5 +270,36 @@ mod tests {
         let ready = layout.managed_pack_ready(profile);
 
         assert!(ready);
+    }
+
+    #[test]
+    fn windows_pack_without_tqdm_dependency_is_not_ready() {
+        let root = temp_root("missing-tqdm");
+        let profile = &WINDOWS_AMD64_PDF2ZH;
+        let layout = Pdf2zhLayout::resolve(root, profile);
+        create_pdf2zh_bin(&layout, profile);
+
+        let model = layout.doclayout_model_path();
+        fs::create_dir_all(model.parent().expect("model should have parent"))
+            .expect("model parent should be created");
+        fs::write(model, b"model bytes").expect("model should be written");
+
+        assert_eq!(first_missing_python_package(&layout), Some("tqdm"));
+    }
+
+    #[test]
+    fn windows_pack_with_tqdm_dependency_is_ready_for_dependency_check() {
+        let root = temp_root("with-tqdm");
+        let profile = &WINDOWS_AMD64_PDF2ZH;
+        let layout = Pdf2zhLayout::resolve(root, profile);
+        let site_packages = layout
+            .pack_dir
+            .join("python")
+            .join("Lib")
+            .join("site-packages")
+            .join("tqdm");
+        fs::create_dir_all(&site_packages).expect("tqdm package should be created");
+
+        assert_eq!(first_missing_python_package(&layout), None);
     }
 }

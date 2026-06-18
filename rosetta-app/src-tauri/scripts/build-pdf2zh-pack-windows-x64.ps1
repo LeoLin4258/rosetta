@@ -16,7 +16,8 @@
 param(
     [string]$Pdf2zhVersion = "1.7.9",
     [string]$PbsRelease = "20260510",
-    [string]$PbsPythonVersion = "3.13.13"
+    [string]$PbsPythonVersion = "3.13.13",
+    [string]$ReleaseTagSuffix = "1"
 )
 
 $ErrorActionPreference = "Stop"
@@ -71,6 +72,7 @@ $PipMirror = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
 Write-Host "[pdf2zh-release] installing pdf2zh==$Pdf2zhVersion into pack python (mirror: $PipMirror)"
 & $PythonExe -m pip install --upgrade pip --quiet -i $PipMirror --trusted-host mirrors.tuna.tsinghua.edu.cn
 & $PythonExe -m pip install "pdf2zh==$Pdf2zhVersion" --quiet -i $PipMirror --trusted-host mirrors.tuna.tsinghua.edu.cn
+& $PythonExe -m pip install "tqdm" --quiet -i $PipMirror --trusted-host mirrors.tuna.tsinghua.edu.cn
 
 Write-Host "[pdf2zh-release] applying NumPy 2 compatibility patch"
 $NumpyPatch = @'
@@ -157,6 +159,7 @@ else:
 $DocLayoutPatch | & $PythonExe -
 
 Write-Host "[pdf2zh-release] smoke test:"
+& $PythonExe -c "import tqdm; import huggingface_hub.file_download"
 & $PythonExe -m pdf2zh.pdf2zh --version
 
 Write-Host "[pdf2zh-release] removing Python bytecode caches (stdlib + site-packages + smoke-test generated)"
@@ -201,7 +204,7 @@ Write-Host "[pdf2zh-release] size bytes:  $SizeBytes"
 Write-Host "[pdf2zh-release] sha256:      $SHA256"
 Write-Host ""
 Write-Host "[pdf2zh-release] next steps:"
-$Tag = "pdf-layout-pack-windows-x64-v$(Get-Date -Format 'yyyy.MM.dd').1"
+$Tag = "pdf-layout-pack-windows-x64-v$(Get-Date -Format 'yyyy.MM.dd').$ReleaseTagSuffix"
 Write-Host "  1. Create a GitHub Release under LeoLin4258/rosetta-assets"
 Write-Host "     tag: $Tag"
 Write-Host "  2. Upload: $ArchivePath"

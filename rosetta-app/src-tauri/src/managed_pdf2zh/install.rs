@@ -209,7 +209,7 @@ async fn install_inner(
 ) -> Result<Pdf2zhInstallResult, String> {
     layout.ensure_dirs()?;
 
-    if layout.managed_pack_ready(profile) && !options.repair {
+    if !options.repair && super::status::build_static_status(app)?.install_plan.ready {
         set_done(registry, "PDF 版面处理已就绪。".to_string()).await;
         emit_progress(app, registry).await;
         return Ok(Pdf2zhInstallResult {
@@ -304,6 +304,7 @@ async fn install_inner(
         }
     }
 
+    let _ = tokio::fs::remove_file(&archive_path).await;
     tokio::fs::rename(&part_path, &archive_path)
         .await
         .map_err(|error| format!("无法重命名下载文件: {error}"))?;
