@@ -99,6 +99,7 @@ pub fn get_managed_rwkv_install_plan(app: AppHandle) -> Result<ManagedRuntimeIns
 pub async fn install_managed_rwkv_runtime(
     app: AppHandle,
     install_registry: State<'_, InstallStateRegistry>,
+    runtime_registry: State<'_, Registry>,
     options: Option<InstallOptions>,
 ) -> Result<InstallResult, String> {
     let Some(profile) = profile::current_profile() else {
@@ -106,12 +107,31 @@ pub async fn install_managed_rwkv_runtime(
     };
     hardware::ensure_supported(profile)?;
     let layout = RuntimeLayout::from_app(&app, profile)?;
+    let options = options.unwrap_or_default();
+    if options.repair {
+        let static_status = build_static_status(&app)?;
+        let sidecar = static_status.sidecar_path.as_deref();
+        let tokenizer = static_status.tokenizer_path.as_deref();
+        let model = static_status
+            .layout
+            .model_extracted_dir
+            .as_deref()
+            .unwrap_or(static_status.layout.model_file.as_path());
+        stop_sidecar(
+            &runtime_registry,
+            Some(static_status.profile),
+            sidecar,
+            tokenizer,
+            Some(model),
+        )
+        .await?;
+    }
     install_model(
         &app,
         install_registry.inner(),
         profile,
         &layout,
-        options.unwrap_or_default(),
+        options,
     )
     .await
 }

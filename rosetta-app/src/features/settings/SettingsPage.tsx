@@ -637,7 +637,7 @@ function RemoteApiSettingsPanel({
             <Input
               id="rwkv-endpoint"
               onChange={updateTextField("endpoint")}
-              placeholder="/v1/chat/completions"
+              placeholder="/v1/batch/completions"
               value={rwkv.endpoint}
             />
           </SettingField>

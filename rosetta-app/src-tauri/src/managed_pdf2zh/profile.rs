@@ -45,12 +45,12 @@ pub const WINDOWS_AMD64_PDF2ZH: Pdf2zhProfile = Pdf2zhProfile {
     pack_directory_name: "windows-amd64",
     bin_relative_path: "python/python.exe",
     pack_filename: "rosetta-pdf2zh-windows-amd64.zip",
-    pack_size_bytes: Some(355_011_264),
-    pack_sha256: Some("9d64d03abf505d67df396f8560aebd4d47478b465149dff9c295c667efd59825"),
-    pack_download_urls: &[
-        "https://github.com/LeoLin4258/rosetta-assets/releases/download/pdf-layout-pack-windows-x64-v2026.06.18.1/rosetta-pdf2zh-windows-amd64.zip",
-        "https://githubdog.com/https://github.com/LeoLin4258/rosetta-assets/releases/download/pdf-layout-pack-windows-x64-v2026.06.18.1/rosetta-pdf2zh-windows-amd64.zip",
-    ],
+    pack_size_bytes: Some(386_074_457),
+    pack_sha256: Some("408690d6b04ea3ed2066dce1b3b4a33b50aaadd546f1c1b8bd9a8669603d4910"),
+    // The v2026.06.18.1 asset is intentionally disabled: it was published
+    // without tqdm and cannot start the worker. Fill these URLs only after
+    // the rebuilt, verified pack above is uploaded under a new release tag.
+    pack_download_urls: &[],
 };
 
 const ALL_PROFILES: &[Pdf2zhProfile] = &[MACOS_ARM64_PDF2ZH, WINDOWS_AMD64_PDF2ZH];

@@ -258,12 +258,12 @@ export function WorkspacePage() {
   function buildProvider() {
     return selectProvider({
       config: rwkv,
-      override:
-        rwkv.providerPreference === "local"
-          ? "rwkv-mobile-batch-chat"
-          : "rwkv-lightning-contents",
       managedRuntimeReady: isManagedRuntimeReady(managedRuntimeStatus),
+      managedRuntimeProviderId:
+        managedRuntimeStatus?.profile?.providerId ?? undefined,
       managedRuntimeBaseUrl: managedRuntimeStatus?.process.baseUrl ?? undefined,
+      managedRuntimeEndpoint:
+        managedRuntimeStatus?.profile?.batchChatPath ?? undefined,
     });
   }
 

@@ -222,3 +222,62 @@ contents, Python pack structure), not the Rust orchestration code.
 - PDF worker: logs python/script/cwd/model/pid at spawn; logs error message
   + stderr tail on failure and timeout.
 - Install flow: logs whether runtime pack extraction was skipped or triggered.
+
+## NVIDIA Windows takeover findings and fixes
+
+Validated on an NVIDIA GeForce RTX 5070 (driver 596.21, CUDA 13.2):
+
+- The published PDF pack was incomplete. Its embedded Python worked, but
+  `doclayout_yolo` failed with `ModuleNotFoundError: No module named 'tqdm'`.
+  The PowerShell pack script had continued after failed native `pip` and
+  Python smoke-test commands because `$ErrorActionPreference = "Stop"` does
+  not convert a native executable's non-zero exit code into an exception.
+  Every Python build step now checks `$LASTEXITCODE`, and the pruned pack is
+  import-tested again immediately before archive creation.
+- The color-preservation patch also relied on the Windows process locale and
+  failed on a Chinese GBK locale while reading UTF-8 Python source. It now
+  reads and writes UTF-8 explicitly.
+- The rebuilt PDF worker completed all four warmup phases and reached ready.
+  The verified replacement pack is 386,074,457 bytes with SHA256
+  `408690d6b04ea3ed2066dce1b3b4a33b50aaadd546f1c1b8bd9a8669603d4910`.
+  The broken `.1` download URLs are disabled until this replacement is
+  uploaded under a new release tag.
+- RWKV failed because Rosetta passed `--host 127.0.0.1`, which upstream
+  V1.0.0 does not support. Its uncaught unknown-argument exception terminates
+  as Windows BEX64 / `0xc0000409` in `ucrtbase.dll`.
+- Starting the same runtime without `--host` loads the 0.4B model and serves
+  `/v1/models`, but upstream hard-codes `0.0.0.0`, which violates Rosetta's
+  local-only boundary.
+- The staging script now verifies the upstream `.7z` SHA256, uses a static
+  runtime-DLL allowlist, patches the two pinned `0.0.0.0` literals to IPv6
+  loopback `::1`, and verifies the patched executable SHA256. Rosetta omits
+  the unsupported `--host` argument and connects to `[::1]`.
+- ZIP creation now uses sorted .NET `ZipArchive` entries with a fixed
+  timestamp. Two consecutive builds produced the same 404,318,341-byte
+  archive and SHA256
+  `b2a4a08cc3c1e6caa836850acd6ba86e3d03f9b2dde4fa1b65278aa00f870499`.
+- The first application translation attempt exposed a separate API-contract
+  mismatch. Rosetta sent its Lightning `contents[]` batch body to
+  `/v1/chat/completions`, while the CUDA runtime implements that body at
+  `/v1/batch/completions`; the chat route is intended for `messages[]`.
+  Rosetta also serialized `stop_tokens` as strings, but the runtime parses
+  them as integer token IDs, producing HTTP 500 before inference.
+- Managed runtime profile summaries now expose their translation endpoint.
+  The frontend dispatches macOS profiles through `rwkv-mobile-batch-chat` and
+  the Windows CUDA profile through `rwkv-lightning-contents` using
+  `/v1/batch/completions`. The invalid string `stop_tokens` override was
+  removed so each runtime uses its model-specific defaults.
+- Live verification against the managed Windows process at IPv6 loopback
+  returned HTTP 200 for a two-item streaming batch and produced the expected
+  Chinese translations in choice-index order.
+- The CUDA runtime emits a final SSE chunk with `delta: {}` and
+  `finish_reason: "stop"`. Rosetta previously required every delta object to
+  contain `content`, so it discarded otherwise successful batches at the
+  finish frame. Streaming message content is now optional at deserialization,
+  while the completed aggregate is still required to be non-empty.
+- Rosetta requests Lightning batch translations with `stream: false`, matching
+  the managed macOS translation behavior. Streaming response parsing remains
+  only as compatibility handling for external APIs.
+- Repair installation now stops and reaps the managed sidecar before deleting
+  the Windows runtime directory. This avoids Windows error 5 when the running
+  executable and DLLs are still locked.

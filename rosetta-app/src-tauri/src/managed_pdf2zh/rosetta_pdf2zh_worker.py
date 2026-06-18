@@ -41,7 +41,17 @@ _yolo_model_path = None
 
 
 def make_protocol_channel():
-    proto = os.fdopen(os.dup(1), "w", buffering=1)
+    # Windows pipe text encoding follows the active system locale by default
+    # (for example GBK on a Chinese installation). The Rust side reads the
+    # line protocol as UTF-8, so locale-encoded warmup labels would terminate
+    # its stdout reader even though the worker process was still healthy.
+    proto = os.fdopen(
+        os.dup(1),
+        "w",
+        buffering=1,
+        encoding="utf-8",
+        errors="backslashreplace",
+    )
     os.dup2(2, 1)
     sys.stdout = sys.stderr
     return proto

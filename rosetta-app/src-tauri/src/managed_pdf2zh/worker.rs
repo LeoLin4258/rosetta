@@ -288,6 +288,8 @@ async fn spawn_worker(app: &AppHandle) -> Result<WorkerProcess, String> {
         .current_dir(&worker_dir)
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .env("PYTHONUNBUFFERED", "1")
+        .env("PYTHONUTF8", "1")
+        .env("PYTHONIOENCODING", "utf-8")
         .env("PYTHONNOUSERSITE", "1")
         .env("PYTHONPATH", "")
         .env("ROSETTA_DOCLAYOUT_MODEL", &doclayout_model)
@@ -348,10 +350,15 @@ async fn spawn_worker(app: &AppHandle) -> Result<WorkerProcess, String> {
     tokio::spawn(async move {
         let mut lines = BufReader::new(stdout).lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            if let Ok(event) = serde_json::from_str::<WorkerEvent>(&line) {
-                if events_tx.send(event).is_err() {
-                    break;
+            match serde_json::from_str::<WorkerEvent>(&line) {
+                Ok(event) => {
+                    if events_tx.send(event).is_err() {
+                        break;
+                    }
                 }
+                Err(error) => eprintln!(
+                    "[pdf2zh-worker:stdout] invalid protocol line ({error}): {line}"
+                ),
             }
         }
     });
@@ -417,7 +424,12 @@ async fn spawn_worker(app: &AppHandle) -> Result<WorkerProcess, String> {
                 event = worker.events.recv() => {
                     let Some(event) = event else {
                         let detail = format_stderr_tail(&capture_ref);
-                        return Err(format!("worker 在就绪前退出。{detail}"));
+                        let exit = match worker.child.try_wait() {
+                            Ok(Some(status)) => format!(" exit status: {status}."),
+                            Ok(None) => " stdout channel closed while process is still running.".to_string(),
+                            Err(error) => format!(" unable to read exit status: {error}."),
+                        };
+                        return Err(format!("worker 在就绪前退出。{exit}{detail}"));
                     };
                     match event.event.as_str() {
                         "warming" => {

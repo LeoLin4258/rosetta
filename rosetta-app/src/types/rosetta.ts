@@ -584,6 +584,7 @@ export type ManagedRuntimeProfileSummary = {
   modelSizeBytes: number;
   modelSha256: string;
   supportedDirections: string[];
+  batchChatPath: string;
   bindHost: string;
 };
 

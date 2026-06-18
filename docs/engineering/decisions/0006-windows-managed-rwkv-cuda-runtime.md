@@ -28,10 +28,13 @@ preparing an official ZIP package.
   `<app-local-data>/managed-rwkv/`.
 - Runtime archives use ZIP and are extracted with Rust's `zip` crate. Rosetta
   does not require 7-Zip or a system `tar` command.
-- Until the official upstream ZIP is published, development uses a locally
-  produced ZIP with fixed size and SHA. Switching to upstream changes only
-  profile metadata.
-- The runtime binds to `127.0.0.1` on an ephemeral port.
+- Upstream V1.0.0 only publishes a `.7z`. Rosetta's staging script verifies
+  that archive's SHA256, removes the bundled build-machine Windows DLL
+  snapshot using a fixed allowlist, and produces a deterministic ZIP.
+- Upstream V1.0.0 hard-codes `0.0.0.0` and crashes on an unknown `--host`
+  argument. The pinned staging step replaces the two equal-length bind
+  literals with IPv6 loopback `::1`, verifies the patched executable SHA256,
+  and Rosetta connects through `http://[::1]:<port>`.
 - Windows child processes use `CREATE_NO_WINDOW`.
 - Stop, cancel, stale-process cleanup, and app exit terminate the complete
   Windows process tree.
@@ -44,5 +47,6 @@ preparing an official ZIP package.
   API, but cannot install the CUDA runtime.
 - NVIDIA runtime launch and translation still require validation on a clean
   SM75+ Windows machine.
-- The temporary development ZIP is not a release artifact. Release metadata
-  must be replaced after the official upstream ZIP is downloaded and verified.
+- The staged ZIP must be uploaded as a Rosetta-controlled release artifact
+  before Windows distribution; the app must never download and execute an
+  unverified runtime archive.

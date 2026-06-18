@@ -473,8 +473,6 @@ fn build_command_args(
             model_path.display().to_string(),
             "--vocab-path".to_string(),
             tokenizer_path.display().to_string(),
-            "--host".to_string(),
-            profile.bind_host.to_string(),
             "--port".to_string(),
             port.to_string(),
         ];
@@ -915,7 +913,7 @@ mod tests {
         );
         assert!(args.iter().any(|arg| arg == "--model-path"));
         assert!(args.iter().any(|arg| arg == "--vocab-path"));
-        assert!(args.iter().any(|arg| arg == "--host"));
+        assert!(!args.iter().any(|arg| arg == "--host"));
         assert!(!args.iter().any(|arg| arg == "--backend"));
         assert!(!args.iter().any(|arg| arg == "--model-name"));
     }

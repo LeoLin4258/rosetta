@@ -289,13 +289,13 @@ export function TranslationPreviewPage() {
         onTranslationFileSaved: setTranslationBundle,
         provider: selectProvider({
           config: rwkv,
-          override:
-            rwkv.providerPreference === "local"
-              ? "rwkv-mobile-batch-chat"
-              : "rwkv-lightning-contents",
           managedRuntimeReady: isManagedRuntimeReady(managedRuntimeStatus),
+          managedRuntimeProviderId:
+            managedRuntimeStatus?.profile?.providerId ?? undefined,
           managedRuntimeBaseUrl:
             managedRuntimeStatus?.process.baseUrl ?? undefined,
+          managedRuntimeEndpoint:
+            managedRuntimeStatus?.profile?.batchChatPath ?? undefined,
         }),
         request: {
           baseUrl: rwkv.baseUrl,

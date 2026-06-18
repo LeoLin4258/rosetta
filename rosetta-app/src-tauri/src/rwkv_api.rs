@@ -134,7 +134,6 @@ struct RwkvChatCompletionsRequest {
     temperature: f64,
     top_k: u32,
     top_p: f64,
-    stop_tokens: Vec<String>,
     alpha_presence: f64,
     alpha_frequency: f64,
     alpha_decay: f64,
@@ -155,6 +154,7 @@ struct RwkvChatCompletionChoice {
 
 #[derive(Debug, Deserialize)]
 struct RwkvChatCompletionMessage {
+    #[serde(default)]
     content: String,
 }
 
@@ -787,11 +787,10 @@ fn build_chat_completions_request(
         temperature: 1.0,
         top_k: 1,
         top_p: 0.0,
-        stop_tokens: vec!["\n\n".to_string()],
         alpha_presence: 0.0,
         alpha_frequency: 0.0,
         alpha_decay: 0.99,
-        stream: true,
+        stream: false,
         password: password.to_string(),
     }
 }
@@ -1680,14 +1679,14 @@ mod tests {
             json!(["English: Hello world.\n\nChinese:"])
         );
         assert_eq!(value["max_tokens"], json!(8292));
-        assert_eq!(value["stop_tokens"], json!(["\n\n"]));
+        assert!(value.get("stop_tokens").is_none());
         assert_eq!(value["temperature"], json!(1.0));
         assert_eq!(value["top_k"], json!(1));
         assert_eq!(value["top_p"], json!(0.0));
         assert_eq!(value["alpha_presence"], json!(0.0));
         assert_eq!(value["alpha_frequency"], json!(0.0));
         assert_eq!(value["alpha_decay"], json!(0.99));
-        assert_eq!(value["stream"], json!(true));
+        assert_eq!(value["stream"], json!(false));
         assert_eq!(value["password"], json!("model-password"));
     }
 
@@ -1737,6 +1736,7 @@ mod tests {
             r#"data: {"choices":[{"index":1,"delta":{"content":"二"}}]}"#,
             r#"data: {"choices":[{"index":0,"delta":{"content":"一段"}}]}"#,
             r#"data: {"choices":[{"index":1,"delta":{"content":"段"}}]}"#,
+            r#"data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"},{"index":1,"delta":{},"finish_reason":"stop"}]}"#,
             "data: [DONE]",
         ]
         .join("\n");

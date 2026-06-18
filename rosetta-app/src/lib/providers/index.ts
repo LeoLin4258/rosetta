@@ -34,13 +34,17 @@ export type SelectProviderInput = {
    * to today.
    */
   managedRuntimeReady?: boolean;
+  /** Provider adapter declared by the active managed runtime profile. */
+  managedRuntimeProviderId?: string;
   /**
-   * `127.0.0.1:<ephemeral-port>` URL of the running managed sidecar. Phase 5
+   * Loopback URL of the running managed sidecar. Phase 5
    * passes the live value; Phase 1 defaults to the Phase 0 validation port
    * (`8765`) so manual end-to-end checks against a hand-started server work
    * without extra wiring.
    */
   managedRuntimeBaseUrl?: string;
+  /** Translation endpoint declared by the active managed runtime profile. */
+  managedRuntimeEndpoint?: string;
 };
 
 /**
@@ -57,12 +61,15 @@ export function selectProvider({
   config,
   override,
   managedRuntimeReady,
+  managedRuntimeProviderId,
   managedRuntimeBaseUrl,
+  managedRuntimeEndpoint,
 }: SelectProviderInput): RwkvProviderHandle {
   const providerId = resolveProviderId(
     override,
     config.providerPreference,
-    managedRuntimeReady
+    managedRuntimeReady,
+    managedRuntimeProviderId
   );
   if (providerId === "rwkv-mobile-batch-chat") {
     return {
@@ -71,12 +78,19 @@ export function selectProvider({
       timeoutMs: config.timeoutMs,
     };
   }
+  const useManagedRuntime =
+    config.providerPreference === "local" &&
+    providerId === "rwkv-lightning-contents";
   return {
     id: "rwkv-lightning-contents",
-    baseUrl: config.baseUrl,
-    endpoint: config.endpoint,
-    internalToken: config.internalToken,
-    bodyPassword: config.bodyPassword,
+    baseUrl: useManagedRuntime
+      ? managedRuntimeBaseUrl ?? DEFAULT_MANAGED_RUNTIME_BASE_URL
+      : config.baseUrl,
+    endpoint: useManagedRuntime
+      ? managedRuntimeEndpoint ?? "/v1/batch/completions"
+      : config.endpoint,
+    internalToken: useManagedRuntime ? "" : config.internalToken,
+    bodyPassword: useManagedRuntime ? "" : config.bodyPassword,
     timeoutMs: config.timeoutMs,
   };
 }
@@ -84,18 +98,31 @@ export function selectProvider({
 function resolveProviderId(
   override: RwkvProviderId | undefined,
   preference: RwkvProviderPreference | undefined,
-  managedRuntimeReady: boolean | undefined
+  managedRuntimeReady: boolean | undefined,
+  managedRuntimeProviderId: string | undefined
 ): RwkvProviderId {
   if (override) {
     return override;
   }
   if (preference === "local") {
+    if (
+      managedRuntimeProviderId === "rwkv-lightning-contents" ||
+      managedRuntimeProviderId === "rwkv-mobile-batch-chat"
+    ) {
+      return managedRuntimeProviderId;
+    }
     return "rwkv-mobile-batch-chat";
   }
   if (preference === "remote-api") {
     return "rwkv-lightning-contents";
   }
   if (managedRuntimeReady) {
+    if (
+      managedRuntimeProviderId === "rwkv-lightning-contents" ||
+      managedRuntimeProviderId === "rwkv-mobile-batch-chat"
+    ) {
+      return managedRuntimeProviderId;
+    }
     return "rwkv-mobile-batch-chat";
   }
   return "rwkv-lightning-contents";

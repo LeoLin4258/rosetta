@@ -89,7 +89,7 @@ pub struct RuntimeProfile {
     pub model_name_arg: &'static str,
     /// Health probe HTTP path.
     pub health_path: &'static str,
-    /// Batch chat endpoint path used by the `rwkv-mobile-batch-chat` adapter.
+    /// Translation endpoint path used by the profile's provider adapter.
     pub batch_chat_path: &'static str,
     /// Loopback host the sidecar must bind to. Never overridden at runtime.
     pub bind_host: &'static str,
@@ -188,9 +188,9 @@ pub const WINDOWS_AMD64_CUDA: RuntimeProfile = RuntimeProfile {
     sidecar_binary_name: "rwkv_lighting_cuda.exe",
     managed_runtime_directory_name: Some("rwkv-lightning-cuda-sm75-msvc"),
     runtime_archive_filename: Some("RWKV_lightning_CUDA_sm75+_Win_MSVC.zip"),
-    runtime_archive_size_bytes: Some(404_232_358),
+    runtime_archive_size_bytes: Some(404_318_341),
     runtime_archive_sha256: Some(
-        "2370dcf5578f480be4721100bad8ff44b1de83b4cb98d17a38ba6955cd6faddf",
+        "b2a4a08cc3c1e6caa836850acd6ba86e3d03f9b2dde4fa1b65278aa00f870499",
     ),
     runtime_download_urls: &[],
     runtime_library_dir_name: Some("lib"),
@@ -208,8 +208,8 @@ pub const WINDOWS_AMD64_CUDA: RuntimeProfile = RuntimeProfile {
     supported_directions: &["en-zh", "zh-en"],
     model_name_arg: "rwkv-translate",
     health_path: "/v1/models",
-    batch_chat_path: "/v1/chat/completions",
-    bind_host: "127.0.0.1",
+    batch_chat_path: "/v1/batch/completions",
+    bind_host: "[::1]",
 };
 
 /// Returns the profile valid for the current host, or `None` when the
@@ -240,6 +240,7 @@ pub struct RuntimeProfileSummary {
     pub model_size_bytes: u64,
     pub model_sha256: &'static str,
     pub supported_directions: &'static [&'static str],
+    pub batch_chat_path: &'static str,
     pub bind_host: &'static str,
 }
 
@@ -257,6 +258,7 @@ impl RuntimeProfileSummary {
             model_size_bytes: profile.model_size_bytes,
             model_sha256: profile.model_sha256,
             supported_directions: profile.supported_directions,
+            batch_chat_path: profile.batch_chat_path,
             bind_host: profile.bind_host,
         }
     }
@@ -292,6 +294,8 @@ mod tests {
             RuntimeLaunchKind::LightningCuda
         );
         assert!(WINDOWS_AMD64_CUDA.hardware_requirement.contains("SM75"));
+        assert_eq!(WINDOWS_AMD64_CUDA.bind_host, "[::1]");
+        assert_eq!(WINDOWS_AMD64_CUDA.batch_chat_path, "/v1/batch/completions");
     }
 
     #[test]

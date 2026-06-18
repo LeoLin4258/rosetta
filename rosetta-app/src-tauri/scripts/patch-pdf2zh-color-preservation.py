@@ -7,7 +7,7 @@ import pdf2zh
 
 root = Path(pdf2zh.__file__).resolve().parent
 target = root / "converter.py"
-text = target.read_text()
+text = target.read_text(encoding="utf-8")
 bold_expr = 're.match(r"(.*Bold|.*Medi|.*Demi|.*Black|.*Heavy|.*SemiBold|.*Semibold|.*Bd)", getattr(child.font, "fontname", "").split("+")[-1], re.IGNORECASE) is not None'
 
 if "def rosetta_pdf_is_bold_font(" in text and "rosetta_pdf_is_bold_font(child.font)" not in text:
@@ -174,7 +174,7 @@ for old, new in replacements:
         raise SystemExit(f"::error::could not find expected pdf2zh converter fragment in {target}")
     text = text.replace(old, new)
 
-target.write_text(text)
+target.write_text(text, encoding="utf-8")
 print(f"[pdf2zh-pack] patched PDF text color and bold preservation in {target}")
 
 for cache_dir in root.rglob("__pycache__"):

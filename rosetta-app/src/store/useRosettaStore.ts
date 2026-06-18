@@ -321,7 +321,7 @@ export const useRosettaStore = create<RosettaState>()(
       themeMode: "dark",
       rwkv: {
         baseUrl: "https://rwkvconcszserver3.rwkvos.com",
-        endpoint: "/v1/chat/completions",
+        endpoint: "/v1/batch/completions",
         internalToken: "",
         bodyPassword: "",
         timeoutMs: 120_000,

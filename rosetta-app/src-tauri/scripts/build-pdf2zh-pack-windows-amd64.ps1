@@ -57,8 +57,11 @@ try {
     }
 
     & $PythonExe -m pip install --upgrade "pip==26.1.2" --index-url $PipIndexUrl
+    if ($LASTEXITCODE -ne 0) { throw "Failed to install pinned pip" }
     & $PythonExe -m pip install --requirement $Requirements --index-url $PipIndexUrl
+    if ($LASTEXITCODE -ne 0) { throw "Failed to install PDF runtime requirements" }
     & $PythonExe -m pip install "pdf2zh==$Pdf2zhVersion" --no-deps --index-url $PipIndexUrl
+    if ($LASTEXITCODE -ne 0) { throw "Failed to install pdf2zh" }
 
     $ModelsDir = Join-Path $PackDir "models"
     New-Item -ItemType Directory -Path $ModelsDir -Force | Out-Null
@@ -72,6 +75,7 @@ try {
 
     $PatchScript = Join-Path $ScriptDir "patch-pdf2zh-color-preservation.py"
     & $PythonExe $PatchScript
+    if ($LASTEXITCODE -ne 0) { throw "Failed to apply pdf2zh color-preservation patch" }
 
     $DocLayoutPatch = @'
 from pathlib import Path
@@ -98,9 +102,12 @@ elif new not in text:
     raise SystemExit("DocLayout model patch target not found")
 '@
     $DocLayoutPatch | & $PythonExe -
+    if ($LASTEXITCODE -ne 0) { throw "Failed to apply bundled DocLayout model patch" }
 
-    & $PythonExe -c "import fitz, numpy, torch, torchvision, cv2, doclayout_yolo, pdf2zh"
+    & $PythonExe -c "import fitz, numpy, torch, torchvision, cv2, doclayout_yolo, pdf2zh, tqdm"
+    if ($LASTEXITCODE -ne 0) { throw "PDF runtime import smoke test failed" }
     & $PythonExe -m pdf2zh.pdf2zh --version
+    if ($LASTEXITCODE -ne 0) { throw "pdf2zh CLI smoke test failed" }
 
     Get-ChildItem -LiteralPath $PackDir -Recurse -Directory -Filter "__pycache__" |
         Remove-Item -Recurse -Force
@@ -114,6 +121,13 @@ elif new not in text:
     Get-ChildItem -LiteralPath (Join-Path $PythonDir "Lib\\site-packages") -Recurse -Directory |
         Where-Object { $_.Name -in @("tests", "test") } |
         Remove-Item -Recurse -Force
+
+    # PowerShell does not turn a native executable's non-zero exit code into
+    # a terminating error, even with $ErrorActionPreference = "Stop". Re-run
+    # the import smoke test after pruning and inspect $LASTEXITCODE explicitly
+    # so an incomplete pack can never be archived and uploaded.
+    & $PythonExe -c "import fitz, numpy, torch, torchvision, cv2, doclayout_yolo, pdf2zh, tqdm; print('pdf-pack-imports-ok')"
+    if ($LASTEXITCODE -ne 0) { throw "Pruned PDF runtime import smoke test failed" }
 
     if (Test-Path -LiteralPath $ArchivePath) { Remove-Item -LiteralPath $ArchivePath -Force }
     tar -a -cf $ArchivePath -C $ResolvedBuildRoot "windows-amd64"
