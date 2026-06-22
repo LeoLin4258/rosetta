@@ -52,6 +52,10 @@ Set the updater key for every Windows release:
 $env:TAURI_SIGNING_PRIVATE_KEY_PATH = "$HOME\.tauri\rosetta\updater.key"
 ```
 
+The current updater key uses an empty password. The Windows release script
+passes that empty password explicitly when
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` is unset.
+
 For a signed public release, also configure a trusted code-signing certificate
 and Windows SDK `signtool.exe`:
 

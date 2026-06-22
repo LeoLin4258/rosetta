@@ -188,6 +188,9 @@ $signerArgs = @("--silent", "tauri", "signer", "sign")
 if ($env:TAURI_SIGNING_PRIVATE_KEY_PATH) {
     $signerArgs += @("-f", $env:TAURI_SIGNING_PRIVATE_KEY_PATH)
 }
+if (-not $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD) {
+    $signerArgs += "--password="
+}
 $signerArgs += $installerPath
 
 Push-Location $AppDir
