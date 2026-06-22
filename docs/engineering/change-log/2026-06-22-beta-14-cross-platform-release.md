@@ -27,9 +27,12 @@ Apple Silicon release.
 - Clarified that Supabase is the sole distribution channel for Rosetta
   application installers and updater assets. GitHub Releases are not part of
   the application release flow.
-- Enabled Tauri's `macos-private-api` Cargo feature only for the macOS target,
-  matching the existing transparent sidebar configuration and restoring
-  direct `cargo check` and test builds on the Apple Silicon release machine.
+- Enabled Tauri's `macos-private-api` Cargo feature in the primary Tauri
+  dependency, matching the existing transparent sidebar configuration and
+  Tauri build-script allowlist checks on the Apple Silicon release machine.
+  The matching `macOSPrivateApi` flag now lives in the shared Tauri config so
+  direct Cargo checks see the same feature allowlist on Windows and macOS.
+  The private API itself remains macOS-only.
 
 ## Privacy
 
