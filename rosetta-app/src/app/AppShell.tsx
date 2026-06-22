@@ -259,13 +259,13 @@ function Pdf2zhWorkerBadge({
   const badgeContent = (
     <>
       {spinning ? (
-        <Loader2 className={cn("size-3 animate-spin", dotClass.replace("bg-", "text-"))} />
+        <Loader2 className={cn("size-2.5 animate-spin", dotClass.replace("bg-", "text-"))} />
       ) : (
-        <span className={cn("size-2 rounded-full", dotClass)} />
+        <span className={cn("size-1.5 rounded-full", dotClass)} />
       )}
-      <span className="tabular-nums">{label}</span>
+      <span className="tabular-nums text-[11px] leading-none">{label}</span>
       {actionLabel ? (
-        <span className="ml-1 border-l border-border/70 pl-1.5 text-foreground">
+        <span className="ml-0.5 border-l border-border/70 pl-1.5 text-[11px] leading-none text-foreground">
           {actionLabel}
         </span>
       ) : null}
@@ -279,14 +279,14 @@ function Pdf2zhWorkerBadge({
           <button
             type="button"
             onClick={onOpenSettings}
-            className="flex h-7 items-center gap-1.5 rounded-lg border border-border/60 bg-muted/35 px-2.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            className="flex h-6 items-center gap-1.5 rounded-lg border border-border/60 bg-muted/35 px-2 text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
             data-window-no-drag
           >
             {badgeContent}
           </button>
         ) : (
           <div
-            className="flex h-7 items-center gap-1.5 rounded-lg border border-border/60 bg-muted/35 px-2.5 text-xs text-muted-foreground"
+            className="flex h-6 items-center gap-1.5 rounded-lg border border-border/60 bg-muted/35 px-2 text-[11px] text-muted-foreground"
             data-window-no-drag
           >
             {badgeContent}
@@ -497,6 +497,7 @@ export function AppShell() {
         className={cn(
           "flex h-screen flex-col bg-transparent text-foreground",
           isMacPlatform && "rosetta-macos",
+          !isMacPlatform && "rosetta-windows",
           isDark && "dark"
         )}
       >

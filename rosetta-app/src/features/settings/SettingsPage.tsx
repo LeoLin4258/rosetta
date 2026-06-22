@@ -89,6 +89,11 @@ type UpdateStatus =
   | "ready-to-restart"
   | "failed";
 
+const SETTINGS_CARD_CLASS =
+  "bg-card shadow-sm ring-1 ring-black/6 dark:bg-card/80 dark:ring-white/8 dark:shadow-[0_0_0_1px_rgba(255,255,255,0.02)]";
+const SETTINGS_SUBPANEL_CLASS =
+  "rounded-lg border border-black/8 bg-muted/28 dark:border-white/8 dark:bg-muted/12";
+
 export function SettingsPage() {
   const themeMode = useRosettaStore((state) => state.themeMode);
   const setThemeMode = useRosettaStore((state) => state.setThemeMode);
@@ -263,15 +268,15 @@ export function SettingsPage() {
 
   return (
     <ScrollArea className="h-full w-full">
-      <section className="mx-auto mb-20 flex w-full max-w-5xl flex-col gap-8 px-6 py-6">
-        <header className="flex flex-col gap-2">
+      <section className="mx-auto mb-24 flex w-full max-w-5xl flex-col gap-10 px-6 py-8">
+        <header className="flex flex-col gap-3">
           <h1 className="text-2xl font-semibold tracking-normal">设置</h1>
           <p className="max-w-3xl text-sm text-muted-foreground">
             选择翻译方式，检查本地组件，并管理外观与更新。
           </p>
         </header>
 
-        <main className="flex w-full flex-col gap-8">
+        <main className="flex w-full flex-col gap-10">
           <TranslationAiSection
             apiStatus={apiStatus}
             canProbeApi={canProbeApi}
@@ -397,8 +402,8 @@ function TranslationAiSection({
 
   return (
     <section className="flex flex-col gap-3" id="translation-ai">
-      <Card className="">
-        <CardContent className="flex flex-col gap-5 py-5">
+      <Card className={SETTINGS_CARD_CLASS}>
+        <CardContent className="flex flex-col gap-6 py-6">
           <SettingsRowHeader
             description={
               <>
@@ -482,7 +487,7 @@ function TranslationAiSection({
             </p>
           ) : null}
 
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap gap-2.5">
             <Button
               aria-expanded={localSettingsOpen}
               onClick={() => setLocalSettingsOpen((open) => !open)}
@@ -512,7 +517,7 @@ function TranslationAiSection({
             onOpenChange={setLocalSettingsOpen}
           >
             <CollapsibleContent>
-              <div className="border-t pt-5">
+              <div className="border-t border-black/8 pt-6 dark:border-white/8">
                 <LocalRwkvPanel />
               </div>
             </CollapsibleContent>
@@ -523,7 +528,7 @@ function TranslationAiSection({
             onOpenChange={onExternalApiOpenChange}
           >
             <CollapsibleContent>
-              <div className="border-t pt-5">
+              <div className="border-t border-black/8 pt-6 dark:border-white/8">
                 <RemoteApiSettingsPanel
                   apiError={apiError}
                   apiProbeResult={apiProbeResult}
@@ -608,7 +613,7 @@ function RemoteApiSettingsPanel({
   updateTimeout: (event: ChangeEvent<HTMLInputElement>) => void;
 }) {
   return (
-    <section className="flex flex-col gap-5 rounded-md bg-muted/20 p-4">
+    <section className={cn("flex flex-col gap-6 p-5", SETTINGS_SUBPANEL_CLASS)}>
       <div>
         <div className="flex items-start justify-between gap-3">
           <div>
@@ -622,7 +627,7 @@ function RemoteApiSettingsPanel({
           <StatusBadge status={apiStatus} />
         </div>
       </div>
-      <div className="flex flex-col gap-5">
+      <div className="flex flex-col gap-6">
         <div className="grid gap-4 md:grid-cols-2">
           <SettingField htmlFor="rwkv-base-url" label="服务地址">
             <Input
@@ -700,7 +705,7 @@ function RemoteApiSettingsPanel({
           </div>
         </div>
 
-        <div className="flex flex-col gap-3 rounded-md border bg-muted/30 p-3">
+        <div className="flex flex-col gap-3 rounded-lg border border-black/8 bg-background/60 p-4 dark:border-white/8 dark:bg-background/40">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex min-w-0 items-center gap-2 text-sm">
               <ShieldCheck className="text-muted-foreground" />
@@ -762,15 +767,11 @@ function BackendChoiceCard({
     <button
       aria-pressed={selected}
       className={cn(
-        "group flex min-h-24 w-full items-start gap-3 rounded-md border p-4 text-left transition-colors",
-        "hover:border-foreground/30 hover:bg-muted/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-        selected && "border-blue-500/70 bg-blue-500/5",
-        status === "active" &&
-          selected &&
-          "border-blue-500/70 bg-blue-500/5",
-        status === "blocked" &&
-          selected &&
-          "border-amber-500/60 bg-amber-500/10",
+        "group flex min-h-28 w-full items-start gap-3.5 rounded-xl border border-black/8 bg-background/72 p-4 text-left transition-colors dark:border-white/8 dark:bg-background/30",
+        "hover:border-black/14 hover:bg-muted/22 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:hover:border-white/16 dark:hover:bg-muted/12",
+        selected &&
+          "border-black/14 bg-background shadow-[inset_0_0_0_1px_rgba(17,24,39,0.04)] dark:border-white/16 dark:bg-background/55 dark:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.04)]",
+        status === "blocked" && selected && "border-amber-500/25 bg-amber-500/8",
         switchDisabled && !selected && "cursor-not-allowed opacity-60"
       )}
       disabled={switchDisabled && !selected}
@@ -779,12 +780,12 @@ function BackendChoiceCard({
     >
       <div
         className={cn(
-          "mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md",
+          "mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg ring-1 ring-black/8 dark:ring-white/8",
           status === "active" &&
-            "bg-blue-500/10 text-blue-600 dark:text-blue-300",
+            "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
           status === "blocked" &&
-            "bg-amber-500/15 text-amber-700 dark:text-amber-300",
-          status === "idle" && "bg-muted text-muted-foreground"
+            "bg-amber-500/12 text-amber-700 dark:text-amber-300",
+          status === "idle" && "bg-muted/40 text-muted-foreground"
         )}
       >
         {icon}
@@ -797,7 +798,7 @@ function BackendChoiceCard({
               {selected ? "当前使用" : statusLabel}
             </SemanticBadge>
             {selected ? (
-              <CheckCircle2 className="size-5 text-blue-600 dark:text-blue-300" />
+              <CheckCircle2 className="size-5 text-emerald-700 dark:text-emerald-300" />
             ) : null}
           </div>
         </div>
@@ -880,8 +881,8 @@ function AppearanceSettingsSection({
   themeMode: AppThemeMode;
 }) {
   return (
-    <Card id="appearance">
-      <CardContent className="grid gap-5 py-5 md:grid-cols-[minmax(16rem,0.42fr)_minmax(0,1fr)] md:items-center">
+    <Card className={SETTINGS_CARD_CLASS} id="appearance">
+      <CardContent className="grid gap-6 py-6 md:grid-cols-[minmax(16rem,0.42fr)_minmax(0,1fr)] md:items-center">
         <SettingsRowHeader
           description="选择窗口主题。"
           icon={<Palette />}
@@ -915,9 +916,9 @@ function AppearanceSettingsSection({
 function DocumentHandlingSection() {
   return (
     <section className="flex flex-col gap-3" id="document-handling">
-      <Card>
-        <CardContent className="flex flex-col gap-5 py-5">
-          <div className="grid gap-5 md:grid-cols-[minmax(16rem,0.42fr)_minmax(0,1fr)] md:items-center">
+      <Card className={SETTINGS_CARD_CLASS}>
+        <CardContent className="flex flex-col gap-6 py-6">
+          <div className="grid gap-6 md:grid-cols-[minmax(16rem,0.42fr)_minmax(0,1fr)] md:items-center">
             <SettingsRowHeader
               description="安装本地 PDF 组件。"
               icon={<FileText />}
@@ -932,7 +933,7 @@ function DocumentHandlingSection() {
             </div>
           </div>
 
-          <div className="border-t pt-5">
+          <div className="border-t border-black/8 pt-6 dark:border-white/8">
             <Pdf2zhPanel />
           </div>
         </CardContent>
@@ -962,8 +963,8 @@ function AboutSettingsSection({
 }) {
   return (
     <section className="flex flex-col gap-3" id="about-settings">
-      <Card>
-        <CardContent className="grid gap-5 py-5 md:grid-cols-[minmax(16rem,0.42fr)_minmax(0,1fr)_auto] md:items-start">
+      <Card className={SETTINGS_CARD_CLASS}>
+        <CardContent className="grid gap-6 py-6 md:grid-cols-[minmax(16rem,0.42fr)_minmax(0,1fr)_auto] md:items-start">
           <SettingsRowHeader
             description="查看当前版本并检查更新。"
             icon={<Info />}
@@ -1069,8 +1070,8 @@ function DangerSettingsSection({
 
   return (
     <section className="flex flex-col gap-3" id="danger-settings">
-      <Card className="border-destructive/30">
-        <CardContent className="grid gap-5 py-5 md:grid-cols-[minmax(16rem,0.42fr)_minmax(0,1fr)_auto] md:items-start">
+      <Card className="border-destructive/18 bg-destructive/[0.035] ring-1 ring-destructive/10 dark:bg-destructive/3">
+        <CardContent className="grid gap-6 py-6 md:grid-cols-[minmax(16rem,0.42fr)_minmax(0,1fr)_auto] md:items-start">
           <SettingsRowHeader
             description="清除这台电脑上的 Rosetta 数据。"
             icon={<Trash2 />}
@@ -1134,7 +1135,7 @@ function DangerSettingsSection({
                   这会停止正在运行的本地模型，并删除任务历史、本地模型文件、PDF 组件和本机设置。原始文件、手动导出的文件和 Rosetta 应用不会被删除。
                 </AlertDialogDescription>
               </AlertDialogHeader>
-              <div className="rounded-md bg-muted/50 p-3 text-xs leading-6 text-muted-foreground">
+              <div className="rounded-lg bg-muted/50 p-3 text-xs leading-6 text-muted-foreground">
                 删除后，Rosetta 下次启动会回到初始状态；本地模型和 PDF 组件需要重新安装。
               </div>
               <AlertDialogFooter>
@@ -1184,11 +1185,11 @@ function SettingsRowHeader({
   title: string;
 }) {
   return (
-    <div className="flex min-w-0 gap-3">
+    <div className="flex min-w-0 gap-4">
       <SettingsIconFrame>{icon}</SettingsIconFrame>
-      <div className="min-w-0">
+      <div className="min-w-0 space-y-1">
         <h2 className="text-base font-semibold tracking-normal">{title}</h2>
-        <div className="mt-1 flex flex-wrap items-center gap-1.5 text-sm text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-2 text-sm leading-6 text-muted-foreground">
           {description}
         </div>
       </div>
@@ -1198,7 +1199,7 @@ function SettingsRowHeader({
 
 function SettingsIconFrame({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex size-9 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+    <div className="flex size-10 shrink-0 items-center justify-center rounded-lg border border-black/8 bg-muted/45 text-muted-foreground dark:border-white/8 dark:bg-muted/35">
       {children}
     </div>
   );
@@ -1241,18 +1242,18 @@ function SemanticBadge({
     <Badge
       variant="outline"
       className={cn(
-        "border-transparent",
+        "gap-1.5 border-transparent ring-1 ring-inset ring-black/6 dark:ring-white/6",
         tone === "selected" &&
-          "bg-blue-500/15 text-blue-700 dark:text-blue-300",
+          "bg-foreground/8 text-foreground dark:bg-white/10 dark:text-white",
         tone === "success" &&
-          "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
+          "bg-emerald-500/12 text-emerald-700 dark:text-emerald-300",
         tone === "warning" &&
-          "bg-amber-500/15 text-amber-800 dark:text-amber-300",
+          "bg-amber-500/12 text-amber-800 dark:text-amber-300",
         tone === "danger" &&
-          "bg-destructive/15 text-destructive dark:text-red-300",
-        tone === "info" && "bg-sky-500/15 text-sky-700 dark:text-sky-300",
+          "bg-destructive/12 text-destructive dark:text-red-300",
+        tone === "info" && "bg-cyan-500/12 text-cyan-700 dark:text-cyan-300",
         tone === "neutral" &&
-          "bg-muted text-muted-foreground dark:bg-muted/70"
+          "bg-muted/80 text-muted-foreground dark:bg-muted/50"
       )}
     >
       {children}

@@ -61,7 +61,10 @@ export function LocalRwkvPanel({ className }: { className?: string }) {
 
   return (
     <section
-      className={cn("flex flex-col gap-4 rounded-md bg-muted/20 p-4", className)}
+      className={cn(
+        "flex flex-col gap-5 rounded-xl border border-black/8 bg-muted/28 p-5 dark:border-white/8 dark:bg-muted/12",
+        className
+      )}
       id="local-rwkv"
     >
       <div className="flex items-start justify-between gap-4">
@@ -406,7 +409,7 @@ function RuntimeBadge({
     return (
       <Badge
         variant="outline"
-        className="gap-1 border-transparent bg-amber-500/15 text-amber-800 dark:text-amber-300"
+        className="gap-1 border-transparent bg-amber-500/12 text-amber-800 ring-1 ring-inset ring-black/5 dark:ring-white/6 dark:text-amber-300"
       >
         <LoaderCircle className="size-3 animate-spin" /> 安装中
       </Badge>
@@ -416,7 +419,7 @@ function RuntimeBadge({
     return (
       <Badge
         variant="outline"
-        className="gap-1 border-transparent bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+        className="gap-1 border-transparent bg-emerald-500/12 text-emerald-700 ring-1 ring-inset ring-black/5 dark:ring-white/6 dark:text-emerald-300"
       >
         <CheckCircle2 className="size-3" /> 运行中
       </Badge>
@@ -426,7 +429,7 @@ function RuntimeBadge({
     return (
       <Badge
         variant="outline"
-        className="gap-1 border-transparent bg-sky-500/15 text-sky-700 dark:text-sky-300"
+        className="gap-1 border-transparent bg-cyan-500/12 text-cyan-700 ring-1 ring-inset ring-black/5 dark:ring-white/6 dark:text-cyan-300"
       >
         <LoaderCircle className="size-3 animate-spin" /> 启动中
       </Badge>

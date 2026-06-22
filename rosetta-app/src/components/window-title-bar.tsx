@@ -16,7 +16,10 @@ export function WindowTitleBar() {
   }
 
   return (
-    <div className="flex h-9 shrink-0 select-none items-center bg-sidebar text-sidebar-foreground">
+    <div
+      className="flex h-9 shrink-0 select-none items-center bg-sidebar text-sidebar-foreground"
+      data-slot="window-titlebar"
+    >
       <div
         className="flex h-full flex-1 items-center px-3 text-sm"
         onMouseDown={startDrag}

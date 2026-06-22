@@ -1,8 +1,9 @@
-import { useState } from "react";
 import { AlertCircle, Download, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import type { ManagedRuntimeInstallProgress } from "@/types/rosetta";
+
+import { OnboardingStepShell } from "./OnboardingStepShell";
 
 type InstallProgressLike = Pick<
   ManagedRuntimeInstallProgress,
@@ -19,16 +20,14 @@ type InstallStepProps = {
   onCancel: () => void;
   onRetry: () => void;
   onSkip: () => void;
+  progressValue: number;
   title?: string;
   errorTitle?: string;
   retryLabel?: string;
   cancelLabel?: string;
-  confirmCancelText?: string;
-  continueLabel?: string;
   defaultCaption?: string;
   downloadingCaption?: string;
   skipLabel?: string;
-  skipHint?: string;
   stepLabel?: string;
 };
 
@@ -46,136 +45,81 @@ export function InstallStep({
   onCancel,
   onRetry,
   onSkip,
+  progressValue,
   title = "正在下载翻译模型",
   errorTitle = "下载没有完成",
   retryLabel = "重新下载",
   cancelLabel = "取消",
-  confirmCancelText = "确认取消下载？",
-  continueLabel = "继续下载",
   defaultCaption = "下载完成后无需再联网",
   downloadingCaption = "下载完成后无需再联网",
   skipLabel = "使用自己的翻译 API →",
-  skipHint = "跳过后可在设置中配置 API",
   stepLabel,
 }: InstallStepProps) {
-  const [confirmingCancel, setConfirmingCancel] = useState(false);
-  const [confirmingSkip, setConfirmingSkip] = useState(false);
-
   const percent = installPercent(progress);
   const isActive = !!progress && ACTIVE_PHASES.has(progress.phase);
   const speed = progress?.speedBytesPerSec ?? 0;
 
   if (errorMessage) {
     return (
-      <div className="flex h-full flex-col items-center justify-between gap-4 px-14 py-10">
-        <div className="flex w-full flex-1 flex-col items-center justify-center gap-5 text-center">
-          <div className="flex size-14 items-center justify-center rounded-2xl bg-destructive/10 text-destructive">
-            <AlertCircle className="size-7" strokeWidth={1.5} />
-          </div>
-          <div className="space-y-2">
-            <h2 className="text-xl font-semibold">{errorTitle}</h2>
-            <p className="max-w-md text-sm leading-relaxed text-muted-foreground">
-              {errorMessage}
-            </p>
-          </div>
-          <div className="flex flex-col items-center gap-3">
-            <Button size="lg" onClick={onRetry} className="min-w-44">
-              <Download className="size-4" /> {retryLabel}
-            </Button>
-            {confirmingSkip ? (
-              <div className="flex items-center gap-3">
-                <span className="text-xs text-muted-foreground/50">{skipHint}</span>
-                <button
-                  type="button"
-                  onClick={onSkip}
-                  className="text-xs text-primary/80 transition-colors hover:text-primary"
-                >
-                  确认
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setConfirmingSkip(false)}
-                  className="text-xs text-muted-foreground/40 transition-colors hover:text-muted-foreground/70"
-                >
-                  取消
-                </button>
-              </div>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setConfirmingSkip(true)}
-                className="text-xs text-muted-foreground/40 transition-colors hover:text-muted-foreground/70"
-              >
-                {skipLabel}
-              </button>
-            )}
-          </div>
+      <OnboardingStepShell
+        stepLabel={stepLabel ?? "安装出错"}
+        progressValue={progressValue}
+        title={errorTitle}
+        description={errorMessage}
+        align="start"
+      >
+        <div className="flex items-center gap-2 text-destructive">
+          <AlertCircle className="size-4" strokeWidth={1.75} />
+          <span className="text-xs font-medium">需要重试或跳过</span>
         </div>
-      </div>
+        <Button size="lg" onClick={onRetry} className="h-11 w-full gap-2">
+          <Download className="size-4" /> {retryLabel}
+        </Button>
+        <button
+          type="button"
+          onClick={onSkip}
+          className="text-left text-xs text-muted-foreground/40 transition-colors hover:text-muted-foreground/70"
+        >
+          {skipLabel}
+        </button>
+      </OnboardingStepShell>
     );
   }
 
   return (
-    <div className="flex h-full flex-col items-center justify-between gap-4 px-14 py-10">
-      <div className="flex w-full flex-1 flex-col items-center justify-center gap-5 text-center">
-        <div className="flex size-14 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-          <Download className="size-7 animate-pulse" strokeWidth={1.5} />
+    <OnboardingStepShell
+      stepLabel={stepLabel ?? "安装中"}
+      progressValue={progressValue}
+      title={title}
+      description={
+        progress?.message ||
+        phaseCaption(progress?.phase, defaultCaption, downloadingCaption)
+      }
+      align="start"
+    >
+      <div className="w-full space-y-3">
+        <div className="relative h-2 w-full overflow-hidden rounded-full bg-muted">
+          <div
+            className="absolute inset-y-0 left-0 rounded-full bg-foreground/80 transition-[width] duration-200"
+            style={{ width: `${percent}%` }}
+          />
         </div>
-        <div className="space-y-2">
-          {stepLabel && (
-            <p className="text-xs font-medium text-muted-foreground">{stepLabel}</p>
-          )}
-          <h2 className="text-xl font-semibold">{title}</h2>
-          <p className="text-sm text-muted-foreground">
-            {progress?.message ||
-              phaseCaption(progress?.phase, defaultCaption, downloadingCaption)}
-          </p>
-        </div>
-
-        <div className="w-full space-y-2">
-          <div className="relative h-2 w-full overflow-hidden rounded-full bg-muted">
-            <div
-              className="absolute inset-y-0 left-0 rounded-full bg-primary transition-[width] duration-200"
-              style={{ width: `${percent}%` }}
-            />
-          </div>
-          <div className="flex items-center justify-between text-xs tabular-nums text-muted-foreground/60">
-            <span>{formatBytes(progress?.bytesDone ?? 0)} / {formatBytes(progress?.bytesTotal ?? 0)}</span>
-            <span>{percent}% · {speed > 0 ? `${formatBytes(speed)}/s` : "—"}</span>
-          </div>
+        <div className="text-xs tabular-nums text-muted-foreground/60">
+          {percent}% · {formatBytes(progress?.bytesDone ?? 0)} /{" "}
+          {formatBytes(progress?.bytesTotal ?? 0)}
+          {speed > 0 ? ` · ${formatBytes(speed)}/s` : ""}
         </div>
       </div>
 
-      {confirmingCancel ? (
-        <div className="flex items-center gap-3">
-          <span className="text-xs text-muted-foreground/60">{confirmCancelText}</span>
-          <button
-            type="button"
-            onClick={onCancel}
-            className="text-xs text-destructive/70 transition-colors hover:text-destructive"
-          >
-            确定
-          </button>
-          <button
-            type="button"
-            onClick={() => setConfirmingCancel(false)}
-            className="text-xs text-muted-foreground/40 transition-colors hover:text-muted-foreground/70"
-          >
-            {continueLabel}
-          </button>
-        </div>
-      ) : (
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => setConfirmingCancel(true)}
-          disabled={!isActive}
-          className="gap-2"
-        >
-          <X className="size-4" /> {cancelLabel}
-        </Button>
-      )}
-    </div>
+      <button
+        type="button"
+        onClick={onCancel}
+        disabled={!isActive}
+        className="inline-flex items-center gap-2 text-xs text-muted-foreground/45 transition-colors hover:text-muted-foreground/70 disabled:pointer-events-none disabled:opacity-30"
+      >
+        <X className="size-4" /> {cancelLabel}
+      </button>
+    </OnboardingStepShell>
   );
 }
 

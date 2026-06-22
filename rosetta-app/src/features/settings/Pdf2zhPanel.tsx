@@ -50,7 +50,10 @@ export function Pdf2zhPanel({ className }: { className?: string }) {
 
   return (
     <section
-      className={cn("flex flex-col gap-4", className)}
+      className={cn(
+        "flex flex-col gap-5 rounded-xl border border-black/8 bg-muted/28 p-5 dark:border-white/8 dark:bg-muted/12",
+        className
+      )}
       id="pdf2zh"
     >
       <div className="flex items-start justify-between gap-4">
@@ -311,7 +314,7 @@ function Pdf2zhBadge({
       <Badge
         variant="outline"
         className={cn(
-          "gap-1 border-transparent bg-amber-500/15 text-amber-800 dark:text-amber-300",
+          "gap-1 border-transparent bg-amber-500/12 text-amber-800 ring-1 ring-inset ring-black/5 dark:ring-white/6 dark:text-amber-300",
           className
         )}
       >
@@ -324,7 +327,7 @@ function Pdf2zhBadge({
       <Badge
         variant="outline"
         className={cn(
-          "gap-1 border-transparent bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
+          "gap-1 border-transparent bg-emerald-500/12 text-emerald-700 ring-1 ring-inset ring-black/5 dark:ring-white/6 dark:text-emerald-300",
           className
         )}
       >
@@ -337,7 +340,7 @@ function Pdf2zhBadge({
       <Badge
         variant="outline"
         className={cn(
-          "border-transparent bg-sky-500/15 text-sky-700 dark:text-sky-300",
+          "border-transparent bg-amber-500/12 text-amber-800 ring-1 ring-inset ring-black/5 dark:ring-white/6 dark:text-amber-300",
           className
         )}
       >
