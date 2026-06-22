@@ -1,5 +1,7 @@
 [CmdletBinding()]
-param()
+param(
+    [switch]$AllowUnsignedPreview
+)
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
@@ -95,27 +97,37 @@ function Assert-CleanWorktree {
 Require-Command git | Out-Null
 Require-Command node | Out-Null
 Require-Command pnpm | Out-Null
-$signTool = Resolve-SignTool
-$CertificateThumbprint = Require-Environment "WINDOWS_CERTIFICATE_THUMBPRINT"
-$ExpectedPublisher = Require-Environment "WINDOWS_CERTIFICATE_SUBJECT"
 if (-not $env:TAURI_SIGNING_PRIVATE_KEY -and -not $env:TAURI_SIGNING_PRIVATE_KEY_PATH) {
     throw "Set TAURI_SIGNING_PRIVATE_KEY_PATH or TAURI_SIGNING_PRIVATE_KEY for updater signing."
+}
+if ($env:TAURI_SIGNING_PRIVATE_KEY_PATH -and -not (Test-Path -LiteralPath $env:TAURI_SIGNING_PRIVATE_KEY_PATH -PathType Leaf)) {
+    throw "TAURI_SIGNING_PRIVATE_KEY_PATH does not exist: $env:TAURI_SIGNING_PRIVATE_KEY_PATH"
 }
 
 Assert-CleanWorktree
 $version = Read-ReleaseVersion
 
-$certificate = Get-ChildItem Cert:\CurrentUser\My |
-    Where-Object { $_.Thumbprint -eq ($CertificateThumbprint -replace "\s", "").ToUpperInvariant() } |
-    Select-Object -First 1
-if (-not $certificate -or -not $certificate.HasPrivateKey) {
-    throw "The configured code-signing certificate was not found with a private key in Cert:\CurrentUser\My."
-}
-if ($certificate.Subject -notlike "*$ExpectedPublisher*") {
-    throw "Certificate subject '$($certificate.Subject)' does not contain expected publisher '$ExpectedPublisher'."
-}
-if ($certificate.NotAfter -le (Get-Date)) {
-    throw "The configured code-signing certificate expired on $($certificate.NotAfter)."
+$signTool = $null
+$certificate = $null
+if ($AllowUnsignedPreview) {
+    Write-Warning "Building an unsigned Windows Preview. Users may see SmartScreen or unknown-publisher warnings."
+} else {
+    $signTool = Resolve-SignTool
+    $CertificateThumbprint = Require-Environment "WINDOWS_CERTIFICATE_THUMBPRINT"
+    $ExpectedPublisher = Require-Environment "WINDOWS_CERTIFICATE_SUBJECT"
+
+    $certificate = Get-ChildItem Cert:\CurrentUser\My |
+        Where-Object { $_.Thumbprint -eq ($CertificateThumbprint -replace "\s", "").ToUpperInvariant() } |
+        Select-Object -First 1
+    if (-not $certificate -or -not $certificate.HasPrivateKey) {
+        throw "The configured code-signing certificate was not found with a private key in Cert:\CurrentUser\My."
+    }
+    if ($certificate.Subject -notlike "*$ExpectedPublisher*") {
+        throw "Certificate subject '$($certificate.Subject)' does not contain expected publisher '$ExpectedPublisher'."
+    }
+    if ($certificate.NotAfter -le (Get-Date)) {
+        throw "The configured code-signing certificate expired on $($certificate.NotAfter)."
+    }
 }
 
 Write-Host "Building Rosetta $version Windows x64 NSIS package"
@@ -141,24 +153,33 @@ New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
 $installerPath = Join-Path $DistDir "$AppName-$version-windows-x64-setup.exe"
 Copy-Item -LiteralPath $builtInstaller.FullName -Destination $installerPath -Force
 
-Write-Host "Applying Authenticode signature"
-& $signTool sign `
-    /sha1 $certificate.Thumbprint `
-    /fd SHA256 `
-    /tr $TimestampUrl `
-    /td SHA256 `
-    /v `
-    $installerPath
-if ($LASTEXITCODE -ne 0) {
-    throw "signtool failed to sign the installer."
-}
+$publisher = "Unsigned Windows Preview"
+if ($AllowUnsignedPreview) {
+    $authenticode = Get-AuthenticodeSignature -LiteralPath $installerPath
+    if ($authenticode.Status -ne "NotSigned") {
+        throw "Unsigned Preview expected Authenticode status NotSigned, got $($authenticode.Status)."
+    }
+} else {
+    Write-Host "Applying Authenticode signature"
+    & $signTool sign `
+        /sha1 $certificate.Thumbprint `
+        /fd SHA256 `
+        /tr $TimestampUrl `
+        /td SHA256 `
+        /v `
+        $installerPath
+    if ($LASTEXITCODE -ne 0) {
+        throw "signtool failed to sign the installer."
+    }
 
-$authenticode = Get-AuthenticodeSignature -LiteralPath $installerPath
-if ($authenticode.Status -ne "Valid") {
-    throw "Authenticode verification failed: $($authenticode.Status) $($authenticode.StatusMessage)"
-}
-if ($authenticode.SignerCertificate.Subject -notlike "*$ExpectedPublisher*") {
-    throw "Signed installer publisher '$($authenticode.SignerCertificate.Subject)' does not contain '$ExpectedPublisher'."
+    $authenticode = Get-AuthenticodeSignature -LiteralPath $installerPath
+    if ($authenticode.Status -ne "Valid") {
+        throw "Authenticode verification failed: $($authenticode.Status) $($authenticode.StatusMessage)"
+    }
+    if ($authenticode.SignerCertificate.Subject -notlike "*$ExpectedPublisher*") {
+        throw "Signed installer publisher '$($authenticode.SignerCertificate.Subject)' does not contain '$ExpectedPublisher'."
+    }
+    $publisher = $authenticode.SignerCertificate.Subject
 }
 
 $signaturePath = "$installerPath.sig"
@@ -193,6 +214,10 @@ Write-Host "Windows release artifacts ready:"
 Write-Host "  Installer: $installerPath"
 Write-Host "  Signature: $signaturePath"
 Write-Host "  SHA256:    $sha256"
-Write-Host "  Publisher: $($authenticode.SignerCertificate.Subject)"
+Write-Host "  Publisher: $publisher"
 Write-Host ""
-Write-Host "Next: run rosetta-app/src-tauri/scripts/publish-windows-updater.ps1"
+if ($AllowUnsignedPreview) {
+    Write-Host "Next: run rosetta-app/src-tauri/scripts/publish-windows-updater.ps1 -AllowUnsignedPreview"
+} else {
+    Write-Host "Next: run rosetta-app/src-tauri/scripts/publish-windows-updater.ps1"
+}

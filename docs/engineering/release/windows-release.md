@@ -4,28 +4,66 @@ Rosetta Windows releases target Windows 10/11 x64. The managed local RWKV
 runtime requires an NVIDIA GPU with compute capability SM75 or newer. Users on
 other Windows hardware can explicitly configure an external translation API.
 
+## Shared updater key
+
+Windows and macOS builds use the same Tauri updater keypair because both apps
+embed the same updater public key from `main`. Do not generate a new key on
+Windows.
+
+Before the first Windows release, securely copy this exact keypair from the
+Mac:
+
+```txt
+~/.tauri/rosetta/updater.key
+~/.tauri/rosetta/updater.key.pub
+```
+
+Store the Windows copy outside the repository, for example:
+
+```txt
+C:\Users\Leo\.tauri\rosetta\updater.key
+C:\Users\Leo\.tauri\rosetta\updater.key.pub
+```
+
+Use encrypted removable storage or another end-to-end encrypted transfer. Do
+not send the key through chat, email, or commit it to Git.
+
+Verify the copied public key matches the app before building:
+
+```powershell
+$configured = (Get-Content -Raw .\rosetta-app\src-tauri\tauri.conf.json |
+  ConvertFrom-Json).plugins.updater.pubkey.Trim()
+$copied = (Get-Content -Raw "$HOME\.tauri\rosetta\updater.key.pub").Trim()
+if ($configured -ne $copied) {
+  throw "Copied updater key does not match the public key embedded in Rosetta."
+}
+```
+
 ## Prerequisites
 
-- A trusted code-signing certificate with its private key in
-  `Cert:\CurrentUser\My`.
-- Windows SDK `signtool.exe`.
 - The existing Rosetta Tauri updater private key.
 - Node, pnpm, Rust, and the Tauri build dependencies.
 - A clean git worktree with matching versions in `package.json`,
   `Cargo.toml`, and `tauri.conf.json`.
 
-Set release-session environment variables without committing their values:
+Set the updater key for every Windows release:
+
+```powershell
+$env:TAURI_SIGNING_PRIVATE_KEY_PATH = "$HOME\.tauri\rosetta\updater.key"
+```
+
+For a signed public release, also configure a trusted code-signing certificate
+and Windows SDK `signtool.exe`:
 
 ```powershell
 $env:WINDOWS_CERTIFICATE_THUMBPRINT = "<certificate thumbprint>"
 $env:WINDOWS_CERTIFICATE_SUBJECT = "<expected publisher subject>"
 $env:WINDOWS_TIMESTAMP_URL = "http://timestamp.digicert.com"
-$env:TAURI_SIGNING_PRIVATE_KEY_PATH = "C:\secure\rosetta\updater.key"
 ```
 
 If `signtool.exe` is not on `PATH`, set `SIGNTOOL_PATH`.
 
-## Build and sign
+## Build a signed release
 
 From the repository root:
 
@@ -43,14 +81,29 @@ The script:
 6. signs the final installer bytes with the Tauri updater key;
 7. writes the installer, `.sig`, SHA256, and byte size under `dist/release/`.
 
+## Build an unsigned Windows Preview
+
+Until an Authenticode certificate is available, build only through the
+explicit Preview switch:
+
+```powershell
+.\rosetta-app\src-tauri\scripts\release-windows.ps1 -AllowUnsignedPreview
+```
+
+This skips Authenticode but still requires the shared Tauri updater private
+key and produces a `.sig`. The `.sig` protects App-internal updates from
+tampering. It does not remove the initial SmartScreen or unknown-publisher
+warning.
+
 ## Upload as unpublished
 
 ```powershell
 $env:SUPABASE_SERVICE_ROLE_KEY = "<local release credential>"
-.\rosetta-app\src-tauri\scripts\publish-windows-updater.ps1
+.\rosetta-app\src-tauri\scripts\publish-windows-updater.ps1 -AllowUnsignedPreview
 ```
 
-The same signed NSIS executable is used as:
+For a signed release, omit `-AllowUnsignedPreview` from both commands. The
+same NSIS executable is used as:
 
 - the website installer;
 - the Tauri Windows updater artifact.
@@ -72,5 +125,5 @@ Before publishing:
 After these checks pass, run the publish command printed by the upload script.
 To roll back, set the same row to `is_published=false`.
 
-Never publish an unsigned installer. SmartScreen reputation can take time to
-develop, but that does not replace trusted Authenticode signing.
+An unsigned build must be described as **Windows Preview** on every download
+surface. Never silently publish it as a signed or stable Windows release.

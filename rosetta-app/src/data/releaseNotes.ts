@@ -37,7 +37,7 @@ export const RELEASE_NOTES: Record<string, ReleaseNote> = {
   "0.1.0-beta.14": {
     version: "0.1.0-beta.14",
     highlights: [
-      "首次提供 Windows 10/11 x64 安装包，并继续支持 macOS Apple Silicon",
+      "首次提供 Windows 10/11 x64 Preview 安装包，并继续支持 macOS Apple Silicon",
       "Windows 可在 NVIDIA SM75 或更新显卡上安装并运行本地 RWKV 翻译模型",
       "首次安装流程增加下载失败重试、PDF 安装阶段和模型预热进度反馈",
       "进入工作台后会等待本地模型真正就绪，避免首次翻译过早失败",

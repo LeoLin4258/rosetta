@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-    [switch]$Publish
+    [switch]$Publish,
+    [switch]$AllowUnsignedPreview
 )
 
 $ErrorActionPreference = "Stop"
@@ -73,8 +74,15 @@ if (-not (Test-Path -LiteralPath $signaturePath -PathType Leaf)) {
     throw "Missing Tauri signature: $signaturePath"
 }
 $authenticode = Get-AuthenticodeSignature -LiteralPath $installerPath
-if ($authenticode.Status -ne "Valid") {
+$isUnsignedPreview = $authenticode.Status -eq "NotSigned"
+if ($isUnsignedPreview -and -not $AllowUnsignedPreview) {
+    throw "Installer is unsigned. Pass -AllowUnsignedPreview only for an explicitly disclosed Windows Preview release."
+}
+if (-not $isUnsignedPreview -and $authenticode.Status -ne "Valid") {
     throw "Installer Authenticode status is $($authenticode.Status), refusing to publish."
+}
+if ($AllowUnsignedPreview -and -not $isUnsignedPreview) {
+    throw "-AllowUnsignedPreview was provided, but installer Authenticode status is $($authenticode.Status)."
 }
 
 $headers = @{
@@ -87,8 +95,18 @@ $signature = (Get-Content -Raw -LiteralPath $signaturePath).Trim()
 $sha256 = (Get-FileHash -LiteralPath $installerPath -Algorithm SHA256).Hash.ToLowerInvariant()
 $size = (Get-Item -LiteralPath $installerPath).Length
 
-Write-Host "Uploading signed Windows installer"
+if ($isUnsignedPreview) {
+    Write-Warning "Uploading an unsigned Windows Preview installer. Tauri updater signature verification remains required."
+} else {
+    Write-Host "Uploading Authenticode-signed Windows installer"
+}
 Invoke-SupabaseUpload -FilePath $installerPath -StoragePath $storagePath -Headers $headers
+
+$notes = if ($isUnsignedPreview) {
+    "Rosetta $version Windows Preview. The installer is not Authenticode-signed and may trigger SmartScreen. In-app updates remain protected by the Tauri updater signature."
+} else {
+    "Rosetta $version"
+}
 
 $payload = @{
     app = $AppName
@@ -101,7 +119,7 @@ $payload = @{
     installer_sha256 = $sha256
     installer_size_bytes = $size
     signature = $signature
-    notes = "Rosetta $version"
+    notes = $notes
     is_published = [bool]$Publish
 } | ConvertTo-Json -Compress
 
@@ -116,6 +134,7 @@ Write-Host ""
 Write-Host "Windows release uploaded:"
 Write-Host "  Version:   $version"
 Write-Host "  Published: $([bool]$Publish)"
+Write-Host "  Channel:   $(if ($isUnsignedPreview) { 'Unsigned Preview' } else { 'Signed' })"
 Write-Host "  SHA256:    $sha256"
 Write-Host "  Size:      $size bytes"
 

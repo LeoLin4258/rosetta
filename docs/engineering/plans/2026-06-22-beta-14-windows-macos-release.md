@@ -48,8 +48,9 @@ Cross-platform merge and lifecycle details:
 
 - Add a local `release-windows.ps1` script that:
   - requires a clean worktree and matching version values;
-  - checks for the Tauri updater private key and Windows Authenticode
-    configuration;
+  - always checks for the shared Tauri updater private key;
+  - requires Windows Authenticode configuration by default, with an explicit
+    `-AllowUnsignedPreview` exception for the first Windows Preview;
   - builds the NSIS installer using a code-signing certificate accessible
     through the Windows certificate store;
   - uses SHA-256 file signing and an RFC 3161 timestamp;
@@ -67,8 +68,9 @@ Cross-platform merge and lifecycle details:
 - Inject certificate identifiers and signing secrets through environment
   variables. Do not store certificate thumbprints, private keys, passwords,
   or service-role credentials in the repository.
-- Treat a trusted Authenticode signature as a public-release requirement. The
-  release script must stop if signing or signature verification fails.
+- Treat a trusted Authenticode signature as the stable public-release
+  requirement. The first Windows Preview may be unsigned only through the
+  explicit Preview switch and must disclose the SmartScreen warning.
 
 ### Supabase release service
 
@@ -193,8 +195,11 @@ pnpm build
 
 ### Windows release validation
 
-- Authenticode signature, timestamp, Tauri `.sig`, and SHA256 are valid.
-- A clean Windows machine can install and uninstall the signed NSIS package.
+- For a signed release, Authenticode signature and timestamp are valid.
+- For an unsigned Preview, Authenticode status is exactly `NotSigned` and the
+  Preview disclosure is visible on the website.
+- Tauri `.sig` and SHA256 are valid in both modes.
+- A clean Windows machine can install and uninstall the selected NSIS package.
 - First-run onboarding installs the managed runtime, translation model, and
   PDF component.
 - Text translation, PDF translation, preview, and export pass.
@@ -224,14 +229,15 @@ pnpm build
 - The first beta.14 release uses local release scripts on a Windows release
   machine and an Apple Silicon Mac. GitHub Actions release automation is out
   of scope.
-- A trusted Windows code-signing certificate will be available through the
-  Windows certificate store before public distribution.
+- A trusted Windows code-signing certificate is preferred for stable public
+  distribution but is not available for the first labeled Windows Preview.
 - The existing beta.13 Tauri updater key remains in use. Do not generate a new
   updater key.
-- Windows Authenticode and Tauri updater signatures serve different purposes
-  and both are required.
-- SmartScreen reputation may still need time to develop after signing. This
-  does not permit publishing an unsigned installer.
+- Windows Authenticode and Tauri updater signatures serve different purposes.
+  The Tauri updater signature is always required; Authenticode may be omitted
+  only for the explicitly labeled first Windows Preview.
+- SmartScreen reputation may still need time to develop after signing.
+  Unsigned distribution is limited to the explicitly labeled Windows Preview.
 - Supabase release storage remains limited to application release artifacts
   and metadata. User documents, translations, job caches, prompts, and
   runtime logs must remain local.

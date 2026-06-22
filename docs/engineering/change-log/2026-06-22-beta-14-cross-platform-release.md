@@ -8,8 +8,8 @@ Apple Silicon release.
 ## Changes
 
 - Added a Windows release script that requires a clean worktree, matching
-  versions, a trusted Authenticode certificate, an RFC 3161 timestamp, and the
-  existing Tauri updater key.
+  versions, and the existing Tauri updater key. Signed mode also requires a
+  trusted Authenticode certificate and RFC 3161 timestamp.
 - Added a Windows Supabase publish script. The signed NSIS installer is used
   for both website installation and Tauri updates.
 - Generalized Supabase release metadata for `windows/x86_64` and
@@ -20,6 +20,10 @@ Apple Silicon release.
   deployment.
 - Updated the macOS publish script to populate general installer metadata.
 - Bumped the app to `0.1.0-beta.14` and added user-facing release notes.
+- Added an explicit unsigned Windows Preview mode. It skips Authenticode only
+  when requested, while still requiring the shared Tauri updater signature.
+- Documented that Windows and macOS packages are built only on their native
+  release machines from the same `main` commit.
 
 ## Privacy
 

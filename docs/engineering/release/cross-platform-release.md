@@ -3,6 +3,12 @@
 Rosetta releases Windows x64 and macOS Apple Silicon from the same `main`
 commit and version.
 
+Platform packages are always produced natively:
+
+- build Windows only on the Windows release machine;
+- build macOS only on the Apple Silicon Mac;
+- do not cross-compile or package one platform from the other.
+
 ## Prepare
 
 1. Merge the release baseline into `main`.
