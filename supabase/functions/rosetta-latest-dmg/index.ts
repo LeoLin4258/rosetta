@@ -1,5 +1,7 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 
+import { newestByVersion } from "../_shared/semver.ts";
+
 const corsHeaders = {
   "access-control-allow-origin": "*",
   "access-control-allow-methods": "GET, OPTIONS",
@@ -39,12 +41,10 @@ Deno.serve(async (request) => {
     .eq("target", "darwin")
     .eq("arch", "aarch64")
     .eq("is_published", true)
-    .not("dmg_storage_path", "is", null)
-    .order("pub_date", { ascending: false })
-    .limit(1)
-    .single();
+    .not("dmg_storage_path", "is", null);
 
-  if (error || !data) {
+  const release = newestByVersion(data ?? []);
+  if (error || !release) {
     return new Response(JSON.stringify({ error: "No release available" }), {
       status: 404,
       headers: { ...corsHeaders, "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
@@ -52,8 +52,8 @@ Deno.serve(async (request) => {
   }
 
   const { data: signedUrl, error: signedUrlError } = await supabase.storage
-    .from(data.storage_bucket)
-    .createSignedUrl(data.dmg_storage_path, 60 * 60);
+    .from(release.storage_bucket)
+    .createSignedUrl(release.dmg_storage_path, 60 * 60);
 
   if (signedUrlError || !signedUrl?.signedUrl) {
     return new Response(JSON.stringify({ error: "Could not create download URL" }), {
@@ -64,8 +64,8 @@ Deno.serve(async (request) => {
 
   return new Response(
     JSON.stringify({
-      version: data.version,
-      pub_date: data.pub_date,
+      version: release.version,
+      pub_date: release.pub_date,
       url: signedUrl.signedUrl,
     }),
     {

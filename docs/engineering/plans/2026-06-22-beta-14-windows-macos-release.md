@@ -2,12 +2,16 @@
 
 Date: 2026-06-22
 
+Cross-platform merge and lifecycle details:
+
+- [Cross-platform onboarding and runtime lifecycle handoff](2026-06-22-cross-platform-onboarding-runtime-lifecycle-handoff.md)
+
 ## Summary
 
 - Use `codex/windows-runtime-rewrite` as the new release baseline.
 - Archive the current `main` at commit
   `5aefef91be1e371e30747dc6ed1a116778b06d29`, then replace `main` with
-  `5c74e696794972402d41dd8a39132856b58e1ede` using
+  the fully validated head of `codex/windows-runtime-rewrite` using
   `--force-with-lease`.
 - Release Windows x64 and macOS Apple Silicon together as
   `0.1.0-beta.14`.
@@ -23,8 +27,9 @@ Date: 2026-06-22
 
 - Create the remote archive branch
   `archive/main-before-windows-rewrite-2026-06-22` at `5aefef9`.
-- Replace remote `main` with `5c74e69` using `--force-with-lease`, then create
-  the beta.14 release work from the new `main`.
+- Replace remote `main` with the complete Windows rewrite head, including the
+  later onboarding retry and process cleanup fixes, using `--force-with-lease`.
+  Create the beta.14 release work from that new `main`.
 - Remove the repository-root temporary diagnostic file `tmp-log.md` and
   verify that no logs, installers, private keys, credentials, or
   machine-specific release files are committed.
@@ -35,6 +40,9 @@ Date: 2026-06-22
 - Add user-facing beta.14 release notes and an engineering change-log entry.
 - Update ADR 0006 to record that the Windows NVIDIA installation, translation,
   PDF, and clean first-run paths have passed real-device validation.
+- Preserve the shared onboarding, runtime-readiness, PDF progress, and system
+  theme changes documented in the cross-platform handoff when replacing
+  `main`; they are required for both release packages.
 
 ### Windows release pipeline
 

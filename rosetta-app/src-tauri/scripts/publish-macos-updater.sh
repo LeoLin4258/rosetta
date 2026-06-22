@@ -144,6 +144,7 @@ main() {
   require_command node
   require_command cargo
   require_command curl
+  require_command shasum
   validate_release_scope
   require_env SUPABASE_SERVICE_ROLE_KEY
 
@@ -188,13 +189,14 @@ main() {
   ok "All artifacts found"
 
   local signature notes storage_path artifact_name artifact_size
-  local dmg_name dmg_size dmg_storage_path
+  local dmg_name dmg_size dmg_storage_path dmg_sha256
   signature="$(tr -d '\n' < "$sig_file")"
   artifact_name="$(basename "$artifact")"
   artifact_size="$(wc -c < "$artifact" | tr -d ' ')"
   storage_path="macos/aarch64/$app_version/$artifact_name"
   dmg_name="$(basename "$dmg_file")"
   dmg_size="$(wc -c < "$dmg_file" | tr -d ' ')"
+  dmg_sha256="$(shasum -a 256 "$dmg_file" | awk '{print $1}')"
   dmg_storage_path="macos/aarch64/$app_version/$dmg_name"
 
   if [[ -n "$NOTES_FILE" ]]; then
@@ -232,7 +234,7 @@ CURL_CONFIG
   step "Writing release metadata  (is_published=$PUBLISH)"
   local payload
   payload="$(
-    printf '{"app":%s,"version":%s,"target":%s,"arch":%s,"storage_bucket":%s,"storage_path":%s,"dmg_storage_path":%s,"signature":%s,"notes":%s,"is_published":%s}' \
+    printf '{"app":%s,"version":%s,"target":%s,"arch":%s,"storage_bucket":%s,"storage_path":%s,"dmg_storage_path":%s,"installer_storage_path":%s,"installer_sha256":%s,"installer_size_bytes":%s,"signature":%s,"notes":%s,"is_published":%s}' \
       "$(json_escape "$APP_NAME")" \
       "$(json_escape "$app_version")" \
       "$(json_escape "$TARGET")" \
@@ -240,6 +242,9 @@ CURL_CONFIG
       "$(json_escape "$SUPABASE_BUCKET")" \
       "$(json_escape "$storage_path")" \
       "$(json_escape "$dmg_storage_path")" \
+      "$(json_escape "$dmg_storage_path")" \
+      "$(json_escape "$dmg_sha256")" \
+      "$dmg_size" \
       "$(json_escape "$signature")" \
       "$(json_escape "$notes")" \
       "$(if [[ "$PUBLISH" == "true" ]]; then printf true; else printf false; fi)"

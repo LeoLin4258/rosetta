@@ -45,8 +45,9 @@ preparing an official ZIP package.
 
 - AMD and Intel Windows machines can use an explicitly configured external
   API, but cannot install the CUDA runtime.
-- NVIDIA runtime launch and translation still require validation on a clean
-  SM75+ Windows machine.
+- The NVIDIA installation, runtime launch, translation, PDF, clean first-run,
+  and application-exit paths passed real-device validation on an SM75+ Windows
+  machine before the first Windows release.
 - The staged ZIP must be uploaded as a Rosetta-controlled release artifact
   before Windows distribution; the app must never download and execute an
   unverified runtime archive.

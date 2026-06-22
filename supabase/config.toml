@@ -5,3 +5,6 @@ verify_jwt = false
 
 [functions.rosetta-latest-dmg]
 verify_jwt = false
+
+[functions.rosetta-latest-download]
+verify_jwt = false
