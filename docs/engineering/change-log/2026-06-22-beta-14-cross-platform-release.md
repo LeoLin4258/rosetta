@@ -27,6 +27,9 @@ Apple Silicon release.
 - Clarified that Supabase is the sole distribution channel for Rosetta
   application installers and updater assets. GitHub Releases are not part of
   the application release flow.
+- Enabled Tauri's `macos-private-api` Cargo feature only for the macOS target,
+  matching the existing transparent sidebar configuration and restoring
+  direct `cargo check` and test builds on the Apple Silicon release machine.
 
 ## Privacy
 
