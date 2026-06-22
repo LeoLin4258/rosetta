@@ -24,6 +24,9 @@ Apple Silicon release.
   when requested, while still requiring the shared Tauri updater signature.
 - Documented that Windows and macOS packages are built only on their native
   release machines from the same `main` commit.
+- Clarified that Supabase is the sole distribution channel for Rosetta
+  application installers and updater assets. GitHub Releases are not part of
+  the application release flow.
 
 ## Privacy
 

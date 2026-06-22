@@ -3,6 +3,12 @@
 Rosetta releases Windows x64 and macOS Apple Silicon from the same `main`
 commit and version.
 
+Supabase Storage and `app_releases` are the only distribution channel for
+Rosetta application installers, updater artifacts, signatures, hashes, and
+release metadata. Do not upload application release assets to GitHub Releases.
+GitHub may optionally carry a source tag, but a tag is not required for
+installer distribution or App-internal updates.
+
 Platform packages are always produced natively:
 
 - build Windows only on the Windows release machine;
@@ -52,8 +58,9 @@ Upload both platform releases as unpublished rows first.
 3. Smoke test the unpublished macOS artifacts, then publish only its row.
 4. Test the macOS in-app update and website download.
 5. Verify updater requests for the current version return `204 No Content`.
-6. Create the matching git tag and GitHub Release only after both platform
-   rows are published and verified.
+6. After both platform rows are published and verified, optionally create a
+   source-code git tag. Do not create a GitHub Release or upload application
+   installers to GitHub.
 
 If one platform fails, set only that release row to unpublished. The other
 platform remains available.

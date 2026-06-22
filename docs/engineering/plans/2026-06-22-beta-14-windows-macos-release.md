@@ -161,8 +161,9 @@ URL.
 5. Publish the Windows row and immediately test beta.13 to beta.14 through the
    in-app updater. Mark the row unpublished again if the test fails.
 6. Publish the macOS row and perform the equivalent updater test.
-7. Verify both website download actions, then create the
-   `v0.1.0-beta.14` tag and GitHub Release record.
+7. Verify both website download actions. Optionally create the
+   `v0.1.0-beta.14` source tag, but do not create a GitHub Release or upload
+   application assets to GitHub.
 8. To roll back a platform, set its beta.14 row to
    `is_published=false`. Beta.13 becomes the latest published website release
    again. Installed beta.14 clients are not downgraded; publish beta.15 for
