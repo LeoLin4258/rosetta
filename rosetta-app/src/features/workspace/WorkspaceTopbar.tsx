@@ -35,6 +35,8 @@ type WorkspaceTopbarProps = {
   isTranslating: boolean;
   isTranslationBusyElsewhere?: boolean;
   isRuntimeStarting: boolean;
+  isRuntimeUnavailable?: boolean;
+  runtimeUnavailableMessage?: string | null;
   isPdfEngineInstalling?: boolean;
   isPdfEngineUnavailable?: boolean;
   /// True while the persistent pdf2zh worker is paying its ~13 s torch
@@ -130,6 +132,8 @@ export function WorkspaceTopbar({
   isTranslating,
   isTranslationBusyElsewhere = false,
   isRuntimeStarting,
+  isRuntimeUnavailable = false,
+  runtimeUnavailableMessage = null,
   isPdfEngineInstalling = false,
   isPdfEngineUnavailable = false,
   isPdfEngineWarming = false,
@@ -185,12 +189,15 @@ export function WorkspaceTopbar({
     sameLanguage ||
     noPdfPagesSelected ||
     isTranslationBusyElsewhere ||
+    isRuntimeUnavailable ||
     (isPdf && isPdfEngineUnavailable) ||
     (isPdf && isPdfEngineWarming);
   const translateTitle = sameLanguage
     ? "原文与译文语言不能相同"
     : isTranslationBusyElsewhere
       ? "另一个文件正在翻译"
+    : isRuntimeUnavailable
+      ? (runtimeUnavailableMessage ?? "本地翻译模型尚未就绪")
     : isPdf && isPdfEngineUnavailable
       ? (pdfEngineUnavailableMessage ?? "PDF 组件未安装，请在设置中安装后再翻译。")
     : isPdf && isPdfEngineWarming

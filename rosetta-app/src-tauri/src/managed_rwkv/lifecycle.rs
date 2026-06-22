@@ -239,7 +239,10 @@ pub async fn start_sidecar(
         .hide_console_on_windows();
 
     let child = command.spawn().map_err(|error| {
-        let msg = format!("无法启动 sidecar 进程: {error}\n日志文件: {}", log_file.display());
+        let msg = format!(
+            "无法启动 sidecar 进程: {error}\n日志文件: {}",
+            log_file.display()
+        );
         guard.last_error = Some(msg.clone());
         guard.state = Some(ManagedRuntimeState::Failed);
         msg
@@ -257,12 +260,8 @@ pub async fn start_sidecar(
     // "starting" state we just set.
     drop(guard);
 
-    let healthy = wait_for_health_with_process_check(
-        &base_url,
-        profile.health_path,
-        &registry.inner,
-    )
-    .await;
+    let healthy =
+        wait_for_health_with_process_check(&base_url, profile.health_path, &registry.inner).await;
     let mut guard = registry.inner.lock().await;
 
     if let Err(error) = healthy {
@@ -715,9 +714,9 @@ fn is_matching_managed_sidecar(
     }
 
     let command = process.command.as_str();
-    if !command.contains(&sidecar_path.display().to_string())
-        || !command.contains(&model_path.display().to_string())
-        || !command.contains(&tokenizer_path.display().to_string())
+    if !command_contains_path(command, sidecar_path)
+        || !command_contains_path(command, model_path)
+        || !command_contains_path(command, tokenizer_path)
     {
         return false;
     }
@@ -733,6 +732,20 @@ fn is_matching_managed_sidecar(
                 && command.contains("--model-name")
                 && command.contains(profile.model_name_arg)
         }
+    }
+}
+
+fn command_contains_path(command: &str, path: &Path) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        command
+            .to_lowercase()
+            .contains(&path.display().to_string().to_lowercase())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        command.contains(&path.display().to_string())
     }
 }
 
@@ -975,6 +988,37 @@ mod tests {
         assert!(!is_matching_managed_sidecar(
             &other,
             &MACOS_ARM64_WEBRWKV,
+            &sidecar,
+            &tokenizer,
+            &model
+        ));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn matching_windows_sidecar_paths_are_case_insensitive() {
+        let sidecar = PathBuf::from(
+            r"C:\Users\Leo\AppData\Local\com.rosetta.desktop\managed-rwkv\runtimes\rwkv-lightning-cuda-sm75-msvc\rwkv_lighting_cuda.exe",
+        );
+        let tokenizer = PathBuf::from(
+            r"C:\Users\Leo\AppData\Local\com.rosetta.desktop\managed-rwkv\runtimes\rwkv-lightning-cuda-sm75-msvc\rwkv_vocab_v20230424.txt",
+        );
+        let model = PathBuf::from(
+            r"C:\Users\Leo\AppData\Local\com.rosetta.desktop\managed-rwkv\models\rwkv7-0.4b-translate-windows-pth\model.pth",
+        );
+        let process = SidecarProcess {
+            pid: 4242,
+            command: format!(
+                "{} --model-path {} --vocab-path {} --port 28888",
+                sidecar.display().to_string().to_uppercase(),
+                model.display().to_string().to_uppercase(),
+                tokenizer.display().to_string().to_uppercase()
+            ),
+        };
+
+        assert!(is_matching_managed_sidecar(
+            &process,
+            &WINDOWS_AMD64_CUDA,
             &sidecar,
             &tokenizer,
             &model

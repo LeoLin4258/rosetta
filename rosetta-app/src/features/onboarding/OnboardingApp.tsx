@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { completeOnboardingAndOpenMain, getOnboardingDecision } from "@/lib/onboarding";
@@ -6,7 +7,12 @@ import {
   isPdf2zhReady,
   useManagedPdf2zhRuntime,
 } from "@/lib/useManagedPdf2zhRuntime";
-import { prewarmPdf2zhWorker } from "@/lib/pdf2zhRuntime";
+import {
+  getPdf2zhWorkerStatus,
+  prewarmPdf2zhWorker,
+  subscribePdf2zhWorkerStatus,
+  type Pdf2zhWorkerStatus,
+} from "@/lib/pdf2zhRuntime";
 import { useManagedRwkvRuntime } from "@/lib/useManagedRwkvRuntime";
 import { cn } from "@/lib/utils";
 
@@ -64,6 +70,11 @@ export function OnboardingApp() {
   const [skippedPdfInstall, setSkippedPdfInstall] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isFinishing, setIsFinishing] = useState(false);
+  const [isPrewarmingPdf, setIsPrewarmingPdf] = useState(false);
+  const [pdfWorkerStatus, setPdfWorkerStatus] =
+    useState<Pdf2zhWorkerStatus | null>(null);
+  const [pdfWarmupElapsed, setPdfWarmupElapsed] = useState(0);
+  const rwkvInstallFlowActiveRef = useRef(false);
   const [decision, setDecision] = useState<{
     modelSizeBytes: number | null;
     isReturningUser: boolean;
@@ -91,8 +102,54 @@ export function OnboardingApp() {
     };
   }, []);
 
+  useEffect(() => {
+    let active = true;
+    let unlisten: UnlistenFn | null = null;
+
+    void getPdf2zhWorkerStatus()
+      .then((status) => {
+        if (active) {
+          setPdfWorkerStatus(status);
+        }
+      })
+      .catch(() => {});
+
+    subscribePdf2zhWorkerStatus((status) => {
+      if (active) {
+        setPdfWorkerStatus(status);
+      }
+    })
+      .then((nextUnlisten) => {
+        if (!active) {
+          nextUnlisten();
+          return;
+        }
+        unlisten = nextUnlisten;
+      })
+      .catch(() => {});
+
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isPrewarmingPdf) {
+      setPdfWarmupElapsed(0);
+      return;
+    }
+
+    const startedAt = Date.now();
+    const interval = window.setInterval(() => {
+      setPdfWarmupElapsed(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+    return () => window.clearInterval(interval);
+  }, [isPrewarmingPdf]);
+
   const beginPdfSetup = useCallback(async () => {
     setErrorMessage(null);
+    setIsPrewarmingPdf(false);
     setStep("installing-pdf");
 
     try {
@@ -101,6 +158,7 @@ export function OnboardingApp() {
         await pdfRuntime.install({ repair: false });
       }
 
+      setIsPrewarmingPdf(true);
       const warmed = await prewarmPdf2zhWorker();
       if (!warmed) {
         throw new Error("PDF 组件已安装，但预热没有完成。请重试。");
@@ -110,33 +168,44 @@ export function OnboardingApp() {
       setStep("welcome");
     } catch (error) {
       setErrorMessage(toMessage(error));
+    } finally {
+      setIsPrewarmingPdf(false);
     }
   }, [pdfRuntime]);
 
   const installLocalRuntime = useCallback(async () => {
+    if (rwkvInstallFlowActiveRef.current) {
+      return;
+    }
+
+    rwkvInstallFlowActiveRef.current = true;
     setErrorMessage(null);
     setStep("installing-runtime");
 
-    const installed = await runtime.install({ repair: false });
-    if (!installed) {
-      setErrorMessage(runtime.lastError ?? "本地翻译引擎安装没有完成。");
-      return;
-    }
+    try {
+      const installed = await runtime.install({ repair: false });
+      if (!installed) {
+        setErrorMessage(null);
+        return;
+      }
 
-    const started = await runtime.start();
-    if (!started) {
-      setErrorMessage(runtime.lastError ?? "本地翻译引擎启动没有完成。");
-      return;
-    }
+      const started = await runtime.start();
+      if (!started) {
+        setErrorMessage(null);
+        return;
+      }
 
-    const probe = await runtime.probe();
-    if (!probe?.ok) {
-      setErrorMessage(probe?.message ?? "本地翻译引擎探活没有完成。");
-      return;
-    }
+      const probe = await runtime.probe();
+      if (!probe?.ok) {
+        setErrorMessage(probe?.message ?? "本地翻译引擎探活没有完成。");
+        return;
+      }
 
-    setSkippedLocalInstall(false);
-    setStep("pdf");
+      setSkippedLocalInstall(false);
+      setStep("pdf");
+    } finally {
+      rwkvInstallFlowActiveRef.current = false;
+    }
   }, [runtime]);
 
   const handleBeginInstall = useCallback(() => {
@@ -215,6 +284,16 @@ export function OnboardingApp() {
   const rwkvDescription = decision?.isReturningUser
     ? "新版本已切换到更小更快的本地模型。"
     : "翻译引擎和模型会安装在本机。";
+  const pdfProgress = isPrewarmingPdf
+    ? {
+        phase: "preparing" as const,
+        bytesDone: 0,
+        bytesTotal: 0,
+        speedBytesPerSec: 0,
+        message: formatPdfWarmupMessage(pdfWorkerStatus, pdfWarmupElapsed),
+        lastError: null,
+      }
+    : pdfRuntime.progress;
 
   return (
     <div
@@ -267,7 +346,7 @@ export function OnboardingApp() {
         {step === "installing-runtime" && (
           <InstallStep
             progress={runtime.progress}
-            errorMessage={errorMessage}
+            errorMessage={errorMessage ?? runtime.lastError}
             onCancel={handleCancel}
             onRetry={handleRetry}
             onSkip={handleSkipLocalInstall}
@@ -297,13 +376,13 @@ export function OnboardingApp() {
         )}
         {step === "installing-pdf" && (
           <InstallStep
-            progress={pdfRuntime.progress}
+            progress={pdfProgress}
             errorMessage={errorMessage ?? pdfRuntime.lastError}
             onCancel={handleCancel}
             onRetry={handleRetry}
             onSkip={handleSkipPdf}
             progressValue={66}
-            title="正在准备 PDF 组件"
+            title={isPrewarmingPdf ? "正在启动 PDF 引擎" : "正在准备 PDF 组件"}
             errorTitle="PDF 组件没有准备完成"
             retryLabel="重试 PDF 安装"
             defaultCaption="用于保留 PDF 页面结构，仅在本机运行"
@@ -333,4 +412,27 @@ function toMessage(error: unknown): string {
     return error;
   }
   return JSON.stringify(error);
+}
+
+function formatPdfWarmupMessage(
+  status: Pdf2zhWorkerStatus | null,
+  elapsedSeconds: number
+): string {
+  const details: string[] = [];
+  if (
+    status?.state === "starting" &&
+    status.warmupStep != null &&
+    status.warmupTotalSteps != null &&
+    status.warmupLabel
+  ) {
+    details.push(
+      `第 ${status.warmupStep}/${status.warmupTotalSteps} 阶段：${status.warmupLabel}`
+    );
+  } else {
+    details.push("正在启动本机 PDF 处理进程");
+  }
+  if (elapsedSeconds > 0) {
+    details.push(`已用 ${elapsedSeconds} 秒`);
+  }
+  return details.join(" · ");
 }

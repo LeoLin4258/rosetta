@@ -108,32 +108,30 @@ pub async fn install_managed_rwkv_runtime(
     hardware::ensure_supported(profile)?;
     let layout = RuntimeLayout::from_app(&app, profile)?;
     let options = options.unwrap_or_default();
-    if options.repair {
-        let static_status = build_static_status(&app)?;
-        let sidecar = static_status.sidecar_path.as_deref();
-        let tokenizer = static_status.tokenizer_path.as_deref();
-        let model = static_status
-            .layout
+
+    let replacing_runtime_pack = profile.managed_runtime_directory_name.is_some()
+        && (options.repair || !layout.is_runtime_installed(profile));
+    if replacing_runtime_pack {
+        let sidecar = layout.runtime_executable.as_deref();
+        let tokenizer = layout
+            .runtime_dir
+            .as_ref()
+            .map(|dir| dir.join(profile.tokenizer_filename));
+        let model = layout
             .model_extracted_dir
             .as_deref()
-            .unwrap_or(static_status.layout.model_file.as_path());
+            .unwrap_or(layout.model_file.as_path());
+        eprintln!("[rwkv-install] stopping managed sidecar before replacing runtime pack");
         stop_sidecar(
             &runtime_registry,
-            Some(static_status.profile),
+            Some(profile),
             sidecar,
-            tokenizer,
+            tokenizer.as_deref(),
             Some(model),
         )
         .await?;
     }
-    install_model(
-        &app,
-        install_registry.inner(),
-        profile,
-        &layout,
-        options,
-    )
-    .await
+    install_model(&app, install_registry.inner(), profile, &layout, options).await
 }
 
 #[tauri::command]
@@ -214,20 +212,16 @@ pub async fn start_managed_rwkv_runtime(
     }
 
     let profile = static_status.profile;
-    let sidecar = static_status
-        .sidecar_path
-        .ok_or_else(|| {
-            let msg = "找不到 sidecar 二进制。".to_string();
-            eprintln!("[rwkv-start] ABORT: {msg}");
-            msg
-        })?;
-    let tokenizer = static_status
-        .tokenizer_path
-        .ok_or_else(|| {
-            let msg = "找不到分词表文件。".to_string();
-            eprintln!("[rwkv-start] ABORT: {msg}");
-            msg
-        })?;
+    let sidecar = static_status.sidecar_path.ok_or_else(|| {
+        let msg = "找不到 sidecar 二进制。".to_string();
+        eprintln!("[rwkv-start] ABORT: {msg}");
+        msg
+    })?;
+    let tokenizer = static_status.tokenizer_path.ok_or_else(|| {
+        let msg = "找不到分词表文件。".to_string();
+        eprintln!("[rwkv-start] ABORT: {msg}");
+        msg
+    })?;
     let model = static_status
         .layout
         .model_extracted_dir

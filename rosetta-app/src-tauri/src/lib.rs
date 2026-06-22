@@ -168,6 +168,19 @@ pub fn run() {
             app.emit("rosetta-menu-event", payload).ok();
         })
         .on_window_event(|_window, _event| {
+            // Windows users expect closing the primary window to exit the
+            // application. Destroying only `main` leaves the pre-created
+            // onboarding/preview windows alive, so ExitRequested never runs
+            // and managed RWKV/PDF child processes remain in Task Manager.
+            #[cfg(target_os = "windows")]
+            if let tauri::WindowEvent::CloseRequested { api, .. } = _event {
+                if _window.label() == "main" {
+                    api.prevent_close();
+                    _window.app_handle().exit(0);
+                    return;
+                }
+            }
+
             // macOS: hide instead of destroy so the window can be restored
             // from the dock. Without this, close destroys the window handle,
             // Reopen can't find "main", and falls back to showing onboarding.

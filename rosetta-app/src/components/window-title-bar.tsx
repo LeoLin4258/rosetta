@@ -1,4 +1,5 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { exit } from "@tauri-apps/plugin-process";
 import { MinusIcon, SquareIcon, XIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -51,7 +52,7 @@ export function WindowTitleBar() {
         <Button
           aria-label="Close window"
           className="h-full rounded-none px-3 hover:bg-destructive/20! hover:text-destructive"
-          onClick={() => void appWindow.close()}
+          onClick={() => void exit(0)}
           size="icon"
           type="button"
           variant="ghost"

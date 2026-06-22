@@ -318,7 +318,7 @@ function sourceSelectionKey(jobId: string, sourceFileId: string) {
 export const useRosettaStore = create<RosettaState>()(
   persist(
     (set, get) => ({
-      themeMode: "dark",
+      themeMode: "system",
       rwkv: {
         baseUrl: "https://rwkvconcszserver3.rwkvos.com",
         endpoint: "/v1/batch/completions",

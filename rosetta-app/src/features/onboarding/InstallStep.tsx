@@ -1,4 +1,4 @@
-import { AlertCircle, Download, X } from "lucide-react";
+import { AlertCircle, Download, LoaderCircle, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import type { ManagedRuntimeInstallProgress } from "@/types/rosetta";
@@ -11,7 +11,8 @@ type InstallProgressLike = Pick<
 > & {
   phase:
     | ManagedRuntimeInstallProgress["phase"]
-    | "extracting";
+    | "extracting"
+    | "preparing";
 };
 
 type InstallStepProps = {
@@ -57,6 +58,11 @@ export function InstallStep({
 }: InstallStepProps) {
   const percent = installPercent(progress);
   const isActive = !!progress && ACTIVE_PHASES.has(progress.phase);
+  const isPostDownloadPhase =
+    progress?.phase === "verifying" ||
+    progress?.phase === "extracting" ||
+    progress?.phase === "writing-manifest" ||
+    progress?.phase === "preparing";
   const speed = progress?.speedBytesPerSec ?? 0;
 
   if (errorMessage) {
@@ -98,17 +104,34 @@ export function InstallStep({
       align="start"
     >
       <div className="w-full space-y-3">
-        <div className="relative h-2 w-full overflow-hidden rounded-full bg-muted">
-          <div
-            className="absolute inset-y-0 left-0 rounded-full bg-foreground/80 transition-[width] duration-200"
-            style={{ width: `${percent}%` }}
-          />
-        </div>
-        <div className="text-xs tabular-nums text-muted-foreground/60">
-          {percent}% · {formatBytes(progress?.bytesDone ?? 0)} /{" "}
-          {formatBytes(progress?.bytesTotal ?? 0)}
-          {speed > 0 ? ` · ${formatBytes(speed)}/s` : ""}
-        </div>
+        {isPostDownloadPhase ? (
+          <>
+            <div className="relative h-2 w-full overflow-hidden rounded-full bg-muted">
+              <div className="absolute inset-y-0 left-0 w-full animate-pulse rounded-full bg-foreground/70 motion-reduce:animate-none" />
+            </div>
+            <div className="flex items-center gap-2 text-xs text-muted-foreground/70">
+              <LoaderCircle
+                className="size-3.5 animate-spin motion-reduce:animate-none"
+                aria-hidden="true"
+              />
+              <span>{postDownloadCaption(progress?.phase)}</span>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="relative h-2 w-full overflow-hidden rounded-full bg-muted">
+              <div
+                className="absolute inset-y-0 left-0 rounded-full bg-foreground/80 transition-[width] duration-200"
+                style={{ width: `${percent}%` }}
+              />
+            </div>
+            <div className="text-xs tabular-nums text-muted-foreground/60">
+              {percent}% · {formatBytes(progress?.bytesDone ?? 0)} /{" "}
+              {formatBytes(progress?.bytesTotal ?? 0)}
+              {speed > 0 ? ` · ${formatBytes(speed)}/s` : ""}
+            </div>
+          </>
+        )}
       </div>
 
       <button
@@ -144,6 +167,8 @@ function phaseCaption(
       return "正在安装到本机…";
     case "writing-manifest":
       return "写入安装清单…";
+    case "preparing":
+      return "正在启动组件…";
     case "done":
       return "已完成";
     case "failed":
@@ -152,6 +177,23 @@ function phaseCaption(
       return "已取消";
     default:
       return defaultCaption;
+  }
+}
+
+function postDownloadCaption(
+  phase: InstallProgressLike["phase"] | undefined
+): string {
+  switch (phase) {
+    case "verifying":
+      return "下载完成，正在校验文件完整性";
+    case "extracting":
+      return "校验完成，正在解压并安装组件";
+    case "writing-manifest":
+      return "组件已解压，正在保存安装信息";
+    case "preparing":
+      return "组件已安装，正在启动 PDF 引擎";
+    default:
+      return "正在完成安装";
   }
 }
 

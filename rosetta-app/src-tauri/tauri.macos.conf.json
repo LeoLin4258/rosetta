@@ -17,7 +17,6 @@
           "y": 30
         },
         "shadow": true,
-        "theme": "Dark",
         "transparent": true,
         "windowEffects": {
           "effects": ["sidebar"],
@@ -42,7 +41,6 @@
           "y": 18
         },
         "shadow": true,
-        "theme": "Dark",
         "transparent": true,
         "windowEffects": {
           "effects": ["sidebar"],

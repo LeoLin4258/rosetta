@@ -58,12 +58,23 @@ async function bootstrapJobList() {
 
 function useOnboardingCompleted() {
   const clearJobHistory = useRosettaStore((s) => s.clearJobHistory);
+  const setManagedRuntimeStatus = useRosettaStore(
+    (s) => s.setManagedRuntimeStatus
+  );
 
   useEffect(() => {
     let unmounted = false;
     let unlisten: (() => void) | null = null;
 
     listen("rosetta-onboarding-completed", () => {
+      // The hidden main window mounted before onboarding started installing
+      // the runtime, so its store may still contain the boot-time
+      // "not-installed" snapshot. Refresh immediately before the user can
+      // start a translation in the newly shown workspace.
+      void getManagedRwkvRuntimeStatus()
+        .then(setManagedRuntimeStatus)
+        .catch(() => {});
+
       // The main window may have bootstrapped its job list while onboarding
       // was still open (both windows exist from app start). Re-bootstrap
       // after clearing so the welcome document reliably shows instead of
@@ -75,7 +86,7 @@ function useOnboardingCompleted() {
     }).catch(console.error);
 
     return () => { unmounted = true; unlisten?.(); };
-  }, [clearJobHistory]);
+  }, [clearJobHistory, setManagedRuntimeStatus]);
 }
 
 /// App-level subscription to pdf2zh progress events. Lives here (not in
@@ -384,7 +395,9 @@ export function AppShell() {
   // Tracks whether the one-shot auto-start has been attempted this session.
   // Prevents re-starting the runtime when the user explicitly stops it.
   const runtimeAutoStartedRef = useRef(false);
-  const [systemPrefersDark, setSystemPrefersDark] = useState(true);
+  const [systemPrefersDark, setSystemPrefersDark] = useState(
+    () => window.matchMedia("(prefers-color-scheme: dark)").matches
+  );
   const isDark = themeMode === "system" ? systemPrefersDark : themeMode === "dark";
   const title = pageTitles[location.pathname] ?? activeDocument?.filename ?? "Rosetta";
   const titlebarHeight = isMacPlatform ? "0px" : "2.25rem";
@@ -470,6 +483,10 @@ export function AppShell() {
 
     runtimeAutoStartedRef.current = true;
     void startManagedRwkvRuntime()
+      // Onboarding may already have started the process while this hidden
+      // main window still held a stale "installed" snapshot. Treat
+      // "already running" as a cue to refresh, not as a terminal failure.
+      .catch(() => null)
       .then(() => getManagedRwkvRuntimeStatus())
       .then(setManagedRuntimeStatus)
       .catch(() => {});

@@ -48,6 +48,10 @@ const STREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const PROGRESS_EVENT_NAME: &str = "managed-rwkv://install-progress";
 const PROGRESS_EMIT_INTERVAL_MS: u128 = 100;
 const HASH_BUFFER_BYTES: usize = 256 * 1024;
+#[cfg(target_os = "windows")]
+const RUNTIME_DIR_DELETE_RETRY_COUNT: usize = 20;
+#[cfg(target_os = "windows")]
+const RUNTIME_DIR_DELETE_RETRY_DELAY: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -199,16 +203,11 @@ pub async fn install_model(
     let cancel = Arc::new(AtomicBool::new(false));
     {
         let mut guard = registry.inner.lock().await;
-        if guard.progress.as_ref().is_some_and(|p| {
-            matches!(
-                p.phase,
-                InstallPhase::Preflight
-                    | InstallPhase::Downloading
-                    | InstallPhase::Verifying
-                    | InstallPhase::Extracting
-                    | InstallPhase::WritingManifest
-            )
-        }) {
+        if guard
+            .progress
+            .as_ref()
+            .is_some_and(|progress| is_active_phase(progress.phase))
+        {
             return Err("已有安装任务在进行中。".to_string());
         }
         guard.cancel = Some(cancel.clone());
@@ -225,39 +224,48 @@ pub async fn install_model(
     }
     emit_progress(app, registry).await;
 
-    layout.ensure_dirs()?;
+    let result = async {
+        layout.ensure_dirs()?;
 
-    if options.repair {
-        cleanup_artifacts(layout)?;
-    }
+        if options.repair {
+            cleanup_artifacts(layout)?;
+        }
 
-    // Precedence: user-configured proxy (Settings input) > macOS system proxy
-    // (detected via `scutil --proxy`) > none (relies on env / direct connect).
-    // Eprintln traces the chosen source so dev terminals can confirm at a glance.
-    let proxy_url: Option<String> = options
-        .effective_proxy_url()
-        .map(|url| {
-            eprintln!("[rwkv-install] proxy source: user-configured ({url})");
-            url.to_string()
-        })
-        .or_else(|| {
-            detect_system_proxy().inspect(|url| {
-                eprintln!("[rwkv-install] proxy source: macOS system proxy ({url})");
+        // Precedence: user-configured proxy (Settings input) > macOS system proxy
+        // (detected via `scutil --proxy`) > none (relies on env / direct connect).
+        // Eprintln traces the chosen source so dev terminals can confirm at a glance.
+        let proxy_url: Option<String> = options
+            .effective_proxy_url()
+            .map(|url| {
+                eprintln!("[rwkv-install] proxy source: user-configured ({url})");
+                url.to_string()
             })
-        });
-    if proxy_url.is_none() {
-        eprintln!("[rwkv-install] proxy source: none (direct / HTTPS_PROXY env if set)");
+            .or_else(|| {
+                detect_system_proxy().inspect(|url| {
+                    eprintln!("[rwkv-install] proxy source: macOS system proxy ({url})");
+                })
+            });
+        if proxy_url.is_none() {
+            eprintln!("[rwkv-install] proxy source: none (direct / HTTPS_PROXY env if set)");
+        }
+        install_inner(
+            app,
+            registry,
+            profile,
+            layout,
+            &options,
+            &cancel,
+            proxy_url.as_deref(),
+        )
+        .await
     }
-    let result = install_inner(
-        app,
-        registry,
-        profile,
-        layout,
-        &options,
-        &cancel,
-        proxy_url.as_deref(),
-    )
     .await;
+
+    if let Err(error) = &result {
+        eprintln!("[rwkv-install] install failed: {error}");
+        set_failed_if_active(registry, error.clone()).await;
+        emit_progress(app, registry).await;
+    }
 
     // Always clear the cancel flag on exit so the next install can rebind one.
     {
@@ -678,8 +686,7 @@ async fn install_runtime_pack(
         .as_ref()
         .ok_or_else(|| "Windows runtime layout 缺少安装目录。".to_string())?;
     if runtime_dir.exists() {
-        std::fs::remove_dir_all(runtime_dir)
-            .map_err(|error| format!("无法清理旧 Windows RWKV 运行包: {error}"))?;
+        remove_runtime_dir(runtime_dir).await?;
     }
     extract_zip(archive_path, runtime_dir)
         .map_err(|error| format!("解压 Windows RWKV 运行包失败: {error}"))?;
@@ -687,6 +694,50 @@ async fn install_runtime_pack(
     write_runtime_manifest(layout, profile, &source, expected_size, expected_sha)?;
     let _ = std::fs::remove_file(archive_path);
     Ok(())
+}
+
+async fn remove_runtime_dir(runtime_dir: &Path) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        for attempt in 0..=RUNTIME_DIR_DELETE_RETRY_COUNT {
+            match std::fs::remove_dir_all(runtime_dir) {
+                Ok(()) => return Ok(()),
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::NotFound || !runtime_dir.exists() =>
+                {
+                    return Ok(());
+                }
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::PermissionDenied
+                        && attempt < RUNTIME_DIR_DELETE_RETRY_COUNT =>
+                {
+                    eprintln!(
+                        "[rwkv-install] runtime directory still locked; retrying delete ({}/{})",
+                        attempt + 1,
+                        RUNTIME_DIR_DELETE_RETRY_COUNT
+                    );
+                    tokio::time::sleep(RUNTIME_DIR_DELETE_RETRY_DELAY).await;
+                }
+                Err(error) => {
+                    return Err(format!(
+                        "无法清理旧 Windows RWKV 运行包 {}: {error}",
+                        runtime_dir.display()
+                    ));
+                }
+            }
+        }
+        unreachable!("runtime directory delete retry loop must return");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::fs::remove_dir_all(runtime_dir).map_err(|error| {
+            format!(
+                "无法清理旧 Windows RWKV 运行包 {}: {error}",
+                runtime_dir.display()
+            )
+        })
+    }
 }
 
 fn resolve_explicit_runtime_pack(options: &InstallOptions) -> Option<PathBuf> {
@@ -1235,6 +1286,17 @@ async fn update_progress(registry: &InstallRegistry, mutate: impl FnOnce(&mut In
     }
 }
 
+fn is_active_phase(phase: InstallPhase) -> bool {
+    matches!(
+        phase,
+        InstallPhase::Preflight
+            | InstallPhase::Downloading
+            | InstallPhase::Verifying
+            | InstallPhase::Extracting
+            | InstallPhase::WritingManifest
+    )
+}
+
 async fn emit_progress(app: &AppHandle, registry: &InstallRegistry) {
     let progress = registry.snapshot().await;
     let _ = app.emit(PROGRESS_EVENT_NAME, progress);
@@ -1260,6 +1322,17 @@ async fn set_cancelled(registry: &InstallRegistry) {
     if let Some(progress) = guard.progress.as_mut() {
         progress.phase = InstallPhase::Cancelled;
         progress.message = "安装已取消（可点击重试继续）。".to_string();
+    }
+}
+
+async fn set_failed_if_active(registry: &InstallRegistry, message: String) {
+    let mut guard = registry.inner.lock().await;
+    if let Some(progress) = guard.progress.as_mut() {
+        if is_active_phase(progress.phase) {
+            progress.phase = InstallPhase::Failed;
+            progress.message = message.clone();
+            progress.last_error = Some(message);
+        }
     }
 }
 
@@ -1443,6 +1516,79 @@ mod tests {
         assert_eq!(p.phase, InstallPhase::Idle);
         assert_eq!(p.bytes_done, 0);
         assert!(p.source_url.is_none());
+    }
+
+    #[test]
+    fn active_install_phases_are_the_only_phases_that_block_retry() {
+        for phase in [
+            InstallPhase::Preflight,
+            InstallPhase::Downloading,
+            InstallPhase::Verifying,
+            InstallPhase::Extracting,
+            InstallPhase::WritingManifest,
+        ] {
+            assert!(is_active_phase(phase), "{phase:?} should block retry");
+        }
+
+        for phase in [
+            InstallPhase::Idle,
+            InstallPhase::Done,
+            InstallPhase::Failed,
+            InstallPhase::Cancelled,
+        ] {
+            assert!(!is_active_phase(phase), "{phase:?} should allow retry");
+        }
+    }
+
+    #[tokio::test]
+    async fn install_error_releases_active_progress_for_retry() {
+        let registry = InstallRegistry::default();
+        {
+            let mut guard = registry.inner.lock().await;
+            guard.progress = Some(InstallProgress {
+                phase: InstallPhase::Preflight,
+                bytes_done: 0,
+                bytes_total: 100,
+                source_url: None,
+                speed_bytes_per_sec: 0,
+                started_at: Some(iso_now()),
+                message: "正在准备下载…".to_string(),
+                last_error: None,
+            });
+        }
+
+        set_failed_if_active(&registry, "测试下载失败".to_string()).await;
+
+        let progress = registry.snapshot().await;
+        assert_eq!(progress.phase, InstallPhase::Failed);
+        assert_eq!(progress.message, "测试下载失败");
+        assert_eq!(progress.last_error.as_deref(), Some("测试下载失败"));
+        assert!(!is_active_phase(progress.phase));
+    }
+
+    #[tokio::test]
+    async fn install_error_does_not_overwrite_cancelled_progress() {
+        let registry = InstallRegistry::default();
+        {
+            let mut guard = registry.inner.lock().await;
+            guard.progress = Some(InstallProgress {
+                phase: InstallPhase::Cancelled,
+                bytes_done: 25,
+                bytes_total: 100,
+                source_url: None,
+                speed_bytes_per_sec: 0,
+                started_at: Some(iso_now()),
+                message: "安装已取消（可点击重试继续）。".to_string(),
+                last_error: None,
+            });
+        }
+
+        set_failed_if_active(&registry, "安装已取消。".to_string()).await;
+
+        let progress = registry.snapshot().await;
+        assert_eq!(progress.phase, InstallPhase::Cancelled);
+        assert_eq!(progress.message, "安装已取消（可点击重试继续）。");
+        assert!(progress.last_error.is_none());
     }
 
     #[test]

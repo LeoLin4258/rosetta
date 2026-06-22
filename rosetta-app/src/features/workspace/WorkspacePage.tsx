@@ -160,6 +160,19 @@ export function WorkspacePage() {
     pdf2zhWorkerStatus?.message ??
     pdf2zhRuntime.status?.message ??
     "PDF 组件未安装，请在设置中安装后再翻译。";
+  const managedRuntimeReady = isManagedRuntimeReady(managedRuntimeStatus);
+  const localRuntimeRequired = rwkv.providerPreference === "local";
+  const localRuntimeUnavailable = localRuntimeRequired && !managedRuntimeReady;
+  const localRuntimeStarting =
+    localRuntimeUnavailable &&
+    managedRuntimeStatus?.state !== "failed" &&
+    managedRuntimeStatus?.state !== "unsupported";
+  const localRuntimeUnavailableMessage =
+    managedRuntimeStatus?.state === "failed"
+      ? managedRuntimeStatus.message
+      : managedRuntimeStatus?.state === "unsupported"
+        ? managedRuntimeStatus.message
+        : "本地翻译模型正在启动，请稍候。";
 
   // Prewarm the persistent pdf2zh worker as soon as a PDF document is open,
   // so its ~13 s Python import overlaps with the user picking pages instead
@@ -838,7 +851,9 @@ export function WorkspacePage() {
             activeTranslationFile={activeTranslationFile}
             isTranslating={isTranslating}
             isTranslationBusyElsewhere={isTranslationBusyElsewhere}
-            isRuntimeStarting={managedRuntimeStatus?.state === "starting"}
+            isRuntimeStarting={localRuntimeStarting}
+            isRuntimeUnavailable={localRuntimeUnavailable}
+            runtimeUnavailableMessage={localRuntimeUnavailableMessage}
             isPdfEngineInstalling={pdf2zhRuntime.isInstalling}
             isPdfEngineUnavailable={pdfEngineUnavailable}
             pdfEngineUnavailableMessage={pdfEngineUnavailableMessage}
