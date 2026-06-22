@@ -8,6 +8,7 @@ set -euo pipefail
 APP_NAME="${APP_NAME:-rosetta}"
 SUPABASE_PROJECT_URL="${SUPABASE_PROJECT_URL:-https://bdujdewqopcgwijhfbcz.supabase.co}"
 SUPABASE_BUCKET="${SUPABASE_BUCKET:-rosetta-releases}"
+PUBLISHER_USER_AGENT="${PUBLISHER_USER_AGENT:-Rosetta-Release-Publisher/1.0}"
 TARGET="${TARGET:-darwin}"
 ARCH="${ARCH:-aarch64}"
 NOTES_FILE="${NOTES_FILE:-}"
@@ -208,6 +209,7 @@ main() {
   step "Uploading updater artifact  ($artifact_size bytes)"
   curl -s --fail-with-body \
     --request POST \
+    --user-agent "$PUBLISHER_USER_AGENT" \
     --header "Content-Type: application/octet-stream" \
     --header "x-upsert: true" \
     --data-binary "@$artifact" \
@@ -221,6 +223,7 @@ CURL_CONFIG
   step "Uploading DMG  ($dmg_size bytes)"
   curl -s --fail-with-body \
     --request POST \
+    --user-agent "$PUBLISHER_USER_AGENT" \
     --header "Content-Type: application/octet-stream" \
     --header "x-upsert: true" \
     --data-binary "@$dmg_file" \
@@ -251,6 +254,7 @@ CURL_CONFIG
   )"
   curl -s --fail-with-body \
     --request POST \
+    --user-agent "$PUBLISHER_USER_AGENT" \
     --header "Content-Type: application/json" \
     --header "Prefer: resolution=merge-duplicates" \
     --data "$payload" \

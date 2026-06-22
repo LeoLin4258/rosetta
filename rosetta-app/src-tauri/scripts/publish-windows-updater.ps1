@@ -16,6 +16,7 @@ $ProjectUrl = if ($env:SUPABASE_PROJECT_URL) {
 } else {
     "https://bdujdewqopcgwijhfbcz.supabase.co"
 }
+$PublisherUserAgent = "Rosetta-Release-Publisher/1.0"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $TauriDir = (Resolve-Path (Join-Path $ScriptDir "..")).Path
@@ -57,7 +58,10 @@ function Invoke-SupabaseUpload {
     Invoke-RestMethod `
         -Method Post `
         -Uri "$ProjectUrl/storage/v1/object/$Bucket/$StoragePath" `
-        -Headers ($Headers + @{ "x-upsert" = "true" }) `
+        -Headers ($Headers + @{
+            "User-Agent" = $PublisherUserAgent
+            "x-upsert" = "true"
+        }) `
         -ContentType "application/octet-stream" `
         -InFile $FilePath | Out-Null
 }
@@ -126,7 +130,10 @@ $payload = @{
 Invoke-RestMethod `
     -Method Post `
     -Uri "$ProjectUrl/rest/v1/app_releases?on_conflict=app,version,target,arch" `
-    -Headers ($headers + @{ Prefer = "resolution=merge-duplicates" }) `
+    -Headers ($headers + @{
+        "User-Agent" = $PublisherUserAgent
+        Prefer = "resolution=merge-duplicates"
+    }) `
     -ContentType "application/json" `
     -Body $payload | Out-Null
 

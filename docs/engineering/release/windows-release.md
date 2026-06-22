@@ -106,6 +106,10 @@ $env:SUPABASE_SERVICE_ROLE_KEY = "<local release credential>"
 .\rosetta-app\src-tauri\scripts\publish-windows-updater.ps1 -AllowUnsignedPreview
 ```
 
+The publish script sets a non-browser `User-Agent` so Supabase's new
+`sb_secret_...` server-side keys can be used from PowerShell without being
+rejected by browser-key protections.
+
 For a signed release, omit `-AllowUnsignedPreview` from both commands. The
 same NSIS executable is used as:
 
