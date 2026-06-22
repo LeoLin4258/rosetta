@@ -5,6 +5,19 @@
 Prepared Rosetta `0.1.0-beta.14` as the first shared Windows x64 and macOS
 Apple Silicon release.
 
+## Release status
+
+- Published the Windows x64 Preview and notarized macOS Apple Silicon release
+  through Supabase on 2026-06-22.
+- Verified native smoke tests on both release machines before publication.
+- Verified both updater endpoints return `0.1.0-beta.14` to older clients and
+  return HTTP 204 to clients already running `0.1.0-beta.14`.
+- Verified both latest-download endpoints return beta.14 metadata and redirect
+  to short-lived signed installer URLs.
+- Redeployed `rosetta-update` after publication because the deployed function
+  was still the earlier macOS-only revision; the deployed function now serves
+  both `windows/x86_64` and `darwin/aarch64`.
+
 ## Changes
 
 - Added a Windows release script that requires a clean worktree, matching
