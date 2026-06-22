@@ -12,6 +12,7 @@ rosetta-app/src-tauri/target/
 # Local runtime data
 .rosetta/
 rosetta-data/
+supabase/.temp/
 
 # Logs and local environment
 *.log
