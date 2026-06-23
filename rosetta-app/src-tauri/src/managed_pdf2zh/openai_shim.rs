@@ -97,10 +97,13 @@ impl ShimRwkvMetrics {
         if !ok {
             self.failed_request_count.fetch_add(1, Ordering::Relaxed);
         }
-        self.total_request_ms.fetch_add(elapsed_ms, Ordering::Relaxed);
+        self.total_request_ms
+            .fetch_add(elapsed_ms, Ordering::Relaxed);
         self.max_request_ms.fetch_max(elapsed_ms, Ordering::Relaxed);
-        self.total_input_chars.fetch_add(input_chars, Ordering::Relaxed);
-        self.total_output_chars.fetch_add(output_chars, Ordering::Relaxed);
+        self.total_input_chars
+            .fetch_add(input_chars, Ordering::Relaxed);
+        self.total_output_chars
+            .fetch_add(output_chars, Ordering::Relaxed);
     }
 
     pub fn snapshot(&self) -> ShimRwkvMetricsSnapshot {
@@ -219,6 +222,7 @@ pub async fn spawn_shim(
     target_lang: String,
     log_file: PathBuf,
     debug: bool,
+    debug_context: Option<String>,
 ) -> Result<OpenAiShim, String> {
     let metrics = Arc::new(ShimRwkvMetrics::default());
     let (max_batch_size, batch_handle) = match provider {
@@ -237,6 +241,7 @@ pub async fn spawn_shim(
                 target_lang.clone(),
                 max_batch_size,
                 Arc::clone(&metrics),
+                debug_context.clone(),
             ));
             (max_batch_size, (batch_tx, handle))
         }
@@ -250,6 +255,7 @@ pub async fn spawn_shim(
                 target_lang.clone(),
                 max_batch_size,
                 Arc::clone(&metrics),
+                debug_context.clone(),
             ));
             (max_batch_size, (batch_tx, handle))
         }
@@ -301,6 +307,7 @@ async fn mobile_batch_processor(
     target_lang: String,
     max_batch_size: usize,
     metrics: Arc<ShimRwkvMetrics>,
+    debug_context: Option<String>,
 ) {
     loop {
         let Some(first) = rx.recv().await else {
@@ -326,6 +333,7 @@ async fn mobile_batch_processor(
                 target_lang: &target_lang,
                 timeout_ms: rwkv.timeout_ms,
                 cancel: None,
+                debug_context: debug_context.as_deref().or(Some("pdf2zh-shim")),
             },
         )
         .await;
@@ -373,6 +381,7 @@ async fn lightning_batch_processor(
     target_lang: String,
     max_batch_size: usize,
     metrics: Arc<ShimRwkvMetrics>,
+    debug_context: Option<String>,
 ) {
     loop {
         let Some(first) = rx.recv().await else {
@@ -403,6 +412,7 @@ async fn lightning_batch_processor(
             &source_lang,
             &target_lang,
             &source_texts,
+            debug_context.as_deref().or(Some("pdf2zh-shim")),
         )
         .await;
         metrics.record(
@@ -411,12 +421,7 @@ async fn lightning_batch_processor(
             source_texts.iter().map(|t| t.chars().count() as u64).sum(),
             result
                 .as_ref()
-                .map(|translations| {
-                    translations
-                        .iter()
-                        .map(|t| t.chars().count() as u64)
-                        .sum()
-                })
+                .map(|translations| translations.iter().map(|t| t.chars().count() as u64).sum())
                 .unwrap_or(0),
         );
         match result {

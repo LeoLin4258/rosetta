@@ -351,18 +351,12 @@ async fn spawn_worker(app: &AppHandle) -> Result<WorkerProcess, String> {
     eprintln!("[pdf2zh-worker]   python:  {}", python.display());
     eprintln!("[pdf2zh-worker]   script:  {}", script_path.display());
     eprintln!("[pdf2zh-worker]   cwd:     {}", worker_dir.display());
-    eprintln!(
-        "[pdf2zh-worker]   model:   {}",
-        doclayout_model.display()
-    );
+    eprintln!("[pdf2zh-worker]   model:   {}", doclayout_model.display());
 
     let mut child = command
         .spawn()
         .map_err(|error| format!("启动 pdf2zh worker 失败: {error}"))?;
-    eprintln!(
-        "[pdf2zh-worker]   pid:     {}",
-        child.id().unwrap_or(0)
-    );
+    eprintln!("[pdf2zh-worker]   pid:     {}", child.id().unwrap_or(0));
 
     let stdin = child
         .stdin
@@ -387,9 +381,9 @@ async fn spawn_worker(app: &AppHandle) -> Result<WorkerProcess, String> {
                         break;
                     }
                 }
-                Err(error) => eprintln!(
-                    "[pdf2zh-worker:stdout] invalid protocol line ({error}): {line}"
-                ),
+                Err(error) => {
+                    eprintln!("[pdf2zh-worker:stdout] invalid protocol line ({error}): {line}")
+                }
             }
         }
     });
@@ -522,7 +516,10 @@ async fn spawn_worker(app: &AppHandle) -> Result<WorkerProcess, String> {
         Err(_) => {
             kill_process_tree(&mut worker.child).await;
             let detail = format_stderr_tail(&stderr_capture);
-            let msg = format!("pdf2zh worker 启动超时 ({} 秒)。{detail}", READY_TIMEOUT.as_secs());
+            let msg = format!(
+                "pdf2zh worker 启动超时 ({} 秒)。{detail}",
+                READY_TIMEOUT.as_secs()
+            );
             eprintln!("[pdf2zh-worker] {msg}");
             set_worker_status(app, "failed", Some(msg.clone()), None);
             Err(msg)
@@ -538,8 +535,15 @@ fn format_stderr_tail(capture: &StdMutex<Vec<String>>) -> String {
     if lines.is_empty() {
         return String::new();
     }
-    let tail: Vec<&str> = lines.iter().rev().take(30).collect::<Vec<_>>()
-        .into_iter().rev().map(|s| s.as_str()).collect();
+    let tail: Vec<&str> = lines
+        .iter()
+        .rev()
+        .take(30)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .map(|s| s.as_str())
+        .collect();
     format!("\n--- stderr ---\n{}", tail.join("\n"))
 }
 

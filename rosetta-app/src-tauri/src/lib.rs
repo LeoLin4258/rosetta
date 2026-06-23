@@ -5,9 +5,11 @@ mod managed_rwkv;
 mod onboarding;
 mod rosetta_jobs;
 mod rwkv_api;
+mod rwkv_io_debug;
 mod rwkv_providers;
 #[allow(dead_code)]
 mod rwkv_runtime;
+mod rwkv_text_cleaning;
 mod windows_process;
 
 use std::sync::{
@@ -22,6 +24,7 @@ use tauri::{Emitter, Manager};
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     app_log::init();
+    rwkv_io_debug::init();
 
     let exit_cleanup_started = Arc::new(AtomicBool::new(false));
 

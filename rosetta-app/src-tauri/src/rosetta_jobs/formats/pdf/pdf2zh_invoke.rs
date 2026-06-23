@@ -154,6 +154,7 @@ pub(crate) async fn invoke_pdf2zh(
         options.target_lang.clone(),
         shim_log_file,
         debug,
+        Some(format!("pdf-job:{}", options.job_id)),
     )
     .await
     .map_err(PdfError::Pdf2zhFailed)?;

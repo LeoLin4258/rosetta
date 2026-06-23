@@ -290,6 +290,7 @@ async fn translate_texts_with_api(
         request.source_lang.as_deref().unwrap_or("en"),
         request.target_lang.as_deref().unwrap_or("zh-CN"),
         &request.source_texts,
+        Some("lightning-adhoc"),
     )
     .await
 }
@@ -411,6 +412,10 @@ async fn start_translation_run(
             .iter()
             .map(|segment| segment.source_text.clone())
             .collect::<Vec<_>>();
+        let debug_context = format!(
+            "lightning-run:{}:{}:{}",
+            request.run_id, request.job_id, request.translation_file_id
+        );
         let result = request_translations_for_language_pair_with_cancel(
             &request.base_url,
             &request.endpoint,
@@ -421,6 +426,7 @@ async fn start_translation_run(
             &request.target_lang,
             &source_texts,
             Some(cancel.clone()),
+            Some(&debug_context),
         )
         .await;
 
@@ -500,6 +506,9 @@ async fn request_translations(
     let started_at = Instant::now();
     let url = api_url(base_url, endpoint);
     let body = build_chat_completions_request(source_texts, body_password, "en", "zh-CN");
+    let source_lang = "en";
+    let target_lang = "zh-CN";
+    let debug_context = Some("lightning-probe");
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_millis(timeout_ms))
         .build()
@@ -519,7 +528,7 @@ async fn request_translations(
     };
 
     let response = client
-        .post(url)
+        .post(&url)
         .header("X-Internal-Token", internal_token)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .header(reqwest::header::ACCEPT, "*/*")
@@ -559,6 +568,18 @@ async fn request_translations(
     };
 
     if !(200..300).contains(&status_code) {
+        log_lightning_rwkv_io(
+            debug_context,
+            &url,
+            source_lang,
+            target_lang,
+            &body.contents,
+            Some(status_code),
+            false,
+            Some("HTTP error"),
+            &[],
+            Some(&response_text),
+        );
         return translation_error(
             Some(status_code),
             &response_text,
@@ -570,7 +591,35 @@ async fn request_translations(
         );
     }
 
-    match parse_translations(&response_text, source_texts.len()) {
+    let parsed_translations = parse_translations(&response_text, source_texts.len());
+    match &parsed_translations {
+        Ok(translations) => log_lightning_rwkv_io(
+            debug_context,
+            &url,
+            source_lang,
+            target_lang,
+            &body.contents,
+            Some(status_code),
+            true,
+            None,
+            translations,
+            Some(&response_text),
+        ),
+        Err(error) => log_lightning_rwkv_io(
+            debug_context,
+            &url,
+            source_lang,
+            target_lang,
+            &body.contents,
+            Some(status_code),
+            false,
+            Some(error),
+            &[],
+            Some(&response_text),
+        ),
+    }
+
+    match parsed_translations {
         Ok(translations) => RwkvTranslationApiTranslateResult {
             ok: true,
             status_code: Some(status_code),
@@ -604,6 +653,7 @@ async fn request_translations_for_language_pair(
     source_lang: &str,
     target_lang: &str,
     source_texts: &[String],
+    debug_context: Option<&str>,
 ) -> RwkvTranslationApiTranslateResult {
     request_translations_for_language_pair_with_cancel(
         base_url,
@@ -615,6 +665,7 @@ async fn request_translations_for_language_pair(
         target_lang,
         source_texts,
         None,
+        debug_context,
     )
     .await
 }
@@ -629,6 +680,7 @@ async fn request_translations_for_language_pair_with_cancel(
     target_lang: &str,
     source_texts: &[String],
     cancel: Option<Arc<AtomicBool>>,
+    debug_context: Option<&str>,
 ) -> RwkvTranslationApiTranslateResult {
     let started_at = Instant::now();
     let url = api_url(base_url, endpoint);
@@ -665,7 +717,7 @@ async fn request_translations_for_language_pair_with_cancel(
     }
 
     let response_future = client
-        .post(url)
+        .post(&url)
         .header("X-Internal-Token", internal_token)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .header(reqwest::header::ACCEPT, "*/*")
@@ -740,6 +792,18 @@ async fn request_translations_for_language_pair_with_cancel(
     };
 
     if !(200..300).contains(&status_code) {
+        log_lightning_rwkv_io(
+            debug_context,
+            &url,
+            source_lang,
+            target_lang,
+            &body.contents,
+            Some(status_code),
+            false,
+            Some("HTTP error"),
+            &[],
+            Some(&response_text),
+        );
         return translation_error(
             Some(status_code),
             &response_text,
@@ -751,7 +815,35 @@ async fn request_translations_for_language_pair_with_cancel(
         );
     }
 
-    match parse_translations(&response_text, source_texts.len()) {
+    let parsed_translations = parse_translations(&response_text, source_texts.len());
+    match &parsed_translations {
+        Ok(translations) => log_lightning_rwkv_io(
+            debug_context,
+            &url,
+            source_lang,
+            target_lang,
+            &body.contents,
+            Some(status_code),
+            true,
+            None,
+            translations,
+            Some(&response_text),
+        ),
+        Err(error) => log_lightning_rwkv_io(
+            debug_context,
+            &url,
+            source_lang,
+            target_lang,
+            &body.contents,
+            Some(status_code),
+            false,
+            Some(error),
+            &[],
+            Some(&response_text),
+        ),
+    }
+
+    match parsed_translations {
         Ok(translations) => RwkvTranslationApiTranslateResult {
             ok: true,
             status_code: Some(status_code),
@@ -783,7 +875,7 @@ fn build_chat_completions_request(
             .iter()
             .map(|text| translation_prompt(text, source_lang, target_lang))
             .collect(),
-        max_tokens: 8292,
+        max_tokens: 1024,
         temperature: 1.0,
         top_k: 1,
         top_p: 0.0,
@@ -795,9 +887,41 @@ fn build_chat_completions_request(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn log_lightning_rwkv_io(
+    debug_context: Option<&str>,
+    endpoint: &str,
+    source_lang: &str,
+    target_lang: &str,
+    inputs: &[String],
+    status_code: Option<u16>,
+    ok: bool,
+    error: Option<&str>,
+    translations: &[String],
+    raw_response: Option<&str>,
+) {
+    if !crate::rwkv_io_debug::enabled() {
+        return;
+    }
+    crate::rwkv_io_debug::log_record(crate::rwkv_io_debug::RwkvIoDebugRecord {
+        provider: "rwkv-lightning-contents",
+        context: debug_context,
+        endpoint: Some(endpoint),
+        source_lang: Some(source_lang),
+        target_lang: Some(target_lang),
+        status_code,
+        ok,
+        error,
+        inputs: inputs.iter().map(String::as_str).collect(),
+        outputs: translations.iter().map(String::as_str).collect(),
+        raw_response,
+    });
+}
+
 fn translation_prompt(source_text: &str, source_lang: &str, target_lang: &str) -> String {
     let source_label = prompt_language_label(source_lang);
     let target_label = prompt_language_label(target_lang);
+    let source_text = crate::rwkv_text_cleaning::clean_text_for_rwkv(source_text);
     format!("{source_label}: {source_text}\n\n{target_label}:")
 }
 
@@ -1271,6 +1395,7 @@ pub async fn translate_rwkv_mobile_batch_chat_texts(
             target_lang: &target_lang,
             timeout_ms: config.timeout_ms,
             cancel: None,
+            debug_context: Some("mobile-adhoc"),
         },
     )
     .await;
@@ -1513,6 +1638,10 @@ async fn start_mobile_batch_chat_run(
             .iter()
             .map(|segment| segment.source_text.clone())
             .collect::<Vec<_>>();
+        let debug_context = format!(
+            "mobile-run:{}:{}:{}",
+            request.run_id, request.job_id, request.translation_file_id
+        );
         let result = mobile_batch_chat::translate_batch(
             &provider_config,
             ProviderTranslateBatch {
@@ -1520,6 +1649,7 @@ async fn start_mobile_batch_chat_run(
                 target_lang: &request.target_lang,
                 timeout_ms: provider_config.timeout_ms,
                 cancel: Some(cancel.clone()),
+                debug_context: Some(&debug_context),
             },
         )
         .await;
@@ -1628,6 +1758,7 @@ pub async fn translate_batch_via_lightning(
     source_lang: &str,
     target_lang: &str,
     source_texts: &[String],
+    debug_context: Option<&str>,
 ) -> Result<Vec<String>, String> {
     let result = request_translations_for_language_pair(
         base_url,
@@ -1638,6 +1769,7 @@ pub async fn translate_batch_via_lightning(
         source_lang,
         target_lang,
         source_texts,
+        debug_context,
     )
     .await;
     if result.ok {
@@ -1655,7 +1787,7 @@ mod tests {
 
     #[test]
     fn prompt_builder_wraps_english_text_for_chinese_translation() {
-        let source_texts = vec!["Hello world.".to_string(), "Good morning.".to_string()];
+        let source_texts = vec!["Hello world.".to_string(), "Good morning.....".to_string()];
         let request = build_chat_completions_request(&source_texts, "secret", "en", "zh-CN");
 
         assert_eq!(
@@ -1678,7 +1810,7 @@ mod tests {
             value["contents"],
             json!(["English: Hello world.\n\nChinese:"])
         );
-        assert_eq!(value["max_tokens"], json!(8292));
+        assert_eq!(value["max_tokens"], json!(1024));
         assert!(value.get("stop_tokens").is_none());
         assert_eq!(value["temperature"], json!(1.0));
         assert_eq!(value["top_k"], json!(1));

@@ -277,13 +277,17 @@ pub async fn translate_batch(
     // Callers that need an ad-hoc one-shot translation should call
     // `set_chat_roles_for_pair` first.
 
-    let conversations: Vec<Conversation> = batch
+    let cleaned_texts = batch
         .source_texts
+        .iter()
+        .map(|text| crate::rwkv_text_cleaning::clean_text_for_rwkv(text))
+        .collect::<Vec<_>>();
+    let conversations: Vec<Conversation> = cleaned_texts
         .iter()
         .map(|text| Conversation {
             messages: vec![Message {
                 role: "user",
-                content: text.as_str(),
+                content: text.as_ref(),
             }],
         })
         .collect();
@@ -311,6 +315,17 @@ pub async fn translate_batch(
     };
 
     if !(200..300).contains(&chat_status) {
+        log_mobile_rwkv_io(
+            batch.debug_context,
+            &chat_url,
+            batch.target_lang,
+            &cleaned_texts,
+            Some(chat_status),
+            false,
+            Some("HTTP error"),
+            &[],
+            Some(&response_text),
+        );
         return error_result_with_status(
             chat_status,
             started_at,
@@ -319,7 +334,34 @@ pub async fn translate_batch(
         );
     }
 
-    match parse_translations(&response_text, batch.source_texts.len(), assistant_role) {
+    let parsed_translations =
+        parse_translations(&response_text, batch.source_texts.len(), assistant_role);
+    match &parsed_translations {
+        Ok(translations) => log_mobile_rwkv_io(
+            batch.debug_context,
+            &chat_url,
+            batch.target_lang,
+            &cleaned_texts,
+            Some(chat_status),
+            true,
+            None,
+            translations,
+            Some(&response_text),
+        ),
+        Err(error) => log_mobile_rwkv_io(
+            batch.debug_context,
+            &chat_url,
+            batch.target_lang,
+            &cleaned_texts,
+            Some(chat_status),
+            false,
+            Some(error),
+            &[],
+            Some(&response_text),
+        ),
+    }
+
+    match parsed_translations {
         Ok(translations) => ProviderTranslateResult {
             ok: true,
             status_code: Some(chat_status),
@@ -361,6 +403,7 @@ pub async fn probe(
             target_lang,
             timeout_ms: config.timeout_ms,
             cancel: None,
+            debug_context: Some("mobile-probe"),
         },
     )
     .await;
@@ -369,6 +412,35 @@ pub async fn probe(
         result.message = "RWKV 本地 /v1/batch/chat 探测成功。".to_string();
     }
     result
+}
+
+fn log_mobile_rwkv_io(
+    debug_context: Option<&str>,
+    endpoint: &str,
+    target_lang: &str,
+    inputs: &[std::borrow::Cow<'_, str>],
+    status_code: Option<u16>,
+    ok: bool,
+    error: Option<&str>,
+    translations: &[String],
+    raw_response: Option<&str>,
+) {
+    if !crate::rwkv_io_debug::enabled() {
+        return;
+    }
+    crate::rwkv_io_debug::log_record(crate::rwkv_io_debug::RwkvIoDebugRecord {
+        provider: "rwkv-mobile-batch-chat",
+        context: debug_context,
+        endpoint: Some(endpoint),
+        source_lang: None,
+        target_lang: Some(target_lang),
+        status_code,
+        ok,
+        error,
+        inputs: inputs.iter().map(|text| text.as_ref()).collect(),
+        outputs: translations.iter().map(String::as_str).collect(),
+        raw_response,
+    });
 }
 
 fn parse_translations(

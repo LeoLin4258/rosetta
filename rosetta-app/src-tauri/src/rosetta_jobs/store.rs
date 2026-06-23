@@ -5,8 +5,9 @@ use tauri::AppHandle;
 
 use crate::rosetta_jobs::{
     document::{
-        ensure_document_files, sync_document_file_statuses, sync_document_file_translation_statuses,
-        sync_job_counts, sync_job_counts_from_source_files, sync_job_source_files,
+        ensure_document_files, sync_document_file_statuses,
+        sync_document_file_translation_statuses, sync_job_counts,
+        sync_job_counts_from_source_files, sync_job_source_files,
     },
     model::{
         RosettaDocument, RosettaJobBundle, RosettaJobIndex, RosettaJobSummary,
@@ -33,8 +34,7 @@ pub fn list_rosetta_jobs(app: AppHandle) -> Result<Vec<RosettaJobSummary>, Strin
         };
         ensure_document_files(&mut document);
         sync_document_file_statuses(&mut document, &segments);
-        let Ok(translation_files) =
-            read_or_migrate_translation_files(&dir, &document, &segments)
+        let Ok(translation_files) = read_or_migrate_translation_files(&dir, &document, &segments)
         else {
             sync_job_counts(job, &segments);
             sync_job_source_files(job, &document);

@@ -20,6 +20,7 @@ pub struct ProviderTranslateBatch<'a> {
     pub target_lang: &'a str,
     pub timeout_ms: u64,
     pub cancel: Option<Arc<AtomicBool>>,
+    pub debug_context: Option<&'a str>,
 }
 
 /// Provider-neutral batch translation result.

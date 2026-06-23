@@ -58,8 +58,12 @@ pub fn logs_dir() -> Option<PathBuf> {
     }
     #[cfg(target_os = "macos")]
     {
-        std::env::var_os("HOME")
-            .map(|h| PathBuf::from(h).join("Library/Application Support").join(APP_ID).join("logs"))
+        std::env::var_os("HOME").map(|h| {
+            PathBuf::from(h)
+                .join("Library/Application Support")
+                .join(APP_ID)
+                .join("logs")
+        })
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
@@ -110,10 +114,7 @@ fn redirect_stderr_to_file(path: &std::path::Path) -> Result<(), String> {
     let fd = file.as_raw_fd();
     let result = unsafe { libc::dup2(fd, 2) };
     if result < 0 {
-        return Err(format!(
-            "dup2 failed: {}",
-            std::io::Error::last_os_error()
-        ));
+        return Err(format!("dup2 failed: {}", std::io::Error::last_os_error()));
     }
 
     std::mem::forget(file);
