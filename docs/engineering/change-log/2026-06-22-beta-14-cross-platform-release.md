@@ -17,6 +17,9 @@ Apple Silicon release.
 - Redeployed `rosetta-update` after publication because the deployed function
   was still the earlier macOS-only revision; the deployed function now serves
   both `windows/x86_64` and `darwin/aarch64`.
+- Fixed `rosetta-latest-download` metadata to return the explicit public Edge
+  Function URL. Supabase normalizes `request.url` inside the function runtime,
+  so reusing it had produced an invalid HTTP URL without `/functions/v1/`.
 
 ## Changes
 

@@ -97,7 +97,12 @@ Deno.serve(async (request) => {
 
   const filename =
     release.installer_storage_path.split("/").at(-1) ?? "Rosetta-installer";
-  const downloadUrl = new URL(request.url);
+  const downloadUrl = new URL(
+    "/functions/v1/rosetta-latest-download",
+    supabaseUrl,
+  );
+  downloadUrl.searchParams.set("target", target);
+  downloadUrl.searchParams.set("arch", arch);
   downloadUrl.searchParams.set("download", "1");
 
   return jsonResponse({
