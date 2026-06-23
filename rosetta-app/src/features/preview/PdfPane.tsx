@@ -3,6 +3,7 @@ import type { MutableRefObject } from "react";
 import type React from "react";
 import { Loader2 } from "lucide-react";
 
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { renderRosettaPdfPageAsPng } from "@/lib/rosettaJobs";
 
 // Phase 2 PDF preview pivot: rasterize via pdfium server-side, display as
@@ -101,26 +102,28 @@ export function PdfPane({
 
   if (!jobId || pages.length === 0) {
     return (
-      <div
-        ref={containerRef}
-        className="flex h-full min-h-0 flex-col items-center justify-center gap-2 overflow-auto bg-background px-8 text-center text-sm text-muted-foreground"
+      <ScrollArea
+        className="h-full min-h-0 bg-background"
+        viewportRef={containerRef}
       >
-        {placeholderLoading && <Loader2 className="size-5 animate-spin" />}
-        {placeholder ?? "等待 PDF…"}
-      </div>
+        <div className="flex min-h-full flex-col items-center justify-center gap-2 px-8 text-center text-sm text-muted-foreground">
+          {placeholderLoading && <Loader2 className="size-5 animate-spin" />}
+          {placeholder ?? "等待 PDF…"}
+        </div>
+      </ScrollArea>
     );
   }
 
   return (
-    <div
-      ref={containerRef}
+    <ScrollArea
       onScroll={onScroll}
-      className="flex h-full min-h-0 flex-col items-stretch gap-3 overflow-auto bg-muted/30 px-4 py-4"
+      className="h-full min-h-0 bg-muted/30"
+      viewportRef={containerRef}
     >
       {pages.map((pageIndex) => (
         <div
           key={`${jobId}-${kind}-${cacheKey ?? "v0"}-${pageIndex}`}
-          className="flex min-w-0 items-start gap-3"
+          className="flex min-w-0 items-start gap-3 px-4 py-1.5 first:pt-4 last:pb-4"
         >
           {/*
             The control gutter is rendered unconditionally so the two panes
@@ -146,7 +149,7 @@ export function PdfPane({
           </div>
         </div>
       ))}
-    </div>
+    </ScrollArea>
   );
 }
 

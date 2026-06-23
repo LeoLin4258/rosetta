@@ -219,7 +219,7 @@ export function WorkspaceTopbar({
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
           {isPdf ? (
             <div className="flex h-9 max-w-full items-center gap-2 rounded-lg border border-border/70 bg-muted/30 px-2.5">
-              <span className="text-xs font-medium text-foreground">页面范围</span>
+              <span className="!text-xs font-medium !text-foreground">页面范围</span>
               <Badge
                 variant={pdfSelectionReady ? "secondary" : "outline"}
                 className="h-5 rounded-md px-1.5 font-normal tabular-nums"
@@ -230,7 +230,7 @@ export function WorkspaceTopbar({
                 <Button
                   size="xs"
                   variant="ghost"
-                  className="h-6 px-1.5 text-[0.6875rem] font-normal leading-none"
+                  className="h-6 px-1.5 !text-xs font-normal leading-none"
                   onClick={onSelectAllPages}
                   disabled={isTranslating || pdfSelectedPageCount === pdfPageCount}
                 >
@@ -239,14 +239,14 @@ export function WorkspaceTopbar({
                 <Button
                   size="xs"
                   variant="ghost"
-                  className="h-6 px-1.5 text-[0.6875rem] font-normal leading-none"
+                  className="h-6 px-1.5 !text-xs font-normal leading-none"
                   onClick={onDeselectAllPages}
                   disabled={isTranslating || pdfSelectedPageCount === 0}
                 >
                   清空
                 </Button>
               </div>
-              <label className="ml-1 flex h-6 cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-[0.6875rem] leading-none text-muted-foreground transition-colors hover:bg-background/80 hover:text-foreground has-disabled:cursor-not-allowed has-disabled:opacity-50">
+              <label className="ml-1 flex h-6 cursor-pointer items-center gap-1.5 rounded-md px-1.5 !text-xs leading-none !text-muted-foreground transition-colors hover:bg-background/80 hover:!text-foreground has-disabled:cursor-not-allowed has-disabled:opacity-50">
                 <input
                   type="checkbox"
                   checked={pdfForceRetranslate}
@@ -259,7 +259,7 @@ export function WorkspaceTopbar({
             </div>
           ) : selectedBlockCount > 0 ? (
             <div className="flex h-9 items-center gap-2 rounded-lg border border-border/70 bg-muted/30 px-2.5">
-              <span className="text-xs font-medium text-foreground">已选段落</span>
+              <span className="!text-xs font-medium !text-foreground">已选段落</span>
               <Badge
                 variant="secondary"
                 className="h-5 rounded-md px-1.5 font-normal tabular-nums"
@@ -269,7 +269,7 @@ export function WorkspaceTopbar({
               <Button
                 size="xs"
                 variant="ghost"
-                className="h-6 px-1.5 text-[0.6875rem] font-normal leading-none"
+                className="h-6 px-1.5 !text-xs font-normal leading-none"
                 onClick={onClearSelection}
                 disabled={isTranslating}
               >
@@ -278,7 +278,7 @@ export function WorkspaceTopbar({
             </div>
           ) : (
             <div className="flex h-9 items-center gap-2 rounded-lg border border-transparent px-2.5">
-              <span className="text-xs font-medium text-foreground">整篇文档</span>
+              <span className="!text-xs font-medium !text-foreground">整篇文档</span>
               <Badge variant="outline" className="h-5 rounded-md px-1.5 font-normal tabular-nums">
                 {totalCount} 段
               </Badge>
@@ -289,8 +289,8 @@ export function WorkspaceTopbar({
         <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
           {isTranslating ? (
             <>
-              <Loader2 className="size-3.5 animate-spin text-muted-foreground/50" />
-              <span className="text-xs tabular-nums text-muted-foreground/60">
+              <Loader2 className="size-3.5 animate-spin !text-muted-foreground/50" />
+              <span className="!text-xs tabular-nums !text-muted-foreground/60">
                 {isPdf ? (
                   <>
                     {/*
@@ -325,21 +325,21 @@ export function WorkspaceTopbar({
               </span>
               {confirmingCancel ? (
                 <div className="flex items-center gap-2">
-                  <span className="text-xs text-muted-foreground/60">确认取消？</span>
+                  <span className="!text-xs !text-muted-foreground/60">确认取消？</span>
                   <button
                     type="button"
                     onClick={() => {
                       onCancelTranslation();
                       setConfirmingCancel(false);
                     }}
-                    className="text-xs text-destructive/70 transition-colors hover:text-destructive"
+                    className="!text-xs !text-destructive/70 transition-colors hover:!text-destructive"
                   >
                     确定
                   </button>
                   <button
                     type="button"
                     onClick={() => setConfirmingCancel(false)}
-                    className="text-xs text-muted-foreground/40 transition-colors hover:text-muted-foreground"
+                    className="!text-xs !text-muted-foreground/40 transition-colors hover:!text-muted-foreground"
                   >
                     继续
                   </button>
@@ -349,7 +349,7 @@ export function WorkspaceTopbar({
                   size="sm"
                   variant="outline"
                   onClick={() => setConfirmingCancel(true)}
-                  className="h-7 gap-1.5 px-2 text-[0.75rem] font-normal leading-none"
+                  className="h-7 gap-1.5 px-2 !text-xs font-normal leading-none"
                 >
                   <Square className="size-3" /> 取消
                 </Button>
@@ -362,7 +362,7 @@ export function WorkspaceTopbar({
                   size="sm"
                   variant="outline"
                   onClick={() => onExport("translation")}
-                  className="h-7 gap-1.5 px-2 text-[0.75rem] font-normal leading-none"
+                  className="h-7 gap-1.5 px-2 !text-xs font-normal leading-none"
                 >
                   <Download className="size-3" /> 导出译文
                 </Button>
@@ -372,29 +372,29 @@ export function WorkspaceTopbar({
                 <Select value={sourceLang} onValueChange={onSourceLangChange}>
                   <SelectTrigger
                     aria-label="原文语言"
-                    className="h-7 w-28 border-0 bg-transparent px-2 text-xs shadow-none focus:ring-0"
+                    className="h-7 w-28 border-0 bg-transparent px-2 !text-xs shadow-none focus:ring-0"
                   >
                     <SelectValue placeholder="原文语言" />
                   </SelectTrigger>
                   <SelectContent>
                     {SOURCE_LANGS.map((lang) => (
-                      <SelectItem key={lang.value} value={lang.value} className="text-xs">
+                      <SelectItem key={lang.value} value={lang.value} className="!text-xs">
                         {lang.label}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
-                <ArrowRight className="size-3.5 text-muted-foreground/50" aria-hidden="true" />
+                <ArrowRight className="size-3.5 !text-muted-foreground/50" aria-hidden="true" />
                 <Select value={targetLang} onValueChange={onTargetLangChange}>
                   <SelectTrigger
                     aria-label="译文语言"
-                    className="h-7 w-28 border-0 bg-transparent px-2 text-xs shadow-none focus:ring-0"
+                    className="h-7 w-28 border-0 bg-transparent px-2 !text-xs shadow-none focus:ring-0"
                   >
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
                     {TARGET_LANGS.map((lang) => (
-                      <SelectItem key={lang.value} value={lang.value} className="text-xs">
+                      <SelectItem key={lang.value} value={lang.value} className="!text-xs">
                         {lang.label}
                       </SelectItem>
                     ))}
@@ -406,7 +406,7 @@ export function WorkspaceTopbar({
                 <Button
                   size="sm"
                   disabled
-                  className="h-7 gap-1.5 px-2 text-[0.75rem] font-normal leading-none"
+                  className="h-7 gap-1.5 px-2 !text-xs font-normal leading-none"
                 >
                   <Loader2 className="size-3 animate-spin" />
                   {pdfEngineProgressMessage ?? "正在准备 PDF 引擎…"}
@@ -415,7 +415,7 @@ export function WorkspaceTopbar({
                 <Button
                   size="sm"
                   disabled
-                  className="h-7 gap-1.5 px-2 text-[0.75rem] font-normal leading-none"
+                  className="h-7 gap-1.5 px-2 !text-xs font-normal leading-none"
                 >
                   <Loader2 className="size-3 animate-spin" />
                   正在启动模型…
@@ -425,7 +425,7 @@ export function WorkspaceTopbar({
                   size="sm"
                   disabled={translateDisabled}
                   onClick={onRetranslateSelected}
-                  className="h-7 gap-1.5 px-2 text-[0.75rem] font-normal leading-none"
+                  className="h-7 gap-1.5 px-2 !text-xs font-normal leading-none"
                   title={translateTitle}
                 >
                   <RefreshCw className="size-3" />
@@ -434,7 +434,7 @@ export function WorkspaceTopbar({
               ) : allTranslated ? (
                 confirmingRetranslateAll ? (
                   <div className="flex items-center gap-2">
-                    <span className="text-xs text-muted-foreground/60">
+                    <span className="!text-xs !text-muted-foreground/60">
                       {isPdf ? `确认重翻${selectedPdfLabel}？` : "确认重翻全部？"}
                     </span>
                     <button
@@ -447,14 +447,14 @@ export function WorkspaceTopbar({
                       }}
                       disabled={translateDisabled}
                       title={translateTitle}
-                      className="text-xs text-destructive/70 transition-colors hover:text-destructive disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:text-destructive/70"
+                      className="!text-xs !text-destructive/70 transition-colors hover:!text-destructive disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:!text-destructive/70"
                     >
                       确定
                     </button>
                     <button
                       type="button"
                       onClick={() => setConfirmingRetranslateAll(false)}
-                      className="text-xs text-muted-foreground/40 transition-colors hover:text-muted-foreground"
+                      className="!text-xs !text-muted-foreground/40 transition-colors hover:!text-muted-foreground"
                     >
                       取消
                     </button>
@@ -464,7 +464,7 @@ export function WorkspaceTopbar({
                     size="sm"
                     disabled={translateDisabled}
                     onClick={() => setConfirmingRetranslateAll(true)}
-                    className="h-7 gap-1.5 px-2 text-[0.75rem] font-normal leading-none"
+                    className="h-7 gap-1.5 px-2 !text-xs font-normal leading-none"
                     title={translateTitle}
                   >
                     <RefreshCw className="size-3" />
@@ -476,7 +476,7 @@ export function WorkspaceTopbar({
                   size="sm"
                   disabled={translateDisabled}
                   onClick={() => onTranslate(targetLang, sourceLang)}
-                  className="h-7 gap-1.5 px-2 text-[0.75rem] font-normal leading-none"
+                  className="h-7 gap-1.5 px-2 !text-xs font-normal leading-none"
                   title={translateTitle}
                 >
                   <Play className="size-3" />

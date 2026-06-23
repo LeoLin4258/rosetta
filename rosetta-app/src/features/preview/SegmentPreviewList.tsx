@@ -3,6 +3,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { useRosettaStore } from "../../store/useRosettaStore";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
+import { ScrollArea } from "@/components/ui/scroll-area";
 
 export function SegmentPreviewList() {
   const segments = useRosettaStore((state) => state.previewSegments);
@@ -30,7 +31,7 @@ export function SegmentPreviewList() {
         <div className="border-r px-4 py-3">原文</div>
         <div className="px-4 py-3">译文</div>
       </div>
-      <div className="h-[420px] overflow-auto" ref={parentRef}>
+      <ScrollArea className="h-[420px]" viewportRef={parentRef}>
         <div
           className="relative w-full"
           style={{ height: `${virtualizer.getTotalSize()}px` }}
@@ -64,7 +65,7 @@ export function SegmentPreviewList() {
             );
           })}
         </div>
-      </div>
+      </ScrollArea>
     </Card>
   );
 }

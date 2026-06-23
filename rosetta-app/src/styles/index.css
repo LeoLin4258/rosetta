@@ -1,7 +1,8 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
-@import "@fontsource-variable/geist";
+@import "@fontsource/libre-baskerville/latin.css";
+@import "@fontsource/lora/latin.css";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -38,9 +39,9 @@
   --sidebar-accent-foreground: oklch(0.2050 0 0);
   --sidebar-border: oklch(0.9220 0 0);
   --sidebar-ring: oklch(0.7080 0 0);
-  --font-sans: Libre Baskerville, serif;
-  --font-serif: Lora, serif;
-  --font-mono: IBM Plex Mono, monospace;
+  --font-sans: "Libre Baskerville", ui-serif, Georgia, serif;
+  --font-serif: Lora, ui-serif, Georgia, serif;
+  --font-mono: IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, monospace;
   --radius: 1rem;
   --shadow-x: 0;
   --shadow-y: 1px;
@@ -93,9 +94,9 @@
   --sidebar-accent-foreground: oklch(0.9850 0 0);
   --sidebar-border: oklch(0.2750 0 0);
   --sidebar-ring: oklch(0.4390 0 0);
-  --font-sans: Libre Baskerville, serif;
-  --font-serif: Lora, serif;
-  --font-mono: IBM Plex Mono, monospace;
+  --font-sans: "Libre Baskerville", ui-serif, Georgia, serif;
+  --font-serif: Lora, ui-serif, Georgia, serif;
+  --font-mono: IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, monospace;
   --radius: 1rem;
   --shadow-x: 0;
   --shadow-y: 1px;
@@ -295,6 +296,10 @@ html,
 body,
 #root {
   min-height: 100%;
+}
+
+html {
+  font-size: 93.75%;
 }
 
 body {
