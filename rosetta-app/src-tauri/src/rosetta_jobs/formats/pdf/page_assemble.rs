@@ -49,6 +49,7 @@ pub(crate) fn assemble_pdf_with_page_translations(
 /// Count pages of a PDF on disk via lopdf (no pdfium dependency). Used to
 /// figure out whether a batch pdf2zh output contains the whole document or
 /// only the selected pages.
+#[cfg(test)]
 pub(crate) fn count_pdf_pages_lopdf(path: &Path) -> Result<u32, String> {
     let doc = Document::load(path)
         .map_err(|error| format!("无法读取 PDF {}: {error}", path.display()))?;
@@ -62,6 +63,7 @@ pub(crate) fn count_pdf_pages_lopdf(path: &Path) -> Result<u32, String> {
 /// For each `(requested_page_number, target_path)`: if the requested page
 /// exists it is used; if the document has exactly one page, that page is used
 /// regardless (pdf2zh sometimes emits a renumbered single-page output).
+#[cfg(test)]
 pub(crate) fn extract_pages_pdf(
     source_path: &Path,
     extractions: &[(u32, PathBuf)],

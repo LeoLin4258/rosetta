@@ -25,6 +25,7 @@ use image::{
     codecs::png::{CompressionType, FilterType, PngEncoder},
     ImageFormat,
 };
+use pdfium_render::prelude::{PdfiumError, PdfiumInternalError};
 use tauri::{AppHandle, Manager};
 
 use crate::rosetta_jobs::formats::pdf::{
@@ -48,7 +49,7 @@ pub(crate) fn count_pages(app: &AppHandle, source_path: &Path) -> Result<u32, Pd
         .ok_or_else(|| PdfError::Read("PDF 路径包含无效字符。".to_string()))?;
     let doc = pdfium
         .load_pdf_from_file(source_path_str, None)
-        .map_err(|error| PdfError::Parse(format!("打开 PDF 失败: {error}")))?;
+        .map_err(map_pdf_load_error)?;
     Ok(doc.pages().len() as u32)
 }
 
@@ -78,7 +79,7 @@ pub(crate) fn render_page_as_png(
     let pdfium = runtime::get_pdfium(app).map_err(PdfError::RuntimeMissing)?;
     let doc = pdfium
         .load_pdf_from_file(source_path_str, None)
-        .map_err(|error| PdfError::Parse(format!("打开 PDF 失败: {error}")))?;
+        .map_err(map_pdf_load_error)?;
 
     let total = doc.pages().len() as u32;
     if page_index >= total {
@@ -130,6 +131,15 @@ pub(crate) fn render_page_as_png(
     }
 
     Ok(out)
+}
+
+fn map_pdf_load_error(error: PdfiumError) -> PdfError {
+    match error {
+        PdfiumError::PdfiumLibraryInternalError(PdfiumInternalError::PasswordError) => {
+            PdfError::Encrypted
+        }
+        other => PdfError::Parse(format!("打开 PDF 失败: {other}")),
+    }
 }
 
 #[cfg(test)]

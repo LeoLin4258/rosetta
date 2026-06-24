@@ -595,7 +595,6 @@ async fn translate_pdf_pages_inner(
             provider: provider.clone(),
             source_lang: source_lang.clone(),
             target_lang: target_lang.to_string(),
-            timeout_ms: timeout,
             ignore_cache: false,
             pages: Some(pages_to_process.clone()),
             page_progress: Some(pdf2zh_invoke::PageProgressContext {
@@ -893,7 +892,6 @@ pub async fn generate_rosetta_translated_pdf(
             provider,
             source_lang,
             target_lang: target_lang.clone(),
-            timeout_ms: timeout,
             ignore_cache: ignore_cache.unwrap_or(false),
             pages: None,
             // Whole-document fallback: no per-page progress to report.

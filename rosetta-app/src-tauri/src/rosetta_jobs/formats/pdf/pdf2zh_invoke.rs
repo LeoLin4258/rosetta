@@ -68,7 +68,6 @@ pub(crate) struct Pdf2zhInvokeOptions {
     pub provider: ShimProviderConfig,
     pub source_lang: String,
     pub target_lang: String,
-    pub timeout_ms: u64,
     pub ignore_cache: bool,
     pub pages: Option<Vec<u32>>,
     /// `None` for callers that translate the whole document in a single

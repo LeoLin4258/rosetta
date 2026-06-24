@@ -1424,6 +1424,7 @@ fn detect_system_proxy() -> Option<String> {
 /// Pure parser split out for unit testing. Accepts the verbatim stdout of
 /// `scutil --proxy`. Returns the strongest proxy declared (HTTPS > HTTP >
 /// SOCKS), prefixed with the right URL scheme for reqwest.
+#[cfg(any(target_os = "macos", test))]
 fn parse_scutil_proxy_output(text: &str) -> Option<String> {
     let mut https_enable = false;
     let mut https_host: Option<String> = None;
