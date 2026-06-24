@@ -34,6 +34,17 @@ export type ReleaseNote = {
  * appearing in `package.json` (e.g. `"0.1.0-beta.8"`), not semver tuples.
  */
 export const RELEASE_NOTES: Record<string, ReleaseNote> = {
+  "0.1.0-beta.15": {
+    version: "0.1.0-beta.15",
+    highlights: [
+      "Windows 默认本地运行时切换为 llama.cpp Vulkan，支持更多 AMD、Intel 和 NVIDIA 显卡",
+      "Windows 首次安装会自动探测可用下载源并选择较快来源，减少手动切换镜像",
+      "安装完成后会校验 Vulkan 设备，提前暴露显卡或驱动兼容问题",
+      "AMD Radeon 780M 等缺少部分 Vulkan 扩展的设备可稳定回退到 CPU 模式",
+      "本地 RWKV 翻译提示词改为模型原生格式，Markdown 和 PDF 翻译输出更可靠",
+      "Windows 本地翻译并发上限提高，短文档和分段翻译吞吐更好",
+    ],
+  },
   "0.1.0-beta.14": {
     version: "0.1.0-beta.14",
     highlights: [
