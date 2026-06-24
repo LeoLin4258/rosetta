@@ -21,7 +21,12 @@ use crate::rwkv_providers::{
 };
 
 const DEFAULT_MAX_BATCH_SIZE: usize = 4;
-const PDF_SHIM_TARGET_PROMPT_TOKENS: usize = 180;
+const PDF_SHIM_BODY_TARGET_PROMPT_TOKENS: usize = 150;
+const PDF_SHIM_BODY_HARD_PROMPT_TOKENS: usize = 190;
+const PDF_SHIM_CAPTION_TARGET_PROMPT_TOKENS: usize = 150;
+const PDF_SHIM_CAPTION_HARD_PROMPT_TOKENS: usize = 190;
+const PDF_SHIM_REFERENCE_TARGET_PROMPT_TOKENS: usize = 130;
+const PDF_SHIM_REFERENCE_HARD_PROMPT_TOKENS: usize = 170;
 
 /// Upper bound on `pdf2zh --thread`. pdf2zh.py spawns this many Python
 /// multiprocessing workers; pushing it too high makes the worker-pool setup
@@ -603,13 +608,21 @@ async fn chat_completions(
 
     let chunks = split_pdf_shim_text(&text);
     if chunks.len() > 1 {
+        let chunk_tokens = chunks
+            .iter()
+            .map(|chunk| estimate_prompt_tokens(chunk))
+            .collect::<Vec<_>>();
+        let max_chunk_tokens = chunk_tokens.iter().copied().max().unwrap_or(0);
+        let avg_chunk_tokens = chunk_tokens.iter().sum::<usize>() / chunk_tokens.len().max(1);
         append_log(
             state.debug,
             &state.log_file,
             &format!(
-                "split long request into {} chunk(s), estimated_tokens={}",
+                "split long request into {} chunk(s), estimated_tokens={}, avg_chunk_tokens={}, max_chunk_tokens={}",
                 chunks.len(),
-                estimate_prompt_tokens(&text)
+                estimate_prompt_tokens(&text),
+                avg_chunk_tokens,
+                max_chunk_tokens
             ),
         );
     }
@@ -694,29 +707,60 @@ fn extract_pdf2zh_source_text(content: &str) -> Option<String> {
 }
 
 fn split_pdf_shim_text(text: &str) -> Vec<String> {
-    let trimmed = text.trim();
-    if trimmed.is_empty() || estimate_prompt_tokens(trimmed) <= PDF_SHIM_TARGET_PROMPT_TOKENS {
+    let normalized = normalize_pdf_source_text(text);
+    let trimmed = normalized.trim();
+    if trimmed.is_empty() {
         return vec![trimmed.to_string()];
     }
 
+    let budget = pdf_chunk_budget_for_text(trimmed);
+    if estimate_prompt_tokens(trimmed) <= budget.hard {
+        return vec![trimmed.to_string()];
+    }
+
+    let units = split_pdf_semantic_units(trimmed);
     let mut chunks = Vec::new();
     let mut current = String::new();
-    for unit in split_pdf_text_units(trimmed) {
-        push_pdf_text_unit(&mut chunks, &mut current, unit);
+    for unit in units {
+        push_pdf_text_unit(&mut chunks, &mut current, &unit, budget);
     }
     if !current.trim().is_empty() {
         chunks.push(current.trim().to_string());
     }
     chunks
         .into_iter()
-        .flat_map(split_oversized_pdf_chunk)
+        .flat_map(|chunk| {
+            let chunk_budget = min_pdf_chunk_budget(budget, pdf_chunk_budget_for_text(&chunk));
+            split_oversized_pdf_chunk(chunk, chunk_budget)
+        })
         .filter(|chunk| !chunk.trim().is_empty())
         .collect()
 }
 
-fn push_pdf_text_unit(chunks: &mut Vec<String>, current: &mut String, unit: &str) {
+fn push_pdf_text_unit(
+    chunks: &mut Vec<String>,
+    current: &mut String,
+    unit: &str,
+    parent_budget: PdfChunkBudget,
+) {
     let unit = unit.trim();
     if unit.is_empty() {
+        return;
+    }
+    let budget = min_pdf_chunk_budget(parent_budget, pdf_chunk_budget_for_text(unit));
+    if estimate_prompt_tokens(unit) > budget.hard {
+        let sub_units = split_pdf_sentences(unit);
+        if sub_units.len() > 1 {
+            for sub_unit in sub_units {
+                push_pdf_text_unit(chunks, current, &sub_unit, budget);
+            }
+            return;
+        }
+        if !current.trim().is_empty() {
+            chunks.push(current.trim().to_string());
+            current.clear();
+        }
+        chunks.extend(split_oversized_pdf_chunk(unit.to_string(), budget));
         return;
     }
     let candidate = if current.is_empty() {
@@ -724,7 +768,7 @@ fn push_pdf_text_unit(chunks: &mut Vec<String>, current: &mut String, unit: &str
     } else {
         format!("{} {}", current.trim(), unit)
     };
-    if !current.is_empty() && estimate_prompt_tokens(&candidate) > PDF_SHIM_TARGET_PROMPT_TOKENS {
+    if !current.is_empty() && estimate_prompt_tokens(&candidate) > budget.target {
         chunks.push(current.trim().to_string());
         current.clear();
     }
@@ -734,8 +778,40 @@ fn push_pdf_text_unit(chunks: &mut Vec<String>, current: &mut String, unit: &str
     current.push_str(unit);
 }
 
-fn split_oversized_pdf_chunk(chunk: String) -> Vec<String> {
-    if estimate_prompt_tokens(&chunk) <= PDF_SHIM_TARGET_PROMPT_TOKENS {
+#[derive(Debug, Clone, Copy)]
+struct PdfChunkBudget {
+    target: usize,
+    hard: usize,
+}
+
+fn pdf_chunk_budget_for_text(text: &str) -> PdfChunkBudget {
+    if is_reference_item(text) {
+        return PdfChunkBudget {
+            target: PDF_SHIM_REFERENCE_TARGET_PROMPT_TOKENS,
+            hard: PDF_SHIM_REFERENCE_HARD_PROMPT_TOKENS,
+        };
+    }
+    if starts_with_caption_label(text) {
+        return PdfChunkBudget {
+            target: PDF_SHIM_CAPTION_TARGET_PROMPT_TOKENS,
+            hard: PDF_SHIM_CAPTION_HARD_PROMPT_TOKENS,
+        };
+    }
+    PdfChunkBudget {
+        target: PDF_SHIM_BODY_TARGET_PROMPT_TOKENS,
+        hard: PDF_SHIM_BODY_HARD_PROMPT_TOKENS,
+    }
+}
+
+fn min_pdf_chunk_budget(left: PdfChunkBudget, right: PdfChunkBudget) -> PdfChunkBudget {
+    PdfChunkBudget {
+        target: left.target.min(right.target),
+        hard: left.hard.min(right.hard),
+    }
+}
+
+fn split_oversized_pdf_chunk(chunk: String, budget: PdfChunkBudget) -> Vec<String> {
+    if estimate_prompt_tokens(&chunk) <= budget.target {
         return vec![chunk];
     }
 
@@ -747,17 +823,16 @@ fn split_oversized_pdf_chunk(chunk: String) -> Vec<String> {
         } else {
             format!("{} {}", current, word)
         };
-        if !current.is_empty() && estimate_prompt_tokens(&candidate) > PDF_SHIM_TARGET_PROMPT_TOKENS
-        {
+        if !current.is_empty() && estimate_prompt_tokens(&candidate) > budget.target {
             chunks.push(current.trim().to_string());
             current.clear();
         }
-        if estimate_prompt_tokens(word) > PDF_SHIM_TARGET_PROMPT_TOKENS {
+        if estimate_prompt_tokens(word) > budget.target {
             if !current.trim().is_empty() {
                 chunks.push(current.trim().to_string());
                 current.clear();
             }
-            chunks.extend(hard_split_pdf_token(word));
+            chunks.extend(hard_split_pdf_token(word, budget));
             continue;
         }
         if !current.is_empty() {
@@ -771,13 +846,12 @@ fn split_oversized_pdf_chunk(chunk: String) -> Vec<String> {
     chunks
 }
 
-fn hard_split_pdf_token(token: &str) -> Vec<String> {
+fn hard_split_pdf_token(token: &str, budget: PdfChunkBudget) -> Vec<String> {
     let mut chunks = Vec::new();
     let mut current = String::new();
     for ch in token.chars() {
         let candidate = format!("{current}{ch}");
-        if !current.is_empty() && estimate_prompt_tokens(&candidate) > PDF_SHIM_TARGET_PROMPT_TOKENS
-        {
+        if !current.is_empty() && estimate_prompt_tokens(&candidate) > budget.target {
             chunks.push(current);
             current = String::new();
         }
@@ -789,22 +863,193 @@ fn hard_split_pdf_token(token: &str) -> Vec<String> {
     chunks
 }
 
-fn split_pdf_text_units(text: &str) -> Vec<&str> {
+fn normalize_pdf_source_text(text: &str) -> String {
+    let mut out = String::new();
+    let chars: Vec<char> = text.chars().collect();
+    let mut index = 0;
+    while index < chars.len() {
+        if chars[index] == '-' {
+            let mut next = index + 1;
+            while next < chars.len() && chars[next].is_whitespace() {
+                next += 1;
+            }
+            if index > 0
+                && next < chars.len()
+                && chars[index - 1].is_ascii_alphabetic()
+                && chars[next].is_ascii_lowercase()
+            {
+                index = next;
+                continue;
+            }
+        }
+        out.push(chars[index]);
+        index += 1;
+    }
+    collapse_pdf_whitespace(&out)
+}
+
+fn collapse_pdf_whitespace(text: &str) -> String {
+    let mut out = String::new();
+    let mut last_was_space = false;
+    for ch in text.chars() {
+        if ch.is_whitespace() {
+            if !last_was_space {
+                out.push(' ');
+                last_was_space = true;
+            }
+        } else {
+            out.push(ch);
+            last_was_space = false;
+        }
+    }
+    out.trim().to_string()
+}
+
+fn split_pdf_semantic_units(text: &str) -> Vec<String> {
+    let reference_units = split_reference_items(text);
+    if reference_units.len() > 1 {
+        return reference_units;
+    }
+
+    let sentence_units = split_pdf_sentences(text);
+    merge_caption_labels(sentence_units)
+}
+
+fn split_reference_items(text: &str) -> Vec<String> {
+    let refs = reference_item_starts(text);
+    if refs.len() < 2 {
+        return Vec::new();
+    }
+
+    refs.iter()
+        .enumerate()
+        .filter_map(|(index, &start)| {
+            let end = refs.get(index + 1).copied().unwrap_or(text.len());
+            let item = text[start..end].trim();
+            (!item.is_empty()).then(|| item.to_string())
+        })
+        .collect()
+}
+
+fn reference_item_starts(text: &str) -> Vec<usize> {
+    let mut starts = Vec::new();
+    let bytes = text.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'[' {
+            index += 1;
+            continue;
+        }
+        let at_boundary = index == 0
+            || text[..index]
+                .chars()
+                .next_back()
+                .is_some_and(|ch| ch.is_whitespace() || ch == '.');
+        if !at_boundary {
+            index += 1;
+            continue;
+        }
+        let mut cursor = index + 1;
+        while cursor < bytes.len() && bytes[cursor].is_ascii_digit() {
+            cursor += 1;
+        }
+        if cursor > index + 1 && cursor < bytes.len() && bytes[cursor] == b']' {
+            starts.push(index);
+            index = cursor + 1;
+        } else {
+            index += 1;
+        }
+    }
+    starts
+}
+
+fn is_reference_item(text: &str) -> bool {
+    let trimmed = text.trim_start();
+    let Some(rest) = trimmed.strip_prefix('[') else {
+        return false;
+    };
+    let Some(close_index) = rest.find(']') else {
+        return false;
+    };
+    close_index > 0
+        && close_index <= 4
+        && rest[..close_index].chars().all(|ch| ch.is_ascii_digit())
+}
+
+fn split_pdf_sentences(text: &str) -> Vec<String> {
     let mut units = Vec::new();
     let mut start = 0;
     for (index, ch) in text.char_indices() {
         let end = index + ch.len_utf8();
         if ch == '\n' || is_sentence_boundary(text, index, ch) {
             if start < end {
-                units.push(&text[start..end]);
+                units.push(text[start..end].trim().to_string());
             }
             start = end;
         }
     }
     if start < text.len() {
-        units.push(&text[start..]);
+        units.push(text[start..].trim().to_string());
     }
-    units
+    units.into_iter().filter(|unit| !unit.is_empty()).collect()
+}
+
+fn merge_caption_labels(units: Vec<String>) -> Vec<String> {
+    let mut merged = Vec::new();
+    let mut index = 0;
+    while index < units.len() {
+        if index + 1 < units.len() && is_caption_label(&units[index]) {
+            merged.push(format!(
+                "{} {}",
+                units[index].trim(),
+                units[index + 1].trim()
+            ));
+            index += 2;
+        } else {
+            merged.push(units[index].clone());
+            index += 1;
+        }
+    }
+    merged
+}
+
+fn is_caption_label(text: &str) -> bool {
+    let trimmed = text.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    let Some(prefix) = lower.strip_suffix('.') else {
+        return false;
+    };
+    let mut parts = prefix.split_whitespace();
+    let Some(label) = parts.next() else {
+        return false;
+    };
+    let Some(number) = parts.next() else {
+        return false;
+    };
+    parts.next().is_none()
+        && matches!(label, "fig" | "fig." | "figure" | "table" | "tab" | "tab.")
+        && number.chars().any(|ch| ch.is_ascii_digit())
+}
+
+fn starts_with_caption_label(text: &str) -> bool {
+    let trimmed = text.trim_start();
+    let mut parts = trimmed.split_whitespace();
+    let Some(label) = parts.next() else {
+        return false;
+    };
+    let label = label
+        .trim_matches(|ch: char| ch == '(' || ch == '[')
+        .to_ascii_lowercase();
+    if !matches!(label.as_str(), "fig" | "fig." | "figure" | "table" | "tab" | "tab.") {
+        return false;
+    }
+    let Some(number) = parts.next() else {
+        return false;
+    };
+    number
+        .trim_end_matches(|ch: char| ch == '.' || ch == ':' || ch == ')')
+        .chars()
+        .any(|ch| ch.is_ascii_digit())
 }
 
 fn is_sentence_boundary(text: &str, index: usize, ch: char) -> bool {
@@ -822,7 +1067,38 @@ fn is_sentence_boundary(text: &str, index: usize, ch: char) -> bool {
     {
         return false;
     }
+    if ch == '.' && ends_with_known_abbreviation(&text[..=index]) {
+        return false;
+    }
     next.is_none_or(char::is_whitespace)
+}
+
+fn ends_with_known_abbreviation(text: &str) -> bool {
+    let lower = text.trim_end().to_ascii_lowercase();
+    let token = lower
+        .split_whitespace()
+        .last()
+        .unwrap_or("")
+        .trim_matches(|ch: char| ch == '(' || ch == '[' || ch == '"');
+    matches!(
+        token,
+        "fig."
+            | "tab."
+            | "eq."
+            | "sec."
+            | "ch."
+            | "no."
+            | "dr."
+            | "prof."
+            | "mr."
+            | "mrs."
+            | "ms."
+            | "vs."
+            | "e.g."
+            | "i.e."
+            | "etc."
+            | "al."
+    )
 }
 
 fn estimate_prompt_tokens(text: &str) -> usize {
@@ -984,8 +1260,89 @@ mod tests {
         assert!(chunks.len() > 1);
         assert!(chunks
             .iter()
-            .all(|chunk| estimate_prompt_tokens(chunk) <= PDF_SHIM_TARGET_PROMPT_TOKENS));
+            .all(|chunk| estimate_prompt_tokens(chunk) <= PDF_SHIM_BODY_TARGET_PROMPT_TOKENS));
         assert!(chunks.concat().contains("Record quarterly revenue"));
+    }
+
+    #[test]
+    fn medium_pdf_paragraph_stays_whole_for_speed_first_chunking() {
+        let text = "For visual feature extraction, we replaced the RWKV module with a purely convolutional counterpart, as specified in config (I) of Table 3. The results clearly indicate a significant performance decline with the convolutional architecture, underscoring the limitations of traditional convolution module in visual feature modeling. This also highlights the effectiveness of RWKV in capturing longrange dependencies, contributing to more accurate pest recognition.";
+
+        assert_eq!(split_pdf_shim_text(text), vec![text]);
+    }
+
+    #[test]
+    fn pdf_sentence_chunker_repairs_soft_hyphenated_line_breaks() {
+        let chunks = split_pdf_shim_text(
+            "In recent years, deep learn- ing has accelerated smart agri- culture applications.",
+        );
+
+        assert_eq!(
+            chunks,
+            vec!["In recent years, deep learning has accelerated smart agriculture applications."]
+        );
+    }
+
+    #[test]
+    fn pdf_sentence_chunker_keeps_caption_label_with_sentence() {
+        let units = split_pdf_semantic_units(
+            "Figure 1. The intricate morphology and texture of pests present challenges. Next sentence.",
+        );
+
+        assert_eq!(
+            units[0],
+            "Figure 1. The intricate morphology and texture of pests present challenges."
+        );
+        assert_eq!(units[1], "Next sentence.");
+    }
+
+    #[test]
+    fn pdf_sentence_chunker_does_not_split_common_paper_abbreviations() {
+        let units = split_pdf_semantic_units(
+            "Smith et al. propose a compact model. Fig. 2 shows the result. It works.",
+        );
+
+        assert_eq!(units[0], "Smith et al. propose a compact model.");
+        assert_eq!(units[1], "Fig. 2 shows the result.");
+        assert_eq!(units[2], "It works.");
+    }
+
+    #[test]
+    fn pdf_reference_block_splits_by_citation_items() {
+        let units = split_pdf_semantic_units(
+            "[26] Haiyun Liu et al. Plant diseases detection. 2024. [27] Jun Liu et al. Pest detection based on deep learning. 2021. [28] Yue Liu et al. Vmamba. 2024.",
+        );
+
+        assert_eq!(units.len(), 3);
+        assert!(units[0].starts_with("[26]"));
+        assert!(units[1].starts_with("[27]"));
+        assert!(units[2].starts_with("[28]"));
+    }
+
+    #[test]
+    fn medium_pdf_reference_stays_whole_for_speed_first_chunking() {
+        let text = "[33] Mireille Gloria, Alice Researcher, Bob Scientist, Carol Author, Daniel Engineer, Elena Analyst, Frank Reviewer, Grace Writer, and Hannah Curator. A long citation title about visual pest detection, remote sensing, feature extraction, convolutional networks, recurrent models, agricultural benchmarks, multilingual document processing, robust evaluation protocols, and local translation systems. 2025.";
+
+        assert_eq!(split_pdf_shim_text(text), vec![text]);
+    }
+
+    #[test]
+    fn very_long_pdf_reference_uses_smaller_prompt_budget() {
+        let text = "[33] Mireille Gloria, Alice Researcher, Bob Scientist, Carol Author, Daniel Engineer, Elena Analyst, Frank Reviewer, Grace Writer, Hannah Curator, Ian Maintainer, Julia Editor, Kevin Parser, Laura Reviewer, Mason Evaluator, Nora Architect, Owen Writer, Paula Designer, Quinn Translator, Riley Integrator, and Sam Engineer. A very long citation title about visual pest detection, remote sensing, feature extraction, convolutional networks, recurrent models, agricultural benchmarks, multilingual document processing, robust evaluation protocols, local translation systems, document layout preservation, multimodal large language models, pest recognition datasets, saliency guided window partitioning, and production PDF translation pipelines. 2025.";
+
+        let chunks = split_pdf_shim_text(text);
+
+        assert!(chunks.len() > 1);
+        assert!(chunks
+            .iter()
+            .all(|chunk| estimate_prompt_tokens(chunk) <= PDF_SHIM_REFERENCE_TARGET_PROMPT_TOKENS));
+    }
+
+    #[test]
+    fn short_sentences_are_merged_until_target_budget() {
+        let text = "First short sentence. Second short sentence. Third short sentence.";
+
+        assert_eq!(split_pdf_shim_text(text), vec![text]);
     }
 
     #[test]

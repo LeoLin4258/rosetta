@@ -154,7 +154,7 @@ AppData/Rosetta/jobs/
 - PDF importer 遇到 image-only、加密或无法解析的文件时必须返回清晰错误，不能创建空任务。
 - 系统文件选择和导出路径选择必须通过非阻塞 Tauri dialog command 完成，不能在 command 中调用 `blocking_pick_file` 或 `blocking_save_file`，避免 Windows 原生对话框打开时卡住应用窗口。
 - 当前视觉 PDF 翻译路径把 PDF 作为版面保持型文档处理：导入阶段缓存 `source.pdf`，翻译阶段使用 `pdf2zh --pages` 生成页级译文 PDF，并把页状态保存到 `pdf_page_translations.<targetLang>.json`。这条路径不把 PDF 文本回填为普通 Rosetta text segments。
-- 视觉 PDF 翻译路径中的文本块由 pdf2zh 抽取并通过本地 OpenAI shim 调用 RWKV，不经过普通文档的 `Segment[]` 调度。shim 必须在转发给 RWKV 前切分过长文本块，避免小上下文模型被 pdf2zh 合并出的长段落卡住。
+- 视觉 PDF 翻译路径中的文本块由 pdf2zh 抽取并通过本地 OpenAI shim 调用 RWKV，不经过普通文档的 `Segment[]` 调度。shim 必须在转发给 RWKV 前切分过长文本块，避免小上下文模型被 pdf2zh 合并出的长段落卡住。PDF shim 的默认策略是句子优先切分、短句按 token budget 合并，参考文献按 `[N]` 条目优先切分，图表 caption 保留编号和后续句子，常见 PDF 断词在切分前修复。
 - `pdf_page_translations.<targetLang>.json` 是 PDF 页级译文状态文件，记录源 PDF 页数、目标语言、每页状态和页级译文 PDF 相对路径。应用加载时遗留的 `queued` / `translating` 页必须恢复为可重试状态。旧任务中的 `pdf_page_translations.json` 只作为兼容读取入口，读取后应写回语言专属状态文件。
 - PDF 页级译文文件保存在 `pdf-pages/<targetLang>/page-000N.pdf`。这些文件是 Rosetta 内部缓存，不是用户导出文件。旧任务中的 `pdf-pages/page-000N.pdf` 只允许在目标语言可信时兼容读取，不能让不同目标语言静默复用同一页缓存。
 

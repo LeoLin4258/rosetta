@@ -101,3 +101,32 @@ Fix:
 - The persistent pdf2zh worker now treats repeated identical RWKV errors as an unrecoverable run failure and restarts the worker, so page state moves to failed instead of appearing to run forever.
 
 This does not change the normal TXT/Markdown/DOCX segmentation path. It is a guardrail for the visual PDF path where pdf2zh owns text extraction and calls the shim directly.
+
+Follow-up implementation detail:
+
+- The PDF shim chunker is sentence-first: sentence boundaries are the preferred semantic unit, short sentences are merged up to a small-context token budget, and only oversized units fall back to word/hard splitting.
+- Common paper abbreviations (`et al.`, `Fig.`, `e.g.`, `i.e.`, etc.) and decimal numbers are protected from false sentence splits.
+- Figure/table captions keep the label with the following sentence, e.g. `Figure 1. ...`.
+- Reference blocks are split by citation item (`[26] ... [27] ...`) before sentence splitting.
+- Common PDF soft line-break hyphenation is repaired before chunking, e.g. `learn- ing` becomes `learning`.
+- Shim debug logs now include chunk count plus average and maximum estimated prompt tokens when a long request is split.
+
+Follow-up after testing the same 10-page PDF again:
+
+- The first sentence-first implementation still let many medium PDF blocks through unchanged because it only split once a block exceeded the hard ceiling. With the tiny 256-token llama.cpp context, a request around 80-150 prompt tokens can still exhaust the remaining output budget and return `stop_type=limit`.
+- The shim now splits once text exceeds the target budget instead of waiting for the hard ceiling.
+- Budgets are mode-specific:
+  - body text: target 70 estimated prompt tokens, hard 120
+  - figure/table captions: target 85, hard 125
+  - references/citations: target 55, hard 85
+- Reference/caption budgets are inherited by their child sentence chunks, so a long `[33] ...` citation does not silently fall back to body-sized chunks after the first sentence.
+- This intentionally increases request count so the RWKV backend can keep more of the 16 llama.cpp slots occupied with smaller requests. The expected tradeoff is lower per-request context pressure and fewer `limit` stops, at the cost of more shim scheduling overhead and more pdf2zh callback traffic.
+
+Follow-up after measuring the aggressive split on the same PDF:
+
+- The aggressive split cleared all `truncated` and `stop_type=limit` completions, but it nearly doubled llama.cpp completion records and increased total PDF translation time from about 149s to about 225s. That tradeoff is not acceptable for the PDF path, where speed is the primary UX constraint.
+- The shim is now tuned back to a speed-first budget:
+  - body text: target 150 estimated prompt tokens, hard 190
+  - figure/table captions: target 150, hard 190
+  - references/citations: target 130, hard 170
+- Medium body paragraphs and medium references are allowed to stay whole. The chunker now only starts splitting once a block exceeds the hard budget; the target budget is used only after splitting has started. This keeps the pathological pdf2zh block guardrail while avoiding the request-count increase that made the aggressive split slower than the old 144s baseline.
