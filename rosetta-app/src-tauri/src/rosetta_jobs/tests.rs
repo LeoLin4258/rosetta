@@ -17,7 +17,9 @@ use crate::rosetta_jobs::{
     path::*,
     revisions::*,
     segmenter::{split_long_text, translatable_block},
-    store::{read_translation_revisions, write_translation_revisions},
+    store::{
+        cleanup_pdf_translation_artifacts, read_translation_revisions, write_translation_revisions,
+    },
     translation_files::*,
 };
 
@@ -524,6 +526,44 @@ fn pdf_page_status_does_not_trust_legacy_shared_page_path_for_english() {
 
     assert_eq!(restored.pages[0].status, "pending");
     assert_eq!(restored.pages[0].translated_pdf_path, None);
+    fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn pdf_import_cleanup_removes_derived_translation_artifacts() {
+    let dir = unique_temp_dir("pdf-import-cleanup");
+    fs::create_dir_all(dir.join("pdf-pages").join("zh-CN")).expect("create page cache");
+    fs::create_dir_all(dir.join("pdf2zh-output")).expect("create output cache");
+    fs::create_dir_all(dir.join("exports")).expect("create exports");
+    fs::write(dir.join("source.pdf"), b"source").expect("write source");
+    fs::write(dir.join("notes.txt"), b"keep").expect("write unrelated file");
+    fs::write(
+        dir.join("pdf_page_translations.zh-CN.json"),
+        b"{\"pages\":[]}",
+    )
+    .expect("write scoped state");
+    fs::write(dir.join("pdf_page_translations.json"), b"{\"pages\":[]}")
+        .expect("write legacy state");
+    fs::write(
+        dir.join("pdf-pages").join("zh-CN").join("page-0001.pdf"),
+        b"page",
+    )
+    .expect("write page cache");
+    fs::write(dir.join("pdf2zh-output").join("page-0001.pdf"), b"output")
+        .expect("write output cache");
+    fs::write(dir.join("exports").join("translated.pdf"), b"translated")
+        .expect("write translated pdf");
+
+    cleanup_pdf_translation_artifacts(&dir).expect("cleanup pdf artifacts");
+
+    assert!(dir.join("source.pdf").is_file());
+    assert!(dir.join("notes.txt").is_file());
+    assert!(dir.join("exports").is_dir());
+    assert!(!dir.join("exports").join("translated.pdf").exists());
+    assert!(!dir.join("pdf-pages").exists());
+    assert!(!dir.join("pdf2zh-output").exists());
+    assert!(!dir.join("pdf_page_translations.zh-CN.json").exists());
+    assert!(!dir.join("pdf_page_translations.json").exists());
     fs::remove_dir_all(dir).ok();
 }
 

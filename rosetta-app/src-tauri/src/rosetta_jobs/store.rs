@@ -82,6 +82,8 @@ pub(crate) fn write_job_bundle_pdf(
     fs::create_dir_all(dir.join("exports"))
         .map_err(|error| format!("无法创建项目目录: {error}"))?;
 
+    cleanup_pdf_translation_artifacts(&dir)?;
+
     let cached_source = dir.join("source.pdf");
     fs::copy(source_path, &cached_source)
         .map_err(|error| format!("无法复制源 PDF 到项目缓存: {error}"))?;
@@ -94,6 +96,50 @@ pub(crate) fn write_job_bundle_pdf(
     )?;
     write_translation_files(&dir, &bundle.translation_files)?;
     upsert_index_job(&root, bundle.job.clone())
+}
+
+pub(crate) fn cleanup_pdf_translation_artifacts(dir: &Path) -> Result<(), String> {
+    for entry in fs::read_dir(dir).map_err(|error| format!("无法读取 PDF 项目缓存目录: {error}"))?
+    {
+        let entry = entry.map_err(|error| format!("无法读取 PDF 缓存项: {error}"))?;
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+
+        if name == "pdf-pages" || name == "pdf2zh-output" {
+            if path.is_dir() {
+                fs::remove_dir_all(&path)
+                    .map_err(|error| format!("无法清理 PDF 缓存 {}: {error}", path.display()))?;
+            } else if path.is_file() {
+                fs::remove_file(&path)
+                    .map_err(|error| format!("无法清理 PDF 缓存 {}: {error}", path.display()))?;
+            }
+            continue;
+        }
+
+        if name == "pdf_page_translations.json"
+            || (name.starts_with("pdf_page_translations.") && name.ends_with(".json"))
+        {
+            if path.is_file() {
+                fs::remove_file(&path).map_err(|error| {
+                    format!("无法清理 PDF 页翻译状态 {}: {error}", path.display())
+                })?;
+            }
+        }
+    }
+
+    let translated_pdf = dir.join("exports").join("translated.pdf");
+    if translated_pdf.is_file() {
+        fs::remove_file(&translated_pdf).map_err(|error| {
+            format!(
+                "无法清理 PDF 内部译文缓存 {}: {error}",
+                translated_pdf.display()
+            )
+        })?;
+    }
+
+    Ok(())
 }
 
 /// Resolve the cached PDF path for a job (where `write_job_bundle_pdf` wrote

@@ -514,6 +514,10 @@ async fn translate_pdf_pages_inner(
         })
         .collect();
     let total_pages_to_process = pages_to_process.len() as u32;
+    if pages_to_process.is_empty() {
+        sync_pdf_page_translation_summary(app, job_id, target_lang, &state)?;
+        return Ok(state);
+    }
 
     let run_started = std::time::Instant::now();
     let run_id = format!("run-pdf-{}", path::timestamp_ms_string());
