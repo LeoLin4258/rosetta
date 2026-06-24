@@ -486,6 +486,17 @@ function ModelInfoRows({ status }: { status: ManagedRuntimeStatus }) {
       { label: "运行后端", value: `${status.profile.backend} (${status.profile.providerId})` }
     );
   }
+  const optionalProfiles = status.candidateProfiles.filter(
+    (profile) => status.profile == null || profile.id !== status.profile.id
+  );
+  optionalProfiles.forEach((profile) => {
+    rows.push({
+      label: "次选后端",
+      value: profile.runtimeWarning
+        ? `${profile.runtimeLabel}: ${profile.runtimeWarning}`
+        : profile.runtimeLabel,
+    });
+  });
   if (status.paths) {
     rows.push(
       { label: "模型路径", value: status.paths.modelFile },

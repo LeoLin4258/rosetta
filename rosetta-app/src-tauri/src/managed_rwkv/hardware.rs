@@ -5,7 +5,7 @@ use serde::Serialize;
 
 use crate::windows_process::HideConsole;
 
-use super::profile::RuntimeProfile;
+use super::profile::{RuntimeLaunchKind, RuntimeProfile};
 
 const MIN_COMPUTE_CAPABILITY: (u32, u32) = (7, 5);
 
@@ -19,7 +19,8 @@ pub struct HardwareSupport {
 }
 
 pub fn inspect(profile: &RuntimeProfile) -> HardwareSupport {
-    if profile.platform_os != "windows" {
+    if profile.platform_os != "windows" || profile.launch_kind == RuntimeLaunchKind::LlamaCppServer
+    {
         return HardwareSupport {
             supported: true,
             gpu_name: None,

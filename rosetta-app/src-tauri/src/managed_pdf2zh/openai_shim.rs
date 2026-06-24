@@ -71,9 +71,16 @@ pub struct LightningApiConfig {
 }
 
 #[derive(Debug, Clone)]
+pub struct LlamaCppApiConfig {
+    pub base_url: String,
+    pub timeout_ms: u64,
+}
+
+#[derive(Debug, Clone)]
 pub enum ShimProviderConfig {
     MobileBatch(MobileBatchChatConfig),
     Lightning(LightningApiConfig),
+    LlamaCpp(LlamaCppApiConfig),
 }
 
 const BATCH_WINDOW_MS: u64 = 80;
@@ -238,6 +245,7 @@ pub async fn spawn_shim(
             let handle = tokio::spawn(mobile_batch_processor(
                 batch_rx,
                 rwkv,
+                source_lang.clone(),
                 target_lang.clone(),
                 max_batch_size,
                 Arc::clone(&metrics),
@@ -251,6 +259,20 @@ pub async fn spawn_shim(
             let handle = tokio::spawn(lightning_batch_processor(
                 batch_rx,
                 lightning,
+                source_lang.clone(),
+                target_lang.clone(),
+                max_batch_size,
+                Arc::clone(&metrics),
+                debug_context.clone(),
+            ));
+            (max_batch_size, (batch_tx, handle))
+        }
+        ShimProviderConfig::LlamaCpp(llama) => {
+            let max_batch_size = DEFAULT_MAX_BATCH_SIZE;
+            let (batch_tx, batch_rx) = mpsc::channel(max_batch_size * 4);
+            let handle = tokio::spawn(llama_cpp_batch_processor(
+                batch_rx,
+                llama,
                 source_lang.clone(),
                 target_lang.clone(),
                 max_batch_size,
@@ -304,6 +326,7 @@ pub async fn spawn_shim(
 async fn mobile_batch_processor(
     mut rx: mpsc::Receiver<PendingTranslation>,
     rwkv: MobileBatchChatConfig,
+    source_lang: String,
     target_lang: String,
     max_batch_size: usize,
     metrics: Arc<ShimRwkvMetrics>,
@@ -330,6 +353,7 @@ async fn mobile_batch_processor(
             &rwkv,
             ProviderTranslateBatch {
                 source_texts: &source_texts,
+                source_lang: &source_lang,
                 target_lang: &target_lang,
                 timeout_ms: rwkv.timeout_ms,
                 cancel: None,
@@ -412,6 +436,79 @@ async fn lightning_batch_processor(
             &source_lang,
             &target_lang,
             &source_texts,
+            debug_context.as_deref().or(Some("pdf2zh-shim")),
+        )
+        .await;
+        metrics.record(
+            request_started.elapsed().as_millis() as u64,
+            result.is_ok(),
+            source_texts.iter().map(|t| t.chars().count() as u64).sum(),
+            result
+                .as_ref()
+                .map(|translations| translations.iter().map(|t| t.chars().count() as u64).sum())
+                .unwrap_or(0),
+        );
+        match result {
+            Ok(translations) if translations.len() == batch.len() => {
+                for (pending, translation) in batch.into_iter().zip(translations) {
+                    let _ = pending.result_tx.send(Ok(translation));
+                }
+            }
+            Ok(translations) => {
+                let error_msg = format!(
+                    "翻译结果数量不匹配（期望 {}，实际 {}）",
+                    batch.len(),
+                    translations.len()
+                );
+                for pending in batch {
+                    let _ = pending.result_tx.send(Err(error_msg.clone()));
+                }
+            }
+            Err(message) => {
+                for pending in batch {
+                    let _ = pending.result_tx.send(Err(message.clone()));
+                }
+            }
+        }
+    }
+}
+
+async fn llama_cpp_batch_processor(
+    mut rx: mpsc::Receiver<PendingTranslation>,
+    config: LlamaCppApiConfig,
+    source_lang: String,
+    target_lang: String,
+    max_batch_size: usize,
+    metrics: Arc<ShimRwkvMetrics>,
+    debug_context: Option<String>,
+) {
+    loop {
+        let Some(first) = rx.recv().await else {
+            break;
+        };
+        let mut batch = vec![first];
+
+        let deadline = Instant::now() + Duration::from_millis(BATCH_WINDOW_MS);
+        while batch.len() < max_batch_size {
+            match timeout_at(deadline, rx.recv()).await {
+                Ok(Some(item)) => batch.push(item),
+                _ => break,
+            }
+        }
+
+        eprintln!(
+            "[pdf2zh-llama-cpp] assembled {} item(s) in batch",
+            batch.len()
+        );
+        let source_texts: Vec<String> = batch.iter().map(|p| p.text.clone()).collect();
+        let request_started = Instant::now();
+        let result = crate::rwkv_api::translate_batch_via_llama_cpp(
+            &config.base_url,
+            config.timeout_ms,
+            &source_lang,
+            &target_lang,
+            &source_texts,
+            None,
             debug_context.as_deref().or(Some("pdf2zh-shim")),
         )
         .await;

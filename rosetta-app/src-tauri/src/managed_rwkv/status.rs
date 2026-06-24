@@ -23,7 +23,9 @@ use tauri::{AppHandle, Manager};
 
 use super::hardware::{self, HardwareSupport};
 use super::layout::RuntimeLayout;
-use super::profile::{current_profile, RuntimeProfile, RuntimeProfileSummary};
+use super::profile::{
+    current_profile, current_profile_candidates, RuntimeProfile, RuntimeProfileSummary,
+};
 
 /// Overall lifecycle state surfaced to the UI.
 ///
@@ -112,6 +114,7 @@ pub struct ManagedRuntimeStatus {
     pub state: ManagedRuntimeState,
     pub message: String,
     pub profile: Option<RuntimeProfileSummary>,
+    pub candidate_profiles: Vec<RuntimeProfileSummary>,
     pub paths: Option<ManagedRuntimePaths>,
     pub install_plan: Option<ManagedRuntimeInstallPlan>,
     pub hardware: Option<HardwareSupport>,
@@ -219,6 +222,7 @@ impl StaticStatus {
                 state: ManagedRuntimeState::Unsupported,
                 message: self.install_plan.message,
                 profile: None,
+                candidate_profiles: Vec::new(),
                 paths: None,
                 install_plan: None,
                 hardware: Some(self.hardware),
@@ -258,6 +262,10 @@ impl StaticStatus {
             state: self.initial_state,
             message,
             profile: Some(RuntimeProfileSummary::from_profile(self.profile)),
+            candidate_profiles: current_profile_candidates()
+                .into_iter()
+                .map(RuntimeProfileSummary::from_profile)
+                .collect(),
             paths: Some(paths),
             install_plan: Some(self.install_plan),
             hardware: Some(self.hardware),
@@ -297,12 +305,14 @@ fn build_install_plan(
         ));
     }
 
-    items.push(make_item(
-        InstallItemKind::Tokenizer,
-        tokenizer_path.as_deref(),
-        format!("分词表 ({}) 未在应用包内找到。", profile.tokenizer_filename),
-        "分词表已就绪。".to_string(),
-    ));
+    if profile.requires_tokenizer() {
+        items.push(make_item(
+            InstallItemKind::Tokenizer,
+            tokenizer_path.as_deref(),
+            format!("分词表 ({}) 未在应用包内找到。", profile.tokenizer_filename),
+            "分词表已就绪。".to_string(),
+        ));
+    }
 
     if profile.backend == "mlx" {
         items.push(make_item(
@@ -501,6 +511,9 @@ fn locate_metallib(app: &AppHandle, sidecar_path: Option<&Path>) -> Option<PathB
 /// tokenizer lands at `Contents/Resources/resources/rwkv-sidecar/<name>` in
 /// bundle and `src-tauri/resources/rwkv-sidecar/<name>` in dev.
 fn locate_tokenizer(app: &AppHandle, profile: &RuntimeProfile) -> Option<PathBuf> {
+    if !profile.requires_tokenizer() {
+        return None;
+    }
     let name = profile.tokenizer_filename;
 
     // Bundle path (Tauri 2): Contents/Resources/resources/rwkv-sidecar/<name>.

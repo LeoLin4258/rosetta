@@ -2,6 +2,7 @@ import { selectProvider } from "@/lib/providers";
 import {
   cancelRwkvTranslationRun,
   getRwkvTranslationRunStatus,
+  startRwkvLlamaCppChatRun,
   startRwkvMobileBatchChatRun,
   startRwkvTranslationRun,
 } from "@/lib/rwkvApi";
@@ -209,6 +210,19 @@ function startRunForProvider(params: {
 
   if (provider.id === "rwkv-mobile-batch-chat") {
     return startRwkvMobileBatchChatRun({
+      runId,
+      jobId,
+      translationFileId,
+      sourceSegmentIds,
+      baseUrl: provider.baseUrl,
+      timeoutMs: provider.timeoutMs,
+      sourceLang,
+      targetLang,
+      batchSize,
+    });
+  }
+  if (provider.id === "llama-cpp-chat-completions") {
+    return startRwkvLlamaCppChatRun({
       runId,
       jobId,
       translationFileId,

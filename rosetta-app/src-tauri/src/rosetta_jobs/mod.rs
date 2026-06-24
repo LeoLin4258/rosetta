@@ -26,7 +26,9 @@ pub(crate) mod store;
 mod tests;
 pub(crate) mod translation_files;
 
-use crate::managed_pdf2zh::openai_shim::{LightningApiConfig, ShimProviderConfig};
+use crate::managed_pdf2zh::openai_shim::{
+    LightningApiConfig, LlamaCppApiConfig, ShimProviderConfig,
+};
 use crate::rwkv_providers::mobile_batch_chat::MobileBatchChatConfig;
 use model::{
     RosettaExportKind, RosettaExportResult, RosettaJobBundle, RosettaJobFileDeleteResult,
@@ -355,6 +357,7 @@ pub async fn translate_rosetta_pdf_pages(
     page_selection: String,
     target_lang: String,
     rwkv_base_url: String,
+    provider_id: Option<String>,
     provider_endpoint: Option<String>,
     provider_internal_token: Option<String>,
     provider_body_password: Option<String>,
@@ -372,6 +375,7 @@ pub async fn translate_rosetta_pdf_pages(
         &page_selection,
         &target_lang,
         rwkv_base_url,
+        provider_id,
         provider_endpoint,
         provider_internal_token,
         provider_body_password,
@@ -384,6 +388,50 @@ pub async fn translate_rosetta_pdf_pages(
     result
 }
 
+fn shim_provider_from_parts(
+    base_url: &str,
+    provider_id: Option<&str>,
+    provider_endpoint: &str,
+    provider_internal_token: Option<String>,
+    provider_body_password: Option<String>,
+    timeout_ms: u64,
+) -> ShimProviderConfig {
+    match provider_id {
+        Some("llama-cpp-chat-completions") => ShimProviderConfig::LlamaCpp(LlamaCppApiConfig {
+            base_url: base_url.to_string(),
+            timeout_ms,
+        }),
+        Some("rwkv-mobile-batch-chat") => ShimProviderConfig::MobileBatch(MobileBatchChatConfig {
+            base_url: base_url.to_string(),
+            timeout_ms,
+        }),
+        Some("rwkv-lightning-contents") => ShimProviderConfig::Lightning(LightningApiConfig {
+            base_url: base_url.to_string(),
+            endpoint: if provider_endpoint.trim().is_empty() {
+                "/v1/batch/completions".to_string()
+            } else {
+                provider_endpoint.to_string()
+            },
+            internal_token: provider_internal_token.unwrap_or_default(),
+            body_password: provider_body_password.unwrap_or_default(),
+            timeout_ms,
+        }),
+        _ if provider_endpoint.trim().is_empty() => {
+            ShimProviderConfig::MobileBatch(MobileBatchChatConfig {
+                base_url: base_url.to_string(),
+                timeout_ms,
+            })
+        }
+        _ => ShimProviderConfig::Lightning(LightningApiConfig {
+            base_url: base_url.to_string(),
+            endpoint: provider_endpoint.to_string(),
+            internal_token: provider_internal_token.unwrap_or_default(),
+            body_password: provider_body_password.unwrap_or_default(),
+            timeout_ms,
+        }),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn translate_pdf_pages_inner(
     app: &AppHandle,
@@ -392,6 +440,7 @@ async fn translate_pdf_pages_inner(
     page_selection: &str,
     target_lang: &str,
     rwkv_base_url: String,
+    provider_id: Option<String>,
     provider_endpoint: Option<String>,
     provider_internal_token: Option<String>,
     provider_body_password: Option<String>,
@@ -435,20 +484,14 @@ async fn translate_pdf_pages_inner(
         .map(str::trim)
         .unwrap_or("")
         .to_string();
-    let provider = if provider_endpoint.is_empty() {
-        ShimProviderConfig::MobileBatch(MobileBatchChatConfig {
-            base_url: rwkv_base_url,
-            timeout_ms: timeout,
-        })
-    } else {
-        ShimProviderConfig::Lightning(LightningApiConfig {
-            base_url: rwkv_base_url,
-            endpoint: provider_endpoint,
-            internal_token: provider_internal_token.unwrap_or_default(),
-            body_password: provider_body_password.unwrap_or_default(),
-            timeout_ms: timeout,
-        })
-    };
+    let provider = shim_provider_from_parts(
+        &rwkv_base_url,
+        provider_id.as_deref(),
+        &provider_endpoint,
+        provider_internal_token,
+        provider_body_password,
+        timeout,
+    );
     let force = force.unwrap_or(false);
 
     // Pages that will actually be invoked (skip already-translated unless
@@ -800,6 +843,7 @@ pub async fn generate_rosetta_translated_pdf(
     cancel_state: State<'_, PdfTranslationCancelState>,
     job_id: String,
     rwkv_base_url: Option<String>,
+    provider_id: Option<String>,
     provider_endpoint: Option<String>,
     provider_internal_token: Option<String>,
     provider_body_password: Option<String>,
@@ -862,20 +906,14 @@ pub async fn generate_rosetta_translated_pdf(
         .map(str::trim)
         .unwrap_or("")
         .to_string();
-    let provider = if ep.is_empty() {
-        ShimProviderConfig::MobileBatch(MobileBatchChatConfig {
-            base_url,
-            timeout_ms: timeout,
-        })
-    } else {
-        ShimProviderConfig::Lightning(LightningApiConfig {
-            base_url,
-            endpoint: ep,
-            internal_token: provider_internal_token.unwrap_or_default(),
-            body_password: provider_body_password.unwrap_or_default(),
-            timeout_ms: timeout,
-        })
-    };
+    let provider = shim_provider_from_parts(
+        &base_url,
+        provider_id.as_deref(),
+        &ep,
+        provider_internal_token,
+        provider_body_password,
+        timeout,
+    );
 
     if !cancel_state.try_begin_run() {
         return Err("已有 PDF 翻译正在进行，请先停止当前翻译。".to_string());

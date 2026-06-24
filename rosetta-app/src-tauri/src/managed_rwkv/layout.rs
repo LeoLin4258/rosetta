@@ -191,7 +191,10 @@ impl RuntimeLayout {
         if !exe_ok {
             return false;
         }
-        if let Some(dir) = self.runtime_dir.as_ref() {
+        if profile.requires_tokenizer() {
+            let Some(dir) = self.runtime_dir.as_ref() else {
+                return false;
+            };
             if !dir.join(profile.tokenizer_filename).is_file() {
                 return false;
             }

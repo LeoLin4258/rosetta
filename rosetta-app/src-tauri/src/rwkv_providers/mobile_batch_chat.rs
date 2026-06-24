@@ -400,6 +400,7 @@ pub async fn probe(
         config,
         ProviderTranslateBatch {
             source_texts: &texts,
+            source_lang,
             target_lang,
             timeout_ms: config.timeout_ms,
             cancel: None,

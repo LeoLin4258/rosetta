@@ -14,6 +14,7 @@ use serde::Serialize;
 pub enum RuntimeLaunchKind {
     RwkvMobile,
     LightningCuda,
+    LlamaCppServer,
 }
 
 /// Static description of a managed sidecar runtime + its companion model.
@@ -40,6 +41,8 @@ pub struct RuntimeProfile {
     pub platform_arch: &'static str,
     pub runtime_label: &'static str,
     pub hardware_requirement: &'static str,
+    pub recommended: bool,
+    pub runtime_warning: Option<&'static str>,
     /// Whether this profile is part of the v1 surface. Windows profile stays
     /// `false` until Phase 8; Phase 3 reads this to skip Windows in dispatch.
     pub enabled: bool,
@@ -95,6 +98,12 @@ pub struct RuntimeProfile {
     pub bind_host: &'static str,
 }
 
+impl RuntimeProfile {
+    pub fn requires_tokenizer(&self) -> bool {
+        !matches!(self.launch_kind, RuntimeLaunchKind::LlamaCppServer)
+    }
+}
+
 /// macOS Apple Silicon profile — MLX backend, 0.4B model (switched 2026-06-10).
 pub const MACOS_ARM64_MLX: RuntimeProfile = RuntimeProfile {
     id: "macos-arm64-mlx",
@@ -103,6 +112,8 @@ pub const MACOS_ARM64_MLX: RuntimeProfile = RuntimeProfile {
     platform_arch: "aarch64",
     runtime_label: "RWKV Mobile MLX",
     hardware_requirement: "Apple Silicon",
+    recommended: true,
+    runtime_warning: None,
     enabled: true,
     backend: "mlx",
     launch_kind: RuntimeLaunchKind::RwkvMobile,
@@ -140,6 +151,8 @@ pub const MACOS_ARM64_WEBRWKV: RuntimeProfile = RuntimeProfile {
     platform_arch: "aarch64",
     runtime_label: "RWKV Mobile WebRWKV",
     hardware_requirement: "Apple Silicon",
+    recommended: false,
+    runtime_warning: Some("已被 MLX profile 取代，仅保留用于回归排查。"),
     enabled: false,
     backend: "web-rwkv",
     launch_kind: RuntimeLaunchKind::RwkvMobile,
@@ -173,6 +186,50 @@ pub const MACOS_ARM64_WEBRWKV: RuntimeProfile = RuntimeProfile {
     bind_host: "127.0.0.1",
 };
 
+/// Windows llama.cpp Vulkan profile.
+#[allow(dead_code)]
+pub const WINDOWS_AMD64_LLAMACPP_VULKAN: RuntimeProfile = RuntimeProfile {
+    id: "windows-amd64-llamacpp-vulkan",
+    provider_id: "llama-cpp-chat-completions",
+    platform_os: "windows",
+    platform_arch: "x86_64",
+    runtime_label: "llama.cpp Vulkan",
+    hardware_requirement: "Vulkan-capable GPU or integrated GPU",
+    recommended: true,
+    runtime_warning: None,
+    enabled: true,
+    backend: "vulkan",
+    launch_kind: RuntimeLaunchKind::LlamaCppServer,
+    sidecar_binary_name: "llama-server.exe",
+    managed_runtime_directory_name: Some("llama-cpp-vulkan-b9775"),
+    runtime_archive_filename: Some("llama-b9775-bin-win-vulkan-x64.zip"),
+    runtime_archive_size_bytes: Some(31_881_712),
+    runtime_archive_sha256: Some(
+        "7c21a289304990cbbbd8ead6edb52aebbda5d3c4549604e6b5254c05cddb620b",
+    ),
+    runtime_download_urls: &[
+        "https://github.com/ggml-org/llama.cpp/releases/download/b9775/llama-b9775-bin-win-vulkan-x64.zip",
+    ],
+    runtime_library_dir_name: None,
+    tokenizer_filename: "",
+    model_directory_name: "rwkv7-g1d-0.4b-translate-gguf-q8",
+    model_filename: "RWKV_v7_G1d_0.4B_Translate_ctx4096_20260607-Q8_0.gguf",
+    model_is_zip: false,
+    model_size_bytes: 501_498_208,
+    model_sha256: "f0f1c64455d075236df309457e4730fe763489e5fc8c038ce3f29d9963dec96b",
+    model_download_urls: &[
+        "https://modelscope.cn/models/RWKV/rwkv-mobile-models/resolve/master/gguf/RWKV_v7_G1d_0.4B_Translate_ctx4096_20260607-Q8_0.gguf",
+        "https://aifasthub.com/mollysama/rwkv-mobile-models/resolve/main/gguf/RWKV_v7_G1d_0.4B_Translate_ctx4096_20260607-Q8_0.gguf?download=true",
+        "https://hf-mirror.com/mollysama/rwkv-mobile-models/resolve/main/gguf/RWKV_v7_G1d_0.4B_Translate_ctx4096_20260607-Q8_0.gguf?download=true",
+        "https://huggingface.co/mollysama/rwkv-mobile-models/resolve/main/gguf/RWKV_v7_G1d_0.4B_Translate_ctx4096_20260607-Q8_0.gguf",
+    ],
+    supported_directions: &["en-zh", "zh-en"],
+    model_name_arg: "rwkv-translate",
+    health_path: "/v1/models",
+    batch_chat_path: "/completion",
+    bind_host: "127.0.0.1",
+};
+
 /// Windows NVIDIA CUDA profile.
 #[allow(dead_code)]
 pub const WINDOWS_AMD64_CUDA: RuntimeProfile = RuntimeProfile {
@@ -182,6 +239,8 @@ pub const WINDOWS_AMD64_CUDA: RuntimeProfile = RuntimeProfile {
     platform_arch: "x86_64",
     runtime_label: "RWKV Lightning NVIDIA CUDA",
     hardware_requirement: "NVIDIA GPU, SM75 or newer",
+    recommended: false,
+    runtime_warning: Some("RWKV Lightning 仍在开发修复中，可能存在翻译或稳定性问题。"),
     enabled: true,
     backend: "cuda-openai",
     launch_kind: RuntimeLaunchKind::LightningCuda,
@@ -228,6 +287,17 @@ pub fn current_profile() -> Option<&'static RuntimeProfile> {
     })
 }
 
+pub fn current_profile_candidates() -> Vec<&'static RuntimeProfile> {
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+    ALL_PROFILES
+        .iter()
+        .filter(|profile| {
+            profile.enabled && profile.platform_os == os && profile.platform_arch == arch
+        })
+        .collect()
+}
+
 /// Profile-summary shape exposed to the frontend.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -238,6 +308,8 @@ pub struct RuntimeProfileSummary {
     pub platform_arch: &'static str,
     pub runtime_label: &'static str,
     pub hardware_requirement: &'static str,
+    pub recommended: bool,
+    pub runtime_warning: Option<&'static str>,
     pub backend: &'static str,
     pub model_filename: &'static str,
     pub model_size_bytes: u64,
@@ -256,6 +328,8 @@ impl RuntimeProfileSummary {
             platform_arch: profile.platform_arch,
             runtime_label: profile.runtime_label,
             hardware_requirement: profile.hardware_requirement,
+            recommended: profile.recommended,
+            runtime_warning: profile.runtime_warning,
             backend: profile.backend,
             model_filename: profile.model_filename,
             model_size_bytes: profile.model_size_bytes,
@@ -267,7 +341,12 @@ impl RuntimeProfileSummary {
     }
 }
 
-const ALL_PROFILES: &[RuntimeProfile] = &[MACOS_ARM64_MLX, MACOS_ARM64_WEBRWKV, WINDOWS_AMD64_CUDA];
+const ALL_PROFILES: &[RuntimeProfile] = &[
+    MACOS_ARM64_MLX,
+    MACOS_ARM64_WEBRWKV,
+    WINDOWS_AMD64_LLAMACPP_VULKAN,
+    WINDOWS_AMD64_CUDA,
+];
 
 #[cfg(test)]
 #[allow(clippy::assertions_on_constants)] // intentional regression guards on const values
@@ -290,8 +369,33 @@ mod tests {
     }
 
     #[test]
-    fn windows_profile_is_cuda_sm75() {
+    fn windows_profile_is_llamacpp_vulkan() {
+        assert!(WINDOWS_AMD64_LLAMACPP_VULKAN.enabled);
+        assert!(WINDOWS_AMD64_LLAMACPP_VULKAN.recommended);
+        assert_eq!(
+            WINDOWS_AMD64_LLAMACPP_VULKAN.launch_kind,
+            RuntimeLaunchKind::LlamaCppServer
+        );
+        assert_eq!(
+            WINDOWS_AMD64_LLAMACPP_VULKAN.provider_id,
+            "llama-cpp-chat-completions"
+        );
+        assert_eq!(WINDOWS_AMD64_LLAMACPP_VULKAN.bind_host, "127.0.0.1");
+        assert_eq!(
+            WINDOWS_AMD64_LLAMACPP_VULKAN.batch_chat_path,
+            "/completion"
+        );
+        assert_eq!(
+            WINDOWS_AMD64_LLAMACPP_VULKAN.model_sha256,
+            "f0f1c64455d075236df309457e4730fe763489e5fc8c038ce3f29d9963dec96b"
+        );
+        assert!(!WINDOWS_AMD64_LLAMACPP_VULKAN.requires_tokenizer());
+    }
+
+    #[test]
+    fn windows_cuda_profile_is_secondary_sm75() {
         assert!(WINDOWS_AMD64_CUDA.enabled);
+        assert!(!WINDOWS_AMD64_CUDA.recommended);
         assert_eq!(
             WINDOWS_AMD64_CUDA.launch_kind,
             RuntimeLaunchKind::LightningCuda
@@ -318,8 +422,8 @@ mod tests {
                 "expected macOS arm64 MLX profile"
             ),
             ("windows", "x86_64") => assert!(
-                resolved.is_some_and(|p| p.id == "windows-amd64-rwkv-lightning-cuda"),
-                "expected Windows CUDA profile"
+                resolved.is_some_and(|p| p.id == "windows-amd64-llamacpp-vulkan"),
+                "expected Windows llama.cpp Vulkan profile"
             ),
             _ => assert!(
                 resolved.is_none(),

@@ -78,6 +78,13 @@ export function selectProvider({
       timeoutMs: config.timeoutMs,
     };
   }
+  if (providerId === "llama-cpp-chat-completions") {
+    return {
+      id: "llama-cpp-chat-completions",
+      baseUrl: managedRuntimeBaseUrl ?? DEFAULT_MANAGED_RUNTIME_BASE_URL,
+      timeoutMs: config.timeoutMs,
+    };
+  }
   const useManagedRuntime =
     config.providerPreference === "local" &&
     providerId === "rwkv-lightning-contents";
@@ -107,7 +114,8 @@ function resolveProviderId(
   if (preference === "local") {
     if (
       managedRuntimeProviderId === "rwkv-lightning-contents" ||
-      managedRuntimeProviderId === "rwkv-mobile-batch-chat"
+      managedRuntimeProviderId === "rwkv-mobile-batch-chat" ||
+      managedRuntimeProviderId === "llama-cpp-chat-completions"
     ) {
       return managedRuntimeProviderId;
     }
@@ -119,7 +127,8 @@ function resolveProviderId(
   if (managedRuntimeReady) {
     if (
       managedRuntimeProviderId === "rwkv-lightning-contents" ||
-      managedRuntimeProviderId === "rwkv-mobile-batch-chat"
+      managedRuntimeProviderId === "rwkv-mobile-batch-chat" ||
+      managedRuntimeProviderId === "llama-cpp-chat-completions"
     ) {
       return managedRuntimeProviderId;
     }

@@ -38,6 +38,8 @@ use tauri::{AppHandle, Emitter};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
+use crate::windows_process::HideConsole;
+
 use super::layout::RuntimeLayout;
 use super::profile::RuntimeProfile;
 
@@ -407,8 +409,23 @@ async fn install_inner(
     .await;
     emit_progress(app, registry).await;
 
+    update_progress(registry, |p| {
+        p.message = "正在选择最快下载源…".to_string();
+        p.source_url = None;
+    })
+    .await;
+    emit_progress(app, registry).await;
+
+    let ranked_urls = ranked_download_urls(
+        profile.model_download_urls,
+        Some(profile.model_size_bytes),
+        proxy_url,
+    )
+    .await;
+
     let mut last_error: Option<String> = None;
-    for url in profile.model_download_urls {
+    let mut selected_model_source: Option<String> = None;
+    for url in ranked_urls {
         if cancel.load(Ordering::SeqCst) {
             set_cancelled(registry).await;
             emit_progress(app, registry).await;
@@ -417,8 +434,8 @@ async fn install_inner(
 
         eprintln!("[rwkv-install] trying mirror: {url}");
         update_progress(registry, |p| {
-            p.source_url = Some(url.to_string());
-            p.message = format!("正在连接 {url}…");
+            p.source_url = None;
+            p.message = "正在连接下载源…".to_string();
         })
         .await;
         emit_progress(app, registry).await;
@@ -438,6 +455,7 @@ async fn install_inner(
         {
             Ok(()) => {
                 eprintln!("[rwkv-install] mirror succeeded: {url}");
+                selected_model_source = Some(url.to_string());
                 last_error = None;
                 break;
             }
@@ -458,7 +476,7 @@ async fn install_inner(
                 let _ = std::fs::remove_file(&part_path);
                 update_progress(registry, |p| {
                     p.bytes_done = 0;
-                    p.message = format!("镜像 {url} 失败，尝试下一个: {msg}");
+                    p.message = format!("下载源失败，正在尝试下一个: {msg}");
                     p.last_error = Some(msg.clone());
                 })
                 .await;
@@ -536,21 +554,7 @@ async fn install_inner(
     })
     .await;
     emit_progress(app, registry).await;
-    let source_url = {
-        let guard = registry.inner.lock().await;
-        guard
-            .progress
-            .as_ref()
-            .and_then(|p| p.source_url.clone())
-            .unwrap_or_else(|| {
-                profile
-                    .model_download_urls
-                    .first()
-                    .copied()
-                    .unwrap_or("manual-model")
-                    .to_string()
-            })
-    };
+    let source_url = selected_model_source.unwrap_or_else(|| "manual-model".to_string());
     let manifest_path = write_manifest(layout, profile, &source_url)?;
 
     set_done(registry, profile, "本地 RWKV 模型已就绪。".to_string()).await;
@@ -608,7 +612,13 @@ async fn install_runtime_pack(
     } else {
         let mut downloaded_from = None;
         let mut failures = Vec::new();
-        for (index, url) in profile.runtime_download_urls.iter().enumerate() {
+        let ranked_urls = ranked_download_urls(
+            profile.runtime_download_urls,
+            Some(expected_size),
+            proxy_url,
+        )
+        .await;
+        for (index, url) in ranked_urls.iter().enumerate() {
             if cancel.load(Ordering::SeqCst) {
                 set_cancelled(registry).await;
                 emit_progress(app, registry).await;
@@ -637,7 +647,7 @@ async fn install_runtime_pack(
             .await
             {
                 Ok(()) => {
-                    downloaded_from = Some((*url).to_string());
+                    downloaded_from = Some(url.to_string());
                     break;
                 }
                 Err(error) => {
@@ -691,6 +701,7 @@ async fn install_runtime_pack(
     extract_zip(archive_path, runtime_dir)
         .map_err(|error| format!("解压 Windows RWKV 运行包失败: {error}"))?;
     validate_runtime_pack(layout, profile)?;
+    validate_runtime_hardware_after_install(layout, profile)?;
     write_runtime_manifest(layout, profile, &source, expected_size, expected_sha)?;
     let _ = std::fs::remove_file(archive_path);
     Ok(())
@@ -814,7 +825,7 @@ async fn download_runtime_pack(
             progress.phase = InstallPhase::Downloading;
             progress.bytes_done = bytes_done;
             progress.bytes_total = expected_size;
-            progress.source_url = Some(url.to_string());
+            progress.source_url = None;
             progress.message = "正在下载 Windows RWKV 运行包…".to_string();
         })
         .await;
@@ -866,11 +877,20 @@ fn validate_runtime_pack(layout: &RuntimeLayout, profile: &RuntimeProfile) -> Re
     let runtime_dir = executable
         .parent()
         .ok_or_else(|| "Windows RWKV 运行目录无效。".to_string())?;
-    if !runtime_dir.join(profile.tokenizer_filename).is_file() {
+    if profile.requires_tokenizer() && !runtime_dir.join(profile.tokenizer_filename).is_file() {
         return Err(format!(
             "Windows RWKV 运行包结构不正确，缺少 {}。",
             profile.tokenizer_filename
         ));
+    }
+    if matches!(
+        profile.launch_kind,
+        super::profile::RuntimeLaunchKind::LlamaCppServer
+    ) && !runtime_dir.join("ggml-vulkan.dll").is_file()
+    {
+        return Err(
+            "Windows llama.cpp Vulkan 运行包结构不正确，缺少 ggml-vulkan.dll。".to_string(),
+        );
     }
     if let Some(library_dir) = layout.runtime_library_dir.as_ref() {
         if !library_dir.is_dir() {
@@ -878,6 +898,133 @@ fn validate_runtime_pack(layout: &RuntimeLayout, profile: &RuntimeProfile) -> Re
         }
     }
     Ok(())
+}
+
+fn validate_runtime_hardware_after_install(
+    layout: &RuntimeLayout,
+    profile: &RuntimeProfile,
+) -> Result<(), String> {
+    if !matches!(
+        profile.launch_kind,
+        super::profile::RuntimeLaunchKind::LlamaCppServer
+    ) {
+        return Ok(());
+    }
+    let executable = layout
+        .runtime_executable
+        .as_ref()
+        .ok_or_else(|| "Windows llama.cpp runtime layout 缺少 llama-server.exe。".to_string())?;
+    let output = std::process::Command::new(executable)
+        .arg("--list-devices")
+        .hide_console_on_windows()
+        .output()
+        .map_err(|error| format!("无法检测 Vulkan 设备: {error}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{stdout}\n{stderr}");
+    if combined.contains("Vulkan") {
+        eprintln!("[rwkv-install] llama.cpp Vulkan devices:\n{combined}");
+        return Ok(());
+    }
+    Err("未检测到 llama.cpp Vulkan 设备。请更新显卡驱动，或改用外部 API；NVIDIA 用户也可以尝试 RWKV Lightning 次选。".to_string())
+}
+
+#[derive(Debug)]
+struct RankedUrl {
+    url: &'static str,
+    ok: bool,
+    elapsed: Duration,
+    index: usize,
+}
+
+async fn ranked_download_urls(
+    urls: &'static [&'static str],
+    expected_size: Option<u64>,
+    proxy_url: Option<&str>,
+) -> Vec<&'static str> {
+    let proxy = proxy_url.map(str::to_string);
+    let handles = urls
+        .iter()
+        .enumerate()
+        .map(|(index, url)| {
+            let url = *url;
+            let proxy = proxy.clone();
+            tokio::spawn(async move {
+                let started = Instant::now();
+                let ok = probe_download_url(url, expected_size, proxy.as_deref()).await;
+                RankedUrl {
+                    url,
+                    ok,
+                    elapsed: started.elapsed(),
+                    index,
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let mut ranked = Vec::with_capacity(handles.len());
+    for handle in handles {
+        if let Ok(item) = handle.await {
+            ranked.push(item);
+        }
+    }
+
+    sort_ranked_urls(ranked, urls)
+}
+
+fn sort_ranked_urls(
+    mut ranked: Vec<RankedUrl>,
+    original_urls: &'static [&'static str],
+) -> Vec<&'static str> {
+    ranked.sort_by(|left, right| match (left.ok, right.ok) {
+        (true, true) => left
+            .elapsed
+            .cmp(&right.elapsed)
+            .then_with(|| left.index.cmp(&right.index)),
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        (false, false) => left.index.cmp(&right.index),
+    });
+
+    if ranked.iter().any(|item| item.ok) {
+        ranked.into_iter().map(|item| item.url).collect()
+    } else {
+        original_urls.to_vec()
+    }
+}
+
+async fn probe_download_url(
+    url: &str,
+    expected_size: Option<u64>,
+    proxy_url: Option<&str>,
+) -> bool {
+    let mut builder = reqwest::Client::builder().timeout(HEAD_TIMEOUT);
+    if let Some(proxy) = proxy_url {
+        let Ok(parsed) = reqwest::Proxy::all(proxy) else {
+            return false;
+        };
+        builder = builder.proxy(parsed);
+    }
+    let Ok(client) = builder.build() else {
+        return false;
+    };
+    let Ok(response) = client.head(url).send().await else {
+        return false;
+    };
+    if !response.status().is_success() {
+        return false;
+    }
+    if let Some(expected_size) = expected_size {
+        if let Some(len) = response
+            .headers()
+            .get(reqwest::header::CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok())
+        {
+            return len == expected_size;
+        }
+    }
+    true
 }
 
 fn write_runtime_manifest(
@@ -1539,6 +1686,44 @@ mod tests {
         ] {
             assert!(!is_active_phase(phase), "{phase:?} should allow retry");
         }
+    }
+
+    #[test]
+    fn download_source_sort_prefers_fastest_valid_then_original_failures() {
+        static URLS: &[&str] = &[
+            "https://slow.test",
+            "https://failed.test",
+            "https://fast.test",
+        ];
+        let ranked = vec![
+            RankedUrl {
+                url: URLS[0],
+                ok: true,
+                elapsed: Duration::from_millis(500),
+                index: 0,
+            },
+            RankedUrl {
+                url: URLS[1],
+                ok: false,
+                elapsed: Duration::from_millis(10),
+                index: 1,
+            },
+            RankedUrl {
+                url: URLS[2],
+                ok: true,
+                elapsed: Duration::from_millis(80),
+                index: 2,
+            },
+        ];
+
+        assert_eq!(
+            sort_ranked_urls(ranked, URLS),
+            vec![
+                "https://fast.test",
+                "https://slow.test",
+                "https://failed.test"
+            ]
+        );
     }
 
     #[tokio::test]

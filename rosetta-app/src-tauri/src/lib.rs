@@ -250,10 +250,13 @@ pub fn run() {
             rosetta_jobs::update_rosetta_job_file_languages,
             rwkv_api::cancel_rwkv_translation_run,
             rwkv_api::get_rwkv_translation_run_status,
+            rwkv_api::probe_rwkv_llama_cpp_chat,
             rwkv_api::probe_rwkv_mobile_batch_chat,
             rwkv_api::probe_rwkv_translation_api,
+            rwkv_api::start_rwkv_llama_cpp_chat_run,
             rwkv_api::start_rwkv_mobile_batch_chat_run,
             rwkv_api::start_rwkv_translation_run,
+            rwkv_api::translate_rwkv_llama_cpp_chat_texts,
             rwkv_api::translate_rwkv_mobile_batch_chat_texts,
             rwkv_api::translate_rwkv_texts_with_api
         ])

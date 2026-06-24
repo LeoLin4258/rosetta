@@ -1,5 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  RwkvLlamaCppChatProbeRequest,
+  RwkvLlamaCppChatRunStartRequest,
+  RwkvLlamaCppChatTranslateRequest,
   RwkvMobileBatchChatProbeRequest,
   RwkvMobileBatchChatRunStartRequest,
   RwkvMobileBatchChatTranslateRequest,
@@ -63,6 +66,36 @@ export function startRwkvMobileBatchChatRun(
   request: RwkvMobileBatchChatRunStartRequest
 ) {
   return invoke<RwkvTranslationRunStatus>("start_rwkv_mobile_batch_chat_run", {
+    request,
+  });
+}
+
+// -----------------------------------------------------------------------------
+// llama-cpp-chat-completions provider (local managed sidecar via llama-server)
+// -----------------------------------------------------------------------------
+
+export function probeRwkvLlamaCppChat(
+  request: RwkvLlamaCppChatProbeRequest
+) {
+  return invoke<RwkvTranslationApiProbeResult>(
+    "probe_rwkv_llama_cpp_chat",
+    { request }
+  );
+}
+
+export function translateRwkvLlamaCppChatTexts(
+  request: RwkvLlamaCppChatTranslateRequest
+) {
+  return invoke<RwkvTranslationApiTranslateResult>(
+    "translate_rwkv_llama_cpp_chat_texts",
+    { request }
+  );
+}
+
+export function startRwkvLlamaCppChatRun(
+  request: RwkvLlamaCppChatRunStartRequest
+) {
+  return invoke<RwkvTranslationRunStatus>("start_rwkv_llama_cpp_chat_run", {
     request,
   });
 }

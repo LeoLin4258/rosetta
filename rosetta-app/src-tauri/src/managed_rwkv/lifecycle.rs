@@ -95,7 +95,7 @@ pub async fn start_sidecar(
     registry: &ManagedRwkvRuntimeRegistry,
     profile: &RuntimeProfile,
     sidecar_path: PathBuf,
-    tokenizer_path: PathBuf,
+    tokenizer_path: Option<PathBuf>,
     model_path: PathBuf,
     log_file: PathBuf,
     metallib_source: Option<PathBuf>,
@@ -109,11 +109,17 @@ pub async fn start_sidecar(
 
     // Sanity: required artifacts present. Lifecycle never lies — if any of
     // these is missing the user should have seen Install Plan say so.
-    for (label, path) in [
+    let mut required_paths = vec![
         ("sidecar", sidecar_path.as_path()),
-        ("tokenizer", tokenizer_path.as_path()),
         ("model", model_path.as_path()),
-    ] {
+    ];
+    if profile.requires_tokenizer() {
+        let tokenizer = tokenizer_path
+            .as_deref()
+            .ok_or_else(|| "分词表文件不存在。".to_string())?;
+        required_paths.push(("tokenizer", tokenizer));
+    }
+    for (label, path) in required_paths {
         if !path.exists() {
             let msg = format!("{label} 文件不存在: {}", path.display());
             guard.last_error = Some(msg.clone());
@@ -183,133 +189,186 @@ pub async fn start_sidecar(
         }
     }
 
-    let port = pick_ephemeral_port().map_err(|error| {
-        let msg = format!("无法分配本地端口: {error}");
-        guard.last_error = Some(msg.clone());
-        msg
-    })?;
-    let base_url = format!("http://{}:{port}", profile.bind_host);
-
-    let args = build_command_args(profile, &sidecar_path, &tokenizer_path, &model_path, port);
-    if let Err(error) =
-        cleanup_stale_sidecars(profile, &sidecar_path, &tokenizer_path, &model_path).await
+    if let Err(error) = cleanup_stale_sidecars(
+        profile,
+        &sidecar_path,
+        tokenizer_path.as_deref(),
+        &model_path,
+    )
+    .await
     {
         guard.last_error = Some(error.clone());
         guard.state = Some(ManagedRuntimeState::Failed);
         return Err(error);
     }
-    let log = open_log_file(&log_file).map_err(|error| {
-        let msg = format!("无法打开运行时日志: {error}");
-        guard.last_error = Some(msg.clone());
-        msg
-    })?;
 
-    let stdout = log
-        .try_clone()
-        .map_err(|error| format!("clone log handle: {error}"))?;
-    let stderr = log;
-
-    guard.state = Some(ManagedRuntimeState::Starting);
-    eprintln!("[rwkv-lifecycle] === sidecar launch ===");
-    eprintln!("[rwkv-lifecycle]   command: {}", args.join(" "));
-    eprintln!("[rwkv-lifecycle]   cwd:     {}", working_dir.display());
-    eprintln!("[rwkv-lifecycle]   log:     {}", log_file.display());
-    eprintln!("[rwkv-lifecycle]   port:    {port}");
-
-    let mut command = TokioCommand::new(&sidecar_path);
-    if let Some(lib_dir_name) = profile.runtime_library_dir_name {
-        let lib_dir = sidecar_dir.join(lib_dir_name);
-        if lib_dir.is_dir() {
-            eprintln!("[rwkv-lifecycle]   prepend PATH: {}", lib_dir.display());
-            let current_path = std::env::var_os("PATH").unwrap_or_default();
-            let mut paths = vec![lib_dir];
-            paths.extend(std::env::split_paths(&current_path));
-            let joined =
-                std::env::join_paths(paths).map_err(|error| format!("拼接 PATH 失败: {error}"))?;
-            command.env("PATH", joined);
-        }
-    }
-    command
-        .args(&args[1..]) // [0] is sidecar path itself, kept for `command` echo
-        .current_dir(&working_dir)
-        .stdout(std::process::Stdio::from(stdout))
-        .stderr(std::process::Stdio::from(stderr))
-        .stdin(std::process::Stdio::null())
-        .kill_on_drop(true)
-        .hide_console_on_windows();
-
-    let child = command.spawn().map_err(|error| {
-        let msg = format!(
-            "无法启动 sidecar 进程: {error}\n日志文件: {}",
-            log_file.display()
-        );
-        guard.last_error = Some(msg.clone());
-        guard.state = Some(ManagedRuntimeState::Failed);
-        msg
-    })?;
-    eprintln!("[rwkv-lifecycle]   pid:     {}", child.id().unwrap_or(0));
-    let pid = child.id().unwrap_or(0);
-    guard.child = Some(child);
-    guard.port = Some(port);
-    guard.base_url = Some(base_url.clone());
-    guard.pid = Some(pid);
-    guard.started_at_iso = Some(iso_now());
-    guard.last_error = None;
-
-    // Drop the lock while we wait for /health — other reads can see the
-    // "starting" state we just set.
-    drop(guard);
-
-    let healthy =
-        wait_for_health_with_process_check(&base_url, profile.health_path, &registry.inner).await;
-    let mut guard = registry.inner.lock().await;
-
-    if let Err(error) = healthy {
-        // Reap child so we don't leave a zombie; we already errored.
-        if let Some(mut child) = guard.child.take() {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-        }
-        guard.port = None;
-        guard.base_url = None;
-        guard.pid = None;
-        guard.started_at_iso = None;
-
-        let log_tail = read_log_tail(&log_file)
-            .unwrap_or_default()
-            .into_iter()
-            .rev()
-            .take(30)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect::<Vec<_>>();
-        let detail = if log_tail.is_empty() {
-            format!("{error}\n日志文件: {}", log_file.display())
+    // For llama.cpp profiles, try GPU first then fall back to CPU if Vulkan
+    // device creation fails (e.g. missing extensions on older AMD drivers).
+    let gpu_layers_attempts: &[Option<&str>] =
+        if profile.launch_kind == RuntimeLaunchKind::LlamaCppServer {
+            &[None, Some("0")]
         } else {
-            format!(
-                "{error}\n日志文件: {}\n--- sidecar log ---\n{}",
-                log_file.display(),
-                log_tail.join("\n")
-            )
+            &[None]
         };
 
-        guard.last_error = Some(detail.clone());
-        guard.state = Some(ManagedRuntimeState::Failed);
-        return Err(detail);
+    let mut last_detail = String::new();
+    for (attempt, gpu_layers) in gpu_layers_attempts.iter().enumerate() {
+        let port = pick_ephemeral_port().map_err(|error| {
+            let msg = format!("无法分配本地端口: {error}");
+            guard.last_error = Some(msg.clone());
+            msg
+        })?;
+        let base_url = format!("http://{}:{port}", profile.bind_host);
+
+        let args = build_command_args(
+            profile,
+            &sidecar_path,
+            tokenizer_path.as_deref(),
+            &model_path,
+            port,
+            *gpu_layers,
+        );
+        let log = open_log_file(&log_file).map_err(|error| {
+            let msg = format!("无法打开运行时日志: {error}");
+            guard.last_error = Some(msg.clone());
+            msg
+        })?;
+
+        let stdout = log
+            .try_clone()
+            .map_err(|error| format!("clone log handle: {error}"))?;
+        let stderr = log;
+
+        guard.state = Some(ManagedRuntimeState::Starting);
+        if attempt > 0 {
+            eprintln!("[rwkv-lifecycle] === sidecar relaunch (CPU fallback) ===");
+        } else {
+            eprintln!("[rwkv-lifecycle] === sidecar launch ===");
+        }
+        eprintln!("[rwkv-lifecycle]   command: {}", args.join(" "));
+        eprintln!("[rwkv-lifecycle]   cwd:     {}", working_dir.display());
+        eprintln!("[rwkv-lifecycle]   log:     {}", log_file.display());
+        eprintln!("[rwkv-lifecycle]   port:    {port}");
+
+        let mut command = TokioCommand::new(&sidecar_path);
+        if let Some(lib_dir_name) = profile.runtime_library_dir_name {
+            let lib_dir = sidecar_dir.join(lib_dir_name);
+            if lib_dir.is_dir() {
+                eprintln!("[rwkv-lifecycle]   prepend PATH: {}", lib_dir.display());
+                let current_path = std::env::var_os("PATH").unwrap_or_default();
+                let mut paths = vec![lib_dir];
+                paths.extend(std::env::split_paths(&current_path));
+                let joined = std::env::join_paths(paths)
+                    .map_err(|error| format!("拼接 PATH 失败: {error}"))?;
+                command.env("PATH", joined);
+            }
+        }
+        command
+            .args(&args[1..])
+            .current_dir(&working_dir)
+            .stdout(std::process::Stdio::from(stdout))
+            .stderr(std::process::Stdio::from(stderr))
+            .stdin(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .hide_console_on_windows();
+
+        let child = command.spawn().map_err(|error| {
+            let msg = format!(
+                "无法启动 sidecar 进程: {error}\n日志文件: {}",
+                log_file.display()
+            );
+            guard.last_error = Some(msg.clone());
+            guard.state = Some(ManagedRuntimeState::Failed);
+            msg
+        })?;
+        eprintln!("[rwkv-lifecycle]   pid:     {}", child.id().unwrap_or(0));
+        let pid = child.id().unwrap_or(0);
+        guard.child = Some(child);
+        guard.port = Some(port);
+        guard.base_url = Some(base_url.clone());
+        guard.pid = Some(pid);
+        guard.started_at_iso = Some(iso_now());
+        guard.last_error = None;
+
+        drop(guard);
+
+        let healthy = wait_for_health_with_process_check(
+            &base_url,
+            profile.health_path,
+            &registry.inner,
+        )
+        .await;
+        guard = registry.inner.lock().await;
+
+        match healthy {
+            Ok(()) => {
+                guard.state = Some(ManagedRuntimeState::Ready);
+                let started_at = guard.started_at_iso.clone().unwrap_or_else(iso_now);
+                let message = if gpu_layers.is_some() {
+                    "本地 RWKV 运行时已就绪（Vulkan 不可用，已回退到 CPU）。".to_string()
+                } else {
+                    "本地 RWKV 运行时已就绪。".to_string()
+                };
+                return Ok(ManagedRuntimeStartResult {
+                    pid,
+                    port,
+                    base_url,
+                    started_at,
+                    command: args,
+                    message,
+                });
+            }
+            Err(error) => {
+                if let Some(mut child) = guard.child.take() {
+                    let _ = child.kill().await;
+                    let _ = child.wait().await;
+                }
+                guard.port = None;
+                guard.base_url = None;
+                guard.pid = None;
+                guard.started_at_iso = None;
+
+                let log_tail = read_log_tail(&log_file)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .rev()
+                    .take(30)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect::<Vec<_>>();
+
+                let has_vulkan_error = log_tail
+                    .iter()
+                    .any(|line| is_vulkan_device_error(line));
+
+                last_detail = if log_tail.is_empty() {
+                    format!("{error}\n日志文件: {}", log_file.display())
+                } else {
+                    format!(
+                        "{error}\n日志文件: {}\n--- sidecar log ---\n{}",
+                        log_file.display(),
+                        log_tail.join("\n")
+                    )
+                };
+
+                if has_vulkan_error && attempt + 1 < gpu_layers_attempts.len() {
+                    eprintln!(
+                        "[rwkv-lifecycle] Vulkan device error detected, retrying with --gpu-layers 0"
+                    );
+                    continue;
+                }
+
+                guard.last_error = Some(last_detail.clone());
+                guard.state = Some(ManagedRuntimeState::Failed);
+                return Err(last_detail);
+            }
+        }
     }
 
-    guard.state = Some(ManagedRuntimeState::Ready);
-    let started_at = guard.started_at_iso.clone().unwrap_or_else(iso_now);
-
-    Ok(ManagedRuntimeStartResult {
-        pid,
-        port,
-        base_url,
-        started_at,
-        command: args,
-        message: "本地 RWKV 运行时已就绪。".to_string(),
-    })
+    guard.last_error = Some(last_detail.clone());
+    guard.state = Some(ManagedRuntimeState::Failed);
+    Err(last_detail)
 }
 
 pub async fn stop_sidecar(
@@ -461,11 +520,13 @@ pub fn read_log_tail(log_path: &std::path::Path) -> Result<Vec<String>, String> 
 fn build_command_args(
     profile: &RuntimeProfile,
     sidecar_path: &Path,
-    tokenizer_path: &Path,
+    tokenizer_path: Option<&Path>,
     model_path: &Path,
     port: u16,
+    gpu_layers_override: Option<&str>,
 ) -> Vec<String> {
     if profile.launch_kind == RuntimeLaunchKind::LightningCuda {
+        let tokenizer_path = tokenizer_path.expect("lightning profile requires tokenizer");
         return vec![
             sidecar_path.display().to_string(),
             "--model-path".to_string(),
@@ -477,6 +538,34 @@ fn build_command_args(
         ];
     }
 
+    if profile.launch_kind == RuntimeLaunchKind::LlamaCppServer {
+        let gpu_layers = gpu_layers_override.unwrap_or("auto");
+        let mut args = vec![
+            sidecar_path.display().to_string(),
+            "--model".to_string(),
+            model_path.display().to_string(),
+            "--host".to_string(),
+            profile.bind_host.to_string(),
+            "--port".to_string(),
+            port.to_string(),
+            "--alias".to_string(),
+            profile.model_name_arg.to_string(),
+            "--ctx-size".to_string(),
+            "4096".to_string(),
+            "--gpu-layers".to_string(),
+            gpu_layers.to_string(),
+            "--parallel".to_string(),
+            crate::rwkv_providers::llama_cpp_chat::DEFAULT_PARALLEL_REQUESTS.to_string(),
+        ];
+        if gpu_layers_override.is_some() {
+            // --device none fully disables Vulkan backend initialization,
+            // which --gpu-layers 0 alone does not prevent.
+            args.extend(["--device".to_string(), "none".to_string()]);
+        }
+        return args;
+    }
+
+    let tokenizer_path = tokenizer_path.expect("rwkv-mobile profile requires tokenizer");
     vec![
         sidecar_path.display().to_string(),
         "--model".to_string(),
@@ -492,6 +581,13 @@ fn build_command_args(
         "--model-name".to_string(),
         profile.model_name_arg.to_string(),
     ]
+}
+
+fn is_vulkan_device_error(line: &str) -> bool {
+    line.contains("ErrorExtensionNotPresent")
+        || line.contains("ErrorFeatureNotPresent")
+        || line.contains("ErrorInitializationFailed")
+        || (line.contains("error loading model") && line.contains("vk::"))
 }
 
 fn pick_ephemeral_port() -> std::io::Result<u16> {
@@ -605,7 +701,7 @@ struct SidecarProcess {
 async fn cleanup_stale_sidecars(
     profile: &RuntimeProfile,
     sidecar_path: &Path,
-    tokenizer_path: &Path,
+    tokenizer_path: Option<&Path>,
     model_path: &Path,
 ) -> Result<usize, String> {
     let processes = list_sidecar_processes()?;
@@ -651,8 +747,7 @@ async fn cleanup_stale_sidecars_if_signature_available(
     tokenizer_path: Option<&Path>,
     model_path: Option<&Path>,
 ) -> Result<usize, String> {
-    let (Some(profile), Some(sidecar_path), Some(tokenizer_path), Some(model_path)) =
-        (profile, sidecar_path, tokenizer_path, model_path)
+    let (Some(profile), Some(sidecar_path), Some(model_path)) = (profile, sidecar_path, model_path)
     else {
         return Ok(0);
     };
@@ -706,7 +801,7 @@ fn is_matching_managed_sidecar(
     process: &SidecarProcess,
     profile: &RuntimeProfile,
     sidecar_path: &Path,
-    tokenizer_path: &Path,
+    tokenizer_path: Option<&Path>,
     model_path: &Path,
 ) -> bool {
     if process.pid == std::process::id() {
@@ -716,7 +811,8 @@ fn is_matching_managed_sidecar(
     let command = process.command.as_str();
     if !command_contains_path(command, sidecar_path)
         || !command_contains_path(command, model_path)
-        || !command_contains_path(command, tokenizer_path)
+        || (profile.requires_tokenizer()
+            && !tokenizer_path.is_some_and(|path| command_contains_path(command, path)))
     {
         return false;
     }
@@ -731,6 +827,13 @@ fn is_matching_managed_sidecar(
                 && command.contains(profile.backend)
                 && command.contains("--model-name")
                 && command.contains(profile.model_name_arg)
+        }
+        RuntimeLaunchKind::LlamaCppServer => {
+            command.contains("--model")
+                && command.contains("--alias")
+                && command.contains(profile.model_name_arg)
+                && command.contains("--ctx-size")
+                && command.contains("--gpu-layers")
         }
     }
 }
@@ -885,7 +988,9 @@ fn days_since_epoch_to_ymd(mut days: i64) -> (u32, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::managed_rwkv::profile::{MACOS_ARM64_WEBRWKV, WINDOWS_AMD64_CUDA};
+    use crate::managed_rwkv::profile::{
+        MACOS_ARM64_WEBRWKV, WINDOWS_AMD64_CUDA, WINDOWS_AMD64_LLAMACPP_VULKAN,
+    };
 
     #[test]
     fn pick_ephemeral_port_returns_high_port() {
@@ -898,9 +1003,10 @@ mod tests {
         let args = build_command_args(
             &MACOS_ARM64_WEBRWKV,
             &PathBuf::from("/bin/rwkv-server"),
-            &PathBuf::from("/data/vocab.txt"),
+            Some(&PathBuf::from("/data/vocab.txt")),
             &PathBuf::from("/data/model.prefab"),
             8765,
+            None,
         );
         // Spot-check the critical args that Phase 0 hand-validated.
         assert_eq!(args[0], "/bin/rwkv-server");
@@ -920,15 +1026,68 @@ mod tests {
         let args = build_command_args(
             &WINDOWS_AMD64_CUDA,
             &PathBuf::from(r"C:\runtime\rwkv_lighting_cuda.exe"),
-            &PathBuf::from(r"C:\runtime\rwkv_vocab_v20230424.txt"),
+            Some(&PathBuf::from(r"C:\runtime\rwkv_vocab_v20230424.txt")),
             &PathBuf::from(r"C:\models\translate.pth"),
             8765,
+            None,
         );
         assert!(args.iter().any(|arg| arg == "--model-path"));
         assert!(args.iter().any(|arg| arg == "--vocab-path"));
         assert!(!args.iter().any(|arg| arg == "--host"));
         assert!(!args.iter().any(|arg| arg == "--backend"));
         assert!(!args.iter().any(|arg| arg == "--model-name"));
+    }
+
+    #[test]
+    fn windows_command_args_use_llama_cpp_vulkan_contract() {
+        let args = build_command_args(
+            &WINDOWS_AMD64_LLAMACPP_VULKAN,
+            &PathBuf::from(r"C:\runtime\llama-server.exe"),
+            None,
+            &PathBuf::from(r"C:\models\translate.gguf"),
+            8765,
+            None,
+        );
+        assert_eq!(args[0], r"C:\runtime\llama-server.exe");
+        assert!(args.iter().any(|arg| arg == "--model"));
+        assert!(args.iter().any(|arg| arg == "--alias"));
+        assert!(args.iter().any(|arg| arg == "rwkv-translate"));
+        assert!(args.iter().any(|arg| arg == "--ctx-size"));
+        assert!(args.iter().any(|arg| arg == "4096"));
+        assert!(args.iter().any(|arg| arg == "--gpu-layers"));
+        assert!(args.iter().any(|arg| arg == "auto"));
+        assert!(args.iter().any(|arg| arg == "--parallel"));
+        assert!(!args.iter().any(|arg| arg == "--tokenizer"));
+        assert!(!args.iter().any(|arg| arg == "--device"));
+        assert!(!args.iter().any(|arg| arg == "--backend"));
+    }
+
+    #[test]
+    fn llama_cpp_cpu_fallback_uses_gpu_layers_zero_and_device_none() {
+        let args = build_command_args(
+            &WINDOWS_AMD64_LLAMACPP_VULKAN,
+            &PathBuf::from(r"C:\runtime\llama-server.exe"),
+            None,
+            &PathBuf::from(r"C:\models\translate.gguf"),
+            8765,
+            Some("0"),
+        );
+        let idx = args.iter().position(|arg| arg == "--gpu-layers").unwrap();
+        assert_eq!(args[idx + 1], "0");
+        let dev_idx = args.iter().position(|arg| arg == "--device").unwrap();
+        assert_eq!(args[dev_idx + 1], "none");
+    }
+
+    #[test]
+    fn vulkan_device_error_detection() {
+        assert!(is_vulkan_device_error(
+            "llama_model_load: error loading model: vk::PhysicalDevice::createDevice: ErrorExtensionNotPresent"
+        ));
+        assert!(is_vulkan_device_error(
+            "error loading model: vk::Device: ErrorFeatureNotPresent"
+        ));
+        assert!(!is_vulkan_device_error("loading model successfully"));
+        assert!(!is_vulkan_device_error("srv init: running without SSL"));
     }
 
     #[test]
@@ -970,7 +1129,7 @@ mod tests {
             &process,
             &MACOS_ARM64_WEBRWKV,
             &sidecar,
-            &tokenizer,
+            Some(&tokenizer),
             &model
         ));
     }
@@ -989,7 +1148,7 @@ mod tests {
             &other,
             &MACOS_ARM64_WEBRWKV,
             &sidecar,
-            &tokenizer,
+            Some(&tokenizer),
             &model
         ));
     }
@@ -1020,7 +1179,7 @@ mod tests {
             &process,
             &WINDOWS_AMD64_CUDA,
             &sidecar,
-            &tokenizer,
+            Some(&tokenizer),
             &model
         ));
     }

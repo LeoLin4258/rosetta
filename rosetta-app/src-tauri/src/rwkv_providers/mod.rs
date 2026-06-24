@@ -1,5 +1,6 @@
 use std::sync::{atomic::AtomicBool, Arc};
 
+pub mod llama_cpp_chat;
 pub mod mobile_batch_chat;
 
 /// Provider-neutral batch translation input.
@@ -8,15 +9,12 @@ pub mod mobile_batch_chat;
 /// translate request, plus an optional cancellation flag shared with the run
 /// orchestrator. The same shape is used by probes and full translation runs.
 ///
-/// `source_lang` deliberately is **not** in this struct: with the
-/// `rwkv-mobile-batch-chat` provider, language direction is global server
-/// state set once per run via `set_chat_roles_for_pair`. Mixing it into the
-/// per-batch struct invites callers to set roles on every batch (wasteful) or
-/// to forget to set them at run start (silent direction bug). The orchestrator
-/// owns direction; providers only need `target_lang` here for response-prefix
-/// stripping.
+/// `source_lang` is optional: the `rwkv-mobile-batch-chat` provider sets
+/// direction globally via `set_chat_roles_for_pair` and ignores it, while the
+/// `llama-cpp` provider needs it per-request to build the raw prompt.
 pub struct ProviderTranslateBatch<'a> {
     pub source_texts: &'a [String],
+    pub source_lang: &'a str,
     pub target_lang: &'a str,
     pub timeout_ms: u64,
     pub cancel: Option<Arc<AtomicBool>>,

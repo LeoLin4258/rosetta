@@ -20,6 +20,7 @@ use crate::rosetta_jobs::{
     },
 };
 use crate::rwkv_providers::{
+    llama_cpp_chat::{self, LlamaCppChatConfig},
     mobile_batch_chat::{self, MobileBatchChatConfig},
     ProviderTranslateBatch, ProviderTranslateResult,
 };
@@ -1335,6 +1336,39 @@ pub struct RwkvMobileBatchChatRunStartRequest {
     batch_size: usize,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RwkvLlamaCppChatProbeRequest {
+    base_url: String,
+    timeout_ms: u64,
+    source_lang: Option<String>,
+    target_lang: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RwkvLlamaCppChatTranslateRequest {
+    base_url: String,
+    timeout_ms: u64,
+    source_lang: Option<String>,
+    target_lang: Option<String>,
+    source_texts: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RwkvLlamaCppChatRunStartRequest {
+    run_id: String,
+    job_id: String,
+    translation_file_id: String,
+    source_segment_ids: Vec<String>,
+    base_url: String,
+    timeout_ms: u64,
+    source_lang: Option<String>,
+    target_lang: String,
+    batch_size: usize,
+}
+
 #[tauri::command]
 pub async fn probe_rwkv_mobile_batch_chat(
     request: RwkvMobileBatchChatProbeRequest,
@@ -1392,10 +1426,61 @@ pub async fn translate_rwkv_mobile_batch_chat_texts(
         &config,
         ProviderTranslateBatch {
             source_texts: &request.source_texts,
+            source_lang: &source_lang,
             target_lang: &target_lang,
             timeout_ms: config.timeout_ms,
             cancel: None,
             debug_context: Some("mobile-adhoc"),
+        },
+    )
+    .await;
+    Ok(provider_result_into_translate(result))
+}
+
+#[tauri::command]
+pub async fn probe_rwkv_llama_cpp_chat(
+    request: RwkvLlamaCppChatProbeRequest,
+) -> Result<RwkvTranslationApiProbeResult, String> {
+    let config = LlamaCppChatConfig {
+        base_url: request.base_url,
+        timeout_ms: request.timeout_ms,
+    };
+    let source_lang = request.source_lang.as_deref().unwrap_or("en");
+    let target_lang = request.target_lang.as_deref().unwrap_or("zh-CN");
+    let result = llama_cpp_chat::probe(&config, source_lang, target_lang).await;
+    Ok(provider_result_into_probe(result))
+}
+
+#[tauri::command]
+pub async fn translate_rwkv_llama_cpp_chat_texts(
+    request: RwkvLlamaCppChatTranslateRequest,
+) -> Result<RwkvTranslationApiTranslateResult, String> {
+    if request.source_texts.is_empty() {
+        return Ok(RwkvTranslationApiTranslateResult {
+            ok: true,
+            status_code: None,
+            translations: Vec::new(),
+            raw_response_preview: String::new(),
+            message: "没有需要翻译的文本。".to_string(),
+            latency_ms: 0,
+        });
+    }
+
+    let config = LlamaCppChatConfig {
+        base_url: request.base_url,
+        timeout_ms: request.timeout_ms,
+    };
+    let source_lang = request.source_lang.as_deref().unwrap_or("en");
+    let target_lang = request.target_lang.as_deref().unwrap_or("zh-CN");
+    let result = llama_cpp_chat::translate_batch(
+        &config,
+        ProviderTranslateBatch {
+            source_texts: &request.source_texts,
+            source_lang,
+            target_lang,
+            timeout_ms: config.timeout_ms,
+            cancel: None,
+            debug_context: Some("llama-cpp-adhoc"),
         },
     )
     .await;
@@ -1409,6 +1494,15 @@ pub async fn start_rwkv_mobile_batch_chat_run(
     request: RwkvMobileBatchChatRunStartRequest,
 ) -> Result<RwkvTranslationRunStatus, String> {
     start_mobile_batch_chat_run(app, registry.inner(), request).await
+}
+
+#[tauri::command]
+pub async fn start_rwkv_llama_cpp_chat_run(
+    app: AppHandle,
+    registry: State<'_, RwkvTranslationRunRegistry>,
+    request: RwkvLlamaCppChatRunStartRequest,
+) -> Result<RwkvTranslationRunStatus, String> {
+    start_llama_cpp_chat_run(app, registry.inner(), request).await
 }
 
 async fn start_mobile_batch_chat_run(
@@ -1646,6 +1740,7 @@ async fn start_mobile_batch_chat_run(
             &provider_config,
             ProviderTranslateBatch {
                 source_texts: &source_texts,
+                source_lang: &source_lang,
                 target_lang: &request.target_lang,
                 timeout_ms: provider_config.timeout_ms,
                 cancel: Some(cancel.clone()),
@@ -1675,6 +1770,231 @@ async fn start_mobile_batch_chat_run(
             let message = if result.ok {
                 format!(
                     "RWKV /v1/batch/chat 返回 {} 条译文，但本批有 {} 条文本。",
+                    result.translations.len(),
+                    batch.len()
+                )
+            } else {
+                result.message
+            };
+            mark_translation_segments_failed(&mut translation_segments, &batch_ids, &message);
+            failed_segment_ids.extend(batch_ids.clone());
+            let bundle = save_run_segments(
+                &dir,
+                &request.translation_file_id,
+                &request.target_lang,
+                translation_segments.clone(),
+            )?;
+            let status = update_run_status(registry, &request.run_id, |status| {
+                status.state = RwkvTranslationRunState::Failed;
+                status.failed_segment_ids = failed_segment_ids.clone();
+                status.message = message.clone();
+                status.translation_file = Some(bundle.0.clone());
+                status.segments = Some(bundle.1.clone());
+            })?;
+            return Ok(status);
+        }
+
+        mark_translation_segments_done(&mut translation_segments, &batch_ids, &result.translations);
+        completed_segment_ids.extend(batch_ids);
+        let bundle = save_run_segments(
+            &dir,
+            &request.translation_file_id,
+            &request.target_lang,
+            translation_segments.clone(),
+        )?;
+        update_run_status(registry, &request.run_id, |status| {
+            status.completed_segment_ids = completed_segment_ids.clone();
+            status.message = format!("已完成 {} 段。", status.completed_segment_ids.len());
+            status.translation_file = Some(bundle.0.clone());
+            status.segments = Some(bundle.1.clone());
+        })?;
+    }
+
+    update_run_status(registry, &request.run_id, |status| {
+        status.state = RwkvTranslationRunState::Completed;
+        status.completed_segment_ids = completed_segment_ids;
+        status.failed_segment_ids = failed_segment_ids;
+        status.message = "翻译运行完成。".to_string();
+    })
+}
+
+async fn start_llama_cpp_chat_run(
+    app: AppHandle,
+    registry: &RwkvTranslationRunRegistry,
+    request: RwkvLlamaCppChatRunStartRequest,
+) -> Result<RwkvTranslationRunStatus, String> {
+    if request.run_id.trim().is_empty() {
+        return Err("翻译运行 id 不能为空。".to_string());
+    }
+
+    let root = jobs_root(&app)?;
+    let dir = checked_job_dir(&root, &request.job_id)?;
+    let source_segments: Vec<Segment> = read_json(&dir.join("segments.json"))?;
+    let mut translation_segments = read_translation_segments(&dir, &request.translation_file_id)?;
+    let source_segment_ids = request
+        .source_segment_ids
+        .iter()
+        .cloned()
+        .collect::<HashSet<_>>();
+    let targets = source_segments
+        .iter()
+        .filter(|segment| source_segment_ids.contains(&segment.id))
+        .filter(|segment| segment.status != "skipped" && !segment.source_text.trim().is_empty())
+        .filter(|segment| {
+            translation_segments
+                .iter()
+                .find(|translation| translation.source_segment_id == segment.id)
+                .is_some_and(|translation| translation.status != "skipped")
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    let initial_bundle = save_run_segments(
+        &dir,
+        &request.translation_file_id,
+        &request.target_lang,
+        translation_segments.clone(),
+    )?;
+    let initial_status = RwkvTranslationRunStatus {
+        run_id: request.run_id.clone(),
+        job_id: request.job_id.clone(),
+        translation_file_id: request.translation_file_id.clone(),
+        state: RwkvTranslationRunState::Running,
+        completed_segment_ids: Vec::new(),
+        failed_segment_ids: Vec::new(),
+        message: if targets.is_empty() {
+            "没有需要翻译的文本。".to_string()
+        } else {
+            "翻译运行已开始。".to_string()
+        },
+        translation_file: Some(initial_bundle.0),
+        segments: Some(initial_bundle.1),
+    };
+    {
+        let mut runs = registry
+            .runs
+            .lock()
+            .map_err(|_| "翻译运行状态锁不可用。".to_string())?;
+        runs.insert(
+            request.run_id.clone(),
+            RwkvTranslationRunRecord {
+                cancel: cancel.clone(),
+                status: initial_status.clone(),
+            },
+        );
+    }
+
+    if targets.is_empty() {
+        let status = update_run_status(registry, &request.run_id, |status| {
+            status.state = RwkvTranslationRunState::Completed;
+            status.message = "没有需要翻译的文本。".to_string();
+        })?;
+        return Ok(status);
+    }
+
+    let provider_config = LlamaCppChatConfig {
+        base_url: request.base_url,
+        timeout_ms: request.timeout_ms,
+    };
+    let source_lang = request.source_lang.as_deref().unwrap_or("en").to_string();
+    let requested = if request.batch_size == 0 {
+        llama_cpp_chat::DEFAULT_PARALLEL_REQUESTS
+    } else {
+        request.batch_size
+    };
+    let ceiling = requested
+        .min(llama_cpp_chat::DEFAULT_PARALLEL_REQUESTS)
+        .max(1);
+    let planned_batches = mobile_batch_chat::plan_batches(&targets, ceiling, |segment| {
+        segment.source_text.chars().count()
+    });
+
+    let mut completed_segment_ids = Vec::new();
+    let mut failed_segment_ids = Vec::new();
+
+    for (batch_index, batch) in planned_batches.iter().enumerate() {
+        if cancel.load(Ordering::SeqCst) {
+            eprintln!(
+                "[rwkv-cancel] llama_cpp_chat: cancel before batch #{batch_index} (of {})",
+                planned_batches.len()
+            );
+            let status = cancel_current_run(
+                registry,
+                &dir,
+                &request.run_id,
+                &request.translation_file_id,
+                &request.target_lang,
+                &mut translation_segments,
+                &[],
+            )?;
+            return Ok(status);
+        }
+
+        let batch_ids = batch
+            .iter()
+            .map(|segment| segment.id.clone())
+            .collect::<Vec<_>>();
+        mark_translation_segments_translating(&mut translation_segments, &batch_ids);
+        let bundle = save_run_segments(
+            &dir,
+            &request.translation_file_id,
+            &request.target_lang,
+            translation_segments.clone(),
+        )?;
+        update_run_status(registry, &request.run_id, |status| {
+            status.state = RwkvTranslationRunState::Running;
+            status.message = "正在翻译当前批次。".to_string();
+            status.translation_file = Some(bundle.0.clone());
+            status.segments = Some(bundle.1.clone());
+        })?;
+
+        let source_texts = batch
+            .iter()
+            .map(|segment| segment.source_text.clone())
+            .collect::<Vec<_>>();
+        let debug_context = format!(
+            "llama-cpp-run:{}:{}:{}:{}->{}",
+            request.run_id,
+            request.job_id,
+            request.translation_file_id,
+            source_lang,
+            request.target_lang
+        );
+        let result = llama_cpp_chat::translate_batch(
+            &provider_config,
+            ProviderTranslateBatch {
+                source_texts: &source_texts,
+                source_lang: &source_lang,
+                target_lang: &request.target_lang,
+                timeout_ms: provider_config.timeout_ms,
+                cancel: Some(cancel.clone()),
+                debug_context: Some(&debug_context),
+            },
+        )
+        .await;
+
+        if cancel.load(Ordering::SeqCst) {
+            eprintln!(
+                "[rwkv-cancel] llama_cpp_chat: cancel after batch #{batch_index} translate_batch returned ok={}",
+                result.ok
+            );
+            let status = cancel_current_run(
+                registry,
+                &dir,
+                &request.run_id,
+                &request.translation_file_id,
+                &request.target_lang,
+                &mut translation_segments,
+                &batch_ids,
+            )?;
+            return Ok(status);
+        }
+
+        if !result.ok || result.translations.len() != batch.len() {
+            let message = if result.ok {
+                format!(
+                    "llama.cpp 返回 {} 条译文，但本批有 {} 条文本。",
                     result.translations.len(),
                     batch.len()
                 )
@@ -1770,6 +2090,40 @@ pub async fn translate_batch_via_lightning(
         target_lang,
         source_texts,
         debug_context,
+    )
+    .await;
+    if result.ok {
+        Ok(result.translations)
+    } else {
+        Err(result.message)
+    }
+}
+
+/// Translate a batch of texts via the llama.cpp raw completion API.
+/// Used by the PDF translation OpenAI shim when the Windows Vulkan provider is active.
+pub async fn translate_batch_via_llama_cpp(
+    base_url: &str,
+    timeout_ms: u64,
+    source_lang: &str,
+    target_lang: &str,
+    source_texts: &[String],
+    cancel: Option<Arc<AtomicBool>>,
+    debug_context: Option<&str>,
+) -> Result<Vec<String>, String> {
+    let config = LlamaCppChatConfig {
+        base_url: base_url.to_string(),
+        timeout_ms,
+    };
+    let result = llama_cpp_chat::translate_batch(
+        &config,
+        ProviderTranslateBatch {
+            source_texts,
+            source_lang,
+            target_lang,
+            timeout_ms,
+            cancel,
+            debug_context,
+        },
     )
     .await;
     if result.ok {

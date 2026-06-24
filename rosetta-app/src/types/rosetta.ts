@@ -243,6 +243,7 @@ export type RwkvProviderPreference = "local" | "remote-api";
 export type RwkvProviderId =
   | "rwkv-lightning-contents"
   | "rwkv-mobile-batch-chat"
+  | "llama-cpp-chat-completions"
   | "custom-rwkv-api";
 
 export type RwkvLightningContentsProviderHandle = {
@@ -260,9 +261,16 @@ export type RwkvMobileBatchChatProviderHandle = {
   timeoutMs: number;
 };
 
+export type RwkvLlamaCppChatProviderHandle = {
+  id: "llama-cpp-chat-completions";
+  baseUrl: string;
+  timeoutMs: number;
+};
+
 export type RwkvProviderHandle =
   | RwkvLightningContentsProviderHandle
-  | RwkvMobileBatchChatProviderHandle;
+  | RwkvMobileBatchChatProviderHandle
+  | RwkvLlamaCppChatProviderHandle;
 
 export type RwkvMobileBatchChatProbeRequest = {
   baseUrl: string;
@@ -280,6 +288,33 @@ export type RwkvMobileBatchChatTranslateRequest = {
 };
 
 export type RwkvMobileBatchChatRunStartRequest = {
+  runId: string;
+  jobId: string;
+  translationFileId: string;
+  sourceSegmentIds: string[];
+  baseUrl: string;
+  timeoutMs: number;
+  sourceLang?: string | null;
+  targetLang: string;
+  batchSize: number;
+};
+
+export type RwkvLlamaCppChatProbeRequest = {
+  baseUrl: string;
+  timeoutMs: number;
+  sourceLang?: string | null;
+  targetLang?: string | null;
+};
+
+export type RwkvLlamaCppChatTranslateRequest = {
+  baseUrl: string;
+  timeoutMs: number;
+  sourceLang?: string | null;
+  targetLang?: string | null;
+  sourceTexts: string[];
+};
+
+export type RwkvLlamaCppChatRunStartRequest = {
   runId: string;
   jobId: string;
   translationFileId: string;
@@ -579,6 +614,8 @@ export type ManagedRuntimeProfileSummary = {
   platformArch: string;
   runtimeLabel: string;
   hardwareRequirement: string;
+  recommended: boolean;
+  runtimeWarning: string | null;
   backend: string;
   modelFilename: string;
   modelSizeBytes: number;
@@ -615,6 +652,7 @@ export type ManagedRuntimeStatus = {
   state: ManagedRuntimeState;
   message: string;
   profile: ManagedRuntimeProfileSummary | null;
+  candidateProfiles: ManagedRuntimeProfileSummary[];
   paths: ManagedRuntimePaths | null;
   installPlan: ManagedRuntimeInstallPlan | null;
   hardware: ManagedRuntimeHardwareSupport | null;

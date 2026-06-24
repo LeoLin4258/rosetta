@@ -217,11 +217,15 @@ pub async fn start_managed_rwkv_runtime(
         eprintln!("[rwkv-start] ABORT: {msg}");
         msg
     })?;
-    let tokenizer = static_status.tokenizer_path.ok_or_else(|| {
-        let msg = "找不到分词表文件。".to_string();
-        eprintln!("[rwkv-start] ABORT: {msg}");
-        msg
-    })?;
+    let tokenizer = if profile.requires_tokenizer() {
+        Some(static_status.tokenizer_path.ok_or_else(|| {
+            let msg = "找不到分词表文件。".to_string();
+            eprintln!("[rwkv-start] ABORT: {msg}");
+            msg
+        })?)
+    } else {
+        None
+    };
     let model = static_status
         .layout
         .model_extracted_dir
