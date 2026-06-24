@@ -363,7 +363,7 @@ export function PdfDocumentPreview({
             canRenderPage={(pageIndex) => pageStatus(pageIndex)?.status === "translated"}
             pageActivity={(pageIndex) => pageStatus(pageIndex)?.status ?? null}
             renderPage={(pageIndex, width) =>
-              renderRosettaPdfTranslatedPageAsPng(jobId, pageIndex + 1, width)
+              renderRosettaPdfTranslatedPageAsPng(jobId, pageIndex + 1, width, targetLang)
             }
             pageStatus={(pageIndex) => translatedPageLabel(pageIndex + 1, pageStatus(pageIndex))}
           />
@@ -394,7 +394,7 @@ function patchPdfPageState(
     translatedPdfPath:
       status === "translated"
         ? existing?.translatedPdfPath ??
-          `pdf-pages/page-${String(update.pageNumber).padStart(4, "0")}.pdf`
+          pdfPageRelativePath(update.targetLang, update.pageNumber)
         : existing?.translatedPdfPath ?? null,
     error: status === "failed" ? existing?.error ?? "可重试" : null,
     updatedAt: now,
@@ -447,6 +447,18 @@ function translatedPageLabel(
   if (page.status === "queued") return `第 ${pageNumber} 页排队中…`;
   if (page.status === "failed") return `第 ${pageNumber} 页失败：${page.error ?? "可重试"}`;
   return `第 ${pageNumber} 页未翻译，导出时保留原文`;
+}
+
+function pdfPageRelativePath(targetLang: string, pageNumber: number) {
+  return `pdf-pages/${pdfPageLanguageDir(targetLang)}/page-${String(pageNumber).padStart(4, "0")}.pdf`;
+}
+
+function pdfPageLanguageDir(targetLang: string) {
+  const slug = targetLang
+    .trim()
+    .replace(/[^A-Za-z0-9_-]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return slug || "unknown";
 }
 
 function phaseLabel(phase: string) {

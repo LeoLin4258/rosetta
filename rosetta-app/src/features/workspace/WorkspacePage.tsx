@@ -782,7 +782,11 @@ export function WorkspacePage() {
           setPageError("PDF 暂不支持双语对照导出。");
           return;
         }
-        await exportRosettaTranslatedPdf(activeJobId, targetPath);
+        await exportRosettaTranslatedPdf(
+          activeJobId,
+          targetPath,
+          activeTranslationFile?.targetLang ?? targetLang
+        );
       } else {
         await exportRosettaTranslationFile(
           activeJobId,

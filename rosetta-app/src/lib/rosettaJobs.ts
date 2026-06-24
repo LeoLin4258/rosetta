@@ -331,9 +331,14 @@ export function translateRosettaPdfPages(
 /// user-chosen destination. Re-generation is unnecessary — the bytes on disk
 /// are exactly the v1 pipeline output. PDF v1 doesn't support bilingual
 /// side-by-side export.
-export function exportRosettaTranslatedPdf(jobId: string, targetPath: string) {
+export function exportRosettaTranslatedPdf(
+  jobId: string,
+  targetPath: string,
+  targetLang?: string | null,
+) {
   return invoke<RosettaExportResult>("export_rosetta_translated_pdf", {
     jobId,
+    targetLang,
     targetPath,
   });
 }
@@ -374,12 +379,14 @@ export async function renderRosettaPdfTranslatedPageAsPng(
   jobId: string,
   pageNumber: number,
   targetWidth: number,
+  targetLang?: string | null,
 ): Promise<Uint8Array> {
   const buffer = await invoke<ArrayBuffer>(
     "render_rosetta_pdf_translated_page_as_png",
     {
       jobId,
       pageNumber,
+      targetLang,
       targetWidth,
     },
   );

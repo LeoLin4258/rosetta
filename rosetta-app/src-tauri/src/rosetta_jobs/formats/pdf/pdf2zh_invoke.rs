@@ -304,7 +304,8 @@ pub(crate) async fn invoke_pdf2zh(
                 format!("{tail}\n--- worker error ---\n{message}"),
             );
             return Err(PdfError::Pdf2zhFailed(format!(
-                "PDF 版面处理没有完成。请重试；若持续失败，可查看日志：{}",
+                "PDF 版面处理没有完成：{}。日志：{}",
+                concise_pdf2zh_error(&message),
                 output_log.display()
             )));
         }
@@ -507,6 +508,20 @@ fn append_live_log(file: &Arc<Mutex<Option<std::fs::File>>>, stream: &str, line:
     };
     let _ = writeln!(handle, "[{stream}] {line}");
     let _ = handle.flush();
+}
+
+fn concise_pdf2zh_error(message: &str) -> String {
+    let trimmed = message.trim();
+    if trimmed.is_empty() {
+        return "未知错误".to_string();
+    }
+    trimmed
+        .lines()
+        .last()
+        .unwrap_or(trimmed)
+        .chars()
+        .take(240)
+        .collect()
 }
 
 fn remember_line(lines: &Arc<Mutex<Vec<String>>>, line: &str) {

@@ -71,17 +71,34 @@ pub(crate) fn read_pdf_page_translation_state(
     source_page_count: u32,
     target_lang: &str,
 ) -> Result<PdfPageTranslationState, String> {
-    let path = job_dir.join(PDF_PAGE_TRANSLATIONS_FILENAME);
+    let preferred_path = job_dir.join(pdf_page_translation_state_filename(target_lang));
+    let legacy_path = job_dir.join(PDF_PAGE_TRANSLATIONS_FILENAME);
+    let path = if preferred_path.is_file() {
+        preferred_path
+    } else {
+        legacy_path
+    };
     if !path.is_file() {
         return Ok(empty_state(source_page_count, target_lang));
     }
 
     let mut state: PdfPageTranslationState = read_json(&path)?;
+    if state.target_lang != target_lang {
+        return Ok(empty_state(source_page_count, target_lang));
+    }
+
     state.source_page_count = source_page_count;
-    state.target_lang = target_lang.to_string();
     for page in &mut state.pages {
         if page.status == "translating" || page.status == "queued" {
             page.status = "pending".to_string();
+            page.updated_at = timestamp_ms_string();
+        }
+        if is_unscoped_legacy_page_path(page.translated_pdf_path.as_deref())
+            && !is_trusted_legacy_target_lang(target_lang)
+        {
+            page.status = "pending".to_string();
+            page.translated_pdf_path = None;
+            page.error = None;
             page.updated_at = timestamp_ms_string();
         }
     }
@@ -92,7 +109,10 @@ pub(crate) fn write_pdf_page_translation_state(
     job_dir: &Path,
     state: &PdfPageTranslationState,
 ) -> Result<(), String> {
-    write_json(&job_dir.join(PDF_PAGE_TRANSLATIONS_FILENAME), state)
+    write_json(
+        &job_dir.join(pdf_page_translation_state_filename(&state.target_lang)),
+        state,
+    )
 }
 
 pub(crate) fn upsert_pdf_page(
@@ -127,6 +147,38 @@ pub(crate) fn upsert_pdf_page(
 
 pub(crate) fn pdf_page_filename(page_number: u32) -> String {
     format!("page-{page_number:04}.pdf")
+}
+
+pub(crate) fn pdf_page_language_dir(target_lang: &str) -> String {
+    let mut slug = String::new();
+    for ch in target_lang.trim().chars() {
+        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+            slug.push(ch);
+        } else if !slug.ends_with('_') {
+            slug.push('_');
+        }
+    }
+    let slug = slug.trim_matches('_');
+    if slug.is_empty() {
+        "unknown".to_string()
+    } else {
+        slug.to_string()
+    }
+}
+
+pub(crate) fn pdf_page_translation_state_filename(target_lang: &str) -> String {
+    format!(
+        "pdf_page_translations.{}.json",
+        pdf_page_language_dir(target_lang)
+    )
+}
+
+pub(crate) fn pdf_page_relative_path_for_lang(target_lang: &str, page_number: u32) -> String {
+    format!(
+        "pdf-pages/{}/{}",
+        pdf_page_language_dir(target_lang),
+        pdf_page_filename(page_number)
+    )
 }
 
 pub(crate) fn pdf_page_relative_path(page_number: u32) -> String {
@@ -191,4 +243,16 @@ fn parse_page_number(input: &str, source_page_count: u32) -> Result<u32, String>
         ));
     }
     Ok(page)
+}
+
+fn is_unscoped_legacy_page_path(path: Option<&str>) -> bool {
+    path.is_some_and(|path| {
+        path.strip_prefix("pdf-pages/page-")
+            .is_some_and(|rest| rest.ends_with(".pdf"))
+    })
+}
+
+fn is_trusted_legacy_target_lang(target_lang: &str) -> bool {
+    let normalized = target_lang.trim().to_ascii_lowercase();
+    normalized == "zh" || normalized.starts_with("zh-")
 }

@@ -461,7 +461,9 @@ async fn translate_pdf_pages_inner(
     let pages = page_state::parse_pdf_page_selection(page_selection, page_count)?;
     let root = path::jobs_root(app)?;
     let dir = path::checked_job_dir(&root, job_id)?;
-    let pages_dir = dir.join("pdf-pages");
+    let pages_dir = dir
+        .join("pdf-pages")
+        .join(page_state::pdf_page_language_dir(target_lang));
     fs::create_dir_all(&pages_dir).map_err(|error| format!("无法创建 PDF 页缓存目录: {error}"))?;
     let mut state = page_state::read_pdf_page_translation_state(&dir, page_count, target_lang)?;
     let source_lang = source_lang
@@ -584,10 +586,13 @@ async fn translate_pdf_pages_inner(
     let dir_for_cb = dir.clone();
     let app_for_cb = app.clone();
     let job_id_for_cb = job_id.to_string();
+    let target_lang_for_cb = target_lang.to_string();
     let state_for_cb: &mut formats::pdf::page_state::PdfPageTranslationState = &mut state;
     let mut on_page_done = move |page_number: u32, worker_file: std::path::PathBuf| {
         let assembly_started = std::time::Instant::now();
-        let target_path = dir_for_cb.join(page_state::pdf_page_relative_path(page_number));
+        let relative_path =
+            page_state::pdf_page_relative_path_for_lang(&target_lang_for_cb, page_number);
+        let target_path = dir_for_cb.join(&relative_path);
         if let Some(parent) = target_path.parent() {
             fs::create_dir_all(parent).ok();
         }
@@ -601,7 +606,7 @@ async fn translate_pdf_pages_inner(
                     state_for_cb,
                     page_number,
                     "translated",
-                    Some(page_state::pdf_page_relative_path(page_number)),
+                    Some(relative_path),
                     None,
                 );
                 let _ = page_state::write_pdf_page_translation_state(&dir_for_cb, state_for_cb);
@@ -733,6 +738,7 @@ pub fn render_rosetta_pdf_translated_page_as_png(
     app: AppHandle,
     job_id: String,
     page_number: u32,
+    target_lang: Option<String>,
     target_width: u32,
 ) -> Result<tauri::ipc::Response, String> {
     if page_number == 0 {
@@ -740,15 +746,62 @@ pub fn render_rosetta_pdf_translated_page_as_png(
     }
     let root = path::jobs_root(&app)?;
     let dir = path::checked_job_dir(&root, &job_id)?;
-    let page_path = dir.join(formats::pdf::page_state::pdf_page_relative_path(
-        page_number,
-    ));
-    if !page_path.is_file() {
+    let bundle = store::load_job_bundle(&app, &job_id)?;
+    let target_lang = resolve_pdf_target_lang(&bundle, target_lang);
+    let source_path = store::cached_pdf_source_path(&app, &job_id)?;
+    let page_count =
+        formats::pdf::count_pages(&app, &source_path).map_err(|error| error.user_message())?;
+    let state =
+        formats::pdf::page_state::read_pdf_page_translation_state(&dir, page_count, &target_lang)?;
+    let page_path = translated_page_artifact_path(&dir, &state, &target_lang, page_number);
+    let Some(page_path) = page_path else {
         return Err(format!("第 {page_number} 页还没有译文 PDF。"));
-    }
+    };
     let bytes = formats::pdf::render_page_as_png(&app, &page_path, 0, target_width)
         .map_err(|error| error.user_message())?;
     Ok(tauri::ipc::Response::new(bytes))
+}
+
+fn resolve_pdf_target_lang(
+    bundle: &model::RosettaJobBundle,
+    target_lang: Option<String>,
+) -> String {
+    target_lang
+        .filter(|lang| !lang.trim().is_empty())
+        .or_else(|| {
+            bundle
+                .document
+                .files
+                .first()
+                .and_then(|file| file.target_lang.clone())
+        })
+        .unwrap_or_else(|| bundle.document.target_lang.clone())
+}
+
+fn translated_page_artifact_path(
+    job_dir: &Path,
+    state: &formats::pdf::page_state::PdfPageTranslationState,
+    target_lang: &str,
+    page_number: u32,
+) -> Option<std::path::PathBuf> {
+    use formats::pdf::page_state;
+
+    let page = state.pages.iter().find(|page| {
+        page.page_number == page_number
+            && page.status == "translated"
+            && page.translated_pdf_path.is_some()
+    })?;
+    let mut candidates = Vec::new();
+    if let Some(relative_path) = page.translated_pdf_path.as_ref() {
+        candidates.push(job_dir.join(relative_path));
+    }
+    candidates.push(job_dir.join(page_state::pdf_page_relative_path_for_lang(
+        target_lang,
+        page_number,
+    )));
+    candidates.push(job_dir.join(page_state::pdf_page_relative_path(page_number)));
+
+    candidates.into_iter().find(|path| path.is_file())
 }
 
 fn emit_pdf_page_progress(app: &AppHandle, job_id: &str, page_number: u32, status: &str) {
@@ -781,6 +834,7 @@ fn pdf_path_for_kind(
 pub fn export_rosetta_translated_pdf(
     app: AppHandle,
     job_id: String,
+    target_lang: Option<String>,
     target_path: String,
 ) -> Result<model::RosettaExportResult, String> {
     let source_pdf = store::cached_pdf_source_path(&app, &job_id)?;
@@ -789,12 +843,7 @@ pub fn export_rosetta_translated_pdf(
     let root = path::jobs_root(&app)?;
     let dir = path::checked_job_dir(&root, &job_id)?;
     let bundle = store::load_job_bundle(&app, &job_id)?;
-    let target_lang = bundle
-        .document
-        .files
-        .first()
-        .and_then(|file| file.target_lang.clone())
-        .unwrap_or_else(|| bundle.document.target_lang.clone());
+    let target_lang = resolve_pdf_target_lang(&bundle, target_lang);
     let state =
         formats::pdf::page_state::read_pdf_page_translation_state(&dir, page_count, &target_lang)?;
     let assembled_path = store::translated_pdf_output_path(&app, &job_id)?;

@@ -55,6 +55,17 @@ mod tests {
             "a persistent Windows worker must not hold the per-job output directory as its cwd"
         );
     }
+
+    #[test]
+    fn detects_repeated_rwkv_errors_from_pdf2zh() {
+        assert!(super::is_pdf2zh_rwkv_error(
+            "ERROR:pdf2zh.converter:RWKV 翻译失败: llama.cpp /completion 返回 HTTP 400"
+        ));
+        assert!(super::is_pdf2zh_rwkv_error(
+            "request (393 tokens) exceeds the available context size (256 tokens)"
+        ));
+        assert!(!super::is_pdf2zh_rwkv_error("100%|██████████| 4/4"));
+    }
 }
 
 /// Status broadcast to the frontend so the header can show a live "PDF 引擎"
@@ -570,6 +581,8 @@ impl WorkerProcess {
         }
 
         let mut on_page = on_page;
+        let mut repeated_rwkv_error_count = 0usize;
+        let mut last_rwkv_error = String::new();
         loop {
             tokio::select! {
                 event = self.events.recv() => {
@@ -607,7 +620,27 @@ impl WorkerProcess {
                 }
                 stderr_line = self.stderr_lines.recv(), if self.stderr_open => {
                     match stderr_line {
-                        Some(text) => on_stderr(&text),
+                        Some(text) => {
+                            on_stderr(&text);
+                            if is_pdf2zh_rwkv_error(&text) {
+                                let normalized = normalize_pdf2zh_error(&text);
+                                if normalized == last_rwkv_error {
+                                    repeated_rwkv_error_count += 1;
+                                } else {
+                                    last_rwkv_error = normalized;
+                                    repeated_rwkv_error_count = 1;
+                                }
+                                if repeated_rwkv_error_count >= 6 {
+                                    return WorkerTranslateOutcome::WorkerLost(format!(
+                                        "PDF 翻译连续失败，已停止当前 worker。最后错误：{}",
+                                        text.trim()
+                                    ));
+                                }
+                            } else if !text.trim().is_empty() {
+                                repeated_rwkv_error_count = 0;
+                                last_rwkv_error.clear();
+                            }
+                        }
                         None => self.stderr_open = false,
                     }
                 }
@@ -618,6 +651,22 @@ impl WorkerProcess {
             }
         }
     }
+}
+
+fn is_pdf2zh_rwkv_error(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    lower.contains("rwkv 翻译失败")
+        || lower.contains("exceeds the available context size")
+        || lower.contains("exceed_context_size_error")
+}
+
+fn normalize_pdf2zh_error(line: &str) -> String {
+    line.trim()
+        .split("最后错误：")
+        .last()
+        .unwrap_or(line)
+        .trim()
+        .to_string()
 }
 
 /// Run one translate job on the shared worker, spawning it first if needed.

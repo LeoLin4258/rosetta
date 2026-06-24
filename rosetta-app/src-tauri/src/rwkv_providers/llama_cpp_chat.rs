@@ -214,10 +214,12 @@ async fn translate_one(
             &[],
             Some(&response_text),
         );
+        let detail = llama_cpp_error_message(&response_text)
+            .unwrap_or_else(|| format!("llama.cpp /completion 返回 HTTP {http_status}。"));
         return Err(SingleTranslationError {
             status_code: http_status,
             raw_response: response_text,
-            message: format!("llama.cpp /completion 返回 HTTP {http_status}。"),
+            message: format!("llama.cpp /completion 返回 HTTP {http_status}: {detail}"),
         });
     }
 
@@ -305,6 +307,17 @@ fn parse_translation(response_text: &str) -> Result<String, String> {
         return Err("completion returned empty content".to_string());
     }
     Ok(content)
+}
+
+fn llama_cpp_error_message(response_text: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(response_text).ok()?;
+    let error = value.get("error")?;
+    let message = error
+        .get("message")
+        .and_then(|message| message.as_str())
+        .or_else(|| error.as_str())?;
+    let message = message.trim();
+    (!message.is_empty()).then(|| message.to_string())
 }
 
 fn log_llama_rwkv_io(
@@ -508,6 +521,20 @@ mod tests {
     fn completion_request_reverse_direction() {
         let request = build_completion_request("你好世界", "zh-CN", "en");
         assert_eq!(request.prompt, "Chinese: 你好世界\n\nEnglish:");
+    }
+
+    #[test]
+    fn extracts_llama_cpp_error_message() {
+        let response = json!({
+            "error": {
+                "message": "request (393 tokens) exceeds the available context size (256 tokens)"
+            }
+        });
+
+        assert_eq!(
+            llama_cpp_error_message(&response.to_string()).as_deref(),
+            Some("request (393 tokens) exceeds the available context size (256 tokens)")
+        );
     }
 
     #[test]

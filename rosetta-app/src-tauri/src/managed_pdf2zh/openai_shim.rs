@@ -21,6 +21,7 @@ use crate::rwkv_providers::{
 };
 
 const DEFAULT_MAX_BATCH_SIZE: usize = 4;
+const PDF_SHIM_TARGET_PROMPT_TOKENS: usize = 180;
 
 /// Upper bound on `pdf2zh --thread`. pdf2zh.py spawns this many Python
 /// multiprocessing workers; pushing it too high makes the worker-pool setup
@@ -189,6 +190,7 @@ struct ShimState {
     batch_tx: mpsc::Sender<PendingTranslation>,
     log_file: PathBuf,
     debug: bool,
+    target_lang: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -303,6 +305,7 @@ pub async fn spawn_shim(
         batch_tx,
         log_file,
         debug,
+        target_lang,
     });
     let app = Router::new()
         .route("/v1/chat/completions", post(chat_completions))
@@ -598,26 +601,21 @@ async fn chat_completions(
         }));
     }
 
-    let (result_tx, result_rx) = oneshot::channel();
-    state
-        .batch_tx
-        .send(PendingTranslation { text, result_tx })
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "翻译批处理队列已关闭。".to_string(),
-            )
-        })?;
+    let chunks = split_pdf_shim_text(&text);
+    if chunks.len() > 1 {
+        append_log(
+            state.debug,
+            &state.log_file,
+            &format!(
+                "split long request into {} chunk(s), estimated_tokens={}",
+                chunks.len(),
+                estimate_prompt_tokens(&text)
+            ),
+        );
+    }
 
-    let content = result_rx
+    let content = translate_chunks(&state, chunks)
         .await
-        .map_err(|_| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "批处理结果接收失败。".to_string(),
-            )
-        })?
         .map_err(|error| (StatusCode::BAD_GATEWAY, format!("RWKV 翻译失败: {error}")))?;
 
     append_log(
@@ -626,6 +624,29 @@ async fn chat_completions(
         &format!("translation_preview={}", preview(&content)),
     );
     Ok(openai_response(content))
+}
+
+async fn translate_chunks(state: &Arc<ShimState>, chunks: Vec<String>) -> Result<String, String> {
+    let mut receivers = Vec::with_capacity(chunks.len());
+    for text in chunks {
+        let (result_tx, result_rx) = oneshot::channel();
+        state
+            .batch_tx
+            .send(PendingTranslation { text, result_tx })
+            .await
+            .map_err(|_| "翻译批处理队列已关闭。".to_string())?;
+        receivers.push(result_rx);
+    }
+
+    let mut translations = Vec::with_capacity(receivers.len());
+    for receiver in receivers {
+        let translation = receiver
+            .await
+            .map_err(|_| "批处理结果接收失败。".to_string())??;
+        translations.push(translation);
+    }
+
+    Ok(join_translated_chunks(translations, &state.target_lang))
 }
 
 fn openai_response(content: String) -> Json<ChatCompletionResponse> {
@@ -670,6 +691,181 @@ fn extract_pdf2zh_source_text(content: &str) -> Option<String> {
         .find(translated_marker)
         .unwrap_or(after_source.len());
     Some(after_source[..source_end].trim().to_string())
+}
+
+fn split_pdf_shim_text(text: &str) -> Vec<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() || estimate_prompt_tokens(trimmed) <= PDF_SHIM_TARGET_PROMPT_TOKENS {
+        return vec![trimmed.to_string()];
+    }
+
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+    for unit in split_pdf_text_units(trimmed) {
+        push_pdf_text_unit(&mut chunks, &mut current, unit);
+    }
+    if !current.trim().is_empty() {
+        chunks.push(current.trim().to_string());
+    }
+    chunks
+        .into_iter()
+        .flat_map(split_oversized_pdf_chunk)
+        .filter(|chunk| !chunk.trim().is_empty())
+        .collect()
+}
+
+fn push_pdf_text_unit(chunks: &mut Vec<String>, current: &mut String, unit: &str) {
+    let unit = unit.trim();
+    if unit.is_empty() {
+        return;
+    }
+    let candidate = if current.is_empty() {
+        unit.to_string()
+    } else {
+        format!("{} {}", current.trim(), unit)
+    };
+    if !current.is_empty() && estimate_prompt_tokens(&candidate) > PDF_SHIM_TARGET_PROMPT_TOKENS {
+        chunks.push(current.trim().to_string());
+        current.clear();
+    }
+    if !current.is_empty() {
+        current.push(' ');
+    }
+    current.push_str(unit);
+}
+
+fn split_oversized_pdf_chunk(chunk: String) -> Vec<String> {
+    if estimate_prompt_tokens(&chunk) <= PDF_SHIM_TARGET_PROMPT_TOKENS {
+        return vec![chunk];
+    }
+
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+    for word in chunk.split_whitespace() {
+        let candidate = if current.is_empty() {
+            word.to_string()
+        } else {
+            format!("{} {}", current, word)
+        };
+        if !current.is_empty() && estimate_prompt_tokens(&candidate) > PDF_SHIM_TARGET_PROMPT_TOKENS
+        {
+            chunks.push(current.trim().to_string());
+            current.clear();
+        }
+        if estimate_prompt_tokens(word) > PDF_SHIM_TARGET_PROMPT_TOKENS {
+            if !current.trim().is_empty() {
+                chunks.push(current.trim().to_string());
+                current.clear();
+            }
+            chunks.extend(hard_split_pdf_token(word));
+            continue;
+        }
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(word);
+    }
+    if !current.trim().is_empty() {
+        chunks.push(current.trim().to_string());
+    }
+    chunks
+}
+
+fn hard_split_pdf_token(token: &str) -> Vec<String> {
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+    for ch in token.chars() {
+        let candidate = format!("{current}{ch}");
+        if !current.is_empty() && estimate_prompt_tokens(&candidate) > PDF_SHIM_TARGET_PROMPT_TOKENS
+        {
+            chunks.push(current);
+            current = String::new();
+        }
+        current.push(ch);
+    }
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+    chunks
+}
+
+fn split_pdf_text_units(text: &str) -> Vec<&str> {
+    let mut units = Vec::new();
+    let mut start = 0;
+    for (index, ch) in text.char_indices() {
+        let end = index + ch.len_utf8();
+        if ch == '\n' || is_sentence_boundary(text, index, ch) {
+            if start < end {
+                units.push(&text[start..end]);
+            }
+            start = end;
+        }
+    }
+    if start < text.len() {
+        units.push(&text[start..]);
+    }
+    units
+}
+
+fn is_sentence_boundary(text: &str, index: usize, ch: char) -> bool {
+    if matches!(ch, '。' | '？' | '！' | '；') {
+        return true;
+    }
+    if !matches!(ch, '.' | '?' | '!' | ';') {
+        return false;
+    }
+    let prev = text[..index].chars().next_back();
+    let next = text[index + ch.len_utf8()..].chars().next();
+    if ch == '.'
+        && prev.is_some_and(|c| c.is_ascii_digit())
+        && next.is_some_and(|c| c.is_ascii_digit())
+    {
+        return false;
+    }
+    next.is_none_or(char::is_whitespace)
+}
+
+fn estimate_prompt_tokens(text: &str) -> usize {
+    // Conservative estimate for the tiny-context llama.cpp profile: CJK
+    // characters often behave close to one token each, while English prose is
+    // roughly four characters per token. Add room for language labels.
+    let mut units = 12.0f32;
+    for ch in text.chars() {
+        units += if ch.is_ascii_whitespace() {
+            0.1
+        } else if ch.is_ascii_alphanumeric() {
+            0.25
+        } else if ch.is_ascii() {
+            0.35
+        } else {
+            1.0
+        };
+    }
+    units.ceil() as usize
+}
+
+fn join_translated_chunks(translations: Vec<String>, target_lang: &str) -> String {
+    let separator = if is_compact_target_lang(target_lang) {
+        ""
+    } else {
+        " "
+    };
+    translations
+        .into_iter()
+        .map(|translation| translation.trim().to_string())
+        .filter(|translation| !translation.is_empty())
+        .collect::<Vec<_>>()
+        .join(separator)
+}
+
+fn is_compact_target_lang(target_lang: &str) -> bool {
+    let normalized = target_lang.trim().to_ascii_lowercase();
+    normalized == "zh"
+        || normalized.starts_with("zh-")
+        || normalized == "ja"
+        || normalized.starts_with("ja-")
+        || normalized == "ko"
+        || normalized.starts_with("ko-")
 }
 
 fn preview(text: &str) -> String {
@@ -777,5 +973,33 @@ mod tests {
         assert!(is_pdf2zh_placeholder_only("$v0$"));
         assert!(is_pdf2zh_placeholder_only("$v0$ $v12$"));
         assert!(!is_pdf2zh_placeholder_only("Value is $v0$"));
+    }
+
+    #[test]
+    fn long_pdf_text_is_split_before_reaching_tiny_context_provider() {
+        let text = "$v25$ Record quarterly revenue of $15.2 million, a 46% increase compared to the prior quarter and up 17x from the same period last year, driven by increased production volumes. Factory shipments increased 122% quarter-over-quarter, with 50% of the production volume delivered for a strategic customer project. $v26$ Gross loss of $31.0 million, a 32-point margin improvement from the prior quarter, driven by increased production volumes and operational efficiencies partially offset by one-time lower than average selling prices. $v27$ Operating expenses totaled $32.9 million, a decrease from prior quarter excluding $5.4 million in one-time non-recurring items. $v28$ $222.9 million net loss attributable to shareholders driven by $151.8 million non-cash changes in fair value tied to mark-to-market adjustments related to the Company’s increased stock price as of June 30, 2025, loss recorded for the repurchase of the Company’s outstanding 2026 convertible notes, and loss recorded as part of the prepayment under the Delayed Draw Term Loan.";
+
+        let chunks = split_pdf_shim_text(text);
+
+        assert!(chunks.len() > 1);
+        assert!(chunks
+            .iter()
+            .all(|chunk| estimate_prompt_tokens(chunk) <= PDF_SHIM_TARGET_PROMPT_TOKENS));
+        assert!(chunks.concat().contains("Record quarterly revenue"));
+    }
+
+    #[test]
+    fn translated_chunks_join_without_spaces_for_chinese() {
+        assert_eq!(
+            join_translated_chunks(
+                vec!["第一段。".to_string(), "第二段。".to_string()],
+                "zh-CN"
+            ),
+            "第一段。第二段。"
+        );
+        assert_eq!(
+            join_translated_chunks(vec!["First.".to_string(), "Second.".to_string()], "en"),
+            "First. Second."
+        );
     }
 }
