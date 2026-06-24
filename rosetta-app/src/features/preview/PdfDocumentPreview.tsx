@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 
 import { Card } from "@/components/ui/card";
@@ -6,6 +6,7 @@ import {
   countRosettaPdfPages,
   getRosettaPdfPageStatus,
   renderRosettaPdfTranslatedPageAsPng,
+  type PdfPageTranslation,
   type PdfPageTranslationState,
 } from "@/lib/rosettaJobs";
 import type {
@@ -13,9 +14,52 @@ import type {
   RosettaTranslationFile,
 } from "../../types/rosetta";
 
-import { PdfPane } from "./PdfPane";
+import { PdfPane, type PdfPaneHandle } from "./PdfPane";
 
 type PreviewSide = "source" | "translation";
+
+type ScrollAnchor = {
+  pageIndex: number;
+  localOffsetRatio: number;
+};
+
+type PdfPreviewCacheEntry = {
+  sourcePageCount: number | null;
+  pdfPageState: PdfPageTranslationState | null;
+  sourceAnchor: ScrollAnchor | null;
+  translationAnchor: ScrollAnchor | null;
+  lastUsed: number;
+};
+
+const PDF_PREVIEW_CACHE = new Map<string, PdfPreviewCacheEntry>();
+const PDF_PREVIEW_CACHE_LIMIT = 2;
+
+function pdfPreviewCacheKey(jobId: string, targetLang: string | null | undefined) {
+  return `${jobId}:${targetLang ?? "default"}`;
+}
+
+function getPdfPreviewCache(key: string) {
+  const cached = PDF_PREVIEW_CACHE.get(key);
+  if (!cached) return null;
+  cached.lastUsed = Date.now();
+  return cached;
+}
+
+function putPdfPreviewCache(key: string, entry: Omit<PdfPreviewCacheEntry, "lastUsed">) {
+  PDF_PREVIEW_CACHE.set(key, { ...entry, lastUsed: Date.now() });
+  while (PDF_PREVIEW_CACHE.size > PDF_PREVIEW_CACHE_LIMIT) {
+    let oldestKey: string | null = null;
+    let oldestSeen = Number.POSITIVE_INFINITY;
+    for (const [candidateKey, candidate] of PDF_PREVIEW_CACHE) {
+      if (candidate.lastUsed < oldestSeen) {
+        oldestSeen = candidate.lastUsed;
+        oldestKey = candidateKey;
+      }
+    }
+    if (!oldestKey) break;
+    PDF_PREVIEW_CACHE.delete(oldestKey);
+  }
+}
 
 type PdfDocumentPreviewProps = {
   jobId: string;
@@ -72,32 +116,56 @@ export function PdfDocumentPreview({
   onPageCountChange,
   onSelectedPagesChange,
 }: PdfDocumentPreviewProps) {
-  const sourceScrollRef = useRef<HTMLDivElement | null>(null);
-  const translationScrollRef = useRef<HTMLDivElement | null>(null);
+  const sourcePaneRef = useRef<PdfPaneHandle | null>(null);
+  const translationPaneRef = useRef<PdfPaneHandle | null>(null);
   const scrollDriverRef = useRef<PreviewSide | null>(null);
   const scrollDriverTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const targetLang = translationFile?.targetLang ?? document.targetLang;
+  const cacheKey = pdfPreviewCacheKey(jobId, targetLang);
+  const cachedPreview = getPdfPreviewCache(cacheKey);
 
-  const [sourcePageCount, setSourcePageCount] = useState<number | null>(null);
-  // Bumping forces PdfPane to re-fetch all pages — used after regeneration so
-  // the user immediately sees the new translated PDF.
-  const [translatedCacheKey, setTranslatedCacheKey] = useState(0);
-  const [pdfPageState, setPdfPageState] = useState<PdfPageTranslationState | null>(null);
+  const [sourcePageCount, setSourcePageCount] = useState<number | null>(
+    cachedPreview?.sourcePageCount ?? null,
+  );
+  const [pdfPageState, setPdfPageState] = useState<PdfPageTranslationState | null>(
+    cachedPreview?.pdfPageState ?? null,
+  );
+  const sourcePageCountRef = useRef(sourcePageCount);
+  const pdfPageStateRef = useRef(pdfPageState);
+
+  useEffect(() => {
+    sourcePageCountRef.current = sourcePageCount;
+  }, [sourcePageCount]);
+
+  useEffect(() => {
+    pdfPageStateRef.current = pdfPageState;
+  }, [pdfPageState]);
+
+  const pagesByNumber = useMemo(() => {
+    const pages = new Map<number, PdfPageTranslation>();
+    for (const page of pdfPageState?.pages ?? []) {
+      pages.set(page.pageNumber, page);
+    }
+    return pages;
+  }, [pdfPageState?.pages]);
 
   const refreshPageState = useCallback(async () => {
     try {
-      const state = await getRosettaPdfPageStatus(jobId, translationFile?.targetLang);
+      const state = await getRosettaPdfPageStatus(jobId, targetLang);
       setPdfPageState(state);
     } catch (error) {
       console.error("[pdf] failed to load page translation state", error);
     }
-  }, [jobId, translationFile?.targetLang]);
+  }, [jobId, targetLang]);
 
   // Probe source pages whenever the job changes. The translated pane uses the
   // same page count because page-level translation can render mixed states
   // before a complete translated PDF exists.
   useEffect(() => {
     let cancelled = false;
-    setSourcePageCount(null);
+    const cached = getPdfPreviewCache(cacheKey);
+    setSourcePageCount(cached?.sourcePageCount ?? null);
+    setPdfPageState(cached?.pdfPageState ?? null);
 
     (async () => {
       try {
@@ -116,7 +184,38 @@ export function PdfDocumentPreview({
     return () => {
       cancelled = true;
     };
-  }, [jobId, onPageCountChange, onSelectedPagesChange, refreshPageState]);
+  }, [cacheKey, jobId, onPageCountChange, onSelectedPagesChange, refreshPageState]);
+
+  useEffect(() => {
+    return () => {
+      putPdfPreviewCache(cacheKey, {
+        sourcePageCount: sourcePageCountRef.current,
+        pdfPageState: pdfPageStateRef.current,
+        sourceAnchor: sourcePaneRef.current?.getScrollAnchor() ?? null,
+        translationAnchor: translationPaneRef.current?.getScrollAnchor() ?? null,
+      });
+    };
+  }, [cacheKey]);
+
+  useEffect(() => {
+    const cached = getPdfPreviewCache(cacheKey);
+    if (!cached || sourcePageCount == null) return;
+    const id = window.setTimeout(() => {
+      if (cached.sourceAnchor) {
+        sourcePaneRef.current?.scrollToPageAnchor(
+          cached.sourceAnchor.pageIndex,
+          cached.sourceAnchor.localOffsetRatio,
+        );
+      }
+      if (cached.translationAnchor) {
+        translationPaneRef.current?.scrollToPageAnchor(
+          cached.translationAnchor.pageIndex,
+          cached.translationAnchor.localOffsetRatio,
+        );
+      }
+    }, 0);
+    return () => window.clearTimeout(id);
+  }, [cacheKey, sourcePageCount]);
 
   useEffect(() => {
     if (!jobId) return;
@@ -126,8 +225,14 @@ export function PdfDocumentPreview({
       "rosetta-pdf-page-progress",
       (event) => {
         if (event.payload.jobId !== jobId) return;
-        void refreshPageState();
-        setTranslatedCacheKey((key) => key + 1);
+        setPdfPageState((current) =>
+          patchPdfPageState(current, {
+            pageNumber: event.payload.pageNumber,
+            sourcePageCount: sourcePageCountRef.current,
+            status: event.payload.status,
+            targetLang,
+          }),
+        );
       },
     ).then((fn) => {
       if (unmounted) fn();
@@ -137,8 +242,12 @@ export function PdfDocumentPreview({
       unmounted = true;
       unlisten?.();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jobId, refreshPageState]);
+  }, [jobId, targetLang]);
+
+  useEffect(() => {
+    if (isTranslating) return;
+    void refreshPageState();
+  }, [isTranslating, refreshPageState]);
 
   useEffect(() => {
     return () => {
@@ -155,48 +264,18 @@ export function PdfDocumentPreview({
   function syncScroll(side: PreviewSide) {
     if (scrollDriverRef.current !== null && scrollDriverRef.current !== side) return;
     const from =
-      side === "source" ? sourceScrollRef.current : translationScrollRef.current;
+      side === "source" ? sourcePaneRef.current : translationPaneRef.current;
     const to =
-      side === "source" ? translationScrollRef.current : sourceScrollRef.current;
-    if (!from || !to) return;
-
-    const fromRows = from.children;
-    const toRows = to.children;
-    if (fromRows.length === 0 || toRows.length === 0) return;
-
-    // First page row whose bottom edge is below the viewport top.
-    let anchorIndex = 0;
-    let anchorTop = 0;
-    for (let index = 0; index < fromRows.length; index += 1) {
-      const row = fromRows[index] as HTMLElement;
-      if (row.offsetTop + row.offsetHeight > from.scrollTop) {
-        anchorIndex = index;
-        anchorTop = row.offsetTop;
-        break;
-      }
-    }
-    const anchorRow = fromRows[anchorIndex] as HTMLElement;
-    const localOffsetRatio =
-      anchorRow.offsetHeight > 0
-        ? (from.scrollTop - anchorTop) / anchorRow.offsetHeight
-        : 0;
-
-    const targetRow = toRows[Math.min(anchorIndex, toRows.length - 1)] as HTMLElement;
-    const targetScrollTop = Math.max(
-      0,
-      Math.min(
-        targetRow.offsetTop + localOffsetRatio * targetRow.offsetHeight,
-        to.scrollHeight - to.clientHeight,
-      ),
-    );
-    if (Math.abs(to.scrollTop - targetScrollTop) < 2) return;
+      side === "source" ? translationPaneRef.current : sourcePaneRef.current;
+    const anchor = from?.getScrollAnchor();
+    if (!anchor || !to) return;
 
     scrollDriverRef.current = side;
     if (scrollDriverTimeoutRef.current) clearTimeout(scrollDriverTimeoutRef.current);
     scrollDriverTimeoutRef.current = setTimeout(() => {
       scrollDriverRef.current = null;
     }, 150);
-    to.scrollTop = targetScrollTop;
+    to.scrollToPageAnchor(anchor.pageIndex, anchor.localOffsetRatio);
   }
 
   const extractionStatus = document.extractionStatus ?? "done";
@@ -238,7 +317,7 @@ export function PdfDocumentPreview({
 
   function pageStatus(pageIndex: number) {
     const pageNumber = pageIndex + 1;
-    return pdfPageState?.pages.find((page) => page.pageNumber === pageNumber) ?? null;
+    return pagesByNumber.get(pageNumber) ?? null;
   }
 
   return (
@@ -246,12 +325,12 @@ export function PdfDocumentPreview({
       <div className="grid min-h-0 flex-1 grid-cols-2">
         <div className="min-h-0 border-r">
           <PdfPane
+            ref={sourcePaneRef}
             jobId={jobId}
             kind="source"
             pageCount={sourcePageCount}
             targetWidth={RASTER_WIDTH}
             placeholder="加载源 PDF…"
-            scrollRef={sourceScrollRef}
             onScroll={() => syncScroll("source")}
             pageActivity={(pageIndex) => pageStatus(pageIndex)?.status ?? null}
             pageControls={(pageIndex) => {
@@ -270,14 +349,16 @@ export function PdfDocumentPreview({
         </div>
         <div className="min-h-0">
           <PdfPane
+            ref={translationPaneRef}
             jobId={jobId}
             kind="translated"
-            cacheKey={translatedCacheKey}
             pageCount={sourcePageCount}
+            pageRenderVersion={(pageIndex) =>
+              translatedPageRenderVersion(pageIndex + 1, pageStatus(pageIndex))
+            }
             targetWidth={RASTER_WIDTH}
             placeholder={translationPlaceholder}
             placeholderLoading={translationPlaceholderLoading}
-            scrollRef={translationScrollRef}
             onScroll={() => syncScroll("translation")}
             canRenderPage={(pageIndex) => pageStatus(pageIndex)?.status === "translated"}
             pageActivity={(pageIndex) => pageStatus(pageIndex)?.status ?? null}
@@ -290,6 +371,70 @@ export function PdfDocumentPreview({
       </div>
     </Card>
   );
+}
+
+function patchPdfPageState(
+  current: PdfPageTranslationState | null,
+  update: {
+    pageNumber: number;
+    sourcePageCount: number | null;
+    status: string;
+    targetLang: string;
+  },
+): PdfPageTranslationState {
+  const now = Date.now().toString();
+  const existingPages = current?.pages ?? [];
+  const pages = [...existingPages];
+  const index = pages.findIndex((page) => page.pageNumber === update.pageNumber);
+  const existing = index >= 0 ? pages[index] : null;
+  const status = normalizePdfPageStatus(update.status);
+  const nextPage: PdfPageTranslation = {
+    pageNumber: update.pageNumber,
+    status,
+    translatedPdfPath:
+      status === "translated"
+        ? existing?.translatedPdfPath ??
+          `pdf-pages/page-${String(update.pageNumber).padStart(4, "0")}.pdf`
+        : existing?.translatedPdfPath ?? null,
+    error: status === "failed" ? existing?.error ?? "可重试" : null,
+    updatedAt: now,
+  };
+
+  if (index >= 0) {
+    pages[index] = nextPage;
+  } else {
+    pages.push(nextPage);
+  }
+  pages.sort((left, right) => left.pageNumber - right.pageNumber);
+
+  return {
+    schemaVersion: current?.schemaVersion ?? 1,
+    sourcePageCount:
+      current?.sourcePageCount ?? update.sourcePageCount ?? Math.max(update.pageNumber, 1),
+    targetLang: current?.targetLang ?? update.targetLang,
+    pages,
+  };
+}
+
+function normalizePdfPageStatus(status: string): PdfPageTranslation["status"] {
+  if (
+    status === "pending" ||
+    status === "queued" ||
+    status === "translating" ||
+    status === "translated" ||
+    status === "failed"
+  ) {
+    return status;
+  }
+  return "pending";
+}
+
+function translatedPageRenderVersion(
+  pageNumber: number,
+  page: { status: string; translatedPdfPath?: string | null; updatedAt?: string | null } | null,
+) {
+  if (page?.status !== "translated") return "pending";
+  return `${pageNumber}:${page.translatedPdfPath ?? ""}:${page.updatedAt ?? "translated"}`;
 }
 
 function translatedPageLabel(
