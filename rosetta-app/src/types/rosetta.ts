@@ -646,6 +646,7 @@ export type ManagedRuntimeProcessSnapshot = {
   baseUrl: string | null;
   startedAt: string | null;
   lastError: string | null;
+  cpuFallback: boolean;
 };
 
 export type ManagedRuntimeStatus = {

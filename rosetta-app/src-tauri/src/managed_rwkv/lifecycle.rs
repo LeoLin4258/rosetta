@@ -42,6 +42,7 @@ struct RuntimeInner {
     started_at_iso: Option<String>,
     last_error: Option<String>,
     state: Option<ManagedRuntimeState>,
+    cpu_fallback: bool,
 }
 
 // `ManagedRwkvRuntimeRegistry` is exposed via Tauri's `State` plumbing; no
@@ -87,6 +88,7 @@ pub async fn current_process_snapshot(
         base_url: guard.base_url.clone(),
         started_at: guard.started_at_iso.clone(),
         last_error: guard.last_error.clone(),
+        cpu_fallback: guard.cpu_fallback,
     };
     (snapshot, guard.state)
 }
@@ -303,6 +305,7 @@ pub async fn start_sidecar(
         match healthy {
             Ok(()) => {
                 guard.state = Some(ManagedRuntimeState::Ready);
+                guard.cpu_fallback = gpu_layers.is_some();
                 let started_at = guard.started_at_iso.clone().unwrap_or_else(iso_now);
                 let message = if gpu_layers.is_some() {
                     "本地 RWKV 运行时已就绪（Vulkan 不可用，已回退到 CPU）。".to_string()
@@ -407,6 +410,7 @@ pub async fn stop_sidecar(
     guard.started_at_iso = None;
     guard.state = Some(ManagedRuntimeState::Stopped);
     guard.last_error = None;
+    guard.cpu_fallback = false;
     drop(guard);
 
     let cleaned = cleanup_stale_sidecars_if_signature_available(

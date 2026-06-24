@@ -23,9 +23,10 @@ The default Windows model is:
 - Launch the runtime through `llama-server.exe` with a local loopback server,
   fixed model alias `rwkv-translate`, context size `4096`, automatic Vulkan GPU
   layers, and a small parallel request count.
-- Add a `llama-cpp-chat-completions` provider that talks to
-  `/v1/chat/completions` and submits one Rosetta segment per OpenAI-compatible
-  chat completion request.
+- Add a `llama-cpp-chat-completions` provider that talks to `/completion`
+  and submits one Rosetta segment per raw completion request. The prompt
+  uses the RWKV translate model's role-based format:
+  `{SourceLang}: {text}\n\n{TargetLang}:`.
 - Keep macOS on the existing MLX profile.
 - Keep Windows RWKV Lightning as a secondary NVIDIA-only profile and warning
   copy source, not as the default.

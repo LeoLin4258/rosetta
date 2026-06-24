@@ -106,6 +106,7 @@ pub struct ManagedRuntimeProcessSnapshot {
     pub base_url: Option<String>,
     pub started_at: Option<String>,
     pub last_error: Option<String>,
+    pub cpu_fallback: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

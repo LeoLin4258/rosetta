@@ -1,6 +1,7 @@
 import { useState } from "react";
 import {
   AlertCircle,
+  AlertTriangle,
   CheckCircle2,
   ChevronDown,
   Cpu,
@@ -121,6 +122,22 @@ export function LocalRwkvPanel({ className }: { className?: string }) {
           </div>
         )}
 
+        {state === "ready" && status?.process.cpuFallback && (
+          <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-300">
+            <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+            <div className="flex flex-col gap-1">
+              <span>
+                你的设备有 GPU，但因显卡驱动较旧，Vulkan
+                初始化失败，当前以 CPU 模式运行。更新显卡驱动后重启 Rosetta
+                即可恢复 GPU 加速。
+              </span>
+              <span className="select-all font-mono text-xs opacity-80">
+                https://www.amd.com/en/support/download/drivers.html
+              </span>
+            </div>
+          </div>
+        )}
+
         {!isUnsupported && (
           <Collapsible open={detailsOpen} onOpenChange={openDetails}>
             <CollapsibleTrigger asChild>
@@ -212,6 +229,13 @@ function resolveStatus(
   }
   switch (state) {
     case "ready":
+      if (status?.process.cpuFallback) {
+        return {
+          dot: "bg-amber-400",
+          label: "本地模型正在运行（CPU 模式）",
+          sub: "检测到 GPU 但 Vulkan 启动失败，已回退到 CPU。更新显卡驱动可恢复 GPU 加速。",
+        };
+      }
       return {
         dot: "bg-emerald-500",
         label: "本地模型正在运行",

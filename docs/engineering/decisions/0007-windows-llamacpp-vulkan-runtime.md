@@ -27,9 +27,11 @@ the RWKV translation GGUF model:
 
 `RWKV_v7_G1d_0.4B_Translate_ctx4096_20260607-Q8_0.gguf`
 
-The provider contract is OpenAI-compatible `/v1/chat/completions` under the new
-provider id `llama-cpp-chat-completions`. Rosetta owns batching by issuing
-parallel single-segment requests to the local server.
+The provider id is `llama-cpp-chat-completions`. Translation uses the raw
+`/completion` endpoint with the RWKV translate model's role-based prompt
+format (`{SourceLang}: {text}\n\n{TargetLang}:`), not the OpenAI chat
+completions API. Rosetta owns batching by issuing parallel single-segment
+requests to the local server (up to 16 concurrent).
 
 Download sources are selected automatically by Rosetta. Users are not asked to
 choose between ModelScope, HuggingFace, hf-mirror, or aifasthub.
