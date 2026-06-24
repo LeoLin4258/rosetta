@@ -171,14 +171,14 @@
 .rosetta-macos {
   --sidebar: oklch(0.9650 0.0035 286.3200 / 46%);
   --sidebar-accent: oklch(0.9000 0.0060 286.3200 / 42%);
-  --sidebar-active: oklch(0.7800 0.0180 286.3200 / 96%);
+  --sidebar-active: oklch(0.9000 0 0 / 72%);
   --sidebar-border: oklch(0.7600 0.0060 286.3200 / 34%);
 }
 
 .rosetta-macos.dark {
   --sidebar: oklch(0.2500 0.0060 286.3200 / 44%);
   --sidebar-accent: oklch(0.3900 0.0080 286.3200 / 38%);
-  --sidebar-active: oklch(0.6100 0.0180 286.3200 / 78%);
+  --sidebar-active: oklch(0.4200 0 0 / 62%);
   --sidebar-border: oklch(0.5200 0.0080 286.3200 / 30%);
 }
 
@@ -187,8 +187,13 @@
   -webkit-backdrop-filter: blur(34px) saturate(1.65);
 }
 
+.rosetta-macos [data-slot="sidebar-container"] {
+  width: calc(var(--sidebar-width) + 1px);
+}
+
 .rosetta-macos [data-slot="sidebar-inner"] {
-  box-shadow: inset -1px 0 0 var(--sidebar-border);
+  border-right: 1px solid var(--sidebar-border);
+  box-shadow: none;
 }
 
 .rosetta-macos [data-sidebar="menu-button"][data-active="true"] {
