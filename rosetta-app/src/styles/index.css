@@ -602,181 +602,109 @@ textarea {
   animation: rosetta-pdf-page-scan 2.35s var(--rosetta-motion-ease) infinite;
 }
 
-.rosetta-pdf-page-skeleton {
+.rosetta-pdf-translation-stream {
   position: relative;
   display: grid;
+  height: 100%;
   min-height: inherit;
-  grid-template-rows: auto auto auto auto auto 1fr auto;
-  gap: 1.15rem;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 0.75rem;
   overflow: hidden;
-  padding: 7.5% 9% 6%;
+  padding: clamp(1rem, 7%, 2rem);
   color: var(--muted-foreground);
 }
 
-.rosetta-pdf-page-skeleton::after {
-  content: "";
-  pointer-events: none;
-  position: absolute;
-  inset: 0;
-  opacity: 0;
-  background:
-    linear-gradient(
-      105deg,
-      transparent 0%,
-      transparent 32%,
-      oklch(1 0 0 / 0.78) 47%,
-      oklch(0.8900 0.0180 255 / 0.38) 52%,
-      transparent 68%,
-      transparent 100%
-    );
-  transform: translateX(-92%);
-}
-
-.rosetta-pdf-page-skeleton[data-active="true"]::after {
-  opacity: 1;
-  animation: rosetta-pdf-skeleton-sheen 1.75s var(--rosetta-motion-ease) infinite;
-}
-
-.rosetta-pdf-page-skeleton[data-active="true"]
-  :is(
-    .rosetta-pdf-skeleton-header span,
-    .rosetta-pdf-skeleton-title span,
-    .rosetta-pdf-skeleton-abstract span,
-    .rosetta-pdf-skeleton-columns span,
-    .rosetta-pdf-skeleton-figure,
-    .rosetta-pdf-skeleton-caption span
-  ) {
-  animation: rosetta-pdf-skeleton-pulse 1.75s ease-in-out infinite;
-}
-
-.rosetta-pdf-skeleton-header {
-  display: flex;
-  justify-content: space-between;
-}
-
-.rosetta-pdf-skeleton-header span,
-.rosetta-pdf-skeleton-title span,
-.rosetta-pdf-skeleton-abstract span,
-.rosetta-pdf-skeleton-columns span,
-.rosetta-pdf-skeleton-figure,
-.rosetta-pdf-skeleton-caption span {
-  display: block;
-  border-radius: 4px;
-  background: color-mix(in oklch, var(--muted) 74%, var(--foreground) 6%);
-}
-
-.rosetta-pdf-skeleton-header span {
-  height: 0.45rem;
-  width: 16%;
-  opacity: 0.55;
-}
-
-.rosetta-pdf-skeleton-title {
-  display: grid;
-  justify-items: center;
-  gap: 0.55rem;
-  padding-top: 0.2rem;
-}
-
-.rosetta-pdf-skeleton-title span {
-  height: 0.95rem;
-}
-
-.rosetta-pdf-skeleton-title span:first-child {
-  width: 62%;
-}
-
-.rosetta-pdf-skeleton-title span:last-child {
-  width: 44%;
-}
-
-.rosetta-pdf-skeleton-abstract,
-.rosetta-pdf-skeleton-columns {
-  display: grid;
-  gap: 0.5rem;
-}
-
-.rosetta-pdf-skeleton-abstract {
-  padding: 0 4%;
-}
-
-.rosetta-pdf-skeleton-abstract span,
-.rosetta-pdf-skeleton-columns span {
-  height: 0.5rem;
-}
-
-.rosetta-pdf-skeleton-abstract span:nth-child(1) {
-  width: 100%;
-}
-
-.rosetta-pdf-skeleton-abstract span:nth-child(2) {
-  width: 96%;
-}
-
-.rosetta-pdf-skeleton-abstract span:nth-child(3) {
-  width: 98%;
-}
-
-.rosetta-pdf-skeleton-abstract span:nth-child(4) {
-  width: 72%;
-}
-
-.rosetta-pdf-skeleton-columns {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  align-content: start;
-  gap: 7%;
-}
-
-.rosetta-pdf-skeleton-columns div {
-  display: grid;
-  gap: 0.5rem;
-}
-
-.rosetta-pdf-skeleton-columns span {
-  width: 100%;
-}
-
-.rosetta-pdf-skeleton-columns span:nth-child(3n) {
-  width: 88%;
-}
-
-.rosetta-pdf-skeleton-columns span:last-child {
-  width: 78%;
-}
-
-.rosetta-pdf-skeleton-figure {
-  height: 5.75rem;
-  width: 72%;
-  justify-self: center;
-  opacity: 0.44;
-}
-
-.rosetta-pdf-skeleton-caption {
-  display: grid;
-  justify-items: center;
-  gap: 0.4rem;
-  opacity: 0.66;
-}
-
-.rosetta-pdf-skeleton-caption span {
-  height: 0.45rem;
-}
-
-.rosetta-pdf-skeleton-caption span:first-child {
-  width: 42%;
-}
-
-.rosetta-pdf-skeleton-caption span:last-child {
-  width: 31%;
-}
-
-.rosetta-pdf-skeleton-status {
+.rosetta-pdf-translation-stream > * {
+  grid-column: 1;
   position: relative;
-  z-index: 1;
-  text-align: center;
+}
+
+.rosetta-pdf-translation-stream-header {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.1rem 0.15rem;
   font-size: 0.75rem;
-  line-height: 1.25rem;
+  line-height: 1;
+  color: color-mix(in oklch, var(--foreground) 88%, var(--muted-foreground) 12%);
+}
+
+.rosetta-pdf-translation-stream-body {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 0.65rem;
+  overflow: hidden;
+  mask-image: linear-gradient(
+    180deg,
+    transparent 0%,
+    black 12%,
+    black 100%
+  );
+}
+
+.rosetta-pdf-translation-stream-line {
+  margin: 0;
+  max-width: 64ch;
+  padding: 0;
+  font-size: 0.86rem;
+  line-height: 1.78;
+  color: color-mix(in oklch, var(--foreground) 88%, var(--muted-foreground) 12%);
+  text-align: left;
+  text-wrap: pretty;
+  animation: rosetta-pdf-translation-text-in 260ms var(--rosetta-motion-ease) both;
+}
+
+.rosetta-pdf-translation-stream-line:last-child {
+  color: var(--foreground);
+}
+
+.rosetta-pdf-translation-stream-waiting {
+  display: grid;
+  gap: 0.55rem;
+  padding: 0.5rem 0.25rem;
   color: var(--muted-foreground);
+}
+
+.rosetta-pdf-translation-stream-waiting span {
+  display: block;
+  height: 0.42rem;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--muted) 70%, var(--foreground) 8%);
+  animation: rosetta-pdf-translation-line 1.45s ease-in-out infinite;
+}
+
+.rosetta-pdf-translation-stream-waiting span:nth-child(1) {
+  width: 82%;
+}
+
+.rosetta-pdf-translation-stream-waiting span:nth-child(2) {
+  width: 64%;
+  animation-delay: 0.12s;
+}
+
+.rosetta-pdf-translation-stream-waiting span:nth-child(3) {
+  width: 42%;
+  animation-delay: 0.24s;
+}
+
+.rosetta-pdf-translation-stream-waiting p {
+  margin: 0.25rem 0 0;
+  font-size: 0.75rem;
+}
+
+.rosetta-pdf-inline-progress {
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: var(--primary);
+  opacity: 0.52;
+  animation: rosetta-pdf-inline-progress 1.15s ease-in-out infinite;
 }
 
 @keyframes rosetta-pdf-page-scan {
@@ -796,12 +724,24 @@ textarea {
   }
 }
 
-@keyframes rosetta-pdf-skeleton-sheen {
+@keyframes rosetta-pdf-translation-text-in {
   0% {
-    transform: translateX(-92%);
+    transform: translateY(0.45rem);
+    opacity: 0;
   }
   100% {
-    transform: translateX(92%);
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@keyframes rosetta-pdf-translation-line {
+  0%,
+  100% {
+    background: color-mix(in oklch, var(--muted) 74%, var(--foreground) 6%);
+  }
+  50% {
+    background: color-mix(in oklch, var(--muted) 60%, var(--foreground) 10%);
   }
 }
 
@@ -815,21 +755,26 @@ textarea {
   }
 }
 
+@keyframes rosetta-pdf-inline-progress {
+  0%,
+  100% {
+    opacity: 0.34;
+    transform: scale(0.86);
+  }
+  50% {
+    opacity: 0.7;
+    transform: scale(1);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .rosetta-pdf-page-scan::before,
-  .rosetta-pdf-page-skeleton[data-active="true"]::after,
+  .rosetta-pdf-translation-stream-line,
+  .rosetta-pdf-translation-stream-waiting span,
+  .rosetta-pdf-inline-progress,
   .rosetta-markdown-translation-skeleton[data-active="true"]::after,
   .rosetta-markdown-source-scanning::after,
-  .rosetta-markdown-translation-skeleton[data-active="true"] span,
-  .rosetta-pdf-page-skeleton[data-active="true"]
-    :is(
-      .rosetta-pdf-skeleton-header span,
-      .rosetta-pdf-skeleton-title span,
-      .rosetta-pdf-skeleton-abstract span,
-      .rosetta-pdf-skeleton-columns span,
-      .rosetta-pdf-skeleton-figure,
-      .rosetta-pdf-skeleton-caption span
-    ) {
+  .rosetta-markdown-translation-skeleton[data-active="true"] span {
     animation: none;
   }
 
@@ -838,8 +783,8 @@ textarea {
     opacity: 0.55;
   }
 
-  .rosetta-pdf-page-skeleton[data-active="true"]::after {
-    opacity: 0.35;
+  .rosetta-pdf-translation-stream-line {
+    opacity: 1;
     transform: none;
   }
 }

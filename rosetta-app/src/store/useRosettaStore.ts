@@ -67,6 +67,8 @@ export type PdfRunProgress = {
   totalPages: number | null;
   /** Cumulative characters returned by RWKV in the current run. */
   translatedChars: number | null;
+  /** Recent in-memory snippets returned by the local PDF translation shim. */
+  recentTranslations: string[];
 };
 
 type RosettaState = {
@@ -148,7 +150,12 @@ type RosettaState = {
   markTranslationRunCompleted: (runId: string, segmentIds: string[]) => void;
   markTranslationRunFailed: (runId: string, segmentIds: string[]) => void;
   finishTranslationRun: (runId: string) => void;
-  setPdfRunProgress: (jobId: string, progress: PdfRunProgress | null) => void;
+  setPdfRunProgress: (
+    jobId: string,
+    progress:
+      | (Partial<PdfRunProgress> & Pick<PdfRunProgress, "phase">)
+      | null
+  ) => void;
   beginPreviewSegmentTranslation: (segmentIds: string[]) => Segment[];
   completePreviewSegmentTranslation: (
     segmentIds: string[],
@@ -845,8 +852,33 @@ export const useRosettaStore = create<RosettaState>()(
       setPdfRunProgress: (jobId, progress) =>
         set((state) => {
           const next = { ...state.pdfRunProgressByJobId };
-          if (progress) next[jobId] = progress;
-          else delete next[jobId];
+          if (progress) {
+            const previous = state.pdfRunProgressByJobId[jobId];
+            const nextCurrentPage =
+              progress.currentPage ?? previous?.currentPage ?? null;
+            const pageChanged =
+              progress.currentPage != null &&
+              previous?.currentPage != null &&
+              progress.currentPage !== previous.currentPage;
+            const previousTranslations = pageChanged
+              ? []
+              : previous?.recentTranslations ?? [];
+            const recentTranslations = progress.recentTranslations
+              ? [
+                  ...previousTranslations,
+                  ...progress.recentTranslations,
+                ].slice(-8)
+              : previousTranslations;
+            next[jobId] = {
+              percent: progress.percent ?? previous?.percent ?? null,
+              currentPage: nextCurrentPage,
+              totalPages: progress.totalPages ?? previous?.totalPages ?? null,
+              translatedChars:
+                progress.translatedChars ?? previous?.translatedChars ?? null,
+              recentTranslations,
+              phase: progress.phase,
+            };
+          } else delete next[jobId];
           return { pdfRunProgressByJobId: next };
         }),
       beginPreviewSegmentTranslation: (segmentIds) => {

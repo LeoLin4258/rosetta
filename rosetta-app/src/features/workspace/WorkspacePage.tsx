@@ -152,6 +152,12 @@ export function WorkspacePage() {
   const isPdfJob = sourceFile?.format === "pdf";
   const pdfProgress =
     isPdfJob && activeJobId ? pdfRunProgressByJobId[activeJobId] ?? null : null;
+  const pdfActivePages = isPdfJob
+    ? pdfPagesForActiveRun(
+        activeFileTranslationRun?.targetSegmentIds ?? [],
+        pdfSelectedPages,
+      )
+    : [];
   const pdfEngineUnavailable =
     isPdfJob &&
     (pdf2zhWorkerStatus?.state === "not-installed" ||
@@ -935,6 +941,7 @@ export function WorkspacePage() {
               translationSegments={translationSegments}
               pdfProgress={pdfProgress}
               pdfError={pdfError}
+              pdfActivePages={pdfActivePages}
               pdfSelectedPages={pdfSelectedPages}
               onPdfPageCountChange={handlePdfPageCountChange}
               onPdfSelectedPagesChange={handlePdfSelectedPagesChange}
@@ -949,6 +956,40 @@ export function WorkspacePage() {
       )}
     </div>
   );
+}
+
+function pdfPagesForActiveRun(targetSegmentIds: string[], fallbackPages: number[]) {
+  const pdfTarget = targetSegmentIds.find((id) => id.startsWith("pdf-pages:"));
+  if (!pdfTarget) {
+    return fallbackPages;
+  }
+
+  const pageSelection = pdfTarget.slice("pdf-pages:".length);
+  return expandPageSelection(pageSelection);
+}
+
+function expandPageSelection(pageSelection: string) {
+  const pages = new Set<number>();
+  for (const part of pageSelection.split(",")) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+
+    const range = trimmed.match(/^(\d+)-(\d+)$/);
+    if (range) {
+      const start = Number(range[1]);
+      const end = Number(range[2]);
+      for (let page = Math.min(start, end); page <= Math.max(start, end); page += 1) {
+        pages.add(page);
+      }
+      continue;
+    }
+
+    const page = Number(trimmed);
+    if (Number.isInteger(page) && page > 0) {
+      pages.add(page);
+    }
+  }
+  return [...pages].sort((a, b) => a - b);
 }
 
 function errorMessage(error: unknown, fallback: string) {

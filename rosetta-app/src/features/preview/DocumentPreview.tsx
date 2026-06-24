@@ -42,6 +42,7 @@ export function DocumentPreview({
   translationSegments,
   pdfProgress,
   pdfError,
+  pdfActivePages = [],
   pdfSelectedPages = [],
   sourceEditing = false,
   sourceEditText = "",
@@ -85,9 +86,11 @@ export function DocumentPreview({
     percent: number | null;
     currentPage: number | null;
     totalPages: number | null;
+    recentTranslations?: string[];
   } | null;
   /// PDF-specific: error message from the last failed PDF generation.
   pdfError?: string | null;
+  pdfActivePages?: number[];
   pdfSelectedPages?: number[];
   sourceEditing?: boolean;
   sourceEditText?: string;
@@ -123,6 +126,7 @@ export function DocumentPreview({
         isTranslating={isTranslating}
         pdfProgress={pdfProgress}
         pdfError={pdfError}
+        activePages={pdfActivePages}
         selectedPages={pdfSelectedPages}
         onPageCountChange={onPdfPageCountChange ?? (() => {})}
         onSelectedPagesChange={onPdfSelectedPagesChange ?? (() => {})}

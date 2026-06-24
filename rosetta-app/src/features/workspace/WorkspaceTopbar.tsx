@@ -1,11 +1,14 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ArrowRight,
   Download,
+  FileText,
   Loader2,
   Play,
   RefreshCw,
   Square,
+  Timer,
+  Type,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -126,6 +129,80 @@ function useElapsedSince(isActive: boolean, startedAtMs?: number | null): number
   return elapsed;
 }
 
+function TranslationRunIndicator({
+  phaseLabel,
+  pageLabel,
+  countLabel,
+  countTitle,
+  elapsedLabel,
+  percent,
+}: {
+  phaseLabel: string;
+  pageLabel: string | null;
+  countLabel: string | null;
+  countTitle: string;
+  elapsedLabel: string;
+  percent: number | null;
+}) {
+  const boundedPercent =
+    percent == null ? null : Math.max(0, Math.min(100, percent));
+
+  return (
+    <div className="flex h-9 max-w-[min(38rem,64vw)] items-center gap-2 rounded-lg border border-border/70 bg-muted/30 px-2.5">
+      <span className="relative flex size-2.5 shrink-0" aria-hidden="true">
+        <span className="absolute inline-flex size-full animate-ping rounded-full bg-primary/25 motion-reduce:animate-none" />
+        <span className="relative inline-flex size-2.5 rounded-full bg-primary/70" />
+      </span>
+      <span className="min-w-0 truncate !text-xs font-medium !text-foreground">
+        {phaseLabel}
+      </span>
+      <div className="flex min-w-0 items-center gap-1.5 border-l border-border/70 pl-2">
+        {pageLabel ? (
+          <RunMetric title="当前页" icon={<FileText className="size-3" />} label={pageLabel} />
+        ) : null}
+        {countLabel ? (
+          <RunMetric title={countTitle} icon={<Type className="size-3" />} label={countLabel} />
+        ) : null}
+        <RunMetric title="已用时间" icon={<Timer className="size-3" />} label={elapsedLabel} />
+        {boundedPercent != null ? (
+          <div
+            className="flex items-center gap-1.5 pl-0.5 !text-xs tabular-nums !text-muted-foreground"
+            title="总体进度"
+          >
+            <span className="h-1.5 w-12 overflow-hidden rounded-full bg-border/80">
+              <span
+                className="block h-full rounded-full bg-primary/70 transition-[width] duration-200 ease-out"
+                style={{ width: `${boundedPercent}%` }}
+              />
+            </span>
+            <span>{boundedPercent}%</span>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function RunMetric({
+  icon,
+  label,
+  title,
+}: {
+  icon: ReactNode;
+  label: string;
+  title: string;
+}) {
+  return (
+    <span
+      className="inline-flex min-w-0 items-center gap-1 rounded-md bg-background/70 px-1.5 py-0.5 !text-xs tabular-nums !text-muted-foreground"
+      title={title}
+    >
+      <span className="shrink-0 !text-muted-foreground/70">{icon}</span>
+      <span className="truncate">{label}</span>
+    </span>
+  );
+}
+
 export function WorkspaceTopbar({
   job,
   activeTranslationFile,
@@ -212,6 +289,21 @@ export function WorkspaceTopbar({
   const pdfSelectionReady = isPdf && pdfSelectedPageCount > 0;
   const pageSelectionLabel =
     pdfPageCount > 0 ? `${pdfSelectedPageCount} / ${pdfPageCount} 页` : "等待页数";
+  const runPhaseLabel = isPdf
+    ? pdfProgress
+      ? PDF_PHASE_LABELS[pdfProgress.phase] ?? pdfProgress.phase
+      : PDF_PHASE_LABELS.warmup
+    : "翻译中";
+  const runPageLabel =
+    isPdf && pdfProgress?.currentPage != null && pdfProgress?.totalPages != null
+      ? `${pdfProgress.currentPage}/${pdfProgress.totalPages} 页`
+      : null;
+  const runCountLabel = isPdf
+    ? pdfProgress?.translatedChars
+      ? `${pdfProgress.translatedChars.toLocaleString()} 字`
+      : null
+    : `${translatedCount}/${totalCount}`;
+  const runPercent = isPdf ? pdfProgress?.percent ?? null : progressPercent;
 
   return (
     <div className="border-b border-border/60 bg-background/95 px-5 py-3" data-window-no-drag>
@@ -289,40 +381,14 @@ export function WorkspaceTopbar({
         <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
           {isTranslating ? (
             <>
-              <Loader2 className="size-3.5 animate-spin !text-muted-foreground/50" />
-              <span className="!text-xs tabular-nums !text-muted-foreground/60">
-                {isPdf ? (
-                  <>
-                    {/*
-                      PDF layout: "[phase label] · 第 X/Y 页 · 已翻译 N 字 · 00:23 · 45%"
-                      Sections are separated by " · " and any of them can be
-                      absent. Page numbers track pdf2zh's live tqdm output; the
-                      character counter comes from the RWKV shim and updates as
-                      each batch returns, so the bar visibly moves even between
-                      page boundaries. Before the first progress event lands we
-                      show 准备翻译引擎 instead of the misleading segment-count
-                      fallback (PDF runs aren't segment-based). The elapsed
-                      timer always shows because we tick locally.
-                    */}
-                    {pdfProgress
-                      ? PDF_PHASE_LABELS[pdfProgress.phase] ?? pdfProgress.phase
-                      : PDF_PHASE_LABELS.warmup}
-                    {pdfProgress?.currentPage != null &&
-                      pdfProgress?.totalPages != null &&
-                      ` · 第 ${pdfProgress.currentPage}/${pdfProgress.totalPages} 页`}
-                    {pdfProgress?.translatedChars
-                      ? ` · 已翻译 ${pdfProgress.translatedChars.toLocaleString()} 字`
-                      : ""}
-                    {" · "}
-                    {elapsedLabel}
-                    {pdfProgress?.percent != null ? ` · ${pdfProgress.percent}%` : ""}
-                  </>
-                ) : (
-                  <>
-                    {translatedCount} / {totalCount} · {progressPercent}% · {elapsedLabel}
-                  </>
-                )}
-              </span>
+              <TranslationRunIndicator
+                phaseLabel={runPhaseLabel}
+                pageLabel={runPageLabel}
+                countLabel={runCountLabel}
+                countTitle={isPdf ? "已翻译字数" : "段落进度"}
+                elapsedLabel={elapsedLabel}
+                percent={runPercent}
+              />
               {confirmingCancel ? (
                 <div className="flex items-center gap-2">
                   <span className="!text-xs !text-muted-foreground/60">确认取消？</span>

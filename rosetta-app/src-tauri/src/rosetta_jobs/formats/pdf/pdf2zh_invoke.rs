@@ -148,6 +148,7 @@ pub(crate) async fn invoke_pdf2zh(
     emit("warmup", Some(20), "正在启动本地翻译 shim…");
     let shim_log_file = output_dir.join("rosetta-pdf2zh-shim.log");
     let shim = managed_pdf2zh::openai_shim::spawn_shim(
+        app.clone(),
         options.provider.clone(),
         options.source_lang.clone(),
         options.target_lang.clone(),
