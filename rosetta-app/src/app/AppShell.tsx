@@ -123,31 +123,6 @@ function usePdfRunProgressEvents() {
     return () => { unmounted = true; unlisten?.(); };
   }, [setPdfRunProgress]);
 
-  useEffect(() => {
-    let unmounted = false;
-    let unlisten: (() => void) | null = null;
-
-    listen<{
-      jobId: string;
-      translations: string[];
-      translatedChars?: number;
-    }>("rosetta-pdf-translation-preview", (event) => {
-      const incoming = event.payload.translations
-        .map((text) => text.trim())
-        .filter(Boolean);
-      if (incoming.length === 0) return;
-      setPdfRunProgress(event.payload.jobId, {
-        phase: "translate",
-        translatedChars: event.payload.translatedChars ?? undefined,
-        recentTranslations: incoming,
-      });
-    }).then((fn) => {
-      if (unmounted) fn();
-      else unlisten = fn;
-    }).catch(console.error);
-
-    return () => { unmounted = true; unlisten?.(); };
-  }, [setPdfRunProgress]);
 }
 
 /// Mirror the persistent pdf2zh worker lifecycle into the store. Fires an

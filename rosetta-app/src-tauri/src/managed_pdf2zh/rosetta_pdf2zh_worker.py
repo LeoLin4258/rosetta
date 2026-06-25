@@ -153,6 +153,7 @@ def translate_streaming(job, proto, model_path):
     lang_in = job.get("langIn", "auto")
     lang_out = job.get("langOut", "auto")
     service = job.get("service", "google")
+    ignore_cache = bool(job.get("ignoreCache"))
 
     timings = {}
 
@@ -191,7 +192,7 @@ def translate_streaming(job, proto, model_path):
 
     obj_patch: dict = {}
     layout: dict = {}
-    rsrcmgr = PDFResourceManager(caching=True)
+    rsrcmgr = PDFResourceManager(caching=not ignore_cache)
     device = TextConverter(
         rsrcmgr,
         sys.stdout,
@@ -219,7 +220,7 @@ def translate_streaming(job, proto, model_path):
             pages_zero_based,
             maxpages=0,
             password="",
-            caching=True,
+            caching=not ignore_cache,
         )
         page_list = list(page_iter)
         total = len(page_list)

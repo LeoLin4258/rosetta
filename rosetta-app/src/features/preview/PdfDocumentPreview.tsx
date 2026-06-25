@@ -63,7 +63,6 @@ type PdfProgress = {
   currentPage: number | null;
   totalPages: number | null;
   translatedChars?: number | null;
-  recentTranslations?: string[];
 };
 
 type PdfDocumentPreviewProps = {
@@ -150,33 +149,27 @@ export function PdfDocumentPreview({
     return pages;
   }, [pdfPageState?.pages]);
 
-  const selectedPagesInRunOrder = useMemo(
-    () => [...new Set(selectedPages)].sort((a, b) => a - b),
-    [selectedPages],
-  );
   const activePagesInRunOrder = useMemo(
     () => [...new Set(activePages)].sort((a, b) => a - b),
     [activePages],
   );
 
-  const livePageNumber = useMemo(() => {
-    if (!isTranslating || !pdfProgress) return null;
+  const selectedPagesInRunOrder = useMemo(
+    () => [...new Set(selectedPages)].sort((a, b) => a - b),
+    [selectedPages],
+  );
+
+  const currentTranslatingPageNumber = useMemo(() => {
+    if (!isTranslating || !pdfProgress?.currentPage) return null;
     const runPages =
       activePagesInRunOrder.length > 0
         ? activePagesInRunOrder
         : selectedPagesInRunOrder;
-    if (pdfProgress.currentPage != null && pdfProgress.currentPage > 0) {
-      return runPages[pdfProgress.currentPage - 1] ?? null;
-    }
-    const translatingPage = pdfPageState?.pages.find(
-      (page) => page.status === "translating",
-    );
-    return translatingPage?.pageNumber ?? null;
+    return runPages[pdfProgress.currentPage - 1] ?? null;
   }, [
     activePagesInRunOrder,
     isTranslating,
-    pdfPageState?.pages,
-    pdfProgress,
+    pdfProgress?.currentPage,
     selectedPagesInRunOrder,
   ]);
 
@@ -338,7 +331,11 @@ export function PdfDocumentPreview({
               const pageIndex = pages[item.index];
               const pageNumber = pageIndex + 1;
               const status = pageStatus(pageIndex);
-              const isLivePage = livePageNumber === pageNumber;
+              const activity = displayPageActivity(
+                status?.status ?? null,
+                pageNumber,
+                currentTranslatingPageNumber,
+              );
 
               return (
                 <div
@@ -389,9 +386,7 @@ export function PdfDocumentPreview({
                         renderVersion={translatedPageRenderVersion(pageNumber, status)}
                         targetWidth={RASTER_WIDTH}
                         canRender={status?.status === "translated"}
-                        activity={status?.status ?? null}
-                        showLiveStream={isLivePage}
-                        liveTranslations={isLivePage ? pdfProgress?.recentTranslations ?? [] : []}
+                        activity={activity}
                         renderPage={(index, width) =>
                           renderRosettaPdfTranslatedPageAsPng(
                             jobId,
@@ -400,7 +395,7 @@ export function PdfDocumentPreview({
                             targetLang,
                           )
                         }
-                        status={translatedPageLabel(pageNumber, status)}
+                        status={translatedPageLabel(pageNumber, status, activity)}
                       />
                     </div>
                   </div>
@@ -478,16 +473,27 @@ function translatedPageRenderVersion(
   return `${pageNumber}:${page.translatedPdfPath ?? ""}:${page.updatedAt ?? "translated"}`;
 }
 
+function displayPageActivity(
+  status: PdfPageTranslation["status"] | null,
+  pageNumber: number,
+  currentTranslatingPageNumber: number | null,
+) {
+  if (status === "failed") return "failed";
+  if (status === "translated") return "translated";
+  if (currentTranslatingPageNumber === pageNumber) return "translating";
+  return "pending";
+}
+
 function translatedPageLabel(
   pageNumber: number,
   page: { status: string; error?: string | null } | null,
+  activity: ReturnType<typeof displayPageActivity>,
 ) {
-  if (!page) return `第 ${pageNumber} 页未翻译，导出时保留原文`;
+  if (!page) return null;
   if (page.status === "translated") return `加载第 ${pageNumber} 页译文...`;
-  if (page.status === "translating") return `第 ${pageNumber} 页翻译中`;
-  if (page.status === "queued") return `第 ${pageNumber} 页排队中`;
-  if (page.status === "failed") return `第 ${pageNumber} 页失败：${page.error ?? "可重试"}`;
-  return `第 ${pageNumber} 页未翻译，导出时保留原文`;
+  if (activity === "translating") return null;
+  if (page.status === "failed") return `失败原因：${page.error ?? "可重试"}`;
+  return null;
 }
 
 function pdfPageRelativePath(targetLang: string, pageNumber: number) {

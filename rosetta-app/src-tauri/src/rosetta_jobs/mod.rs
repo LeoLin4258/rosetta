@@ -1,6 +1,6 @@
 use std::{
     fs,
-    path::Path,
+    path::{Component, Path},
     str::FromStr,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -545,6 +545,12 @@ async fn translate_pdf_pages_inner(
 
     let mut cancelled = false;
 
+    if force {
+        for page_number in &pages_to_process {
+            clear_pdf_page_artifacts(&dir, &mut state, target_lang, *page_number);
+        }
+    }
+
     // Mark every targeted page as "translating" up front so the sidebar and
     // page grid flip to the spinner the moment the user clicks translate,
     // not when the first worker event lands.
@@ -647,7 +653,7 @@ async fn translate_pdf_pages_inner(
             provider: provider.clone(),
             source_lang: source_lang.clone(),
             target_lang: target_lang.to_string(),
-            ignore_cache: false,
+            ignore_cache: force,
             pages: Some(pages_to_process.clone()),
             page_progress: Some(pdf2zh_invoke::PageProgressContext {
                 completed_before: 0,
@@ -671,6 +677,23 @@ async fn translate_pdf_pages_inner(
             profile.durations_ms.pdf2zh_warmup = output.warmup_ms;
             profile.durations_ms.pdf2zh_process = output.process_ms;
             rwkv_aggregate.add(&output.rwkv_metrics);
+            if force && total_pages_to_process > 0 && output.rwkv_metrics.request_count == 0 {
+                let message = "PDF 重翻没有向翻译模型发送任何文本，已拒绝复用旧译文。请确认该页包含可提取文本后再试。"
+                    .to_string();
+                for page_number in &pages_to_process {
+                    clear_pdf_page_artifacts(&dir, &mut state, target_lang, *page_number);
+                    page_state::upsert_pdf_page(
+                        &mut state,
+                        *page_number,
+                        "failed",
+                        None,
+                        Some(message.clone()),
+                    );
+                    emit_pdf_page_progress(app, job_id, *page_number, "failed");
+                }
+                let _ = page_state::write_pdf_page_translation_state(&dir, &state);
+                failure_message = Some(message);
+            }
         }
         Err(formats::pdf::errors::PdfError::Cancelled) => {
             cancelled = true;
@@ -735,6 +758,49 @@ async fn translate_pdf_pages_inner(
     }
     finish_profile(&mut profile, "completed", &rwkv_aggregate);
     Ok(state)
+}
+
+fn clear_pdf_page_artifacts(
+    job_dir: &Path,
+    state: &mut formats::pdf::page_state::PdfPageTranslationState,
+    target_lang: &str,
+    page_number: u32,
+) {
+    use formats::pdf::page_state;
+
+    let mut candidates = vec![job_dir.join(page_state::pdf_page_relative_path_for_lang(
+        target_lang,
+        page_number,
+    ))];
+    if let Some(page) = state
+        .pages
+        .iter()
+        .find(|page| page.page_number == page_number)
+    {
+        if let Some(path) = page
+            .translated_pdf_path
+            .as_deref()
+            .and_then(|relative| safe_relative_cache_path(job_dir, relative))
+        {
+            candidates.push(path);
+        }
+    }
+    for path in candidates {
+        let _ = fs::remove_file(path);
+    }
+    page_state::upsert_pdf_page(state, page_number, "pending", None, None);
+}
+
+fn safe_relative_cache_path(job_dir: &Path, relative: &str) -> Option<std::path::PathBuf> {
+    let path = Path::new(relative);
+    let is_safe = path
+        .components()
+        .all(|component| matches!(component, Component::Normal(_) | Component::CurDir));
+    if is_safe {
+        Some(job_dir.join(path))
+    } else {
+        None
+    }
 }
 
 #[tauri::command]

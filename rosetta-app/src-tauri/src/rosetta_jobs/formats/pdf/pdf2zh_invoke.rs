@@ -148,7 +148,6 @@ pub(crate) async fn invoke_pdf2zh(
     emit("warmup", Some(20), "正在启动本地翻译 shim…");
     let shim_log_file = output_dir.join("rosetta-pdf2zh-shim.log");
     let shim = managed_pdf2zh::openai_shim::spawn_shim(
-        app.clone(),
         options.provider.clone(),
         options.source_lang.clone(),
         options.target_lang.clone(),
@@ -166,7 +165,7 @@ pub(crate) async fn invoke_pdf2zh(
     std::fs::write(
         output_dir.join("rosetta-pdf2zh-command.log"),
         format!(
-            "bin={}\nsource={}\noutput_dir={}\ntemp_dir={}\nopenai_base_url={}\nservice=openai:rwkv\nsource_lang={}\ntarget_lang={}\nthreads={}\ndebug={}\n",
+            "bin={}\nsource={}\noutput_dir={}\ntemp_dir={}\nopenai_base_url={}\nservice=openai:rwkv\nsource_lang={}\ntarget_lang={}\nthreads={}\ndebug={}\nignore_cache={}\n",
             bin.display(),
             source_path.display(),
             output_dir.display(),
@@ -176,10 +175,10 @@ pub(crate) async fn invoke_pdf2zh(
             options.target_lang,
             thread_count,
             debug,
+            options.ignore_cache,
         ),
     )
     .ok();
-    let _ = options.ignore_cache;
 
     emit("translate", Some(0), "正在翻译 PDF…");
     let warmup_ms = invoke_started.elapsed().as_millis() as u64;
@@ -252,10 +251,12 @@ pub(crate) async fn invoke_pdf2zh(
         "langOut": pdf2zh_lang(&options.target_lang),
         "service": "openai:rwkv",
         "thread": thread_count,
+        "ignoreCache": options.ignore_cache,
         "env": {
             "OPENAI_BASE_URL": openai_base_url.clone(),
             "OPENAI_API_KEY": "rosetta-local",
             "OPENAI_MODEL": "rwkv",
+            "ROSETTA_PDF2ZH_IGNORE_CACHE": if options.ignore_cache { "1" } else { "0" },
         },
     });
     let streaming_used = on_page_done.is_some();
@@ -339,6 +340,10 @@ pub(crate) async fn invoke_pdf2zh(
             .env("OPENAI_BASE_URL", &openai_base_url)
             .env("OPENAI_API_KEY", "rosetta-local")
             .env("OPENAI_MODEL", "rwkv")
+            .env(
+                "ROSETTA_PDF2ZH_IGNORE_CACHE",
+                if options.ignore_cache { "1" } else { "0" },
+            )
             .env("TMPDIR", &temp_dir)
             .env("TEMP", &temp_dir)
             .env("TMP", &temp_dir)

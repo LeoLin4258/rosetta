@@ -294,12 +294,9 @@ pub async fn start_sidecar(
 
         drop(guard);
 
-        let healthy = wait_for_health_with_process_check(
-            &base_url,
-            profile.health_path,
-            &registry.inner,
-        )
-        .await;
+        let healthy =
+            wait_for_health_with_process_check(&base_url, profile.health_path, &registry.inner)
+                .await;
         guard = registry.inner.lock().await;
 
         match healthy {
@@ -341,9 +338,7 @@ pub async fn start_sidecar(
                     .rev()
                     .collect::<Vec<_>>();
 
-                let has_vulkan_error = log_tail
-                    .iter()
-                    .any(|line| is_vulkan_device_error(line));
+                let has_vulkan_error = log_tail.iter().any(|line| is_vulkan_device_error(line));
 
                 last_detail = if log_tail.is_empty() {
                     format!("{error}\n日志文件: {}", log_file.display())

@@ -601,6 +601,34 @@ fn pdf_page_status_summary_marks_all_pages_translated() {
 }
 
 #[test]
+fn pdf_force_retranslate_clears_existing_page_artifact() {
+    let dir = unique_temp_dir("pdf-force-clear-page");
+    let page_dir = dir.join("pdf-pages").join("zh-CN");
+    fs::create_dir_all(&page_dir).expect("create page cache");
+    let page_path = page_dir.join("page-0002.pdf");
+    fs::write(&page_path, b"old translated page").expect("write old page");
+    let mut state = PdfPageTranslationState {
+        schema_version: SCHEMA_VERSION,
+        source_page_count: 3,
+        target_lang: "zh-CN".to_string(),
+        pages: vec![PdfPageTranslation {
+            page_number: 2,
+            status: "translated".to_string(),
+            translated_pdf_path: Some("pdf-pages/zh-CN/page-0002.pdf".to_string()),
+            error: None,
+            updated_at: "1".to_string(),
+        }],
+    };
+
+    super::clear_pdf_page_artifacts(&dir, &mut state, "zh-CN", 2);
+
+    assert!(!page_path.exists());
+    assert_eq!(state.pages[0].status, "pending");
+    assert_eq!(state.pages[0].translated_pdf_path, None);
+    fs::remove_dir_all(dir).ok();
+}
+
+#[test]
 fn pdf_page_artifact_path_is_stable() {
     assert_eq!(pdf_page_filename(1), "page-0001.pdf");
     assert_eq!(pdf_page_filename(42), "page-0042.pdf");

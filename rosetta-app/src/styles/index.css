@@ -535,6 +535,99 @@ textarea {
   transition-timing-function: var(--rosetta-motion-ease);
 }
 
+.rosetta-run-count-value {
+  display: inline-flex;
+  width: fit-content;
+  max-width: max-content;
+  align-items: baseline;
+  justify-content: flex-start;
+  overflow: hidden;
+  contain: layout paint;
+  color: oklch(0.6200 0.1900 255);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  line-height: 1;
+  transition: width 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.dark .rosetta-run-count-value {
+  color: oklch(0.7200 0.1400 250);
+}
+
+.rosetta-run-count-content {
+  display: inline-flex;
+  width: max-content;
+  flex: 0 0 auto;
+  align-items: baseline;
+  gap: 0.25ch;
+}
+
+.rosetta-run-count-number {
+  display: inline-flex;
+  height: 1em;
+  align-items: baseline;
+  justify-content: flex-end;
+  line-height: 1;
+}
+
+.rosetta-run-count-digit {
+  position: relative;
+  display: inline-block;
+  width: 1ch;
+  height: 1em;
+  flex: 0 0 1ch;
+  overflow: hidden;
+  line-height: 1;
+  vertical-align: middle;
+}
+
+.rosetta-run-count-digit-current,
+.rosetta-run-count-digit-previous {
+  display: inline-flex;
+  height: 1em;
+  align-items: baseline;
+  justify-content: center;
+  line-height: 1;
+  will-change: transform;
+}
+
+.rosetta-run-count-digit-previous {
+  position: absolute;
+  inset: 0;
+}
+
+.rosetta-run-count-digit[data-rolling="true"] .rosetta-run-count-digit-current {
+  animation: rosetta-run-count-digit-in 200ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.rosetta-run-count-digit[data-rolling="true"] .rosetta-run-count-digit-previous {
+  animation: rosetta-run-count-digit-out 200ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.rosetta-run-count-separator {
+  display: inline-flex;
+  width: 0.45ch;
+  height: 1em;
+  align-items: baseline;
+  justify-content: center;
+  text-align: center;
+  line-height: 1;
+}
+
+.rosetta-run-count-unit {
+  flex: 0 0 auto;
+  line-height: 1;
+}
+
+.rosetta-run-time-value {
+  display: inline-block;
+  width: 5ch;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
 .rosetta-file-status-icon {
   display: inline-flex;
   width: 1rem;
@@ -602,100 +695,6 @@ textarea {
   animation: rosetta-pdf-page-scan 2.35s var(--rosetta-motion-ease) infinite;
 }
 
-.rosetta-pdf-translation-stream {
-  position: relative;
-  display: grid;
-  height: 100%;
-  min-height: inherit;
-  grid-template-rows: auto minmax(0, 1fr);
-  gap: 0.75rem;
-  overflow: hidden;
-  padding: clamp(1rem, 7%, 2rem);
-  color: var(--muted-foreground);
-}
-
-.rosetta-pdf-translation-stream > * {
-  grid-column: 1;
-  position: relative;
-}
-
-.rosetta-pdf-translation-stream-header {
-  display: inline-flex;
-  width: fit-content;
-  max-width: 100%;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.1rem 0.15rem;
-  font-size: 0.75rem;
-  line-height: 1;
-  color: color-mix(in oklch, var(--foreground) 88%, var(--muted-foreground) 12%);
-}
-
-.rosetta-pdf-translation-stream-body {
-  display: flex;
-  min-height: 0;
-  flex-direction: column;
-  justify-content: flex-end;
-  gap: 0.65rem;
-  overflow: hidden;
-  mask-image: linear-gradient(
-    180deg,
-    transparent 0%,
-    black 12%,
-    black 100%
-  );
-}
-
-.rosetta-pdf-translation-stream-line {
-  margin: 0;
-  max-width: 64ch;
-  padding: 0;
-  font-size: 0.86rem;
-  line-height: 1.78;
-  color: color-mix(in oklch, var(--foreground) 88%, var(--muted-foreground) 12%);
-  text-align: left;
-  text-wrap: pretty;
-  animation: rosetta-pdf-translation-text-in 260ms var(--rosetta-motion-ease) both;
-}
-
-.rosetta-pdf-translation-stream-line:last-child {
-  color: var(--foreground);
-}
-
-.rosetta-pdf-translation-stream-waiting {
-  display: grid;
-  gap: 0.55rem;
-  padding: 0.5rem 0.25rem;
-  color: var(--muted-foreground);
-}
-
-.rosetta-pdf-translation-stream-waiting span {
-  display: block;
-  height: 0.42rem;
-  border-radius: 999px;
-  background: color-mix(in oklch, var(--muted) 70%, var(--foreground) 8%);
-  animation: rosetta-pdf-translation-line 1.45s ease-in-out infinite;
-}
-
-.rosetta-pdf-translation-stream-waiting span:nth-child(1) {
-  width: 82%;
-}
-
-.rosetta-pdf-translation-stream-waiting span:nth-child(2) {
-  width: 64%;
-  animation-delay: 0.12s;
-}
-
-.rosetta-pdf-translation-stream-waiting span:nth-child(3) {
-  width: 42%;
-  animation-delay: 0.24s;
-}
-
-.rosetta-pdf-translation-stream-waiting p {
-  margin: 0.25rem 0 0;
-  font-size: 0.75rem;
-}
-
 .rosetta-pdf-inline-progress {
   display: inline-block;
   width: 0.5rem;
@@ -724,10 +723,10 @@ textarea {
   }
 }
 
-@keyframes rosetta-pdf-translation-text-in {
+@keyframes rosetta-run-count-digit-in {
   0% {
-    transform: translateY(0.45rem);
-    opacity: 0;
+    transform: translateY(72%);
+    opacity: 0.45;
   }
   100% {
     transform: translateY(0);
@@ -735,13 +734,14 @@ textarea {
   }
 }
 
-@keyframes rosetta-pdf-translation-line {
-  0%,
-  100% {
-    background: color-mix(in oklch, var(--muted) 74%, var(--foreground) 6%);
+@keyframes rosetta-run-count-digit-out {
+  0% {
+    transform: translateY(0);
+    opacity: 1;
   }
-  50% {
-    background: color-mix(in oklch, var(--muted) 60%, var(--foreground) 10%);
+  100% {
+    transform: translateY(-72%);
+    opacity: 0.35;
   }
 }
 
@@ -769,13 +769,15 @@ textarea {
 
 @media (prefers-reduced-motion: reduce) {
   .rosetta-pdf-page-scan::before,
-  .rosetta-pdf-translation-stream-line,
-  .rosetta-pdf-translation-stream-waiting span,
   .rosetta-pdf-inline-progress,
+  .rosetta-run-count-value,
+  .rosetta-run-count-digit-current,
+  .rosetta-run-count-digit-previous,
   .rosetta-markdown-translation-skeleton[data-active="true"]::after,
   .rosetta-markdown-source-scanning::after,
   .rosetta-markdown-translation-skeleton[data-active="true"] span {
     animation: none;
+    transition: none;
   }
 
   .rosetta-pdf-page-scan::before {
@@ -783,10 +785,6 @@ textarea {
     opacity: 0.55;
   }
 
-  .rosetta-pdf-translation-stream-line {
-    opacity: 1;
-    transform: none;
-  }
 }
 
 

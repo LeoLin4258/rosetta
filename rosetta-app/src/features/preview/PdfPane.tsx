@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type React from "react";
-import { AlertCircle, CheckCircle2, Clock3, Loader2 } from "lucide-react";
+import { AlertCircle, Loader2 } from "lucide-react";
 
 import { renderRosettaPdfPageAsPng } from "@/lib/rosettaJobs";
 import { cn } from "@/lib/utils";
@@ -70,8 +70,6 @@ export function PdfPageImage({
   renderPage,
   status,
   activity,
-  showLiveStream = false,
-  liveTranslations = [],
 }: {
   jobId: string;
   kind: "source" | "translated";
@@ -82,8 +80,6 @@ export function PdfPageImage({
   renderPage?: (pageIndex: number, targetWidth: number) => Promise<Uint8Array>;
   status?: React.ReactNode;
   activity?: PdfPageActivity | null;
-  showLiveStream?: boolean;
-  liveTranslations?: string[];
 }) {
   const [src, setSrc] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -138,9 +134,7 @@ export function PdfPageImage({
         {kind === "translated" ? (
           <PdfPagePlaceholder
             activity={activity}
-            liveTranslations={liveTranslations}
             pageNumber={pageIndex + 1}
-            showLiveStream={showLiveStream}
             status={status}
           />
         ) : (
@@ -199,97 +193,36 @@ function PdfPagePlaceholder({
   activity,
   pageNumber,
   status,
-  showLiveStream,
-  liveTranslations,
 }: {
   activity?: PdfPageActivity | null;
   pageNumber: number;
   status?: React.ReactNode;
-  showLiveStream: boolean;
-  liveTranslations: string[];
 }) {
-  if (activity === "translating" && showLiveStream) {
-    return (
-      <PdfTranslationTextStream
-        status={status}
-        translations={liveTranslations}
-      />
-    );
-  }
-
   const failed = activity === "failed";
-  const queued = activity === "queued";
   const translating = activity === "translating";
 
   return (
     <div
       className={cn(
-        "flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-xs",
+        "flex h-full flex-col items-center justify-center gap-1.5 px-6 text-center text-xs",
         failed ? "text-destructive" : "text-muted-foreground",
       )}
     >
-      {failed ? (
-        <AlertCircle className="size-4" />
-      ) : queued ? (
-        <Clock3 className="size-4" />
-      ) : translating ? (
-        <Loader2 className="size-4 animate-spin motion-reduce:animate-none" />
-      ) : (
-        <CheckCircle2 className="size-4 opacity-0" aria-hidden="true" />
-      )}
+      {translating ? (
+        <Loader2 className="mb-0.5 size-4 animate-spin motion-reduce:animate-none" />
+      ) : null}
       <div className="font-medium text-foreground">
         {failed
           ? `第 ${pageNumber} 页翻译失败`
-          : queued
-            ? `第 ${pageNumber} 页排队中`
-            : translating
-              ? `第 ${pageNumber} 页翻译中`
-              : `第 ${pageNumber} 页未翻译`}
+          : translating
+            ? "翻译中"
+            : "未翻译"}
       </div>
-      <div className="max-w-52 leading-5">
-        {status ?? (failed ? "可重试此页。" : "导出时保留原文。")}
-      </div>
-    </div>
-  );
-}
-
-function PdfTranslationTextStream({
-  status,
-  translations,
-}: {
-  status?: React.ReactNode;
-  translations: string[];
-}) {
-  const visibleTranslations = translations
-    .map((text) => text.trim())
-    .filter(Boolean)
-    .slice(-5);
-
-  return (
-    <div className="rosetta-pdf-translation-stream" data-active="true">
-      <div className="rosetta-pdf-translation-stream-header">
-        <span>{status ?? "正在翻译"}</span>
-      </div>
-      <div className="rosetta-pdf-translation-stream-body">
-        {visibleTranslations.length > 0 ? (
-          visibleTranslations.map((text, index) => (
-            <p
-              key={`${index}-${text.slice(0, 24)}`}
-              className="rosetta-pdf-translation-stream-line"
-              style={{ animationDelay: `${Math.min(index, 4) * 70}ms` }}
-            >
-              {text}
-            </p>
-          ))
-        ) : (
-          <div className="rosetta-pdf-translation-stream-waiting">
-            <span />
-            <span />
-            <span />
-            <p>等待当前页译文返回</p>
-          </div>
-        )}
-      </div>
+      {failed || status ? (
+        <div className="max-w-52 leading-5">
+          {status ?? "可重试此页。"}
+        </div>
+      ) : null}
     </div>
   );
 }

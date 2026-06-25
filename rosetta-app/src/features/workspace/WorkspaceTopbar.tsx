@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   ArrowRight,
   Download,
@@ -132,21 +138,16 @@ function useElapsedSince(isActive: boolean, startedAtMs?: number | null): number
 function TranslationRunIndicator({
   phaseLabel,
   pageLabel,
-  countLabel,
+  countValue,
   countTitle,
   elapsedLabel,
-  percent,
 }: {
   phaseLabel: string;
   pageLabel: string | null;
-  countLabel: string | null;
+  countValue: ReactNode | null;
   countTitle: string;
   elapsedLabel: string;
-  percent: number | null;
 }) {
-  const boundedPercent =
-    percent == null ? null : Math.max(0, Math.min(100, percent));
-
   return (
     <div className="flex h-9 max-w-[min(38rem,64vw)] items-center gap-2 rounded-lg border border-border/70 bg-muted/30 px-2.5">
       <span className="relative flex size-2.5 shrink-0" aria-hidden="true">
@@ -158,47 +159,119 @@ function TranslationRunIndicator({
       </span>
       <div className="flex min-w-0 items-center gap-1.5 border-l border-border/70 pl-2">
         {pageLabel ? (
-          <RunMetric title="当前页" icon={<FileText className="size-3" />} label={pageLabel} />
+          <RunMetric title="当前页" icon={<FileText className="size-3" />}>
+            {pageLabel}
+          </RunMetric>
         ) : null}
-        {countLabel ? (
-          <RunMetric title={countTitle} icon={<Type className="size-3" />} label={countLabel} />
+        {countValue ? (
+          <RunMetric title={countTitle} icon={<Type className="size-3" />}>
+            {countValue}
+          </RunMetric>
         ) : null}
-        <RunMetric title="已用时间" icon={<Timer className="size-3" />} label={elapsedLabel} />
-        {boundedPercent != null ? (
-          <div
-            className="flex items-center gap-1.5 pl-0.5 !text-xs tabular-nums !text-muted-foreground"
-            title="总体进度"
-          >
-            <span className="h-1.5 w-12 overflow-hidden rounded-full bg-border/80">
-              <span
-                className="block h-full rounded-full bg-primary/70 transition-[width] duration-200 ease-out"
-                style={{ width: `${boundedPercent}%` }}
-              />
-            </span>
-            <span>{boundedPercent}%</span>
-          </div>
-        ) : null}
+        <RunMetric title="已用时间" icon={<Timer className="size-3" />}>
+          <span className="rosetta-run-time-value">{elapsedLabel}</span>
+        </RunMetric>
       </div>
     </div>
   );
 }
 
 function RunMetric({
+  children,
   icon,
-  label,
   title,
 }: {
+  children: ReactNode;
   icon: ReactNode;
-  label: string;
   title: string;
 }) {
   return (
     <span
-      className="inline-flex min-w-0 items-center gap-1 rounded-md bg-background/70 px-1.5 py-0.5 !text-xs tabular-nums !text-muted-foreground"
+      className="flex min-w-0 items-center justify-center gap-1 rounded-md bg-background/70 px-1.5 py-0.5 !text-xs tabular-nums !text-muted-foreground"
       title={title}
     >
       <span className="shrink-0 !text-muted-foreground/70">{icon}</span>
-      <span className="truncate">{label}</span>
+      <span className="truncate flex items-center justify-center">{children}</span>
+    </span>
+  );
+}
+
+function RollingTranslatedChars({ value }: { value: number }) {
+  const formatted = Math.max(0, Math.floor(value)).toLocaleString();
+  const contentRef = useRef<HTMLSpanElement | null>(null);
+  const [contentWidth, setContentWidth] = useState<number | null>(null);
+
+  useLayoutEffect(() => {
+    const nextWidth = contentRef.current?.getBoundingClientRect().width ?? null;
+    if (nextWidth == null) {
+      return;
+    }
+    setContentWidth((current) => {
+      const rounded = Math.ceil(nextWidth);
+      return current === rounded ? current : rounded;
+    });
+  }, [formatted]);
+
+  return (
+    <span
+      aria-label={`${formatted} 字`}
+      className="rosetta-run-count-value"
+      style={contentWidth == null ? undefined : { width: contentWidth }}
+    >
+      <span
+        className="rosetta-run-count-content"
+        aria-hidden="true"
+        ref={contentRef}
+      >
+        <span className="rosetta-run-count-number">
+          {formatted.split("").map((char, index) =>
+            /\d/.test(char) ? (
+              <RollingDigit digit={Number(char)} key={`${index}:digit`} />
+            ) : (
+              <span className="rosetta-run-count-separator" key={`${index}:${char}`}>
+                {char}
+              </span>
+            )
+          )}
+        </span>
+        <span className="rosetta-run-count-unit">字</span>
+      </span>
+    </span>
+  );
+}
+
+function RollingDigit({ digit }: { digit: number }) {
+  const previousDigitRef = useRef(digit);
+  const [previousDigit, setPreviousDigit] = useState<number | null>(null);
+
+  useLayoutEffect(() => {
+    if (previousDigitRef.current === digit) {
+      return;
+    }
+
+    setPreviousDigit(previousDigitRef.current);
+    previousDigitRef.current = digit;
+
+    const timeout = window.setTimeout(() => {
+      setPreviousDigit(null);
+    }, 220);
+
+    return () => window.clearTimeout(timeout);
+  }, [digit]);
+
+  return (
+    <span
+      className="rosetta-run-count-digit"
+      data-rolling={previousDigit == null ? undefined : "true"}
+    >
+      {previousDigit == null ? null : (
+        <span className="rosetta-run-count-digit-previous">
+          {previousDigit}
+        </span>
+      )}
+      <span className="rosetta-run-count-digit-current" key={digit}>
+        {digit}
+      </span>
     </span>
   );
 }
@@ -257,8 +330,6 @@ export function WorkspaceTopbar({
       ? activeTranslationFile.status === "translated"
       : activeTranslationFile.segmentCount > 0 &&
         activeTranslationFile.completedSegments >= activeTranslationFile.segmentCount);
-  const progressPercent =
-    totalCount > 0 ? Math.round((translatedCount / totalCount) * 100) : 0;
   const isPdf = job.format === "pdf";
   const sameLanguage = sourceLang === targetLang;
   const noPdfPagesSelected = isPdf && pdfSelectedPageCount === 0;
@@ -298,12 +369,11 @@ export function WorkspaceTopbar({
     isPdf && pdfProgress?.currentPage != null && pdfProgress?.totalPages != null
       ? `${pdfProgress.currentPage}/${pdfProgress.totalPages} 页`
       : null;
-  const runCountLabel = isPdf
-    ? pdfProgress?.translatedChars
-      ? `${pdfProgress.translatedChars.toLocaleString()} 字`
+  const runCountValue = isPdf
+    ? pdfProgress?.translatedChars != null
+      ? <RollingTranslatedChars value={pdfProgress.translatedChars} />
       : null
     : `${translatedCount}/${totalCount}`;
-  const runPercent = isPdf ? pdfProgress?.percent ?? null : progressPercent;
 
   return (
     <div className="border-b border-border/60 bg-background/95 px-5 py-3" data-window-no-drag>
@@ -384,10 +454,9 @@ export function WorkspaceTopbar({
               <TranslationRunIndicator
                 phaseLabel={runPhaseLabel}
                 pageLabel={runPageLabel}
-                countLabel={runCountLabel}
+                countValue={runCountValue}
                 countTitle={isPdf ? "已翻译字数" : "段落进度"}
                 elapsedLabel={elapsedLabel}
-                percent={runPercent}
               />
               {confirmingCancel ? (
                 <div className="flex items-center gap-2">

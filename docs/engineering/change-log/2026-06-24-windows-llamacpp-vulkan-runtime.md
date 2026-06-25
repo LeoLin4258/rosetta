@@ -127,6 +127,16 @@ length-bucket policy further halved the ceiling for medium-length segments
 macOS markdown batch ceiling. The 0.4B model is small enough to serve 16
 concurrent completions even in CPU-only mode.
 
+### 5. Windows llama.cpp runtime GitHub mirror
+
+**Symptom**: Mainland China users can have slow or blocked access to the
+llama.cpp Windows Vulkan runtime ZIP on GitHub Releases.
+
+**Fix**: Added a githubdog mirror URL to
+`WINDOWS_AMD64_LLAMACPP_VULKAN.runtime_download_urls`. The existing automatic
+source probing still picks the fastest reachable source and falls back without
+asking the user to choose a mirror.
+
 ## Test results
 
 - 180 Rust unit tests pass (`cargo test`).

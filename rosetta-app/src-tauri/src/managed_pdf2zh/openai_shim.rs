@@ -8,7 +8,6 @@ use std::{
 
 use axum::{extract::State, http::StatusCode, routing::post, Json, Router};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter};
 use tokio::{
     net::TcpListener,
     sync::{mpsc, oneshot},
@@ -91,9 +90,6 @@ pub enum ShimProviderConfig {
 }
 
 const BATCH_WINDOW_MS: u64 = 80;
-const PDF_TRANSLATION_PREVIEW_EVENT: &str = "rosetta-pdf-translation-preview";
-const PDF_TRANSLATION_PREVIEW_MAX_ITEMS: usize = 4;
-const PDF_TRANSLATION_PREVIEW_MAX_CHARS: usize = 560;
 
 /// Aggregated RWKV request timing for one shim lifetime. Written by the batch
 /// processors, read after the run to build the diagnostics profile. Counts
@@ -195,20 +191,6 @@ struct PendingTranslation {
     result_tx: oneshot::Sender<Result<String, String>>,
 }
 
-#[derive(Debug, Clone)]
-struct PdfTranslationPreviewEmitter {
-    app: AppHandle,
-    job_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PdfTranslationPreviewPayload {
-    pub job_id: String,
-    pub translations: Vec<String>,
-    pub translated_chars: u64,
-}
-
 struct ShimState {
     batch_tx: mpsc::Sender<PendingTranslation>,
     log_file: PathBuf,
@@ -249,7 +231,6 @@ struct ChatMessageResponse {
 }
 
 pub async fn spawn_shim(
-    app: AppHandle,
     provider: ShimProviderConfig,
     source_lang: String,
     target_lang: String,
@@ -257,15 +238,7 @@ pub async fn spawn_shim(
     debug: bool,
     debug_context: Option<String>,
 ) -> Result<OpenAiShim, String> {
-    let job_id = debug_context
-        .as_deref()
-        .and_then(|context| context.strip_prefix("pdf-job:"))
-        .map(str::to_string);
     let metrics = Arc::new(ShimRwkvMetrics::default());
-    let preview_emitter = PdfTranslationPreviewEmitter {
-        app: app.clone(),
-        job_id,
-    };
     let (max_batch_size, batch_handle) = match provider {
         ShimProviderConfig::MobileBatch(rwkv) => {
             mobile_batch_chat::set_chat_roles_for_pair(&rwkv, &source_lang, &target_lang, None)
@@ -284,7 +257,6 @@ pub async fn spawn_shim(
                 max_batch_size,
                 Arc::clone(&metrics),
                 debug_context.clone(),
-                preview_emitter.clone(),
             ));
             (max_batch_size, (batch_tx, handle))
         }
@@ -299,7 +271,6 @@ pub async fn spawn_shim(
                 max_batch_size,
                 Arc::clone(&metrics),
                 debug_context.clone(),
-                preview_emitter.clone(),
             ));
             (max_batch_size, (batch_tx, handle))
         }
@@ -314,7 +285,6 @@ pub async fn spawn_shim(
                 max_batch_size,
                 Arc::clone(&metrics),
                 debug_context.clone(),
-                preview_emitter.clone(),
             ));
             (max_batch_size, (batch_tx, handle))
         }
@@ -369,7 +339,6 @@ async fn mobile_batch_processor(
     max_batch_size: usize,
     metrics: Arc<ShimRwkvMetrics>,
     debug_context: Option<String>,
-    preview_emitter: PdfTranslationPreviewEmitter,
 ) {
     loop {
         let Some(first) = rx.recv().await else {
@@ -417,16 +386,6 @@ async fn mobile_batch_processor(
             result.translations.len()
         );
         if result.ok && result.translations.len() == batch.len() {
-            emit_translation_preview(
-                &preview_emitter.app,
-                preview_emitter.job_id.as_deref(),
-                &result.translations,
-                result
-                    .translations
-                    .iter()
-                    .map(|text| text.chars().count() as u64)
-                    .sum(),
-            );
             for (pending, translation) in batch.into_iter().zip(result.translations) {
                 let _ = pending.result_tx.send(Ok(translation));
             }
@@ -455,7 +414,6 @@ async fn lightning_batch_processor(
     max_batch_size: usize,
     metrics: Arc<ShimRwkvMetrics>,
     debug_context: Option<String>,
-    preview_emitter: PdfTranslationPreviewEmitter,
 ) {
     loop {
         let Some(first) = rx.recv().await else {
@@ -500,15 +458,6 @@ async fn lightning_batch_processor(
         );
         match result {
             Ok(translations) if translations.len() == batch.len() => {
-                emit_translation_preview(
-                    &preview_emitter.app,
-                    preview_emitter.job_id.as_deref(),
-                    &translations,
-                    translations
-                        .iter()
-                        .map(|text| text.chars().count() as u64)
-                        .sum(),
-                );
                 for (pending, translation) in batch.into_iter().zip(translations) {
                     let _ = pending.result_tx.send(Ok(translation));
                 }
@@ -540,7 +489,6 @@ async fn llama_cpp_batch_processor(
     max_batch_size: usize,
     metrics: Arc<ShimRwkvMetrics>,
     debug_context: Option<String>,
-    preview_emitter: PdfTranslationPreviewEmitter,
 ) {
     loop {
         let Some(first) = rx.recv().await else {
@@ -583,15 +531,6 @@ async fn llama_cpp_batch_processor(
         );
         match result {
             Ok(translations) if translations.len() == batch.len() => {
-                emit_translation_preview(
-                    &preview_emitter.app,
-                    preview_emitter.job_id.as_deref(),
-                    &translations,
-                    translations
-                        .iter()
-                        .map(|text| text.chars().count() as u64)
-                        .sum(),
-                );
                 for (pending, translation) in batch.into_iter().zip(translations) {
                     let _ = pending.result_tx.send(Ok(translation));
                 }
@@ -721,42 +660,6 @@ async fn translate_chunks(state: &Arc<ShimState>, chunks: Vec<String>) -> Result
     }
 
     Ok(join_translated_chunks(translations, &state.target_lang))
-}
-
-fn emit_translation_preview(
-    app: &AppHandle,
-    job_id: Option<&str>,
-    translations: &[String],
-    translated_chars: u64,
-) {
-    let Some(job_id) = job_id else {
-        return;
-    };
-    let snippets = translations
-        .iter()
-        .map(|text| compact_preview_text(text))
-        .filter(|text| !text.is_empty())
-        .take(PDF_TRANSLATION_PREVIEW_MAX_ITEMS)
-        .collect::<Vec<_>>();
-    if snippets.is_empty() {
-        return;
-    }
-    let _ = app.emit(
-        PDF_TRANSLATION_PREVIEW_EVENT,
-        PdfTranslationPreviewPayload {
-            job_id: job_id.to_string(),
-            translations: snippets,
-            translated_chars,
-        },
-    );
-}
-
-fn compact_preview_text(text: &str) -> String {
-    let compact = collapse_pdf_whitespace(text);
-    compact
-        .chars()
-        .take(PDF_TRANSLATION_PREVIEW_MAX_CHARS)
-        .collect::<String>()
 }
 
 fn openai_response(content: String) -> Json<ChatCompletionResponse> {
@@ -1068,9 +971,7 @@ fn is_reference_item(text: &str) -> bool {
     let Some(close_index) = rest.find(']') else {
         return false;
     };
-    close_index > 0
-        && close_index <= 4
-        && rest[..close_index].chars().all(|ch| ch.is_ascii_digit())
+    close_index > 0 && close_index <= 4 && rest[..close_index].chars().all(|ch| ch.is_ascii_digit())
 }
 
 fn split_pdf_sentences(text: &str) -> Vec<String> {
@@ -1137,7 +1038,10 @@ fn starts_with_caption_label(text: &str) -> bool {
     let label = label
         .trim_matches(|ch: char| ch == '(' || ch == '[')
         .to_ascii_lowercase();
-    if !matches!(label.as_str(), "fig" | "fig." | "figure" | "table" | "tab" | "tab.") {
+    if !matches!(
+        label.as_str(),
+        "fig" | "fig." | "figure" | "table" | "tab" | "tab."
+    ) {
         return false;
     }
     let Some(number) = parts.next() else {

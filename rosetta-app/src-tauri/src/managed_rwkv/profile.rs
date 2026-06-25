@@ -209,6 +209,7 @@ pub const WINDOWS_AMD64_LLAMACPP_VULKAN: RuntimeProfile = RuntimeProfile {
     ),
     runtime_download_urls: &[
         "https://github.com/ggml-org/llama.cpp/releases/download/b9775/llama-b9775-bin-win-vulkan-x64.zip",
+        "https://githubdog.com/https://github.com/ggml-org/llama.cpp/releases/download/b9775/llama-b9775-bin-win-vulkan-x64.zip",
     ],
     runtime_library_dir_name: None,
     tokenizer_filename: "",
@@ -381,14 +382,19 @@ mod tests {
             "llama-cpp-chat-completions"
         );
         assert_eq!(WINDOWS_AMD64_LLAMACPP_VULKAN.bind_host, "127.0.0.1");
-        assert_eq!(
-            WINDOWS_AMD64_LLAMACPP_VULKAN.batch_chat_path,
-            "/completion"
-        );
+        assert_eq!(WINDOWS_AMD64_LLAMACPP_VULKAN.batch_chat_path, "/completion");
         assert_eq!(
             WINDOWS_AMD64_LLAMACPP_VULKAN.model_sha256,
             "f0f1c64455d075236df309457e4730fe763489e5fc8c038ce3f29d9963dec96b"
         );
+        assert!(WINDOWS_AMD64_LLAMACPP_VULKAN
+            .runtime_download_urls
+            .iter()
+            .any(|url| url.starts_with("https://github.com/")));
+        assert!(WINDOWS_AMD64_LLAMACPP_VULKAN
+            .runtime_download_urls
+            .iter()
+            .any(|url| url.starts_with("https://githubdog.com/")));
         assert!(!WINDOWS_AMD64_LLAMACPP_VULKAN.requires_tokenizer());
     }
 

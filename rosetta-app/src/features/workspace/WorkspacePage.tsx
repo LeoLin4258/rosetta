@@ -10,6 +10,7 @@ import {
   exportRosettaTranslationFile,
   importRosettaDocumentFromPath,
   importRosettaProjectFromDirectory,
+  getRosettaPdfPageStatus,
   loadRosettaJob,
   loadRosettaTranslationFile,
   pickRosettaExportPath,
@@ -344,7 +345,7 @@ export function WorkspacePage() {
           return;
         }
         const pageSelection = formatPageSelection(pdfSelectedPages);
-        const force = pdfForceRetranslate || activeTranslationFile?.status === "translated";
+        const force = await shouldForcePdfPageTranslation(targetLang);
         await handleTranslatePdfPages(pageSelection, force, targetLang, srcLang);
         return;
       }
@@ -498,6 +499,27 @@ export function WorkspacePage() {
       if (runId) finishTranslationRun(runId);
       cancelRef.current = null;
       return null;
+    }
+  }
+
+  async function shouldForcePdfPageTranslation(pageTargetLang: string) {
+    if (pdfForceRetranslate || activeTranslationFile?.status === "translated") {
+      return true;
+    }
+    if (!activeJobId || pdfSelectedPages.length === 0) {
+      return false;
+    }
+
+    try {
+      const state = await getRosettaPdfPageStatus(activeJobId, pageTargetLang);
+      const translatedPages = new Set(
+        state.pages
+          .filter((page) => page.status === "translated" && page.translatedPdfPath)
+          .map((page) => page.pageNumber),
+      );
+      return pdfSelectedPages.every((page) => translatedPages.has(page));
+    } catch {
+      return false;
     }
   }
 

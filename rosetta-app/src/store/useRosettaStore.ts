@@ -67,8 +67,6 @@ export type PdfRunProgress = {
   totalPages: number | null;
   /** Cumulative characters returned by RWKV in the current run. */
   translatedChars: number | null;
-  /** Recent in-memory snippets returned by the local PDF translation shim. */
-  recentTranslations: string[];
 };
 
 type RosettaState = {
@@ -854,28 +852,12 @@ export const useRosettaStore = create<RosettaState>()(
           const next = { ...state.pdfRunProgressByJobId };
           if (progress) {
             const previous = state.pdfRunProgressByJobId[jobId];
-            const nextCurrentPage =
-              progress.currentPage ?? previous?.currentPage ?? null;
-            const pageChanged =
-              progress.currentPage != null &&
-              previous?.currentPage != null &&
-              progress.currentPage !== previous.currentPage;
-            const previousTranslations = pageChanged
-              ? []
-              : previous?.recentTranslations ?? [];
-            const recentTranslations = progress.recentTranslations
-              ? [
-                  ...previousTranslations,
-                  ...progress.recentTranslations,
-                ].slice(-8)
-              : previousTranslations;
             next[jobId] = {
               percent: progress.percent ?? previous?.percent ?? null,
-              currentPage: nextCurrentPage,
+              currentPage: progress.currentPage ?? previous?.currentPage ?? null,
               totalPages: progress.totalPages ?? previous?.totalPages ?? null,
               translatedChars:
                 progress.translatedChars ?? previous?.translatedChars ?? null,
-              recentTranslations,
               phase: progress.phase,
             };
           } else delete next[jobId];
