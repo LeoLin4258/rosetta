@@ -25,6 +25,10 @@ use crate::windows_process::HideConsole;
 const PROGRESS_EVENT_NAME: &str = "managed-pdf2zh://install-progress";
 const PROGRESS_EMIT_INTERVAL_MS: u128 = 100;
 const STREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+#[cfg(target_os = "windows")]
+const PACK_DIR_DELETE_RETRY_COUNT: usize = 20;
+#[cfg(target_os = "windows")]
+const PACK_DIR_DELETE_RETRY_DELAY: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -233,7 +237,6 @@ async fn install_inner(
         .join(format!("{}.part", profile.pack_filename));
 
     if options.repair {
-        let _ = std::fs::remove_dir_all(&layout.pack_dir);
         let _ = std::fs::remove_file(&archive_path);
         let _ = std::fs::remove_file(&part_path);
     }
@@ -353,7 +356,7 @@ async fn install_inner(
     .await;
     emit_progress(app, registry).await;
 
-    extract_pack(&archive_path, layout, profile, cancel).await?;
+    extract_pack(app, &archive_path, layout, profile, cancel).await?;
     scrub_python_bytecode(&layout.pack_dir)?;
     write_manifest(
         layout,
@@ -533,6 +536,7 @@ async fn sha256_file(path: &Path, cancel: &Arc<AtomicBool>) -> Result<String, St
 }
 
 async fn extract_pack(
+    app: &AppHandle,
     archive: &Path,
     layout: &Pdf2zhLayout,
     profile: &Pdf2zhProfile,
@@ -582,8 +586,16 @@ async fn extract_pack(
     }
 
     if layout.pack_dir.exists() {
-        std::fs::remove_dir_all(&layout.pack_dir)
-            .map_err(|error| format!("无法清理旧 PDF 版面处理组件: {error}"))?;
+        if super::worker::stop_worker_for_install(app).await {
+            eprintln!("[pdf2zh-install] stopped warm worker before replacing PDF component");
+        }
+        let cleaned =
+            super::worker::cleanup_stale_workers_for_install(&layout.root_dir, &layout.pack_dir)
+                .await?;
+        if cleaned > 0 {
+            eprintln!("[pdf2zh-install] stopped {cleaned} stale PDF worker process(es)");
+        }
+        remove_pack_dir(&layout.pack_dir).await?;
     }
     if let Some(parent) = layout.pack_dir.parent() {
         std::fs::create_dir_all(parent).map_err(|error| format!("无法创建组件目录: {error}"))?;
@@ -597,6 +609,74 @@ async fn extract_pack(
     }
     let _ = std::fs::remove_dir_all(&staging);
     Ok(())
+}
+
+async fn remove_pack_dir(pack_dir: &Path) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        clear_readonly_attrs(pack_dir);
+        for attempt in 0..=PACK_DIR_DELETE_RETRY_COUNT {
+            match std::fs::remove_dir_all(pack_dir) {
+                Ok(()) => return Ok(()),
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::NotFound || !pack_dir.exists() =>
+                {
+                    return Ok(());
+                }
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::PermissionDenied
+                        && attempt < PACK_DIR_DELETE_RETRY_COUNT =>
+                {
+                    eprintln!(
+                        "[pdf2zh-install] pack directory still locked; retrying delete ({}/{})",
+                        attempt + 1,
+                        PACK_DIR_DELETE_RETRY_COUNT
+                    );
+                    clear_readonly_attrs(pack_dir);
+                    tokio::time::sleep(PACK_DIR_DELETE_RETRY_DELAY).await;
+                }
+                Err(error) => {
+                    return Err(format!(
+                        "无法清理旧 PDF 版面处理组件 {}: {error}",
+                        pack_dir.display()
+                    ));
+                }
+            }
+        }
+        unreachable!("pack directory delete retry loop must return");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::fs::remove_dir_all(pack_dir).map_err(|error| {
+            format!(
+                "无法清理旧 PDF 版面处理组件 {}: {error}",
+                pack_dir.display()
+            )
+        })
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn clear_readonly_attrs(path: &Path) {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return;
+    };
+    let mut permissions = metadata.permissions();
+    if permissions.readonly() {
+        permissions.set_readonly(false);
+        let _ = std::fs::set_permissions(path, permissions);
+    }
+
+    if !metadata.is_dir() {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        clear_readonly_attrs(&entry.path());
+    }
 }
 
 fn extract_zip(archive_path: &Path, destination: &Path) -> std::io::Result<()> {

@@ -11,7 +11,9 @@ pub(crate) mod page_assemble;
 pub(crate) mod page_state;
 pub(crate) mod pdf2zh_invoke;
 pub(crate) mod rasterize;
+pub(crate) mod run_state;
 pub(crate) mod runtime;
+pub(crate) mod source_state;
 
 pub(crate) use rasterize::{count_pages, render_page_as_png};
 pub(crate) use runtime::{probe_status, PdfRuntimeStatus};

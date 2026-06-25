@@ -49,7 +49,6 @@ pub(crate) fn assemble_pdf_with_page_translations(
 /// Count pages of a PDF on disk via lopdf (no pdfium dependency). Used to
 /// figure out whether a batch pdf2zh output contains the whole document or
 /// only the selected pages.
-#[cfg(test)]
 pub(crate) fn count_pdf_pages_lopdf(path: &Path) -> Result<u32, String> {
     let doc = Document::load(path)
         .map_err(|error| format!("无法读取 PDF {}: {error}", path.display()))?;
@@ -112,7 +111,22 @@ fn translated_page_path(
             && page.translated_pdf_path.is_some()
     })?;
     let path = job_dir.join(page.translated_pdf_path.as_ref()?);
-    path.is_file().then_some(path)
+    if path.is_file() {
+        return Some(path);
+    }
+    let legacy_lang_path = job_dir.join(
+        crate::rosetta_jobs::formats::pdf::page_state::legacy_pdf_page_relative_path_for_lang(
+            &state.target_lang,
+            page_number,
+        ),
+    );
+    if legacy_lang_path.is_file() {
+        return Some(legacy_lang_path);
+    }
+    let legacy_path = job_dir.join(
+        crate::rosetta_jobs::formats::pdf::page_state::legacy_pdf_page_relative_path(page_number),
+    );
+    legacy_path.is_file().then_some(legacy_path)
 }
 
 fn merge_single_pages(page_sources: &[PageSource]) -> Result<Document, String> {

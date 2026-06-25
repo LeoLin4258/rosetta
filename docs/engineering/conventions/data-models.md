@@ -129,11 +129,13 @@ AppData/Rosetta/jobs/
     segments.json
     translation_files.json
     translations/<translationFileId>.json
-    pdf_page_translations.<targetLang>.json
-    pdf_page_translations.json  # 旧任务兼容读取
-    pdf-pages/
+    pdf_source.json
+    pdf_pages.<targetLang>.json
+    pdf_run.<targetLang>.json
+    translated-pages/
       <targetLang>/
         page-0001.pdf
+    .tmp/pdf-runs/<runId>/
     translation_revisions.json
     exports/
 ```
@@ -148,15 +150,87 @@ AppData/Rosetta/jobs/
 - TXT 按空行切分为段落。
 - Markdown 使用轻量 block parser，首版只保留标题、段落、列表、引用、代码块和空行等基础结构。
 - fenced code block、纯 URL 行和空白行默认 `skipped`。
-- PDF v1 的基线支持是可提取文本的 PDF。扫描 PDF 和 OCR 不属于 v1 基线范围。PDF 格式高保真还原是 nice to have，可以探索，但不能阻塞文本提取、翻译、预览和文本式导出的主路径。
-- PDF importer 应输出 `RosettaDocument(format: "pdf")`、`RosettaSourceFile(format: "pdf")`、`RosettaBlock[]` 和 `Segment[]`，后续翻译、预览、译文文件和导出继续复用现有流程。
-- PDF 页码、页内顺序等来源信息先放入 `RosettaBlock.style.pdf`，例如 `{ page: 1, orderOnPage: 12 }`。高保真还原需要的 bbox、字体、列检测结果等布局信息也应先放在 `style.pdf` 中探索；不要在没有 ADR 的情况下把这些字段提升到核心模型顶层。
+- PDF v1 的当前实现是视觉 PDF 翻译路径：导入阶段只创建 job-local `source.pdf` 和 PDF skeleton document，翻译阶段由本地 `pdf2zh` 生成页级译文 PDF。旧的“PDF 转 RosettaBlock/Segment 后复用 TXT/Markdown 调度”的计划是历史背景，不再描述当前主路径。
+- PDF importer 应输出 `RosettaDocument(format: "pdf")`、一个 `RosettaSourceFile(format: "pdf")`、空 `RosettaBlock[]` 和空 `Segment[]`。PDF 仍进入普通 job/workbench 模型，但页面翻译事实不保存在 `Segment[]` 中。
 - PDF importer 遇到 image-only、加密或无法解析的文件时必须返回清晰错误，不能创建空任务。
 - 系统文件选择和导出路径选择必须通过非阻塞 Tauri dialog command 完成，不能在 command 中调用 `blocking_pick_file` 或 `blocking_save_file`，避免 Windows 原生对话框打开时卡住应用窗口。
-- 当前视觉 PDF 翻译路径把 PDF 作为版面保持型文档处理：导入阶段缓存 `source.pdf`，翻译阶段使用 `pdf2zh --pages` 生成页级译文 PDF，并把页状态保存到 `pdf_page_translations.<targetLang>.json`。这条路径不把 PDF 文本回填为普通 Rosetta text segments。
+- 当前视觉 PDF 翻译路径把 PDF 作为版面保持型文档处理：导入阶段复制 `source.pdf`，翻译阶段使用 `pdf2zh` 按 10 页批次生成页级译文 PDF，并把页状态保存到 `pdf_pages.<targetLang>.json`。这条路径不把 PDF 文本回填为普通 Rosetta text segments。
 - 视觉 PDF 翻译路径中的文本块由 pdf2zh 抽取并通过本地 OpenAI shim 调用 RWKV，不经过普通文档的 `Segment[]` 调度。shim 必须在转发给 RWKV 前切分过长文本块，避免小上下文模型被 pdf2zh 合并出的长段落卡住。PDF shim 的默认策略是句子优先切分、短句按 token budget 合并，参考文献按 `[N]` 条目优先切分，图表 caption 保留编号和后续句子，常见 PDF 断词在切分前修复。
-- `pdf_page_translations.<targetLang>.json` 是 PDF 页级译文状态文件，记录源 PDF 页数、目标语言、每页状态和页级译文 PDF 相对路径。应用加载时遗留的 `queued` / `translating` 页必须恢复为可重试状态。旧任务中的 `pdf_page_translations.json` 只作为兼容读取入口，读取后应写回语言专属状态文件。
-- PDF 页级译文文件保存在 `pdf-pages/<targetLang>/page-000N.pdf`。这些文件是 Rosetta 内部缓存，不是用户导出文件。旧任务中的 `pdf-pages/page-000N.pdf` 只允许在目标语言可信时兼容读取，不能让不同目标语言静默复用同一页缓存。
+- `pdf_source.json` 是 PDF source 元数据文件，记录 `pageCount`、`sourceFingerprint`、导入文件名、原始路径快照和时间戳。`sourceFingerprint` 只用于诊断和未来显式去重，不触发隐式共享状态。
+- `pdf_pages.<targetLang>.json` 是 PDF 页级译文状态文件，记录源 PDF 页数、目标语言、每页状态和页级译文 PDF 相对路径。它只持久化 `pending`、`translated`、`failed`。应用加载时遗留的 `queued` / `translating` 页必须恢复为可重试状态。
+- `pdf_run.<targetLang>.json` 是当前或最近一次 PDF 翻译 run。`running` / `pausing` run 必须绑定 `ownerSessionId`；新 app session 看到旧 live run 时必须恢复为 `paused`。
+- PDF 页级译文文件保存在 `translated-pages/<targetLang>/page-000N.pdf`。这些文件是 Rosetta 内部译文产物，不是用户导出文件。旧任务中的 `pdf-pages/<targetLang>/page-000N.pdf` 和 `pdf-pages/page-000N.pdf` 只作为兼容读取入口；repair 应迁移或复制到 `translated-pages/`。
+- 旧任务中的 `pdf_page_translations.<targetLang>.json` 和 `pdf_page_translations.json` 只作为兼容读取入口，新写入必须使用 `pdf_pages.<targetLang>.json`。
+- `.tmp/pdf-runs/<runId>/` 只保存当前批次输出。批次提交成功后应清理；启动/repair 可清理无 active lease 的旧临时目录。
+
+PDF source metadata:
+
+```json
+{
+  "schemaVersion": 1,
+  "pageCount": 436,
+  "sourceFingerprint": "sha256:...",
+  "filename": "source.pdf",
+  "originalPath": "C:/Users/...",
+  "importedAt": "1782369534004",
+  "updatedAt": "1782369534004"
+}
+```
+
+PDF page state:
+
+```json
+{
+  "schemaVersion": 1,
+  "sourcePageCount": 436,
+  "targetLang": "zh-CN",
+  "pages": [
+    {
+      "pageNumber": 1,
+      "status": "translated",
+      "translatedPdfPath": "translated-pages/zh-CN/page-0001.pdf",
+      "artifactVersion": "1782369534004",
+      "error": null,
+      "updatedAt": "1782369534004",
+      "lastRunId": "pdf-run-1782369534004"
+    }
+  ]
+}
+```
+
+PDF run state:
+
+```json
+{
+  "schemaVersion": 1,
+  "runId": "pdf-run-1782369534004",
+  "jobId": "job-1782369534004-document",
+  "targetLang": "zh-CN",
+  "state": "running",
+  "mode": "continue",
+  "requestedPages": [1, 2, 3],
+  "completedPages": [1],
+  "failedPages": [],
+  "currentChunk": [2, 3],
+  "ownerSessionId": "session-1234-1782369534000",
+  "leaseUpdatedAt": "1782369535000",
+  "cancelRequested": false,
+  "startedAt": "1782369534004",
+  "updatedAt": "1782369535000",
+  "lastError": null
+}
+```
+
+PDF cleanup task:
+
+```json
+{
+  "jobId": "job-1782369534004-document",
+  "path": "AppData/Rosetta/jobs/.trash/job-1782369534004-document-1782369535000",
+  "createdAt": "1782369535000",
+  "lastError": "The process cannot access the file..."
+}
+```
 
 导出约定：
 
@@ -166,7 +240,7 @@ AppData/Rosetta/jobs/
 - Markdown 导出只承诺保留基础 marker，不承诺完整 CommonMark AST 级别还原。
 - 任务工作台的导出最小单位是当前选中的译文文件，而不是整个项目。项目是文件集合与共享设置容器，不能让用户在当前文件视图里误触发整项目导出。
 - 当前译文文件必须完成翻译后才能导出；`done`、`edited` 和 `skipped` 视为已处理，`pending`、`translating`、`failed` 或空译文不能导出。
-- PDF 导出例外：视觉 PDF 导出始终生成完整 PDF，已翻译页使用 `pdf-pages/` 中的页级译文 PDF，未翻译页或失败页保留源 PDF 对应页面。因此 PDF 不要求所有页面完成后才能导出。
+- PDF 导出例外：视觉 PDF 导出始终生成完整 PDF，已翻译页使用 `translated-pages/` 中的页级译文 PDF，未翻译页或失败页保留源 PDF 对应页面。因此 PDF 不要求所有页面完成后才能导出。
 - 当前译文文件导出到用户选择的具体文件路径，输出文件名默认来自源文件名和目标语言，例如 `chapter.zh-CN.md` 或 `chapter.zh-CN.bilingual.md`。
 - 多文件项目的批量导出如果后续恢复，应作为单独的项目级入口，并明确提示会导出项目内所有文件。删除项目只删除 Rosetta job cache，不删除用户原始文件或已导出目录。
 

@@ -1,5 +1,9 @@
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
+use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 
 use crate::rosetta_jobs::{
@@ -10,7 +14,7 @@ use crate::rosetta_jobs::{
     },
     formats::{collect_supported_source_paths, document_format, parse_source, pdf, SourceFormat},
     model::{
-        default_file_translation_status, RosettaDocument, RosettaJobBundle,
+        default_file_translation_status, RosettaDocument, RosettaJobBundle, RosettaJobDeleteResult,
         RosettaJobFileDeleteResult, RosettaJobSummary, RosettaSourceFile, Segment, SourceSnapshot,
         MAX_IMPORT_BYTES, MAX_PROJECT_FILES, SCHEMA_VERSION,
     },
@@ -29,6 +33,16 @@ use crate::rosetta_jobs::{
 };
 
 const BLANK_TXT_DEFAULT_TITLE: &str = "未命名文档";
+const DELETE_CLEANUP_TASKS_FILENAME: &str = "delete_cleanup_tasks.json";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeleteCleanupTask {
+    job_id: String,
+    path: String,
+    created_at: String,
+    last_error: Option<String>,
+}
 
 /// Fast path for PDF imports: synchronously creates the job directory + copies
 /// the source PDF + writes a skeleton `document.json` (no blocks). Phase 3
@@ -788,18 +802,51 @@ pub(crate) fn normalize_required_lang(language: String) -> Result<String, String
     Ok(normalized)
 }
 
-pub(crate) fn delete_job(app: &AppHandle, job_id: &str) -> Result<Vec<RosettaJobSummary>, String> {
+pub(crate) fn delete_job(app: &AppHandle, job_id: &str) -> Result<RosettaJobDeleteResult, String> {
     let root = jobs_root(app)?;
     let dir = checked_job_dir(&root, job_id)?;
 
-    if dir.exists() {
-        fs::remove_dir_all(&dir).map_err(|error| format!("无法删除项目缓存: {error}"))?;
-    }
-
     let mut index = read_index(&root)?;
+    let before = index.jobs.len();
     index.jobs.retain(|job| job.id != job_id);
+    if before == index.jobs.len() && !dir.exists() {
+        return Ok(RosettaJobDeleteResult {
+            jobs: index.jobs,
+            cleanup_status: "not-found".to_string(),
+            warning: None,
+        });
+    }
     write_index(&root, &index)?;
-    Ok(index.jobs)
+
+    let (cleanup_status, warning) = if dir.exists() {
+        match move_job_dir_to_trash(&root, &dir, job_id) {
+            Ok(trash_dir) => match fs::remove_dir_all(&trash_dir) {
+                Ok(_) => ("deleted".to_string(), None),
+                Err(error) => {
+                    record_delete_cleanup_task(&root, job_id, &trash_dir, Some(error.to_string()))?;
+                    (
+                        "pending-cleanup".to_string(),
+                        Some(format!("文档已从列表移除，磁盘缓存稍后重试清理: {error}")),
+                    )
+                }
+            },
+            Err(error) => {
+                record_delete_cleanup_task(&root, job_id, &dir, Some(error.clone()))?;
+                (
+                    "pending-cleanup".to_string(),
+                    Some(format!("文档已从列表移除，磁盘缓存稍后重试清理: {error}")),
+                )
+            }
+        }
+    } else {
+        ("no-cache".to_string(), None)
+    };
+
+    Ok(RosettaJobDeleteResult {
+        jobs: index.jobs,
+        cleanup_status,
+        warning,
+    })
 }
 
 pub(crate) fn delete_job_file(
@@ -825,10 +872,10 @@ pub(crate) fn delete_job_file(
     };
 
     if document.files.len() <= 1 {
-        let jobs = delete_job(app, job_id)?;
+        let result = delete_job(app, job_id)?;
         return Ok(RosettaJobFileDeleteResult {
             deleted_job: true,
-            jobs,
+            jobs: result.jobs,
             bundle: None,
             message: "项目只包含一个文件，已删除整个项目。".to_string(),
         });
@@ -899,6 +946,70 @@ pub(crate) fn delete_job_file(
         }),
         message: "文件已删除。".to_string(),
     })
+}
+
+pub(crate) fn cleanup_pending_job_deletions(app: &AppHandle) -> Result<(), String> {
+    let root = jobs_root(app)?;
+    let tasks_path = root.join(DELETE_CLEANUP_TASKS_FILENAME);
+    if !tasks_path.is_file() {
+        return Ok(());
+    }
+
+    let tasks: Vec<DeleteCleanupTask> = read_json(&tasks_path)?;
+    let mut remaining = Vec::new();
+    for mut task in tasks {
+        let path = PathBuf::from(&task.path);
+        if !path.starts_with(&root) {
+            task.last_error = Some("清理路径不在 Rosetta jobs 目录内，已跳过。".to_string());
+            remaining.push(task);
+            continue;
+        }
+        if !path.exists() {
+            continue;
+        }
+        if let Err(error) = fs::remove_dir_all(&path) {
+            task.last_error = Some(error.to_string());
+            remaining.push(task);
+        }
+    }
+
+    if remaining.is_empty() {
+        let _ = fs::remove_file(tasks_path);
+    } else {
+        write_json(&tasks_path, &remaining)?;
+    }
+    Ok(())
+}
+
+fn move_job_dir_to_trash(root: &Path, dir: &Path, job_id: &str) -> Result<PathBuf, String> {
+    let trash_root = root.join(".trash");
+    fs::create_dir_all(&trash_root).map_err(|error| format!("无法创建项目回收目录: {error}"))?;
+    let trash_dir = trash_root.join(format!("{job_id}-{}", timestamp_ms_string()));
+    fs::rename(dir, &trash_dir).map_err(|error| format!("无法移动项目缓存到回收目录: {error}"))?;
+    Ok(trash_dir)
+}
+
+fn record_delete_cleanup_task(
+    root: &Path,
+    job_id: &str,
+    path: &Path,
+    last_error: Option<String>,
+) -> Result<(), String> {
+    let tasks_path = root.join(DELETE_CLEANUP_TASKS_FILENAME);
+    let mut tasks: Vec<DeleteCleanupTask> = if tasks_path.is_file() {
+        read_json(&tasks_path)?
+    } else {
+        Vec::new()
+    };
+    let path_string = path.to_string_lossy().to_string();
+    tasks.retain(|task| task.path != path_string);
+    tasks.push(DeleteCleanupTask {
+        job_id: job_id.to_string(),
+        path: path_string,
+        created_at: timestamp_ms_string(),
+        last_error,
+    });
+    write_json(&tasks_path, &tasks)
 }
 
 const WELCOME_JOB_ID: &str = "job-welcome";

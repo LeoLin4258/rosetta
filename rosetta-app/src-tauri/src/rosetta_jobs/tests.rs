@@ -10,6 +10,7 @@ use crate::rosetta_jobs::{
         assemble_pdf_with_page_translations, count_pdf_pages_lopdf, extract_pages_pdf,
     },
     formats::pdf::page_state::*,
+    formats::pdf::run_state::*,
     formats::pdf::test_helpers::fixture_path,
     formats::{markdown::parse_markdown, txt::parse_txt},
     import::{build_blank_txt_bundle, rebuild_txt_source_file},
@@ -467,8 +468,10 @@ fn pdf_page_status_restores_stale_translating_pages() {
             page_number: 1,
             status: "translating".to_string(),
             translated_pdf_path: None,
+            artifact_version: None,
             error: None,
             updated_at: "1".to_string(),
+            last_run_id: None,
         }],
     };
     write_pdf_page_translation_state(&dir, &state).expect("write state");
@@ -476,6 +479,78 @@ fn pdf_page_status_restores_stale_translating_pages() {
     let restored = read_pdf_page_translation_state(&dir, 2, "zh-CN").expect("read state");
 
     assert_eq!(restored.pages[0].status, "pending");
+    fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn pdf_page_state_writes_canonical_file_and_only_durable_statuses() {
+    let dir = unique_temp_dir("pdf-page-state-canonical");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let state = PdfPageTranslationState {
+        schema_version: SCHEMA_VERSION,
+        source_page_count: 2,
+        target_lang: "zh-CN".to_string(),
+        pages: vec![PdfPageTranslation {
+            page_number: 1,
+            status: "queued".to_string(),
+            translated_pdf_path: Some("translated-pages/zh-CN/page-0001.pdf".to_string()),
+            artifact_version: Some("1".to_string()),
+            error: Some("runtime".to_string()),
+            updated_at: "1".to_string(),
+            last_run_id: Some("run-1".to_string()),
+        }],
+    };
+
+    write_pdf_page_translation_state(&dir, &state).expect("write state");
+
+    assert!(dir.join("pdf_pages.zh-CN.json").is_file());
+    assert!(!dir.join("pdf_page_translations.zh-CN.json").exists());
+    let restored = read_pdf_page_translation_state(&dir, 2, "zh-CN").expect("read state");
+    assert_eq!(restored.pages[0].status, "pending");
+    assert_eq!(restored.pages[0].translated_pdf_path, None);
+    assert_eq!(restored.pages[0].error, None);
+    fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn pdf_run_recovery_pauses_stale_live_run() {
+    let dir = unique_temp_dir("pdf-run-recovery");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let mut run = PdfTranslationRun::new(
+        "run-1".to_string(),
+        "job-1".to_string(),
+        "zh-CN".to_string(),
+        "continue".to_string(),
+        vec![1, 2, 3],
+        "old-session".to_string(),
+    );
+    run.current_chunk = vec![1, 2, 3];
+    write_pdf_run_state(&dir, &run).expect("write run");
+
+    let restored = recover_stale_run(&dir, "zh-CN", "new-session")
+        .expect("recover run")
+        .expect("run");
+
+    assert_eq!(restored.state, "paused");
+    assert_eq!(restored.current_chunk, Vec::<u32>::new());
+    assert!(!restored.cancel_requested);
+    assert!(restored.last_error.is_some());
+    fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn pdf_repair_tmp_cleanup_keeps_only_active_run_dirs() {
+    let dir = unique_temp_dir("pdf-tmp-run-cleanup");
+    let runs_dir = dir.join(".tmp").join("pdf-runs");
+    fs::create_dir_all(runs_dir.join("run-active")).expect("create active temp run");
+    fs::create_dir_all(runs_dir.join("run-stale")).expect("create stale temp run");
+    let active = std::collections::BTreeSet::from(["run-active".to_string()]);
+
+    let cleaned = super::cleanup_stale_pdf_run_tmp_dirs(&dir, &active).expect("cleanup tmp runs");
+
+    assert!(cleaned);
+    assert!(runs_dir.join("run-active").is_dir());
+    assert!(!runs_dir.join("run-stale").exists());
     fs::remove_dir_all(dir).ok();
 }
 
@@ -491,8 +566,10 @@ fn pdf_page_status_does_not_reuse_state_for_other_target_language() {
             page_number: 1,
             status: "translated".to_string(),
             translated_pdf_path: Some(pdf_page_relative_path(1)),
+            artifact_version: Some("1".to_string()),
             error: None,
             updated_at: "1".to_string(),
+            last_run_id: None,
         }],
     };
     write_pdf_page_translation_state(&dir, &state).expect("write state");
@@ -516,8 +593,10 @@ fn pdf_page_status_does_not_trust_legacy_shared_page_path_for_english() {
             page_number: 1,
             status: "translated".to_string(),
             translated_pdf_path: Some("pdf-pages/page-0001.pdf".to_string()),
+            artifact_version: Some("1".to_string()),
             error: None,
             updated_at: "1".to_string(),
+            last_run_id: None,
         }],
     };
     write_pdf_page_translation_state(&dir, &state).expect("write state");
@@ -533,6 +612,8 @@ fn pdf_page_status_does_not_trust_legacy_shared_page_path_for_english() {
 fn pdf_import_cleanup_removes_derived_translation_artifacts() {
     let dir = unique_temp_dir("pdf-import-cleanup");
     fs::create_dir_all(dir.join("pdf-pages").join("zh-CN")).expect("create page cache");
+    fs::create_dir_all(dir.join("translated-pages").join("zh-CN"))
+        .expect("create translated pages");
     fs::create_dir_all(dir.join("pdf2zh-output")).expect("create output cache");
     fs::create_dir_all(dir.join("exports")).expect("create exports");
     fs::write(dir.join("source.pdf"), b"source").expect("write source");
@@ -549,6 +630,13 @@ fn pdf_import_cleanup_removes_derived_translation_artifacts() {
         b"page",
     )
     .expect("write page cache");
+    fs::write(
+        dir.join("translated-pages")
+            .join("zh-CN")
+            .join("page-0001.pdf"),
+        b"translated page",
+    )
+    .expect("write translated page");
     fs::write(dir.join("pdf2zh-output").join("page-0001.pdf"), b"output")
         .expect("write output cache");
     fs::write(dir.join("exports").join("translated.pdf"), b"translated")
@@ -561,6 +649,7 @@ fn pdf_import_cleanup_removes_derived_translation_artifacts() {
     assert!(dir.join("exports").is_dir());
     assert!(!dir.join("exports").join("translated.pdf").exists());
     assert!(!dir.join("pdf-pages").exists());
+    assert!(!dir.join("translated-pages").exists());
     assert!(!dir.join("pdf2zh-output").exists());
     assert!(!dir.join("pdf_page_translations.zh-CN.json").exists());
     assert!(!dir.join("pdf_page_translations.json").exists());
@@ -577,16 +666,20 @@ fn pdf_page_status_summary_marks_all_pages_translated() {
             PdfPageTranslation {
                 page_number: 1,
                 status: "translated".to_string(),
-                translated_pdf_path: Some("pdf-pages/page-0001.pdf".to_string()),
+                translated_pdf_path: Some("translated-pages/zh-CN/page-0001.pdf".to_string()),
+                artifact_version: Some("1".to_string()),
                 error: None,
                 updated_at: "1".to_string(),
+                last_run_id: None,
             },
             PdfPageTranslation {
                 page_number: 2,
                 status: "translated".to_string(),
-                translated_pdf_path: Some("pdf-pages/page-0002.pdf".to_string()),
+                translated_pdf_path: Some("translated-pages/zh-CN/page-0002.pdf".to_string()),
+                artifact_version: Some("1".to_string()),
                 error: None,
                 updated_at: "1".to_string(),
+                last_run_id: None,
             },
         ],
     };
@@ -603,7 +696,7 @@ fn pdf_page_status_summary_marks_all_pages_translated() {
 #[test]
 fn pdf_force_retranslate_clears_existing_page_artifact() {
     let dir = unique_temp_dir("pdf-force-clear-page");
-    let page_dir = dir.join("pdf-pages").join("zh-CN");
+    let page_dir = dir.join("translated-pages").join("zh-CN");
     fs::create_dir_all(&page_dir).expect("create page cache");
     let page_path = page_dir.join("page-0002.pdf");
     fs::write(&page_path, b"old translated page").expect("write old page");
@@ -614,9 +707,11 @@ fn pdf_force_retranslate_clears_existing_page_artifact() {
         pages: vec![PdfPageTranslation {
             page_number: 2,
             status: "translated".to_string(),
-            translated_pdf_path: Some("pdf-pages/zh-CN/page-0002.pdf".to_string()),
+            translated_pdf_path: Some("translated-pages/zh-CN/page-0002.pdf".to_string()),
+            artifact_version: Some("1".to_string()),
             error: None,
             updated_at: "1".to_string(),
+            last_run_id: None,
         }],
     };
 
@@ -632,16 +727,20 @@ fn pdf_force_retranslate_clears_existing_page_artifact() {
 fn pdf_page_artifact_path_is_stable() {
     assert_eq!(pdf_page_filename(1), "page-0001.pdf");
     assert_eq!(pdf_page_filename(42), "page-0042.pdf");
-    assert_eq!(pdf_page_relative_path(42), "pdf-pages/page-0042.pdf");
+    assert_eq!(pdf_page_relative_path(42), "translated-pages/page-0042.pdf");
     assert_eq!(pdf_page_language_dir("en"), "en");
     assert_eq!(pdf_page_language_dir("zh-CN"), "zh-CN");
     assert_eq!(pdf_page_language_dir("../en"), "en");
     assert_eq!(
         pdf_page_relative_path_for_lang("en", 42),
-        "pdf-pages/en/page-0042.pdf"
+        "translated-pages/en/page-0042.pdf"
     );
     assert_eq!(
         pdf_page_translation_state_filename("en"),
+        "pdf_pages.en.json"
+    );
+    assert_eq!(
+        legacy_pdf_page_translation_state_filename("en"),
         "pdf_page_translations.en.json"
     );
 }
@@ -682,7 +781,7 @@ fn pdf_page_export_substitutes_translated_page_and_keeps_full_length() {
         .get_pages()
         .len();
     let dir = unique_temp_dir("pdf-page-export-substitute");
-    let pages_dir = dir.join("pdf-pages").join("zh-CN");
+    let pages_dir = dir.join("translated-pages").join("zh-CN");
     fs::create_dir_all(&pages_dir).expect("create page cache dir");
     fs::copy(&translated, pages_dir.join("page-0001.pdf")).expect("copy translated page");
     let target = dir.join("export.pdf");
@@ -693,9 +792,11 @@ fn pdf_page_export_substitutes_translated_page_and_keeps_full_length() {
         pages: vec![PdfPageTranslation {
             page_number: 1,
             status: "translated".to_string(),
-            translated_pdf_path: Some("pdf-pages/zh-CN/page-0001.pdf".to_string()),
+            translated_pdf_path: Some("translated-pages/zh-CN/page-0001.pdf".to_string()),
+            artifact_version: Some("1".to_string()),
             error: None,
             updated_at: "1".to_string(),
+            last_run_id: None,
         }],
     };
 

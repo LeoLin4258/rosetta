@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   RosettaExportKind,
   RosettaExportResult,
+  RosettaJobDeleteResult,
   RosettaJobFileDeleteResult,
   RosettaJobBundle,
   RosettaJobSummary,
@@ -15,8 +16,10 @@ export type PdfPageTranslation = {
   pageNumber: number;
   status: "pending" | "queued" | "translating" | "translated" | "failed";
   translatedPdfPath?: string | null;
+  artifactVersion?: string | null;
   error?: string | null;
   updatedAt: string;
+  lastRunId?: string | null;
 };
 
 export type PdfPageTranslationState = {
@@ -24,6 +27,55 @@ export type PdfPageTranslationState = {
   sourcePageCount: number;
   targetLang: string;
   pages: PdfPageTranslation[];
+};
+
+export type PdfSourceMetadata = {
+  schemaVersion: number;
+  pageCount: number;
+  sourceFingerprint: string;
+  filename: string;
+  originalPath?: string | null;
+  importedAt: string;
+  updatedAt: string;
+};
+
+export type PdfTranslationRunSnapshot = {
+  schemaVersion: number;
+  runId: string;
+  jobId: string;
+  targetLang: string;
+  state: "idle" | "running" | "pausing" | "paused" | "failed" | "completed" | string;
+  mode: "continue" | "retranslate-selected" | "retranslate-all" | string;
+  requestedPages: number[];
+  completedPages: number[];
+  failedPages: number[];
+  currentChunk: number[];
+  ownerSessionId: string;
+  leaseUpdatedAt: string;
+  cancelRequested: boolean;
+  startedAt: string;
+  updatedAt: string;
+  lastError?: string | null;
+};
+
+export type PdfJobSnapshot = {
+  source?: PdfSourceMetadata | null;
+  pages: PdfPageTranslationState;
+  run?: PdfTranslationRunSnapshot | null;
+  summary: {
+    totalPages: number;
+    completedPages: number;
+    failedPages: number;
+    pendingPages: number;
+  };
+  repairWarnings: string[];
+};
+
+export type PdfRepairResult = {
+  jobId: string;
+  repaired: boolean;
+  recoverable: boolean;
+  warnings: string[];
 };
 
 export type LocalDataResetItem = {
@@ -178,7 +230,7 @@ export function renameRosettaJob(jobId: string, name: string) {
 }
 
 export function deleteRosettaJob(jobId: string) {
-  return invoke<RosettaJobSummary[]>("delete_rosetta_job", { jobId });
+  return invoke<RosettaJobDeleteResult>("delete_rosetta_job", { jobId });
 }
 
 export function deleteRosettaJobFile(jobId: string, fileId: string) {
@@ -285,6 +337,32 @@ export function generateRosettaTranslatedPdf(
 
 export function cancelRosettaTranslatedPdf() {
   return invoke<void>("cancel_rosetta_translated_pdf");
+}
+
+export function pauseRosettaPdfRun(
+  jobId: string,
+  targetLang: string,
+  runId?: string | null,
+) {
+  return invoke<PdfTranslationRunSnapshot | null>("pause_rosetta_pdf_run", {
+    jobId,
+    targetLang,
+    runId,
+  });
+}
+
+export function repairRosettaPdfJob(jobId: string) {
+  return invoke<PdfRepairResult>("repair_rosetta_pdf_job", { jobId });
+}
+
+export function getRosettaPdfSnapshot(
+  jobId: string,
+  targetLang?: string | null,
+) {
+  return invoke<PdfJobSnapshot>("get_rosetta_pdf_snapshot", {
+    jobId,
+    targetLang,
+  });
 }
 
 export function getRosettaPdfPageStatus(

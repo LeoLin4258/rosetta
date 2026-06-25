@@ -49,7 +49,7 @@ pub(crate) struct PdfTranslationDurations {
     /// translate + render). RWKV time happens inside this window; subtract
     /// `rwkv.totalRequestMs` for a lower bound on pure PDF processing.
     pub pdf2zh_process: u64,
-    /// Splitting batch output into per-page PDFs under `pdf-pages/`.
+    /// Splitting batch output into per-page PDFs under `translated-pages/`.
     pub page_artifact_assembly: u64,
 }
 

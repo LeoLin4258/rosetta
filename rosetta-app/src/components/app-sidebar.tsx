@@ -17,6 +17,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   deleteRosettaJob,
   loadRosettaJob,
+  repairRosettaPdfJob,
 } from "@/lib/rosettaJobs";
 import { useRosettaStore } from "@/store/useRosettaStore";
 import {
@@ -183,6 +184,7 @@ export function AppSidebar({
   const refreshJobBundle = useRosettaStore((s) => s.refreshJobBundle);
   const [pendingDeleteJob, setPendingDeleteJob] = useState<RosettaJobSummary | null>(null);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
+  const [sidebarError, setSidebarError] = useState<string | null>(null);
 
   // Lightweight drag listener for visual feedback only — does not handle drop.
   // Same StrictMode-safe async cleanup pattern as WorkspacePage.
@@ -228,6 +230,7 @@ export function AppSidebar({
   }
 
   async function openJob(job: RosettaJobSummary) {
+    setSidebarError(null);
     try {
       const bundle = await loadRosettaJob(job.id);
       // Same job: preserve existing translationSegments (don't clear them).
@@ -238,8 +241,32 @@ export function AppSidebar({
         setActiveBundle(bundle);
       }
       navigate("/");
-    } catch {
-      // silent — user stays on current doc
+    } catch (error) {
+      if (job.format === "pdf") {
+        try {
+          const repair = await repairRosettaPdfJob(job.id);
+          if (!repair.recoverable) {
+            setSidebarError(
+              repair.warnings[0] ?? "文档数据损坏，可删除或重新导入。",
+            );
+            return;
+          }
+          if (repair.recoverable) {
+            const bundle = await loadRosettaJob(job.id);
+            if (activeJobId === job.id) {
+              refreshJobBundle(bundle);
+            } else {
+              setActiveBundle(bundle);
+            }
+            navigate("/");
+            return;
+          }
+        } catch (repairError) {
+          setSidebarError(errorMessage(repairError, "文档数据损坏，可删除或重新导入。"));
+          return;
+        }
+      }
+      setSidebarError(errorMessage(error, "无法打开文档。"));
     }
   }
 
@@ -247,12 +274,16 @@ export function AppSidebar({
     if (!pendingDeleteJob) return;
     const jobId = pendingDeleteJob.id;
     setPendingDeleteJob(null);
+    setSidebarError(null);
     try {
-      const nextJobs = await deleteRosettaJob(jobId);
-      setJobList(nextJobs);
+      const result = await deleteRosettaJob(jobId);
+      setJobList(result.jobs);
       if (activeJobId === jobId) clearActiveJob();
-    } catch {
-      // silent — job may already be gone
+      if (result.warning) {
+        setSidebarError(result.warning);
+      }
+    } catch (error) {
+      setSidebarError(errorMessage(error, "无法删除文档。"));
     }
   }
 
@@ -284,6 +315,11 @@ export function AppSidebar({
           <SidebarGroup>
             <SidebarGroupLabel>文档</SidebarGroupLabel>
             <SidebarGroupContent>
+              {sidebarError ? (
+                <div className="mx-2 mb-2 rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1.5 text-xs leading-5 text-destructive">
+                  {sidebarError}
+                </div>
+              ) : null}
               <SidebarMenu>
                 {recentJobs.map((job) => {
                   const isRunning = activeTranslationRun?.jobId === job.id;
@@ -402,4 +438,10 @@ export function AppSidebar({
       </AlertDialog>
     </>
   );
+}
+
+function errorMessage(error: unknown, fallback: string) {
+  if (error instanceof Error && error.message.trim()) return error.message;
+  if (typeof error === "string" && error.trim()) return error;
+  return fallback;
 }

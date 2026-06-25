@@ -42,6 +42,7 @@ type WorkspaceTopbarProps = {
   job: RosettaJobSummary;
   activeTranslationFile: RosettaTranslationFile | null;
   isTranslating: boolean;
+  isPausingTranslation?: boolean;
   isTranslationBusyElsewhere?: boolean;
   isRuntimeStarting: boolean;
   isRuntimeUnavailable?: boolean;
@@ -280,6 +281,7 @@ export function WorkspaceTopbar({
   job,
   activeTranslationFile,
   isTranslating,
+  isPausingTranslation = false,
   isTranslationBusyElsewhere = false,
   isRuntimeStarting,
   isRuntimeUnavailable = false,
@@ -361,7 +363,9 @@ export function WorkspaceTopbar({
   const pageSelectionLabel =
     pdfPageCount > 0 ? `${pdfSelectedPageCount} / ${pdfPageCount} 页` : "等待页数";
   const runPhaseLabel = isPdf
-    ? pdfProgress
+    ? isPausingTranslation
+      ? "正在停止"
+      : pdfProgress
       ? PDF_PHASE_LABELS[pdfProgress.phase] ?? pdfProgress.phase
       : PDF_PHASE_LABELS.warmup
     : "翻译中";
@@ -458,9 +462,19 @@ export function WorkspaceTopbar({
                 countTitle={isPdf ? "已翻译字数" : "段落进度"}
                 elapsedLabel={elapsedLabel}
               />
-              {confirmingCancel ? (
+              {isPausingTranslation ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled
+                  className="h-7 gap-1.5 px-2 !text-xs font-normal leading-none"
+                >
+                  <Loader2 className="size-3 animate-spin" />
+                  正在停止
+                </Button>
+              ) : confirmingCancel ? (
                 <div className="flex items-center gap-2">
-                  <span className="!text-xs !text-muted-foreground/60">确认取消？</span>
+                  <span className="!text-xs !text-muted-foreground/60">确认暂停？</span>
                   <button
                     type="button"
                     onClick={() => {
@@ -469,7 +483,7 @@ export function WorkspaceTopbar({
                     }}
                     className="!text-xs !text-destructive/70 transition-colors hover:!text-destructive"
                   >
-                    确定
+                    暂停
                   </button>
                   <button
                     type="button"
@@ -486,7 +500,7 @@ export function WorkspaceTopbar({
                   onClick={() => setConfirmingCancel(true)}
                   className="h-7 gap-1.5 px-2 !text-xs font-normal leading-none"
                 >
-                  <Square className="size-3" /> 取消
+                  <Square className="size-3" /> 暂停
                 </Button>
               )}
             </>
@@ -576,7 +590,7 @@ export function WorkspaceTopbar({
                       type="button"
                       onClick={() => {
                         if (translateDisabled) return;
-                        if (isPdf) onTranslate(targetLang, sourceLang);
+                        if (isPdf) onRetranslateSelected();
                         else onRetranslateAll();
                         setConfirmingRetranslateAll(false);
                       }}

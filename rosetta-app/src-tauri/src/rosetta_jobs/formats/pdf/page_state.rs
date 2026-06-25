@@ -9,6 +9,7 @@ use crate::rosetta_jobs::{
 };
 
 pub(crate) const PDF_PAGE_TRANSLATIONS_FILENAME: &str = "pdf_page_translations.json";
+pub(crate) const PDF_PAGES_FILENAME_PREFIX: &str = "pdf_pages";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -25,8 +26,12 @@ pub(crate) struct PdfPageTranslation {
     pub page_number: u32,
     pub status: String,
     pub translated_pdf_path: Option<String>,
+    #[serde(default)]
+    pub artifact_version: Option<String>,
     pub error: Option<String>,
     pub updated_at: String,
+    #[serde(default)]
+    pub last_run_id: Option<String>,
 }
 
 pub(crate) fn parse_pdf_page_selection(
@@ -72,11 +77,14 @@ pub(crate) fn read_pdf_page_translation_state(
     target_lang: &str,
 ) -> Result<PdfPageTranslationState, String> {
     let preferred_path = job_dir.join(pdf_page_translation_state_filename(target_lang));
-    let legacy_path = job_dir.join(PDF_PAGE_TRANSLATIONS_FILENAME);
+    let scoped_legacy_path = job_dir.join(legacy_pdf_page_translation_state_filename(target_lang));
+    let shared_legacy_path = job_dir.join(PDF_PAGE_TRANSLATIONS_FILENAME);
     let path = if preferred_path.is_file() {
         preferred_path
+    } else if scoped_legacy_path.is_file() {
+        scoped_legacy_path
     } else {
-        legacy_path
+        shared_legacy_path
     };
     if !path.is_file() {
         return Ok(empty_state(source_page_count, target_lang));
@@ -91,6 +99,14 @@ pub(crate) fn read_pdf_page_translation_state(
     for page in &mut state.pages {
         if page.status == "translating" || page.status == "queued" {
             page.status = "pending".to_string();
+            page.translated_pdf_path = None;
+            page.error = None;
+            page.updated_at = timestamp_ms_string();
+        }
+        if page.status != "pending" && page.status != "translated" && page.status != "failed" {
+            page.status = "pending".to_string();
+            page.translated_pdf_path = None;
+            page.error = None;
             page.updated_at = timestamp_ms_string();
         }
         if is_unscoped_legacy_page_path(page.translated_pdf_path.as_deref())
@@ -109,9 +125,18 @@ pub(crate) fn write_pdf_page_translation_state(
     job_dir: &Path,
     state: &PdfPageTranslationState,
 ) -> Result<(), String> {
+    let mut persisted = state.clone();
+    for page in &mut persisted.pages {
+        if page.status == "queued" || page.status == "translating" {
+            page.status = "pending".to_string();
+            page.translated_pdf_path = None;
+            page.error = None;
+            page.updated_at = timestamp_ms_string();
+        }
+    }
     write_json(
-        &job_dir.join(pdf_page_translation_state_filename(&state.target_lang)),
-        state,
+        &job_dir.join(pdf_page_translation_state_filename(&persisted.target_lang)),
+        &persisted,
     )
 }
 
@@ -122,25 +147,44 @@ pub(crate) fn upsert_pdf_page(
     translated_pdf_path: Option<String>,
     error: Option<String>,
 ) {
+    upsert_pdf_page_with_run(state, page_number, status, translated_pdf_path, error, None);
+}
+
+pub(crate) fn upsert_pdf_page_with_run(
+    state: &mut PdfPageTranslationState,
+    page_number: u32,
+    status: &str,
+    translated_pdf_path: Option<String>,
+    error: Option<String>,
+    run_id: Option<&str>,
+) {
     let updated_at = timestamp_ms_string();
+    let status = persisted_pdf_page_status(status);
     if let Some(page) = state
         .pages
         .iter_mut()
         .find(|page| page.page_number == page_number)
     {
-        page.status = status.to_string();
+        page.status = status;
         page.translated_pdf_path = translated_pdf_path;
+        page.artifact_version = page
+            .translated_pdf_path
+            .as_ref()
+            .map(|_| updated_at.clone());
         page.error = error;
         page.updated_at = updated_at;
+        page.last_run_id = run_id.map(str::to_string);
         return;
     }
 
     state.pages.push(PdfPageTranslation {
         page_number,
-        status: status.to_string(),
+        status,
+        artifact_version: translated_pdf_path.as_ref().map(|_| updated_at.clone()),
         translated_pdf_path,
         error,
         updated_at,
+        last_run_id: run_id.map(str::to_string),
     });
     state.pages.sort_by_key(|page| page.page_number);
 }
@@ -168,6 +212,14 @@ pub(crate) fn pdf_page_language_dir(target_lang: &str) -> String {
 
 pub(crate) fn pdf_page_translation_state_filename(target_lang: &str) -> String {
     format!(
+        "{}.{}.json",
+        PDF_PAGES_FILENAME_PREFIX,
+        pdf_page_language_dir(target_lang)
+    )
+}
+
+pub(crate) fn legacy_pdf_page_translation_state_filename(target_lang: &str) -> String {
+    format!(
         "pdf_page_translations.{}.json",
         pdf_page_language_dir(target_lang)
     )
@@ -175,13 +227,28 @@ pub(crate) fn pdf_page_translation_state_filename(target_lang: &str) -> String {
 
 pub(crate) fn pdf_page_relative_path_for_lang(target_lang: &str, page_number: u32) -> String {
     format!(
-        "pdf-pages/{}/{}",
+        "translated-pages/{}/{}",
         pdf_page_language_dir(target_lang),
         pdf_page_filename(page_number)
     )
 }
 
 pub(crate) fn pdf_page_relative_path(page_number: u32) -> String {
+    format!("translated-pages/{}", pdf_page_filename(page_number))
+}
+
+pub(crate) fn legacy_pdf_page_relative_path_for_lang(
+    target_lang: &str,
+    page_number: u32,
+) -> String {
+    format!(
+        "pdf-pages/{}/{}",
+        pdf_page_language_dir(target_lang),
+        pdf_page_filename(page_number)
+    )
+}
+
+pub(crate) fn legacy_pdf_page_relative_path(page_number: u32) -> String {
     format!("pdf-pages/{}", pdf_page_filename(page_number))
 }
 
@@ -199,14 +266,8 @@ pub(crate) fn pdf_page_status_summary(
         .iter()
         .filter(|page| page.status == "failed")
         .count();
-    let has_running = state
-        .pages
-        .iter()
-        .any(|page| page.status == "queued" || page.status == "translating");
     let status = if segment_count > 0 && completed_segments >= segment_count {
         "translated"
-    } else if has_running {
-        "translating"
     } else if failed_segments > 0 {
         "failed"
     } else {
@@ -255,4 +316,12 @@ fn is_unscoped_legacy_page_path(path: Option<&str>) -> bool {
 fn is_trusted_legacy_target_lang(target_lang: &str) -> bool {
     let normalized = target_lang.trim().to_ascii_lowercase();
     normalized == "zh" || normalized.starts_with("zh-")
+}
+
+fn persisted_pdf_page_status(status: &str) -> String {
+    match status {
+        "translated" => "translated".to_string(),
+        "failed" => "failed".to_string(),
+        _ => "pending".to_string(),
+    }
 }

@@ -486,9 +486,6 @@ export const useRosettaStore = create<RosettaState>()(
             translationRevisions: isSwitchingJob
               ? []
               : state.translationRevisions,
-            activeTranslationRun: isSwitchingJob
-              ? null
-              : state.activeTranslationRun,
           };
         }),
       setActiveFileId: (fileId) =>
@@ -553,9 +550,6 @@ export const useRosettaStore = create<RosettaState>()(
             translationRevisions: isSwitchingJob
               ? []
               : state.translationRevisions,
-            activeTranslationRun: isSwitchingJob
-              ? null
-              : state.activeTranslationRun,
           };
         }),
       setActiveBundle: (bundle) =>

@@ -6,7 +6,7 @@ import { Card } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   countRosettaPdfPages,
-  getRosettaPdfPageStatus,
+  getRosettaPdfSnapshot,
   renderRosettaPdfTranslatedPageAsPng,
   type PdfPageTranslation,
   type PdfPageTranslationState,
@@ -19,43 +19,8 @@ import type {
 
 import { PdfPageImage } from "./PdfPane";
 
-type PdfPreviewCacheEntry = {
-  sourcePageCount: number | null;
-  pdfPageState: PdfPageTranslationState | null;
-  lastUsed: number;
-};
-
-const PDF_PREVIEW_CACHE = new Map<string, PdfPreviewCacheEntry>();
-const PDF_PREVIEW_CACHE_LIMIT = 2;
 const RASTER_WIDTH = 1800;
 const PAGE_ASPECT_RATIO = 1.4142;
-
-function pdfPreviewCacheKey(jobId: string, targetLang: string | null | undefined) {
-  return `${jobId}:${targetLang ?? "default"}`;
-}
-
-function getPdfPreviewCache(key: string) {
-  const cached = PDF_PREVIEW_CACHE.get(key);
-  if (!cached) return null;
-  cached.lastUsed = Date.now();
-  return cached;
-}
-
-function putPdfPreviewCache(key: string, entry: Omit<PdfPreviewCacheEntry, "lastUsed">) {
-  PDF_PREVIEW_CACHE.set(key, { ...entry, lastUsed: Date.now() });
-  while (PDF_PREVIEW_CACHE.size > PDF_PREVIEW_CACHE_LIMIT) {
-    let oldestKey: string | null = null;
-    let oldestSeen = Number.POSITIVE_INFINITY;
-    for (const [candidateKey, candidate] of PDF_PREVIEW_CACHE) {
-      if (candidate.lastUsed < oldestSeen) {
-        oldestSeen = candidate.lastUsed;
-        oldestKey = candidateKey;
-      }
-    }
-    if (!oldestKey) break;
-    PDF_PREVIEW_CACHE.delete(oldestKey);
-  }
-}
 
 type PdfProgress = {
   phase: string;
@@ -99,17 +64,10 @@ export function PdfDocumentPreview({
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [viewportWidth, setViewportWidth] = useState(0);
   const targetLang = translationFile?.targetLang ?? document.targetLang;
-  const cacheKey = pdfPreviewCacheKey(jobId, targetLang);
-  const cachedPreview = getPdfPreviewCache(cacheKey);
 
-  const [sourcePageCount, setSourcePageCount] = useState<number | null>(
-    cachedPreview?.sourcePageCount ?? null,
-  );
-  const [pdfPageState, setPdfPageState] = useState<PdfPageTranslationState | null>(
-    cachedPreview?.pdfPageState ?? null,
-  );
+  const [sourcePageCount, setSourcePageCount] = useState<number | null>(null);
+  const [pdfPageState, setPdfPageState] = useState<PdfPageTranslationState | null>(null);
   const sourcePageCountRef = useRef(sourcePageCount);
-  const pdfPageStateRef = useRef(pdfPageState);
 
   useLayoutEffect(() => {
     const node = scrollRef.current;
@@ -128,10 +86,6 @@ export function PdfDocumentPreview({
   useEffect(() => {
     sourcePageCountRef.current = sourcePageCount;
   }, [sourcePageCount]);
-
-  useEffect(() => {
-    pdfPageStateRef.current = pdfPageState;
-  }, [pdfPageState]);
 
   const pages = useMemo(
     () =>
@@ -193,28 +147,44 @@ export function PdfDocumentPreview({
 
   const refreshPageState = useCallback(async () => {
     try {
-      const state = await getRosettaPdfPageStatus(jobId, targetLang);
-      setPdfPageState(state);
+      const snapshot = await getRosettaPdfSnapshot(jobId, targetLang);
+      setPdfPageState(snapshot.pages);
+      const totalPages = snapshot.summary.totalPages || snapshot.pages.sourcePageCount;
+      if (totalPages > 0) {
+        setSourcePageCount(totalPages);
+        onPageCountChange(totalPages);
+      }
     } catch (error) {
       console.error("[pdf] failed to load page translation state", error);
     }
-  }, [jobId, targetLang]);
+  }, [jobId, onPageCountChange, targetLang]);
 
   useEffect(() => {
     let cancelled = false;
-    const cached = getPdfPreviewCache(cacheKey);
-    setSourcePageCount(cached?.sourcePageCount ?? null);
-    setPdfPageState(cached?.pdfPageState ?? null);
+    setSourcePageCount(null);
+    setPdfPageState(null);
 
     (async () => {
       try {
-        const srcPages = await countRosettaPdfPages(jobId, "source");
+        const snapshot = await getRosettaPdfSnapshot(jobId, targetLang);
         if (cancelled) return;
+        const srcPages = snapshot.summary.totalPages || snapshot.pages.sourcePageCount;
         setSourcePageCount(srcPages);
+        setPdfPageState(snapshot.pages);
         onPageCountChange(srcPages);
         onSelectedPagesChange(Array.from({ length: srcPages }, (_, index) => index + 1));
-        void refreshPageState();
       } catch (error) {
+        try {
+          const srcPages = await countRosettaPdfPages(jobId, "source");
+          if (cancelled) return;
+          setSourcePageCount(srcPages);
+          onPageCountChange(srcPages);
+          onSelectedPagesChange(Array.from({ length: srcPages }, (_, index) => index + 1));
+          void refreshPageState();
+          return;
+        } catch {
+          // Fall through to the visible console diagnostic below.
+        }
         if (cancelled) return;
         console.error("[pdf] failed to probe PDF page counts for job", jobId, error);
       }
@@ -223,32 +193,31 @@ export function PdfDocumentPreview({
     return () => {
       cancelled = true;
     };
-  }, [cacheKey, jobId, onPageCountChange, onSelectedPagesChange, refreshPageState]);
-
-  useEffect(() => {
-    return () => {
-      putPdfPreviewCache(cacheKey, {
-        sourcePageCount: sourcePageCountRef.current,
-        pdfPageState: pdfPageStateRef.current,
-      });
-    };
-  }, [cacheKey]);
+  }, [jobId, onPageCountChange, onSelectedPagesChange, refreshPageState, targetLang]);
 
   useEffect(() => {
     if (!jobId) return;
     let unlisten: (() => void) | null = null;
     let unmounted = false;
 
-    listen<{ jobId: string; pageNumber: number; status: string }>(
+    listen<{
+      jobId: string;
+      targetLang?: string | null;
+      runId?: string | null;
+      pageNumber: number;
+      status: string;
+    }>(
       "rosetta-pdf-page-progress",
       (event) => {
         if (event.payload.jobId !== jobId) return;
+        if (event.payload.targetLang && event.payload.targetLang !== targetLang) return;
         setPdfPageState((current) =>
           patchPdfPageState(current, {
             pageNumber: event.payload.pageNumber,
             sourcePageCount: sourcePageCountRef.current,
             status: event.payload.status,
             targetLang,
+            runId: event.payload.runId ?? null,
           }),
         );
       },
@@ -416,6 +385,7 @@ function patchPdfPageState(
     sourcePageCount: number | null;
     status: string;
     targetLang: string;
+    runId: string | null;
   },
 ): PdfPageTranslationState {
   const now = Date.now().toString();
@@ -432,8 +402,10 @@ function patchPdfPageState(
         ? existing?.translatedPdfPath ??
           pdfPageRelativePath(update.targetLang, update.pageNumber)
         : existing?.translatedPdfPath ?? null,
+    artifactVersion: status === "translated" ? existing?.artifactVersion ?? now : null,
     error: status === "failed" ? existing?.error ?? "可重试" : null,
     updatedAt: now,
+    lastRunId: update.runId,
   };
 
   if (index >= 0) {
@@ -497,7 +469,7 @@ function translatedPageLabel(
 }
 
 function pdfPageRelativePath(targetLang: string, pageNumber: number) {
-  return `pdf-pages/${pdfPageLanguageDir(targetLang)}/page-${String(pageNumber).padStart(4, "0")}.pdf`;
+  return `translated-pages/${pdfPageLanguageDir(targetLang)}/page-${String(pageNumber).padStart(4, "0")}.pdf`;
 }
 
 function pdfPageLanguageDir(targetLang: string) {

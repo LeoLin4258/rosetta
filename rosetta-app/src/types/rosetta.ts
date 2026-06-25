@@ -228,6 +228,12 @@ export type RosettaJobFileDeleteResult = {
   message: string;
 };
 
+export type RosettaJobDeleteResult = {
+  jobs: RosettaJobSummary[];
+  cleanupStatus: "deleted" | "pending-cleanup" | "no-cache" | "not-found" | string;
+  warning?: string | null;
+};
+
 export type RwkvConnectionConfig = {
   baseUrl: string;
   endpoint: string;

@@ -1,5 +1,11 @@
 # PDF v1 Support Plan
 
+> Historical document. This plan records the original PDF v1 direction. The
+> current PDF implementation is the visual `pdf2zh` page-artifact pipeline
+> described in `docs/engineering/pdf-pipeline.md` and ADR 0008. When this file
+> conflicts with those documents or current code, treat it as historical
+> context only.
+
 ## Summary
 
 Rosetta v1 must support PDF import because PDF is a required first-version document format. The baseline PDF milestone is text-based PDF import into the existing Rosetta document pipeline. High-fidelity PDF structure or layout restoration is valuable, but it is a nice-to-have enhancement path rather than the minimum acceptance gate for v1.

@@ -9,6 +9,7 @@ use crate::rosetta_jobs::{
         sync_document_file_translation_statuses, sync_job_counts,
         sync_job_counts_from_source_files, sync_job_source_files,
     },
+    formats::pdf::{self, source_state},
     model::{
         RosettaDocument, RosettaJobBundle, RosettaJobIndex, RosettaJobSummary,
         RosettaTranslationFile, Segment, SourceSnapshot, TranslationRevision, JOB_INDEX_FILENAME,
@@ -87,9 +88,18 @@ pub(crate) fn write_job_bundle_pdf(
     let cached_source = dir.join("source.pdf");
     fs::copy(source_path, &cached_source)
         .map_err(|error| format!("无法复制源 PDF 到项目缓存: {error}"))?;
+    let page_count = pdf::count_pages(app, &cached_source).map_err(|error| error.user_message())?;
+    let source_metadata = source_state::build_pdf_source_metadata(
+        &cached_source,
+        page_count,
+        bundle.document.filename.clone(),
+        bundle.job.source_path.clone(),
+        Some(bundle.job.created_at.clone()),
+    )?;
 
     write_json(&dir.join("document.json"), &bundle.document)?;
     write_json(&dir.join("segments.json"), &bundle.segments)?;
+    source_state::write_pdf_source_metadata(&dir, &source_metadata)?;
     write_json(
         &dir.join(TRANSLATION_REVISIONS_FILENAME),
         &bundle.translation_revisions,
@@ -107,7 +117,11 @@ pub(crate) fn cleanup_pdf_translation_artifacts(dir: &Path) -> Result<(), String
             continue;
         };
 
-        if name == "pdf-pages" || name == "pdf2zh-output" {
+        if name == "pdf-pages"
+            || name == "translated-pages"
+            || name == "pdf2zh-output"
+            || name == ".tmp"
+        {
             if path.is_dir() {
                 fs::remove_dir_all(&path)
                     .map_err(|error| format!("无法清理 PDF 缓存 {}: {error}", path.display()))?;
@@ -118,8 +132,11 @@ pub(crate) fn cleanup_pdf_translation_artifacts(dir: &Path) -> Result<(), String
             continue;
         }
 
-        if name == "pdf_page_translations.json"
+        if name == source_state::PDF_SOURCE_FILENAME
+            || name == "pdf_page_translations.json"
             || (name.starts_with("pdf_page_translations.") && name.ends_with(".json"))
+            || (name.starts_with("pdf_pages.") && name.ends_with(".json"))
+            || (name.starts_with("pdf_run.") && name.ends_with(".json"))
         {
             if path.is_file() {
                 fs::remove_file(&path).map_err(|error| {
@@ -300,6 +317,22 @@ pub(crate) fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, 
 pub(crate) fn write_json<T: Serialize + ?Sized>(path: &Path, value: &T) -> Result<(), String> {
     let contents =
         serde_json::to_string_pretty(value).map_err(|error| format!("无法序列化 JSON: {error}"))?;
-    fs::write(path, contents)
-        .map_err(|error| format!("无法写入 JSON 文件 {}: {error}", path.display()))
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("无法创建 JSON 目录 {}: {error}", parent.display()))?;
+    }
+    let tmp_path = path.with_extension(format!(
+        "{}.tmp",
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or("json")
+    ));
+    fs::write(&tmp_path, contents)
+        .map_err(|error| format!("无法写入临时 JSON 文件 {}: {error}", tmp_path.display()))?;
+    if path.exists() {
+        fs::remove_file(path)
+            .map_err(|error| format!("无法替换 JSON 文件 {}: {error}", path.display()))?;
+    }
+    fs::rename(&tmp_path, path)
+        .map_err(|error| format!("无法提交 JSON 文件 {}: {error}", path.display()))
 }

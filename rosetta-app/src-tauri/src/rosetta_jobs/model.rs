@@ -291,6 +291,14 @@ pub struct RosettaJobFileDeleteResult {
     pub(crate) message: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RosettaJobDeleteResult {
+    pub(crate) jobs: Vec<RosettaJobSummary>,
+    pub(crate) cleanup_status: String,
+    pub(crate) warning: Option<String>,
+}
+
 #[derive(Debug)]
 pub(crate) struct SourceSnapshot {
     pub(crate) relative_path: String,

@@ -1,5 +1,11 @@
 # PDF Translation Stability and Performance Roadmap
 
+> Historical roadmap. This document explains the problems and staged thinking
+> before the durable PDF run/page-artifact refactor. The current implementation
+> contract lives in `docs/engineering/pdf-pipeline.md` and ADR 0008. When this
+> roadmap conflicts with those documents or current code, treat it as
+> historical context only.
+
 ## Summary
 
 This document records the current PDF translation problems reported in Rosetta, the working mental model behind them, and a staged repair route. It is intentionally a planning document, not an implementation patch.

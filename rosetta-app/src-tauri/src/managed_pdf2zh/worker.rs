@@ -18,7 +18,7 @@
 //! At ~600 MB resident torch memory that's a deliberate trade.
 
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Stdio,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -65,6 +65,31 @@ mod tests {
             "request (393 tokens) exceeds the available context size (256 tokens)"
         ));
         assert!(!super::is_pdf2zh_rwkv_error("100%|██████████| 4/4"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn stale_worker_match_uses_pdf2zh_sidecar_signature() {
+        let root = std::path::PathBuf::from(
+            r"C:\Users\Leo\AppData\Local\com.rosetta.desktop\pdf2zh-sidecar",
+        );
+        let pack = root.join("pack").join("windows-amd64");
+        let process = super::WindowsProcess {
+            pid: std::process::id() + 1,
+            command: format!(
+                r#""{}\python\python.exe" {}\worker\rosetta_pdf2zh_worker.py"#,
+                pack.display(),
+                root.display()
+            ),
+        };
+
+        assert!(super::is_matching_pdf2zh_worker(&process, &root, &pack));
+
+        let unrelated = super::WindowsProcess {
+            pid: std::process::id() + 2,
+            command: r#""C:\Python311\python.exe" script.py"#.to_string(),
+        };
+        assert!(!super::is_matching_pdf2zh_worker(&unrelated, &root, &pack));
     }
 }
 
@@ -761,4 +786,153 @@ pub(crate) async fn shutdown_worker(app: &AppHandle) -> bool {
     kill_process_tree(&mut worker.child).await;
     set_worker_status(app, "idle", None, None);
     true
+}
+
+pub(crate) async fn stop_worker_for_install(app: &AppHandle) -> bool {
+    let Some(state) = app.try_state::<WorkerState>() else {
+        return false;
+    };
+
+    let mut guard = state.inner.lock().await;
+    let Some(mut worker) = guard.take() else {
+        return false;
+    };
+
+    kill_process_tree(&mut worker.child).await;
+    set_worker_status(app, "idle", None, None);
+    true
+}
+
+pub(crate) async fn cleanup_stale_workers_for_install(
+    root_dir: &Path,
+    pack_dir: &Path,
+) -> Result<usize, String> {
+    #[cfg(target_os = "windows")]
+    {
+        cleanup_stale_workers_windows(root_dir, pack_dir).await
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (root_dir, pack_dir);
+        Ok(0)
+    }
+}
+
+#[cfg(target_os = "windows")]
+async fn cleanup_stale_workers_windows(root_dir: &Path, pack_dir: &Path) -> Result<usize, String> {
+    let processes = list_windows_processes().await?;
+    let stale = processes
+        .into_iter()
+        .filter(|process| is_matching_pdf2zh_worker(process, root_dir, pack_dir))
+        .collect::<Vec<_>>();
+
+    if stale.is_empty() {
+        return Ok(0);
+    }
+
+    for process in &stale {
+        terminate_windows_process_tree(process.pid).await?;
+    }
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    eprintln!(
+        "[pdf2zh-worker] cleaned {} stale worker process(es) before install",
+        stale.len()
+    );
+    Ok(stale.len())
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Debug)]
+struct WindowsProcess {
+    pid: u32,
+    command: String,
+}
+
+#[cfg(target_os = "windows")]
+async fn list_windows_processes() -> Result<Vec<WindowsProcess>, String> {
+    let output = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine,ExecutablePath | ConvertTo-Json -Compress",
+        ])
+        .hide_console_on_windows()
+        .output()
+        .await
+        .map_err(|error| format!("无法列出 Windows 进程: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "PowerShell 进程查询失败: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "PascalCase")]
+    struct WinProcess {
+        process_id: u32,
+        command_line: Option<String>,
+        executable_path: Option<String>,
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if stdout.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let value: serde_json::Value =
+        serde_json::from_str(&stdout).map_err(|error| format!("解析进程列表失败: {error}"))?;
+    let processes: Vec<WinProcess> = if value.is_array() {
+        serde_json::from_value(value).map_err(|error| format!("解析进程列表失败: {error}"))?
+    } else {
+        vec![serde_json::from_value(value).map_err(|error| format!("解析进程列表失败: {error}"))?]
+    };
+
+    Ok(processes
+        .into_iter()
+        .map(|process| WindowsProcess {
+            pid: process.process_id,
+            command: format!(
+                "{} {}",
+                process.executable_path.unwrap_or_default(),
+                process.command_line.unwrap_or_default()
+            ),
+        })
+        .collect())
+}
+
+#[cfg(target_os = "windows")]
+fn is_matching_pdf2zh_worker(process: &WindowsProcess, root_dir: &Path, pack_dir: &Path) -> bool {
+    if process.pid == std::process::id() {
+        return false;
+    }
+
+    let command = process.command.to_lowercase();
+    let root = root_dir.display().to_string().to_lowercase();
+    let pack = pack_dir.display().to_string().to_lowercase();
+    command.contains("rosetta_pdf2zh_worker.py")
+        && (command.contains(&root) || command.contains(&pack))
+}
+
+#[cfg(target_os = "windows")]
+async fn terminate_windows_process_tree(pid: u32) -> Result<(), String> {
+    let output = Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .hide_console_on_windows()
+        .output()
+        .await
+        .map_err(|error| format!("无法停止旧 PDF worker 进程 {pid}: {error}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.contains("not found") || stderr.contains("没有找到") {
+        return Ok(());
+    }
+    Err(format!(
+        "停止旧 PDF worker 进程 {pid} 失败: taskkill 返回 {} ({})",
+        output.status,
+        stderr.trim()
+    ))
 }
