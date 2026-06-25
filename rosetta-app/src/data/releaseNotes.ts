@@ -34,6 +34,17 @@ export type ReleaseNote = {
  * appearing in `package.json` (e.g. `"0.1.0-beta.8"`), not semver tuples.
  */
 export const RELEASE_NOTES: Record<string, ReleaseNote> = {
+  "0.1.0-beta.16": {
+    version: "0.1.0-beta.16",
+    highlights: [
+      "PDF 预览改为按可见页面加载，长 PDF 滚动、切换文档和翻译中刷新更顺滑",
+      "PDF 译文页按页更新，后续页面完成时已翻译页面不再整页闪烁重载",
+      "PDF 页级译文缓存按目标语言隔离，切换语言后不会误用旧语言译文页",
+      "PDF 翻译新增强制重翻选项，可对已翻译页面重新生成译文",
+      "重新导入 PDF 会清理旧页级译文产物，避免新任务显示过期页面",
+      "PDF 长文本块会在送入本地模型前自动切分，减少小上下文模型卡住或报错",
+    ],
+  },
   "0.1.0-beta.15": {
     version: "0.1.0-beta.15",
     highlights: [
