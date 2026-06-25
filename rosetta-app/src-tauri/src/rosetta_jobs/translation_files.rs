@@ -116,7 +116,7 @@ pub(crate) fn ensure_translation_file(
         .find(|file| file.source_file_id == source_file_id && file.target_lang == target_lang)
         .cloned()
     {
-        let segments = read_translation_segments(&dir, &translation_file.id)?;
+        let segments = read_translation_segments_or_repair_pdf(&dir, &document, &translation_file)?;
         return Ok(RosettaTranslationFileBundle {
             translation_file,
             segments,
@@ -150,11 +150,13 @@ pub(crate) fn load_translation_file_bundle(
 ) -> Result<RosettaTranslationFileBundle, String> {
     let root = jobs_root(app)?;
     let dir = checked_job_dir(&root, job_id)?;
+    let mut document: RosettaDocument = read_json(&dir.join("document.json"))?;
+    ensure_document_files(&mut document);
     let translation_file = read_translation_files(&dir)?
         .into_iter()
         .find(|file| file.id == translation_file_id)
         .ok_or_else(|| "译文文件不存在。".to_string())?;
-    let segments = read_translation_segments(&dir, translation_file_id)?;
+    let segments = read_translation_segments_or_repair_pdf(&dir, &document, &translation_file)?;
     Ok(RosettaTranslationFileBundle {
         translation_file,
         segments,
@@ -197,6 +199,29 @@ pub(crate) fn read_translation_segments(
     read_json(&translation_segments_path(dir, translation_file_id)?)
 }
 
+pub(crate) fn read_translation_segments_or_repair_pdf(
+    dir: &Path,
+    document: &RosettaDocument,
+    translation_file: &RosettaTranslationFile,
+) -> Result<Vec<TranslationSegment>, String> {
+    let path = translation_segments_path(dir, &translation_file.id)?;
+    if path.exists() {
+        return read_json(&path);
+    }
+
+    if !is_pdf_source_file(document, &translation_file.source_file_id) {
+        return read_json(&path);
+    }
+
+    let segments = Vec::<TranslationSegment>::new();
+    write_translation_segments(dir, &translation_file.id, &segments)?;
+    eprintln!(
+        "[rosetta-jobs] repaired missing PDF translation segment file: {}",
+        path.display()
+    );
+    Ok(segments)
+}
+
 pub(crate) fn write_translation_segments(
     dir: &Path,
     translation_file_id: &str,
@@ -224,6 +249,13 @@ pub(crate) fn translation_segments_path(
         return Err("译文文件路径越界。".to_string());
     }
     Ok(path)
+}
+
+fn is_pdf_source_file(document: &RosettaDocument, source_file_id: &str) -> bool {
+    document
+        .files
+        .iter()
+        .any(|file| file.id == source_file_id && file.format.eq_ignore_ascii_case("pdf"))
 }
 
 pub(crate) fn build_translation_file(

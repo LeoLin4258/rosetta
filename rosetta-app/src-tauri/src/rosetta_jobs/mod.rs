@@ -1034,6 +1034,11 @@ pub async fn translate_rosetta_pdf_pages(
     timeout_ms: Option<u64>,
     force: Option<bool>,
 ) -> Result<formats::pdf::page_state::PdfPageTranslationState, String> {
+    eprintln!(
+        "[pdf-translate] command received: job_id={job_id}, target_lang={target_lang}, page_selection={page_selection}, provider_id={}, force={}",
+        provider_id.as_deref().unwrap_or("default"),
+        force.unwrap_or(false)
+    );
     let result = translate_pdf_pages_inner(
         &app,
         &cancel_state,
@@ -1051,6 +1056,15 @@ pub async fn translate_rosetta_pdf_pages(
     )
     .await;
     cancel_state.end_run();
+    match &result {
+        Ok(state) => eprintln!(
+            "[pdf-translate] command completed: job_id={job_id}, target_lang={target_lang}, pages={}",
+            state.pages.len()
+        ),
+        Err(error) => eprintln!(
+            "[pdf-translate] command failed: job_id={job_id}, target_lang={target_lang}, error={error}"
+        ),
+    }
     result
 }
 

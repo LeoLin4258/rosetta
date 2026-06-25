@@ -342,6 +342,43 @@ fn legacy_segments_migrate_to_translation_file() {
 }
 
 #[test]
+fn missing_pdf_translation_segments_file_repairs_to_empty_compat_file() {
+    let dir = unique_temp_dir("pdf-translation-segments-repair");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let mut document = test_document();
+    document.format = "pdf".to_string();
+    document.filename = "demo.pdf".to_string();
+    document.files.truncate(1);
+    document.files[0].filename = "demo.pdf".to_string();
+    document.files[0].relative_path = "demo.pdf".to_string();
+    document.files[0].format = "pdf".to_string();
+    document.files[0].block_ids.clear();
+    let translation_file = RosettaTranslationFile {
+        id: translation_file_id("file-1", "zh-CN"),
+        source_file_id: "file-1".to_string(),
+        target_lang: "zh-CN".to_string(),
+        status: "untranslated".to_string(),
+        segment_count: 60,
+        completed_segments: 0,
+        failed_segments: 0,
+        updated_at: "2000".to_string(),
+        exported_at: None,
+    };
+    let path = translation_segments_path(&dir, &translation_file.id).expect("translation path");
+    assert!(!path.exists());
+
+    let segments = read_translation_segments_or_repair_pdf(&dir, &document, &translation_file)
+        .expect("repair PDF compat translation file");
+
+    assert!(segments.is_empty());
+    assert!(path.is_file());
+    let persisted = read_translation_segments(&dir, &translation_file.id)
+        .expect("read repaired PDF compat translation file");
+    assert!(persisted.is_empty());
+    fs::remove_dir_all(dir).ok();
+}
+
+#[test]
 fn translation_file_status_drives_job_sidebar_summary() {
     let mut document = test_document();
     let segments = vec![

@@ -24,12 +24,12 @@ import {
 } from "@/lib/translationRunner";
 import { defaultExportFilename, exportFormatForSource } from "@/lib/rosettaExport";
 import { useRosettaStore } from "@/store/useRosettaStore";
-import type { RosettaJobBundle } from "@/types/rosetta";
+import type {
+  RosettaJobBundle,
+  RosettaTranslationFileBundle,
+} from "@/types/rosetta";
 import { DocumentPreview } from "@/features/preview/DocumentPreview";
-import {
-  isPdf2zhReady,
-  useManagedPdf2zhRuntime,
-} from "@/lib/useManagedPdf2zhRuntime";
+import { useManagedPdf2zhRuntime } from "@/lib/useManagedPdf2zhRuntime";
 import {
   prewarmPdf2zhWorker,
   type Pdf2zhInstallProgress,
@@ -315,20 +315,6 @@ export function WorkspacePage() {
     );
   }
 
-  async function ensurePdf2zhReadyForTranslation() {
-    const current = await pdf2zhRuntime.refreshStatus();
-    if (isPdf2zhReady(current)) return;
-
-    if (current?.state === "unsupported") {
-      throw new Error(current.message);
-    }
-
-    throw new Error(
-      current?.message ??
-        "PDF 组件未安装。请先在设置中安装 PDF 组件，再返回翻译。"
-    );
-  }
-
   async function handleTranslate(targetLang: string, srcLang: string) {
     if (!activeJobId || !activeSourceFileId) return;
     setPageError(null);
@@ -339,23 +325,29 @@ export function WorkspacePage() {
     let runId: string | null = null;
 
     try {
+      if (sourceFile?.format === "pdf") {
+        const selectedPages =
+          pdfSelectedPages.length > 0
+            ? pdfSelectedPages
+            : pdfPageCount > 0
+              ? Array.from({ length: pdfPageCount }, (_, index) => index + 1)
+              : [];
+        if (selectedPages.length === 0) {
+          setPdfError("请选择要翻译的页面。");
+          return;
+        }
+        const pageSelection = formatPageSelection(selectedPages);
+        const force = await shouldForcePdfPageTranslation(targetLang);
+        await handleTranslatePdfPages(pageSelection, force, targetLang, srcLang);
+        return;
+      }
+
       const tfBundle = await ensureRosettaTranslationFile(
         activeJobId,
         activeSourceFileId,
         targetLang
       );
       setActiveTranslationFileBundle(tfBundle);
-
-      if (sourceFile?.format === "pdf") {
-        if (pdfSelectedPages.length === 0) {
-          setPdfError("请选择要翻译的页面。");
-          return;
-        }
-        const pageSelection = formatPageSelection(pdfSelectedPages);
-        const force = await shouldForcePdfPageTranslation(targetLang);
-        await handleTranslatePdfPages(pageSelection, force, targetLang, srcLang);
-        return;
-      }
 
       const targets = translationTargetsForStatuses({
         sourceSegments: previewSegments,
@@ -439,6 +431,7 @@ export function WorkspacePage() {
     force: boolean,
     targetLangOverride = targetLang,
     sourceLangOverride = sourceLang,
+    preparedBundle?: RosettaTranslationFileBundle,
   ) {
     if (!activeJobId || !activeSourceFileId) return null;
     const pageTargetLang = targetLangOverride;
@@ -449,13 +442,14 @@ export function WorkspacePage() {
     let runId: string | null = null;
 
     try {
-      const tfBundle = await ensureRosettaTranslationFile(
-        activeJobId,
-        activeSourceFileId,
-        pageTargetLang,
-      );
+      const tfBundle =
+        preparedBundle ??
+        (await ensureRosettaTranslationFile(
+          activeJobId,
+          activeSourceFileId,
+          pageTargetLang,
+        ));
       setActiveTranslationFileBundle(tfBundle);
-      await ensurePdf2zhReadyForTranslation();
       const provider = buildProvider();
 
       runId = `run-pdf-pages-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -508,6 +502,7 @@ export function WorkspacePage() {
       }
       return state;
     } catch (err) {
+      console.error("[pdf-translate] failed", err);
       const msg = errorMessage(err, "");
       if (!msg.includes("已取消")) {
         setPdfError(errorMessage(err, "PDF 按页翻译出错。"));
@@ -649,62 +644,13 @@ export function WorkspacePage() {
 
     try {
       if (sourceFile?.format === "pdf") {
-        const tfBundle = await ensureRosettaTranslationFile(
-          activeJobId,
-          activeSourceFileId,
-          retranslateTargetLang
-        );
-        setActiveTranslationFileBundle(tfBundle);
-        await ensurePdf2zhReadyForTranslation();
-        const provider = buildProvider();
         const pageCount = await countRosettaPdfPages(activeJobId, "source");
-        const pageSelection = `1-${pageCount}`;
-        runId = `run-pdf-all-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        setIsPausingPdfRun(false);
-        cancelRef.current = () => {
-          if (!activeJobId) return;
-          setIsPausingPdfRun(true);
-          void pauseRosettaPdfRun(activeJobId, retranslateTargetLang, null).catch((error) => {
-            setPdfError(errorMessage(error, "暂停 PDF 翻译失败。"));
-            setIsPausingPdfRun(false);
-          });
-        };
-        startTranslationRun({
-          id: runId,
-          jobId: activeJobId,
-          sourceFileId: activeSourceFileId,
-          translationFileId: tfBundle.translationFile.id,
-          scope: "file",
-          targetSegmentIds: [`pdf-pages:${pageSelection}`],
-        });
-        await translateRosettaPdfPages(activeJobId, {
-          pageSelection,
-          targetLang: retranslateTargetLang,
-          rwkvBaseUrl: provider.baseUrl,
-          providerId: provider.id,
-          providerEndpoint: provider.id === "rwkv-lightning-contents" ? provider.endpoint : undefined,
-          providerInternalToken: provider.id === "rwkv-lightning-contents" ? provider.internalToken : undefined,
-          providerBodyPassword: provider.id === "rwkv-lightning-contents" ? provider.bodyPassword : undefined,
-          sourceLang,
-          timeoutMs: rwkv.timeoutMs,
-          force: true,
-        });
-        cancelRef.current = null;
-        setIsPausingPdfRun(false);
-        markTranslationRunCompleted(runId, [`pdf-pages:${pageSelection}`]);
-        finishTranslationRun(runId);
-        runId = null;
-        const freshBundle = await loadRosettaJob(activeJobId);
-        refreshJobBundle(freshBundle);
-        const refreshedTranslation = freshBundle.translationFiles.find(
-          (file) => file.id === tfBundle.translationFile.id,
-        );
-        if (refreshedTranslation) {
-          setActiveTranslationFileBundle({
-            translationFile: refreshedTranslation,
-            segments: [],
-          });
+        if (pageCount <= 0) {
+          setPdfError("无法读取 PDF 页数，请重新导入后再试。");
+          return;
         }
+        const pageSelection = `1-${pageCount}`;
+        await handleTranslatePdfPages(pageSelection, true, retranslateTargetLang, sourceLang);
         return;
       }
 
