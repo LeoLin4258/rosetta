@@ -67,6 +67,7 @@ export function PdfDocumentPreview({
 
   const [sourcePageCount, setSourcePageCount] = useState<number | null>(null);
   const [pdfPageState, setPdfPageState] = useState<PdfPageTranslationState | null>(null);
+  const [sourcePageImages, setSourcePageImages] = useState<Record<number, string>>({});
   const sourcePageCountRef = useRef(sourcePageCount);
 
   useLayoutEffect(() => {
@@ -127,6 +128,11 @@ export function PdfDocumentPreview({
     selectedPagesInRunOrder,
   ]);
 
+  const activePageNumberSet = useMemo(
+    () => new Set(activePagesInRunOrder),
+    [activePagesInRunOrder],
+  );
+
   const estimatedRowSize = useMemo(() => {
     const horizontalPadding = 32;
     const checkboxColumn = 32;
@@ -163,6 +169,7 @@ export function PdfDocumentPreview({
     let cancelled = false;
     setSourcePageCount(null);
     setPdfPageState(null);
+    setSourcePageImages({});
 
     (async () => {
       try {
@@ -279,6 +286,17 @@ export function PdfDocumentPreview({
     return pagesByNumber.get(pageNumber) ?? null;
   }
 
+  const handleSourcePageRendered = useCallback((pageIndex: number, src: string | null) => {
+    setSourcePageImages((current) => {
+      if (src && current[pageIndex] === src) return current;
+      if (!src && !current[pageIndex]) return current;
+      const next = { ...current };
+      if (src) next[pageIndex] = src;
+      else delete next[pageIndex];
+      return next;
+    });
+  }, []);
+
   const virtualItems = virtualizer.getVirtualItems();
 
   return (
@@ -304,6 +322,8 @@ export function PdfDocumentPreview({
                 status?.status ?? null,
                 pageNumber,
                 currentTranslatingPageNumber,
+                activePageNumberSet,
+                isTranslating,
               );
 
               return (
@@ -343,7 +363,12 @@ export function PdfDocumentPreview({
                         renderVersion={0}
                         targetWidth={RASTER_WIDTH}
                         canRender
-                        activity={status?.status ?? null}
+                        activity={
+                          currentTranslatingPageNumber === pageNumber
+                            ? "translating"
+                            : null
+                        }
+                        onRendered={handleSourcePageRendered}
                       />
                     </div>
 
@@ -356,6 +381,7 @@ export function PdfDocumentPreview({
                         targetWidth={RASTER_WIDTH}
                         canRender={status?.status === "translated"}
                         activity={activity}
+                        backdropSrc={sourcePageImages[pageIndex] ?? null}
                         renderPage={(index, width) =>
                           renderRosettaPdfTranslatedPageAsPng(
                             jobId,
@@ -449,10 +475,15 @@ function displayPageActivity(
   status: PdfPageTranslation["status"] | null,
   pageNumber: number,
   currentTranslatingPageNumber: number | null,
+  activePageNumberSet: ReadonlySet<number>,
+  isTranslating: boolean,
 ) {
   if (status === "failed") return "failed";
   if (status === "translated") return "translated";
+  if (status === "translating") return "translating";
+  if (status === "queued") return "queued";
   if (currentTranslatingPageNumber === pageNumber) return "translating";
+  if (isTranslating && activePageNumberSet.has(pageNumber)) return "queued";
   return "pending";
 }
 
@@ -461,9 +492,10 @@ function translatedPageLabel(
   page: { status: string; error?: string | null } | null,
   activity: ReturnType<typeof displayPageActivity>,
 ) {
+  if (activity === "translating") return "RWKV 翻译中";
+  if (activity === "queued") return `等待第 ${pageNumber} 页译文`;
   if (!page) return null;
   if (page.status === "translated") return `加载第 ${pageNumber} 页译文...`;
-  if (activity === "translating") return null;
   if (page.status === "failed") return `失败原因：${page.error ?? "可重试"}`;
   return null;
 }

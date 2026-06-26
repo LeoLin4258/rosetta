@@ -70,6 +70,8 @@ export function PdfPageImage({
   renderPage,
   status,
   activity,
+  backdropSrc,
+  onRendered,
 }: {
   jobId: string;
   kind: "source" | "translated";
@@ -80,10 +82,13 @@ export function PdfPageImage({
   renderPage?: (pageIndex: number, targetWidth: number) => Promise<Uint8Array>;
   status?: React.ReactNode;
   activity?: PdfPageActivity | null;
+  backdropSrc?: string | null;
+  onRendered?: (pageIndex: number, src: string | null) => void;
 }) {
   const [src, setSrc] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const cacheKey = `${jobId}:${kind}:${pageIndex}:${targetWidth}:${renderVersion}`;
+  const showLoadingBackdrop = kind === "translated" && canRender && !src && !!backdropSrc;
 
   useEffect(() => {
     let cancelled = false;
@@ -93,12 +98,14 @@ export function PdfPageImage({
       try {
         if (!canRender) {
           setSrc(null);
+          onRendered?.(pageIndex, null);
           return;
         }
 
         const cached = getCachedPng(cacheKey);
         if (cached) {
           setSrc(cached);
+          onRendered?.(pageIndex, cached);
           return;
         }
 
@@ -112,6 +119,7 @@ export function PdfPageImage({
         const createdUrl = URL.createObjectURL(blob);
         putCachedPng(cacheKey, createdUrl);
         setSrc(createdUrl);
+        onRendered?.(pageIndex, createdUrl);
       } catch (err) {
         if (cancelled) return;
         setError(
@@ -123,12 +131,15 @@ export function PdfPageImage({
     return () => {
       cancelled = true;
     };
-  }, [cacheKey, canRender, jobId, kind, pageIndex, renderPage, targetWidth]);
+  }, [cacheKey, canRender, jobId, kind, onRendered, pageIndex, renderPage, targetWidth]);
 
   if (!canRender) {
     return (
       <div
-        className="rosetta-pdf-page-frame rosetta-pdf-page-frame--placeholder h-full w-full"
+        className={cn(
+          "rosetta-pdf-page-frame rosetta-pdf-page-frame--placeholder h-full w-full",
+          showLoadingBackdrop && "rosetta-pdf-page-frame--backdrop",
+        )}
         style={{ aspectRatio: PDF_PAGE_ASPECT_RATIO }}
       >
         {kind === "translated" ? (
@@ -163,10 +174,22 @@ export function PdfPageImage({
   if (!src) {
     return (
       <div
-        className="flex h-full w-full items-center justify-center rounded border border-border bg-background text-xs text-muted-foreground"
+        className={cn(
+          "rosetta-pdf-page-frame flex h-full w-full items-center justify-center rounded border border-border bg-background text-xs text-muted-foreground",
+          showLoadingBackdrop && "rosetta-pdf-page-frame--backdrop",
+        )}
         style={{ aspectRatio: PDF_PAGE_ASPECT_RATIO }}
       >
-        <span className="inline-flex items-center gap-2">
+        {showLoadingBackdrop ? (
+          <img
+            src={backdropSrc}
+            alt=""
+            className="rosetta-pdf-page-backdrop"
+            draggable={false}
+            aria-hidden="true"
+          />
+        ) : null}
+        <span className="rosetta-pdf-page-loading-label">
           <Loader2 className="size-3.5 animate-spin motion-reduce:animate-none" />
           {status ?? `加载第 ${pageIndex + 1} 页...`}
         </span>
@@ -176,10 +199,19 @@ export function PdfPageImage({
 
   return (
     <div className="rosetta-pdf-page-frame h-full w-full" style={{ aspectRatio: PDF_PAGE_ASPECT_RATIO }}>
+      {kind === "translated" && backdropSrc ? (
+        <img
+          src={backdropSrc}
+          alt=""
+          className="rosetta-pdf-page-backdrop rosetta-pdf-page-backdrop--exit"
+          draggable={false}
+          aria-hidden="true"
+        />
+      ) : null}
       <img
         src={src}
         alt={`第 ${pageIndex + 1} 页`}
-        className="block size-full rounded border border-border bg-background shadow-sm"
+        className="rosetta-pdf-page-image block size-full rounded border border-border bg-background shadow-sm"
         draggable={false}
       />
       {kind === "source" && activity === "translating" ? (
@@ -200,24 +232,26 @@ function PdfPagePlaceholder({
 }) {
   const failed = activity === "failed";
   const translating = activity === "translating";
+  const queued = activity === "queued";
+  const title = failed
+    ? `第 ${pageNumber} 页翻译失败`
+    : translating
+      ? "翻译中"
+      : queued
+        ? "等待处理"
+        : "未翻译";
 
   return (
     <div
       className={cn(
-        "flex h-full flex-col items-center justify-center gap-1.5 px-6 text-center text-xs",
+        "relative z-10 flex h-full flex-col items-center justify-center gap-1.5 px-6 text-center text-xs",
         failed ? "text-destructive" : "text-muted-foreground",
       )}
     >
-      {translating ? (
+      {translating || queued ? (
         <Loader2 className="mb-0.5 size-4 animate-spin motion-reduce:animate-none" />
       ) : null}
-      <div className="font-medium text-foreground">
-        {failed
-          ? `第 ${pageNumber} 页翻译失败`
-          : translating
-            ? "翻译中"
-            : "未翻译"}
-      </div>
+      <div className="font-medium text-foreground">{title}</div>
       {failed || status ? (
         <div className="max-w-52 leading-5">
           {status ?? "可重试此页。"}
