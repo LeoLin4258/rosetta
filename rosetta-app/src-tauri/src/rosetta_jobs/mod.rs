@@ -1559,6 +1559,9 @@ async fn translate_pdf_pages_inner(
                         "PDF 重翻没有向翻译模型发送任何文本，已拒绝复用旧译文。请确认该页包含可提取文本后再试。"
                             .to_string(),
                     );
+                    for page_number in &chunk_pages {
+                        clear_pdf_page_artifacts(&dir, &mut state, target_lang, *page_number);
+                    }
                 }
             }
             Err(formats::pdf::errors::PdfError::Cancelled) => {

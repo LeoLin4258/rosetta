@@ -57,6 +57,34 @@ mod tests {
     }
 
     #[test]
+    fn persistent_worker_rebinds_pdf2zh_cache_per_job() {
+        assert!(
+            WORKER_SCRIPT.contains("pdf2zh_cache.cache_dir = cache_root"),
+            "the warm worker must rebind pdf2zh.cache after per-job tmpDir is set"
+        );
+        assert!(
+            WORKER_SCRIPT.contains("os.path.join(tempfile.gettempdir(), \"cache\")"),
+            "the cache root should follow tempfile.gettempdir() for each translate job"
+        );
+    }
+
+    #[test]
+    fn force_translate_worker_clears_pdf2zh_paragraph_cache() {
+        assert!(
+            WORKER_SCRIPT.contains("ignore_cache = bool(job.get(\"ignoreCache\"))"),
+            "the worker should read Rosetta's force-retranslate flag"
+        );
+        assert!(
+            WORKER_SCRIPT.contains("if ignore_cache and os.path.isdir(cache_root):"),
+            "forced PDF retranslation must clear pdf2zh's paragraph cache"
+        );
+        assert!(
+            WORKER_SCRIPT.contains("shutil.rmtree(cache_root, ignore_errors=True)"),
+            "forced PDF retranslation should remove cached paragraph translations"
+        );
+    }
+
+    #[test]
     fn detects_repeated_rwkv_errors_from_pdf2zh() {
         assert!(super::is_pdf2zh_rwkv_error(
             "ERROR:pdf2zh.converter:RWKV 翻译失败: llama.cpp /completion 返回 HTTP 400"

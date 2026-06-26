@@ -30,6 +30,7 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 import threading
@@ -897,6 +898,7 @@ def translate_streaming(job, proto, model_path):
 def run_translate(job, proto, model_path):
     output_dir = job["outputDir"]
     os.makedirs(output_dir, exist_ok=True)
+    ignore_cache = bool(job.get("ignoreCache"))
 
     for key, value in (job.get("env") or {}).items():
         os.environ[key] = str(value)
@@ -908,6 +910,18 @@ def run_translate(job, proto, model_path):
         os.environ["TEMP"] = tmp_dir
         os.environ["TMP"] = tmp_dir
         tempfile.tempdir = tmp_dir
+
+    # pdf2zh.cache is imported during worker prewarm, before per-job TMPDIR is
+    # known, so its module-level cache_dir otherwise keeps pointing at the
+    # process/system temp cache across all later jobs. Rebind it for each
+    # translation task so "force retranslate" cannot reuse old paragraph text.
+    import pdf2zh.cache as pdf2zh_cache
+
+    cache_root = os.path.join(tempfile.gettempdir(), "cache")
+    pdf2zh_cache.cache_dir = cache_root
+    if ignore_cache and os.path.isdir(cache_root):
+        shutil.rmtree(cache_root, ignore_errors=True)
+    os.makedirs(cache_root, exist_ok=True)
 
     return translate_streaming(job, proto, model_path)
 
