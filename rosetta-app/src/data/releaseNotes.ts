@@ -34,6 +34,17 @@ export type ReleaseNote = {
  * appearing in `package.json` (e.g. `"0.1.0-beta.8"`), not semver tuples.
  */
 export const RELEASE_NOTES: Record<string, ReleaseNote> = {
+  "0.1.0-beta.17": {
+    version: "0.1.0-beta.17",
+    highlights: [
+      "PDF 翻译运行状态更可靠，暂停、强退或异常中断后可恢复，不易卡在翻译中",
+      "PDF 页面译文按任务和目标语言持久保存，打开旧任务时会自动修复缺失或过期状态",
+      "删除 PDF 任务改为先移出列表再清理文件，被占用时会保留可恢复的清理记录",
+      "PDF 译文页加载时会先显示源文页面底图，等待译文生成时版面不再空白跳动",
+      "PDF 引擎预热会提前准备版面识别模型，首次译文页面通常更快出现",
+      "新增本机 PDF 时间线诊断，便于排查慢任务且不会记录文档原文或译文内容",
+    ],
+  },
   "0.1.0-beta.16": {
     version: "0.1.0-beta.16",
     highlights: [
