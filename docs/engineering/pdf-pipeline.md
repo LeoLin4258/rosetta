@@ -1,6 +1,6 @@
 # PDF Pipeline
 
-Last updated: 2026-06-25
+Last updated: 2026-06-26
 
 This document describes the current PDF translation implementation. Older PDF
 plans are historical background only when they conflict with this file and
@@ -37,6 +37,9 @@ AppData/Rosetta/jobs/
     pdf_source.json
     pdf_pages.<targetLang>.json
     pdf_run.<targetLang>.json
+    diagnostics/
+      pdf-timeline.jsonl
+      pdf-translation-profile-<runId>.json
     translated-pages/
       <targetLang>/
         page-0001.pdf
@@ -87,6 +90,55 @@ User exports:
 
 - `exports/`: only user-triggered full-PDF exports belong here. The full export
   is rebuilt from page artifacts; it is not the source of page truth.
+
+Diagnostics:
+
+- `diagnostics/pdf-timeline.jsonl`: append-only lifecycle events for one PDF
+  job, starting at import and continuing through translation runs. Events record
+  timestamps, run IDs, page numbers, counts, durations, file sizes, provider
+  IDs, and aggregate RWKV timings. They must not contain source text,
+  translated text, prompts, model responses, or document content.
+  Translation runs also include `worker.stage` events emitted by the persistent
+  pdf2zh worker for internal phases such as PDF preprocessing, YOLO layout
+  inference, pdfminer page processing, patch application, single-page PDF save,
+  and page event emission. `page.processPage` is further split into pdfminer
+  `beginPage`, `renderStreams`, `endPage`, `receiveLayout`,
+  `translateRequest`, and `patchStreams` events so the first visible
+  page can be analyzed without treating pdfminer/TextConverter as one opaque
+  block.
+- `diagnostics/pdf-translation-profile-<runId>.json`: per-run aggregate profile
+  for PDF translation. This remains the compact summary for one translation
+  run; the timeline is the ordered event log used to reconstruct the chain.
+
+Diagnostic files are not job state. Repair, preview, export, and resume logic
+must continue to use `pdf_source.json`, `pdf_pages.<targetLang>.json`,
+`pdf_run.<targetLang>.json`, and page artifacts as the source of truth.
+
+## PDF Translation Concurrency
+
+For local OpenAI-shim providers that do not report a supported batch size,
+Rosetta uses a default PDF paragraph batch width of 8. The same value is passed
+to the persistent worker as pdf2zh's `thread` count. Timeline diagnostics record
+the effective thread count in the worker `job.started` stage and record every
+`page.processPage.translateRequest`, making it possible to see whether a page
+waited on one, two, or more TextConverter translation waves.
+
+## Worker Prewarm
+
+App startup starts the persistent pdf2zh worker in the background after the
+main window is shown. The worker prewarm now includes:
+
+- importing PyTorch, DocLayout-YOLO, and pdf2zh;
+- checking the bundled DocLayout model path;
+- optional MPS probing when explicitly enabled;
+- loading the cached YOLO model and running one synthetic blank-page
+  prediction at 596x842 px (`imgsz=832`).
+
+The synthetic prediction does not use document content. Its purpose is to move
+YOLO's first predict-time setup out of the first translated page. If that
+prediction fails, the worker still becomes ready and translation falls back to
+the same behavior as before; the ready log records `yoloWarmupStatus`,
+`yoloWarmupMs`, `yoloWarmupDevice`, and `yoloWarmupReason`.
 
 ## Page State
 

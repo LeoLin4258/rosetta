@@ -20,7 +20,11 @@ use crate::rwkv_providers::{
     ProviderTranslateBatch,
 };
 
-const DEFAULT_MAX_BATCH_SIZE: usize = 4;
+/// Default paragraph batch width for PDF providers that do not report their
+/// own supported sizes. Also drives pdf2zh's `thread` count below, so raising
+/// this from 4 to 8 reduces common first-page TextConverter waves from
+/// `4 + 4 + 1` to `8 + 1` while staying below the historical 16-thread cap.
+const DEFAULT_MAX_BATCH_SIZE: usize = 8;
 const PDF_SHIM_BODY_TARGET_PROMPT_TOKENS: usize = 150;
 const PDF_SHIM_BODY_HARD_PROMPT_TOKENS: usize = 190;
 const PDF_SHIM_CAPTION_TARGET_PROMPT_TOKENS: usize = 150;

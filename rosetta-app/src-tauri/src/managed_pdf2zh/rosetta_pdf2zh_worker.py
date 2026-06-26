@@ -32,12 +32,14 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import time
 import traceback
 
 
 _yolo_model = None
 _yolo_model_path = None
+_emit_lock = threading.Lock()
 
 
 def make_protocol_channel():
@@ -58,8 +60,318 @@ def make_protocol_channel():
 
 
 def emit(proto, payload):
-    proto.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    proto.flush()
+    with _emit_lock:
+        proto.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        proto.flush()
+
+
+def emit_stage(proto, job_id, stage, status, page_number=None, duration_ms=None, details=None):
+    payload = {
+        "id": job_id,
+        "event": "stage",
+        "stage": stage,
+        "status": status,
+    }
+    if page_number is not None:
+        payload["pageNumber"] = int(page_number)
+    if duration_ms is not None:
+        payload["durationMs"] = int(duration_ms)
+    if details:
+        payload["details"] = details
+    emit(proto, payload)
+
+
+def stage_start(proto, job_id, stage, page_number=None, details=None):
+    emit_stage(proto, job_id, stage, "started", page_number=page_number, details=details)
+    return time.time()
+
+
+def stage_done(proto, job_id, stage, started_at, page_number=None, details=None):
+    emit_stage(
+        proto,
+        job_id,
+        stage,
+        "completed",
+        page_number=page_number,
+        duration_ms=int((time.time() - started_at) * 1000),
+        details=details,
+    )
+
+
+def stage_failed(proto, job_id, stage, started_at, page_number=None, details=None):
+    emit_stage(
+        proto,
+        job_id,
+        stage,
+        "failed",
+        page_number=page_number,
+        duration_ms=int((time.time() - started_at) * 1000),
+        details=details,
+    )
+
+
+def safe_len(value):
+    try:
+        return len(value)
+    except Exception:
+        return None
+
+
+def summarize_layout_tree(root):
+    stack = [(root, 0)]
+    counts = {}
+    max_depth = 0
+    total_items = 0
+    while stack:
+        item, depth = stack.pop()
+        total_items += 1
+        max_depth = max(max_depth, depth)
+        name = type(item).__name__
+        counts[name] = counts.get(name, 0) + 1
+        try:
+            children = list(item)
+        except Exception:
+            children = []
+        for child in reversed(children):
+            stack.append((child, depth + 1))
+    return {
+        "itemCount": total_items,
+        "maxDepth": max_depth,
+        "ltCharCount": counts.get("LTChar", 0),
+        "ltLineCount": counts.get("LTLine", 0),
+        "ltFigureCount": counts.get("LTFigure", 0),
+        "ltTextLineCount": counts.get("LTTextLine", 0),
+        "ltTextBoxCount": counts.get("LTTextBox", 0)
+        + counts.get("LTTextBoxHorizontal", 0)
+        + counts.get("LTTextBoxVertical", 0),
+    }
+
+
+def install_page_process_probe(device, proto, job_id, page_number):
+    context = {
+        "pageNumber": page_number,
+        "translateRequestCount": 0,
+        "translateFailedCount": 0,
+        "translateRequestMs": 0,
+        "translateInputChars": 0,
+        "translateOutputChars": 0,
+        "lock": threading.Lock(),
+    }
+    device._rosetta_probe_context = context
+
+    if not hasattr(device, "_rosetta_original_translate"):
+        original_translate = device.translator.translate
+        device._rosetta_original_translate = original_translate
+
+        def rosetta_translate_probe(text):
+            probe = getattr(device, "_rosetta_probe_context", None)
+            if not probe:
+                return original_translate(text)
+            source_chars = len(text) if isinstance(text, str) else 0
+            with probe["lock"]:
+                probe["translateRequestCount"] += 1
+                request_index = probe["translateRequestCount"]
+                probe["translateInputChars"] += source_chars
+            started_at = stage_start(
+                proto,
+                job_id,
+                "page.processPage.translateRequest",
+                probe["pageNumber"],
+                details={
+                    "requestIndex": request_index,
+                    "sourceChars": source_chars,
+                },
+            )
+            try:
+                result = original_translate(text)
+            except BaseException as error:
+                duration_ms = int((time.time() - started_at) * 1000)
+                with probe["lock"]:
+                    probe["translateFailedCount"] += 1
+                    probe["translateRequestMs"] += duration_ms
+                stage_failed(
+                    proto,
+                    job_id,
+                    "page.processPage.translateRequest",
+                    started_at,
+                    probe["pageNumber"],
+                    details={
+                        "requestIndex": request_index,
+                        "sourceChars": source_chars,
+                        "errorType": type(error).__name__,
+                    },
+                )
+                raise
+            duration_ms = int((time.time() - started_at) * 1000)
+            output_chars = len(result) if isinstance(result, str) else 0
+            with probe["lock"]:
+                probe["translateRequestMs"] += duration_ms
+                probe["translateOutputChars"] += output_chars
+            stage_done(
+                proto,
+                job_id,
+                "page.processPage.translateRequest",
+                started_at,
+                probe["pageNumber"],
+                details={
+                    "requestIndex": request_index,
+                    "sourceChars": source_chars,
+                    "outputChars": output_chars,
+                },
+            )
+            return result
+
+        device.translator.translate = rosetta_translate_probe
+
+    if not hasattr(device, "_rosetta_original_receive_layout"):
+        original_receive_layout = device.receive_layout
+        device._rosetta_original_receive_layout = original_receive_layout
+
+        def rosetta_receive_layout_probe(ltpage):
+            probe = getattr(device, "_rosetta_probe_context", None)
+            if not probe:
+                return original_receive_layout(ltpage)
+            summary = summarize_layout_tree(ltpage)
+            started_at = stage_start(
+                proto,
+                job_id,
+                "page.processPage.receiveLayout",
+                probe["pageNumber"],
+                details=summary,
+            )
+            try:
+                result = original_receive_layout(ltpage)
+            except BaseException as error:
+                stage_failed(
+                    proto,
+                    job_id,
+                    "page.processPage.receiveLayout",
+                    started_at,
+                    probe["pageNumber"],
+                    details={**summary, "errorType": type(error).__name__},
+                )
+                raise
+            stage_done(
+                proto,
+                job_id,
+                "page.processPage.receiveLayout",
+                started_at,
+                probe["pageNumber"],
+                details={**summary, **translate_probe_summary(probe)},
+            )
+            return result
+
+        device.receive_layout = rosetta_receive_layout_probe
+
+    return context
+
+
+def translate_probe_summary(context):
+    with context["lock"]:
+        return {
+            "translateRequestCount": context["translateRequestCount"],
+            "translateFailedCount": context["translateFailedCount"],
+            "translateRequestMs": context["translateRequestMs"],
+            "translateInputChars": context["translateInputChars"],
+            "translateOutputChars": context["translateOutputChars"],
+        }
+
+
+def page_ctm(page):
+    x0, y0, x1, y1 = page.cropbox
+    if page.rotate == 90:
+        return (0, -1, 1, 0, -y0, x1)
+    if page.rotate == 180:
+        return (-1, 0, 0, -1, x1, y1)
+    if page.rotate == 270:
+        return (0, 1, -1, 0, y1, -x0)
+    return (1, 0, 0, 1, -x0, -y0)
+
+
+def process_page_with_stages(interpreter, device, page, proto, job_id, page_number):
+    """Equivalent to pdf2zh.pdfinterp.PDFPageInterpreter.process_page with probes."""
+    x0, y0, _x1, _y1 = page.cropbox
+    ctm = page_ctm(page)
+    probe = install_page_process_probe(device, proto, job_id, page_number)
+    try:
+        t0 = stage_start(
+            proto,
+            job_id,
+            "page.processPage.beginPage",
+            page_number,
+            details={
+                "rotate": page.rotate,
+                "cropbox": [float(value) for value in page.cropbox],
+            },
+        )
+        device.begin_page(page, ctm)
+        stage_done(proto, job_id, "page.processPage.beginPage", t0, page_number)
+
+        t0 = stage_start(
+            proto,
+            job_id,
+            "page.processPage.renderStreams",
+            page_number,
+            details={
+                "resourceCount": safe_len(page.resources),
+                "streamObjectCount": safe_len(page.contents),
+            },
+        )
+        ops_base = interpreter.render_contents(page.resources, page.contents, ctm=ctm)
+        stage_done(
+            proto,
+            job_id,
+            "page.processPage.renderStreams",
+            t0,
+            page_number,
+            details={
+                "baseOpsChars": len(ops_base) if isinstance(ops_base, str) else None,
+                "fontIdCount": safe_len(interpreter.fontid),
+                "fontMapCount": safe_len(interpreter.fontmap),
+            },
+        )
+
+        t0 = stage_start(proto, job_id, "page.processPage.endPage", page_number)
+        device.fontid = interpreter.fontid
+        device.fontmap = interpreter.fontmap
+        ops_new = device.end_page(page)
+        stage_done(
+            proto,
+            job_id,
+            "page.processPage.endPage",
+            t0,
+            page_number,
+            details={
+                "translatedOpsChars": len(ops_new) if isinstance(ops_new, str) else None,
+                **translate_probe_summary(probe),
+            },
+        )
+
+        t0 = stage_start(
+            proto,
+            job_id,
+            "page.processPage.patchStreams",
+            page_number,
+            details={"streamObjectCount": safe_len(page.contents)},
+        )
+        interpreter.obj_patch[
+            page.page_xref
+        ] = f"q {ops_base}Q 1 0 0 1 {x0} {y0} cm {ops_new}"
+        for obj in page.contents:
+            interpreter.obj_patch[obj.objid] = ""
+        stage_done(
+            proto,
+            job_id,
+            "page.processPage.patchStreams",
+            t0,
+            page_number,
+            details={
+                "streamObjectCount": safe_len(page.contents),
+                "pagePatchChars": safe_len(interpreter.obj_patch.get(page.page_xref)),
+            },
+        )
+    finally:
+        device._rosetta_probe_context = None
 
 
 def probe_and_enable_mps(torch, doclayout_yolo, model_path):
@@ -120,6 +432,53 @@ def get_yolo_model(model_path):
     return _yolo_model
 
 
+def warm_yolo_predict(torch, model_path, mps_enabled=False):
+    """Move the first real YOLO inference cost into worker prewarm.
+
+    The image is synthetic and blank, so no document content leaves the
+    translation path. Its shape mirrors a common A4-ish page observed in
+    Rosetta logs (596x842 px, imgsz 832), which is enough to trigger the
+    model's first predict-time setup before the user translates page 1.
+    """
+    started_at = time.time()
+    width = 596
+    height = 842
+    imgsz = int(height / 32) * 32
+    device_name = (
+        "mps" if mps_enabled else "cuda:0" if torch.cuda.is_available() else "cpu"
+    )
+    try:
+        import numpy as np
+
+        model = get_yolo_model(model_path)
+        dummy = np.zeros((height, width, 3), dtype=np.uint8)
+        result = model.predict(
+            dummy,
+            imgsz=imgsz,
+            device=device_name,
+            verbose=False,
+        )[0]
+        return {
+            "status": "completed",
+            "durationMs": int((time.time() - started_at) * 1000),
+            "device": device_name,
+            "width": width,
+            "height": height,
+            "imgsz": imgsz,
+            "boxCount": len(result.boxes),
+        }
+    except Exception as error:
+        return {
+            "status": "failed",
+            "durationMs": int((time.time() - started_at) * 1000),
+            "device": device_name,
+            "width": width,
+            "height": height,
+            "imgsz": imgsz,
+            "reason": f"{type(error).__name__}: {str(error)[:300]}",
+        }
+
+
 def translate_streaming(job, proto, model_path):
     """Custom replacement for pdf2zh.pdf2zh.extract_text().
 
@@ -156,8 +515,27 @@ def translate_streaming(job, proto, model_path):
     ignore_cache = bool(job.get("ignoreCache"))
 
     timings = {}
+    emit_stage(
+        proto,
+        job_id,
+        "job",
+        "started",
+        details={
+            "requestedPageCount": len(pages) if pages else None,
+            "thread": thread,
+            "langIn": lang_in,
+            "langOut": lang_out,
+            "service": service,
+            "ignoreCache": ignore_cache,
+        },
+    )
 
-    t = time.time()
+    t = stage_start(
+        proto,
+        job_id,
+        "preprocess.openPrepareAndSavePdf",
+        details={"requestedPageCount": len(pages) if pages else None},
+    )
     doc_en = pymupdf.open(file_path)
     page_count = doc_en.page_count
     font_list = ["china-ss", "tiro"]
@@ -185,11 +563,36 @@ def translate_streaming(job, proto, model_path):
     en_path = os.path.join(output_dir, f"{filename}-en.pdf")
     doc_en.save(en_path)
     timings["preprocessMs"] = int((time.time() - t) * 1000)
+    stage_done(
+        proto,
+        job_id,
+        "preprocess.openPrepareAndSavePdf",
+        t,
+        details={
+            "sourcePageCount": page_count,
+            "xrefLength": xreflen,
+            "fontNames": font_list,
+            "preparedPdfBytes": os.path.getsize(en_path) if os.path.exists(en_path) else None,
+        },
+    )
 
-    t = time.time()
+    t = stage_start(proto, job_id, "model.getYoloModel")
     model = get_yolo_model(model_path)
     timings["modelReadyMs"] = int((time.time() - t) * 1000)
+    stage_done(
+        proto,
+        job_id,
+        "model.getYoloModel",
+        t,
+        details={"modelPathPresent": bool(model_path)},
+    )
 
+    t = stage_start(
+        proto,
+        job_id,
+        "pdfminer.initializeInterpreter",
+        details={"thread": thread, "ignoreCache": ignore_cache},
+    )
     obj_patch: dict = {}
     layout: dict = {}
     rsrcmgr = PDFResourceManager(caching=not ignore_cache)
@@ -207,6 +610,7 @@ def translate_streaming(job, proto, model_path):
         service=service,
     )
     interpreter = PDFPageInterpreter(rsrcmgr, device, obj_patch)
+    stage_done(proto, job_id, "pdfminer.initializeInterpreter", t)
 
     t_translate = time.time()
     yolo_total = 0.0
@@ -214,6 +618,12 @@ def translate_streaming(job, proto, model_path):
     save_total = 0.0
     pages_translated = 0
 
+    t = stage_start(
+        proto,
+        job_id,
+        "pdfminer.loadPages",
+        details={"requestedPageCount": len(pages) if pages else None},
+    )
     with open(en_path, "rb") as fp:
         page_iter = PDFPage.get_pages(
             fp,
@@ -224,19 +634,82 @@ def translate_streaming(job, proto, model_path):
         )
         page_list = list(page_iter)
         total = len(page_list)
+        stage_done(
+            proto,
+            job_id,
+            "pdfminer.loadPages",
+            t,
+            details={"loadedPageCount": total},
+        )
 
         for page in tqdm.tqdm(page_list, total=total, position=0):
-            t0 = time.time()
+            page_number = page.pageno + 1
+            emit_stage(
+                proto,
+                job_id,
+                "page",
+                "started",
+                page_number=page_number,
+                details={
+                    "pageIndex": page.pageno,
+                    "pageOrdinalInRun": pages_translated + 1,
+                    "totalPagesInRun": total,
+                },
+            )
+
+            page_started = time.time()
+            t0 = stage_start(proto, job_id, "page.pixmapAndImage", page_number)
             pix = doc_en[page.pageno].get_pixmap()
             image = np.frombuffer(pix.samples, np.uint8).reshape(
                 pix.height, pix.width, 3
             )[:, :, ::-1]
+            stage_done(
+                proto,
+                job_id,
+                "page.pixmapAndImage",
+                t0,
+                page_number,
+                details={
+                    "width": pix.width,
+                    "height": pix.height,
+                    "sampleBytes": len(pix.samples),
+                },
+            )
+            device_name = "cuda:0" if torch.cuda.is_available() else "cpu"
+            imgsz = int(pix.height / 32) * 32
+            t0 = stage_start(
+                proto,
+                job_id,
+                "page.yoloPredict",
+                page_number,
+                details={"device": device_name, "imgsz": imgsz},
+            )
             page_layout = model.predict(
                 image,
-                imgsz=int(pix.height / 32) * 32,
-                device="cuda:0" if torch.cuda.is_available() else "cpu",
+                imgsz=imgsz,
+                device=device_name,
                 verbose=False,
             )[0]
+            stage_done(
+                proto,
+                job_id,
+                "page.yoloPredict",
+                t0,
+                page_number,
+                details={
+                    "device": device_name,
+                    "imgsz": imgsz,
+                    "boxCount": len(page_layout.boxes),
+                },
+            )
+
+            t0 = stage_start(
+                proto,
+                job_id,
+                "page.layoutMask",
+                page_number,
+                details={"boxCount": len(page_layout.boxes)},
+            )
             box = np.ones((pix.height, pix.width))
             h, w = box.shape
             vcls = ["abandon", "figure", "table", "isolate_formula", "formula_caption"]
@@ -261,24 +734,80 @@ def translate_streaming(job, proto, model_path):
                     )
                     box[y0:y1, x0:x1] = 0
             layout[page.pageno] = box
-            yolo_total += time.time() - t0
+            stage_done(
+                proto,
+                job_id,
+                "page.layoutMask",
+                t0,
+                page_number,
+                details={"layoutHeight": h, "layoutWidth": w},
+            )
+            yolo_total += time.time() - page_started
 
+            t0 = stage_start(proto, job_id, "page.prepareContentStream", page_number)
             page.rotate = page.rotate % 360
             page.page_xref = doc_en.get_new_xref()
             doc_en.update_object(page.page_xref, "<<>>")
             doc_en.update_stream(page.page_xref, b"")
             doc_en[page.pageno].set_contents(page.page_xref)
+            stage_done(
+                proto,
+                job_id,
+                "page.prepareContentStream",
+                t0,
+                page_number,
+                details={"pageXref": page.page_xref},
+            )
 
-            t0 = time.time()
+            t0 = stage_start(
+                proto,
+                job_id,
+                "page.processPage",
+                page_number,
+                details={"existingPatchCount": len(obj_patch)},
+            )
             before_keys = set(obj_patch.keys())
-            interpreter.process_page(page)
+            process_page_with_stages(
+                interpreter,
+                device,
+                page,
+                proto,
+                job_id,
+                page_number,
+            )
             new_keys = list(set(obj_patch.keys()) - before_keys)
             process_total += time.time() - t0
+            stage_done(
+                proto,
+                job_id,
+                "page.processPage",
+                t0,
+                page_number,
+                details={
+                    "newPatchCount": len(new_keys),
+                    "totalPatchCount": len(obj_patch),
+                },
+            )
 
-            t0 = time.time()
+            t0 = stage_start(
+                proto,
+                job_id,
+                "page.applyPatches",
+                page_number,
+                details={"newPatchCount": len(new_keys)},
+            )
             for obj_id in new_keys:
                 doc_en.update_stream(obj_id, obj_patch[obj_id].encode())
+            stage_done(
+                proto,
+                job_id,
+                "page.applyPatches",
+                t0,
+                page_number,
+                details={"newPatchCount": len(new_keys)},
+            )
 
+            t0 = stage_start(proto, job_id, "page.saveSinglePdf", page_number)
             single = pymupdf.open()
             single.insert_pdf(doc_en, from_page=page.pageno, to_page=page.pageno)
             page_out_path = os.path.join(
@@ -289,8 +818,21 @@ def translate_streaming(job, proto, model_path):
             single.save(page_out_path, deflate=1)
             single.close()
             save_total += time.time() - t0
+            stage_done(
+                proto,
+                job_id,
+                "page.saveSinglePdf",
+                t0,
+                page_number,
+                details={
+                    "outputBytes": os.path.getsize(page_out_path)
+                    if os.path.exists(page_out_path)
+                    else None,
+                },
+            )
             pages_translated += 1
 
+            t0 = stage_start(proto, job_id, "page.emitPageEvent", page_number)
             emit(
                 proto,
                 {
@@ -300,8 +842,23 @@ def translate_streaming(job, proto, model_path):
                     "file": page_out_path,
                 },
             )
+            stage_done(proto, job_id, "page.emitPageEvent", t0, page_number)
+            emit_stage(
+                proto,
+                job_id,
+                "page",
+                "completed",
+                page_number=page_number,
+                duration_ms=int((time.time() - page_started) * 1000),
+                details={
+                    "pageOrdinalInRun": pages_translated,
+                    "totalPagesInRun": total,
+                },
+            )
 
+    t = stage_start(proto, job_id, "cleanup.closePdfminer")
     device.close()
+    stage_done(proto, job_id, "cleanup.closePdfminer", t)
     timings["translateMs"] = int((time.time() - t_translate) * 1000)
     timings["yoloMs"] = int(yolo_total * 1000)
     timings["processPageMs"] = int(process_total * 1000)
@@ -309,11 +866,30 @@ def translate_streaming(job, proto, model_path):
     timings["pagesTranslated"] = pages_translated
     timings["sourcePageCount"] = page_count
 
+    t = stage_start(proto, job_id, "cleanup.closePdf")
     doc_en.close()
+    stage_done(proto, job_id, "cleanup.closePdf", t)
+    t = stage_start(proto, job_id, "cleanup.removePreparedPdf")
     try:
         os.remove(en_path)
+        removed_prepared = True
     except OSError:
-        pass
+        removed_prepared = False
+    stage_done(
+        proto,
+        job_id,
+        "cleanup.removePreparedPdf",
+        t,
+        details={"removed": removed_prepared},
+    )
+    emit_stage(
+        proto,
+        job_id,
+        "job",
+        "completed",
+        duration_ms=timings["translateMs"],
+        details=timings,
+    )
 
     return timings
 
@@ -364,16 +940,16 @@ def main():
         # macs: torch dominates (~70%), the CV stack pulled in by
         # doclayout_yolo (~20%), pdf2zh itself (~8%), then the model-path
         # check. The labels are user-facing so keep them plain.
-        emit_warming(proto, 1, 4, "加载 PyTorch")
+        emit_warming(proto, 1, 5, "加载 PyTorch")
         import torch
 
-        emit_warming(proto, 2, 4, "加载文档版面模型库")
+        emit_warming(proto, 2, 5, "加载文档版面模型库")
         import doclayout_yolo
 
-        emit_warming(proto, 3, 4, "加载 pdf2zh")
+        emit_warming(proto, 3, 5, "加载 pdf2zh")
         from pdf2zh import pdf2zh as cli
 
-        emit_warming(proto, 4, 4, "完成准备")
+        emit_warming(proto, 4, 5, "检查组件")
         cli.setup_log()
         model_path = os.environ.get("ROSETTA_DOCLAYOUT_MODEL")
         if not model_path or not Path(model_path).is_file():
@@ -392,6 +968,22 @@ def main():
         return 3
 
     mps_enabled, mps_reason = probe_and_enable_mps(torch, doclayout_yolo, model_path)
+    emit_warming(proto, 5, 5, "预热版面推理")
+    yolo_warmup = warm_yolo_predict(torch, model_path, mps_enabled=mps_enabled)
+    if yolo_warmup["status"] == "completed":
+        print(
+            "[pdf2zh-worker] yolo predict warmup completed "
+            f"({yolo_warmup['durationMs']} ms, "
+            f"device={yolo_warmup['device']}, imgsz={yolo_warmup['imgsz']})",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            "[pdf2zh-worker] yolo predict warmup failed "
+            f"({yolo_warmup['durationMs']} ms, "
+            f"device={yolo_warmup['device']}, reason={yolo_warmup.get('reason', '-')})",
+            file=sys.stderr,
+        )
 
     emit(
         proto,
@@ -400,6 +992,10 @@ def main():
             "importMs": int((time.time() - import_started) * 1000),
             "mps": mps_enabled,
             "mpsReason": mps_reason,
+            "yoloWarmupMs": yolo_warmup["durationMs"],
+            "yoloWarmupStatus": yolo_warmup["status"],
+            "yoloWarmupDevice": yolo_warmup["device"],
+            "yoloWarmupReason": yolo_warmup.get("reason"),
         },
     )
 

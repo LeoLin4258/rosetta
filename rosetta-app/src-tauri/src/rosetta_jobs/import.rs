@@ -1,9 +1,11 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    time::Instant,
 };
 
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tauri::AppHandle;
 
 use crate::rosetta_jobs::{
@@ -51,6 +53,7 @@ pub(crate) async fn import_pdf_skeleton(
     app: &AppHandle,
     source_path: &Path,
 ) -> Result<RosettaJobBundle, String> {
+    let import_started = Instant::now();
     let metadata =
         fs::metadata(source_path).map_err(|error| format!("无法读取文件信息: {error}"))?;
     if !metadata.is_file() {
@@ -129,6 +132,21 @@ pub(crate) async fn import_pdf_skeleton(
         translation_revisions: vec![],
     };
     write_job_bundle_pdf(app, &bundle, source_path)?;
+    let root = jobs_root(app)?;
+    let dir = checked_job_dir(&root, &bundle.job.id)?;
+    let source = pdf::source_state::read_pdf_source_metadata(&dir)
+        .ok()
+        .flatten();
+    pdf::diagnostics::append_timeline_event(
+        &dir,
+        pdf::diagnostics::PdfTimelineEvent::new(&bundle.job.id, "import", "import.completed")
+            .duration_ms(import_started.elapsed().as_millis() as u64)
+            .details(json!({
+                "sourceFilename": filename,
+                "fileBytes": metadata.len(),
+                "pageCount": source.as_ref().map(|source| source.page_count),
+            })),
+    );
 
     Ok(bundle)
 }

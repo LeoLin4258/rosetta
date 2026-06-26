@@ -6,12 +6,15 @@
 //! can target the real bottleneck. Counts, durations and page numbers only —
 //! never source or translated text.
 
-use std::path::Path;
+use std::{fs::OpenOptions, io::Write, path::Path};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 
 use crate::managed_pdf2zh::openai_shim::ShimRwkvMetricsSnapshot;
 use crate::rosetta_jobs::model::SCHEMA_VERSION;
+
+pub(crate) const PDF_TIMELINE_FILENAME: &str = "pdf-timeline.jsonl";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -121,6 +124,113 @@ pub(crate) fn write_profile(job_dir: &Path, profile: &PdfTranslationProfile) {
     }
 }
 
+/// Append one PDF lifecycle event to `<job_dir>/diagnostics/pdf-timeline.jsonl`.
+///
+/// The timeline is diagnostic-only and must not become a source of truth for
+/// job/page state. Keep details to counts, timings, IDs, and file sizes; never
+/// write source text, translated text, prompts, or model responses here.
+pub(crate) fn append_timeline_event(job_dir: &Path, event: PdfTimelineEvent) {
+    let dir = job_dir.join("diagnostics");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let path = dir.join(PDF_TIMELINE_FILENAME);
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
+    if let Ok(mut line) = serde_json::to_string(&event) {
+        line.push('\n');
+        let _ = file.write_all(line.as_bytes());
+        let _ = file.flush();
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PdfTimelineEvent {
+    pub schema_version: u32,
+    pub timestamp_ms: String,
+    pub job_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    pub phase: String,
+    pub event: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_lang: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page_number: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub details: Value,
+}
+
+impl PdfTimelineEvent {
+    pub(crate) fn new(job_id: &str, phase: &str, event: &str) -> Self {
+        Self {
+            schema_version: SCHEMA_VERSION,
+            timestamp_ms: crate::rosetta_jobs::path::timestamp_ms_string(),
+            job_id: job_id.to_string(),
+            run_id: None,
+            phase: phase.to_string(),
+            event: event.to_string(),
+            target_lang: None,
+            page_number: None,
+            duration_ms: None,
+            details: Value::Null,
+        }
+    }
+
+    pub(crate) fn run_id(mut self, run_id: &str) -> Self {
+        self.run_id = Some(run_id.to_string());
+        self
+    }
+
+    pub(crate) fn target_lang(mut self, target_lang: &str) -> Self {
+        self.target_lang = Some(target_lang.to_string());
+        self
+    }
+
+    pub(crate) fn page_number(mut self, page_number: u32) -> Self {
+        self.page_number = Some(page_number);
+        self
+    }
+
+    pub(crate) fn duration_ms(mut self, duration_ms: u64) -> Self {
+        self.duration_ms = Some(duration_ms);
+        self
+    }
+
+    pub(crate) fn details(mut self, details: Value) -> Self {
+        self.details = details;
+        self
+    }
+}
+
+pub(crate) fn rwkv_snapshot_details(snapshot: &ShimRwkvMetricsSnapshot) -> Value {
+    json!({
+        "requestCount": snapshot.request_count,
+        "failedRequestCount": snapshot.failed_request_count,
+        "totalRequestMs": snapshot.total_request_ms,
+        "averageRequestMs": snapshot.average_request_ms,
+        "maxRequestMs": snapshot.max_request_ms,
+        "totalInputChars": snapshot.total_input_chars,
+        "totalOutputChars": snapshot.total_output_chars,
+    })
+}
+
+pub(crate) fn rwkv_aggregate_details(aggregate: &RwkvAggregate) -> Value {
+    json!({
+        "requestCount": aggregate.request_count,
+        "failedRequestCount": aggregate.failed_request_count,
+        "totalRequestMs": aggregate.total_request_ms,
+        "averageRequestMs": aggregate.average_request_ms,
+        "maxRequestMs": aggregate.max_request_ms,
+        "totalInputChars": aggregate.total_input_chars,
+        "totalOutputChars": aggregate.total_output_chars,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,6 +273,41 @@ mod tests {
             assert!(
                 !json.contains(forbidden),
                 "profile JSON must not contain `{forbidden}`"
+            );
+        }
+    }
+
+    #[test]
+    fn timeline_event_json_contains_no_text_fields() {
+        let event = PdfTimelineEvent::new("job-y", "translation", "run.completed")
+            .run_id("run-x")
+            .target_lang("zh-CN")
+            .duration_ms(1200)
+            .details(json!({
+                "pagesRequested": 3,
+                "pagesTranslated": 3,
+                "rwkv": rwkv_aggregate_details(&RwkvAggregate {
+                    request_count: 2,
+                    failed_request_count: 0,
+                    total_request_ms: 900,
+                    average_request_ms: 450,
+                    max_request_ms: 500,
+                    total_input_chars: 100,
+                    total_output_chars: 80,
+                })
+            }));
+        let text = serde_json::to_string(&event).expect("serialize event");
+        assert!(text.contains("run.completed"));
+        for forbidden in [
+            "sourceText",
+            "translatedText",
+            "prompt",
+            "rawResponse",
+            "messages",
+        ] {
+            assert!(
+                !text.contains(forbidden),
+                "timeline JSON must not contain `{forbidden}`"
             );
         }
     }

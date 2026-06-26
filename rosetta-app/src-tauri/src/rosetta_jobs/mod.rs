@@ -9,6 +9,7 @@ use std::{
 };
 
 use serde::Serialize;
+use serde_json::json;
 use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_dialog::DialogExt;
 use tokio::sync::oneshot;
@@ -1199,7 +1200,32 @@ async fn translate_pdf_pages_inner(
         })
         .collect();
     let total_pages_to_process = pages_to_process.len() as u32;
+    diagnostics::append_timeline_event(
+        &dir,
+        diagnostics::PdfTimelineEvent::new(job_id, "translation", "translation.requested")
+            .target_lang(target_lang)
+            .details(json!({
+                "pageSelection": page_selection,
+                "sourcePageCount": page_count,
+                "selectedPageCount": pages.len(),
+                "pagesToProcess": total_pages_to_process,
+                "force": force,
+                "mode": mode,
+                "providerId": provider_id.as_deref().unwrap_or("default"),
+                "sourceLang": source_lang.clone(),
+            })),
+    );
     if pages_to_process.is_empty() {
+        diagnostics::append_timeline_event(
+            &dir,
+            diagnostics::PdfTimelineEvent::new(job_id, "translation", "translation.skipped")
+                .target_lang(target_lang)
+                .details(json!({
+                    "reason": "all-requested-pages-already-translated",
+                    "pageSelection": page_selection,
+                    "selectedPageCount": pages.len(),
+                })),
+        );
         sync_pdf_page_translation_summary(app, job_id, target_lang, &state)?;
         return Ok(state);
     }
@@ -1219,6 +1245,19 @@ async fn translate_pdf_pages_inner(
         cancel_state.session_id().to_string(),
     );
     run_state::write_pdf_run_state(&dir, &run)?;
+    diagnostics::append_timeline_event(
+        &dir,
+        diagnostics::PdfTimelineEvent::new(job_id, "translation", "run.started")
+            .run_id(&run_id)
+            .target_lang(target_lang)
+            .details(json!({
+                "mode": mode,
+                "requestedPages": pages_to_process.clone(),
+                "requestedPageCount": total_pages_to_process,
+                "chunkSize": run_state::PDF_RUN_CHUNK_SIZE,
+                "ownerSessionId": cancel_state.session_id(),
+            })),
+    );
 
     let mut profile = diagnostics::new_profile(
         &run_id,
@@ -1239,6 +1278,35 @@ async fn translate_pdf_pages_inner(
         if rwkv.request_count > 0 {
             profile.rwkv = Some(rwkv.clone());
         }
+        let event_name = match status {
+            "completed" => "run.completed",
+            "cancelled" => "run.cancelled",
+            "failed" => "run.failed",
+            _ => "run.finished",
+        };
+        diagnostics::append_timeline_event(
+            &dir,
+            diagnostics::PdfTimelineEvent::new(job_id, "translation", event_name)
+                .run_id(&profile.run_id)
+                .target_lang(&profile.target_lang)
+                .duration_ms(profile.durations_ms.total)
+                .details(json!({
+                    "status": status,
+                    "sourceLang": profile.source_lang.clone(),
+                    "pageSelection": profile.page_selection.clone(),
+                    "pagesRequested": profile.pages_requested,
+                    "pagesTranslated": profile.pages_translated,
+                    "pagesFailed": profile.pages_failed,
+                    "invocationCount": profile.invocation_count,
+                    "durationsMs": {
+                        "total": profile.durations_ms.total,
+                        "pdf2zhWarmup": profile.durations_ms.pdf2zh_warmup,
+                        "pdf2zhProcess": profile.durations_ms.pdf2zh_process,
+                        "pageArtifactAssembly": profile.durations_ms.page_artifact_assembly,
+                    },
+                    "rwkv": diagnostics::rwkv_aggregate_details(rwkv),
+                })),
+        );
         diagnostics::write_profile(&dir, profile);
     };
 
@@ -1283,6 +1351,20 @@ async fn translate_pdf_pages_inner(
         run.current_chunk = chunk_pages.clone();
         run.touch_lease();
         run_state::write_pdf_run_state(&dir, &run)?;
+        let chunk_started = std::time::Instant::now();
+        diagnostics::append_timeline_event(
+            &dir,
+            diagnostics::PdfTimelineEvent::new(job_id, "translation", "chunk.started")
+                .run_id(&run_id)
+                .target_lang(target_lang)
+                .details(json!({
+                    "chunkIndex": chunk_index,
+                    "pages": chunk_pages.clone(),
+                    "pageCount": chunk_pages.len(),
+                    "completedBefore": processed_before,
+                    "totalPagesToProcess": total_pages_to_process,
+                })),
+        );
         for page_number in &chunk_pages {
             emit_pdf_page_progress_for_run(
                 app,
@@ -1322,6 +1404,9 @@ async fn translate_pdf_pages_inner(
 
             match outcome {
                 Ok(_) => {
+                    let output_bytes = fs::metadata(&target_path)
+                        .map(|metadata| metadata.len())
+                        .ok();
                     page_state::upsert_pdf_page_with_run(
                         state_for_cb,
                         page_number,
@@ -1341,8 +1426,27 @@ async fn translate_pdf_pages_inner(
                             status: "translated".to_string(),
                         },
                     );
+                    diagnostics::append_timeline_event(
+                        &dir_for_cb,
+                        diagnostics::PdfTimelineEvent::new(
+                            &job_id_for_cb,
+                            "translation",
+                            "page.committed",
+                        )
+                        .run_id(&run_id_for_cb)
+                        .target_lang(&target_lang_for_cb)
+                        .page_number(page_number)
+                        .details(json!({
+                            "translatedPdfPath": page_state::pdf_page_relative_path_for_lang(
+                                &target_lang_for_cb,
+                                page_number,
+                            ),
+                            "outputBytes": output_bytes,
+                        })),
+                    );
                 }
                 Err(error) => {
+                    let error_for_timeline = error.clone();
                     page_state::upsert_pdf_page_with_run(
                         state_for_cb,
                         page_number,
@@ -1362,8 +1466,44 @@ async fn translate_pdf_pages_inner(
                             status: "failed".to_string(),
                         },
                     );
+                    diagnostics::append_timeline_event(
+                        &dir_for_cb,
+                        diagnostics::PdfTimelineEvent::new(
+                            &job_id_for_cb,
+                            "translation",
+                            "page.commitFailed",
+                        )
+                        .run_id(&run_id_for_cb)
+                        .target_lang(&target_lang_for_cb)
+                        .page_number(page_number)
+                        .details(json!({
+                            "error": error_for_timeline,
+                        })),
+                    );
                 }
             }
+        };
+
+        let dir_for_stage = dir.clone();
+        let job_id_for_stage = job_id.to_string();
+        let target_lang_for_stage = target_lang.to_string();
+        let run_id_for_stage = run_id.clone();
+        let mut on_worker_stage = move |stage: crate::managed_pdf2zh::worker::WorkerStageEvent| {
+            let mut event =
+                diagnostics::PdfTimelineEvent::new(&job_id_for_stage, "worker", "worker.stage")
+                    .run_id(&run_id_for_stage)
+                    .target_lang(&target_lang_for_stage)
+                    .details(json!({
+                        "stage": stage.stage,
+                        "status": stage.status,
+                        "pageNumber": stage.page_number,
+                        "durationMs": stage.duration_ms,
+                        "stageDetails": stage.details,
+                    }));
+            if let Some(duration_ms) = stage.duration_ms {
+                event = event.duration_ms(duration_ms);
+            }
+            diagnostics::append_timeline_event(&dir_for_stage, event);
         };
 
         let invoke_result = pdf2zh_invoke::invoke_pdf2zh(
@@ -1386,6 +1526,7 @@ async fn translate_pdf_pages_inner(
             },
             cancel_rx,
             Some(&mut on_page_done),
+            Some(&mut on_worker_stage),
         )
         .await;
 
@@ -1398,6 +1539,20 @@ async fn translate_pdf_pages_inner(
                 profile.durations_ms.pdf2zh_warmup += output.warmup_ms;
                 profile.durations_ms.pdf2zh_process += output.process_ms;
                 translated_chars_offset += output.rwkv_metrics.total_output_chars;
+                diagnostics::append_timeline_event(
+                    &dir,
+                    diagnostics::PdfTimelineEvent::new(job_id, "translation", "chunk.completed")
+                        .run_id(&run_id)
+                        .target_lang(target_lang)
+                        .duration_ms(chunk_started.elapsed().as_millis() as u64)
+                        .details(json!({
+                            "chunkIndex": chunk_index,
+                            "pages": chunk_pages.clone(),
+                            "warmupMs": output.warmup_ms,
+                            "processMs": output.process_ms,
+                            "rwkv": diagnostics::rwkv_snapshot_details(&output.rwkv_metrics),
+                        })),
+                );
                 rwkv_aggregate.add(&output.rwkv_metrics);
                 if force && output.rwkv_metrics.request_count == 0 {
                     failure_message = Some(
@@ -1407,10 +1562,34 @@ async fn translate_pdf_pages_inner(
                 }
             }
             Err(formats::pdf::errors::PdfError::Cancelled) => {
+                diagnostics::append_timeline_event(
+                    &dir,
+                    diagnostics::PdfTimelineEvent::new(job_id, "translation", "chunk.cancelled")
+                        .run_id(&run_id)
+                        .target_lang(target_lang)
+                        .duration_ms(chunk_started.elapsed().as_millis() as u64)
+                        .details(json!({
+                            "chunkIndex": chunk_index,
+                            "pages": chunk_pages.clone(),
+                        })),
+                );
                 cancelled = true;
             }
             Err(error) => {
-                failure_message = Some(error.user_message());
+                let message = error.user_message();
+                diagnostics::append_timeline_event(
+                    &dir,
+                    diagnostics::PdfTimelineEvent::new(job_id, "translation", "chunk.failed")
+                        .run_id(&run_id)
+                        .target_lang(target_lang)
+                        .duration_ms(chunk_started.elapsed().as_millis() as u64)
+                        .details(json!({
+                            "chunkIndex": chunk_index,
+                            "pages": chunk_pages.clone(),
+                            "error": message.clone(),
+                        })),
+                );
+                failure_message = Some(message);
             }
         }
 
@@ -1884,6 +2063,7 @@ pub async fn generate_rosetta_translated_pdf(
             translated_chars_offset: 0,
         },
         cancel_rx,
+        None,
         None, // no streaming callback — this path is whole-doc only
     )
     .await;

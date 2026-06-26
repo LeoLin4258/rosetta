@@ -103,6 +103,9 @@ pub(crate) async fn invoke_pdf2zh(
     options: Pdf2zhInvokeOptions,
     cancel_rx: oneshot::Receiver<()>,
     on_page_done: Option<&mut (dyn FnMut(u32, PathBuf) + Send)>,
+    on_worker_stage: Option<
+        &mut (dyn FnMut(crate::managed_pdf2zh::worker::WorkerStageEvent) + Send),
+    >,
 ) -> Result<Pdf2zhOutput, PdfError> {
     let page_progress = options.page_progress;
     let pages_done = Arc::new(AtomicU32::new(0));
@@ -279,6 +282,7 @@ pub(crate) async fn invoke_pdf2zh(
             worker_payload,
             &mut on_stderr,
             on_page_done,
+            on_worker_stage,
             &mut cancel_rx,
         )
         .await

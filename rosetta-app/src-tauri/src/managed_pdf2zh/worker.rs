@@ -244,6 +244,14 @@ struct WorkerEvent {
     mps: Option<bool>,
     #[serde(default, rename = "mpsReason")]
     mps_reason: Option<String>,
+    #[serde(default, rename = "yoloWarmupMs")]
+    yolo_warmup_ms: Option<u64>,
+    #[serde(default, rename = "yoloWarmupStatus")]
+    yolo_warmup_status: Option<String>,
+    #[serde(default, rename = "yoloWarmupDevice")]
+    yolo_warmup_device: Option<String>,
+    #[serde(default, rename = "yoloWarmupReason")]
+    yolo_warmup_reason: Option<String>,
     /// 1-based absolute page number announced after a single page finishes
     /// translating. Paired with `file` (the single-page translated PDF
     /// written by the worker).
@@ -264,6 +272,23 @@ struct WorkerEvent {
     /// stderr for the diagnostics log; not parsed structurally.
     #[serde(default)]
     timings: Option<serde_json::Value>,
+    #[serde(default)]
+    stage: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default, rename = "durationMs")]
+    duration_ms: Option<u64>,
+    #[serde(default)]
+    details: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct WorkerStageEvent {
+    pub page_number: Option<u32>,
+    pub stage: String,
+    pub status: String,
+    pub duration_ms: Option<u64>,
+    pub details: Option<serde_json::Value>,
 }
 
 pub struct WorkerProcess {
@@ -502,11 +527,19 @@ async fn spawn_worker(app: &AppHandle) -> Result<WorkerProcess, String> {
                         }
                         "ready" => {
                             let import_ms = event.import_ms.unwrap_or(0);
+                            let yolo_warmup_ms = event
+                                .yolo_warmup_ms
+                                .map(|value| value.to_string())
+                                .unwrap_or_else(|| "-".to_string());
                             eprintln!(
-                                "[pdf2zh-worker] ready (import {} ms, mps={}, reason={})",
+                                "[pdf2zh-worker] ready (import {} ms, mps={}, reason={}, yoloWarmupStatus={}, yoloWarmupMs={}, yoloWarmupDevice={}, yoloWarmupReason={})",
                                 import_ms,
                                 event.mps.unwrap_or(false),
-                                event.mps_reason.as_deref().unwrap_or("-")
+                                event.mps_reason.as_deref().unwrap_or("-"),
+                                event.yolo_warmup_status.as_deref().unwrap_or("-"),
+                                yolo_warmup_ms,
+                                event.yolo_warmup_device.as_deref().unwrap_or("-"),
+                                event.yolo_warmup_reason.as_deref().unwrap_or("-")
                             );
                             return Ok(import_ms);
                         }
@@ -589,6 +622,7 @@ impl WorkerProcess {
         mut payload: serde_json::Value,
         on_stderr: &mut (dyn FnMut(&str) + Send),
         on_page: Option<&mut (dyn FnMut(u32, PathBuf) + Send)>,
+        on_stage: Option<&mut (dyn FnMut(WorkerStageEvent) + Send)>,
         cancel_rx: &mut oneshot::Receiver<()>,
     ) -> WorkerTranslateOutcome {
         self.next_job += 1;
@@ -606,6 +640,7 @@ impl WorkerProcess {
         }
 
         let mut on_page = on_page;
+        let mut on_stage = on_stage;
         let mut repeated_rwkv_error_count = 0usize;
         let mut last_rwkv_error = String::new();
         loop {
@@ -622,6 +657,19 @@ impl WorkerProcess {
                                 (on_page.as_deref_mut(), event.page_number, event.file)
                             {
                                 cb(page, PathBuf::from(file));
+                            }
+                        }
+                        "stage" if event.id.as_deref() == Some(job_id.as_str()) => {
+                            if let (Some(cb), Some(stage)) =
+                                (on_stage.as_deref_mut(), event.stage)
+                            {
+                                cb(WorkerStageEvent {
+                                    page_number: event.page_number,
+                                    stage,
+                                    status: event.status.unwrap_or_else(|| "point".to_string()),
+                                    duration_ms: event.duration_ms,
+                                    details: event.details,
+                                });
                             }
                         }
                         "done" if event.id.as_deref() == Some(job_id.as_str()) => {
@@ -703,6 +751,7 @@ pub(crate) async fn translate_via_worker(
     payload: serde_json::Value,
     on_stderr: &mut (dyn FnMut(&str) + Send),
     on_page: Option<&mut (dyn FnMut(u32, PathBuf) + Send)>,
+    on_stage: Option<&mut (dyn FnMut(WorkerStageEvent) + Send)>,
     cancel_rx: &mut oneshot::Receiver<()>,
 ) -> WorkerTranslateOutcome {
     let state = app.state::<WorkerState>();
@@ -717,7 +766,7 @@ pub(crate) async fn translate_via_worker(
     let worker = guard.as_mut().expect("worker present after ensure");
     set_worker_status(app, "translating", None, None);
     let outcome = worker
-        .run_translate(payload, on_stderr, on_page, cancel_rx)
+        .run_translate(payload, on_stderr, on_page, on_stage, cancel_rx)
         .await;
 
     if matches!(
