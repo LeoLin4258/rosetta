@@ -34,6 +34,17 @@ export type ReleaseNote = {
  * appearing in `package.json` (e.g. `"0.1.0-beta.8"`), not semver tuples.
  */
 export const RELEASE_NOTES: Record<string, ReleaseNote> = {
+  "0.1.0-beta.18": {
+    version: "0.1.0-beta.18",
+    highlights: [
+      "Windows 本地 PDF 翻译默认使用更大的 llama.cpp 上下文，减少长页面译文被截断",
+      "llama.cpp 返回截断、空译文或达到生成上限时会被判为失败，不再静默接受不完整译文",
+      "PDF 翻译会按本机运行时自动选择更稳的分块策略，并对失败分块做更细粒度重试",
+      "短引用片段会直接保留，减少本地模型在极短文本上重复生成导致的失败",
+      "首次安装失败时可复制诊断信息，便于排查下载源、运行时或 PDF 组件问题",
+      "安装下载源优先选择大陆可访问镜像，网络排序逻辑更直接",
+    ],
+  },
   "0.1.0-beta.17": {
     version: "0.1.0-beta.17",
     highlights: [
