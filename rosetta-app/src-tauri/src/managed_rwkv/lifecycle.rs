@@ -212,6 +212,8 @@ pub async fn start_sidecar(
         } else {
             &[None]
         };
+    let llama_cpp_settings =
+        crate::rwkv_providers::llama_cpp_chat::managed_runtime_settings_from_env();
 
     let mut last_detail = String::new();
     for (attempt, gpu_layers) in gpu_layers_attempts.iter().enumerate() {
@@ -229,6 +231,7 @@ pub async fn start_sidecar(
             &model_path,
             port,
             *gpu_layers,
+            llama_cpp_settings,
         );
         let log = open_log_file(&log_file).map_err(|error| {
             let msg = format!("无法打开运行时日志: {error}");
@@ -523,6 +526,7 @@ fn build_command_args(
     model_path: &Path,
     port: u16,
     gpu_layers_override: Option<&str>,
+    llama_cpp_settings: crate::rwkv_providers::llama_cpp_chat::ManagedLlamaCppRuntimeSettings,
 ) -> Vec<String> {
     if profile.launch_kind == RuntimeLaunchKind::LightningCuda {
         let tokenizer_path = tokenizer_path.expect("lightning profile requires tokenizer");
@@ -550,11 +554,11 @@ fn build_command_args(
             "--alias".to_string(),
             profile.model_name_arg.to_string(),
             "--ctx-size".to_string(),
-            "4096".to_string(),
+            llama_cpp_settings.server_ctx_size.to_string(),
             "--gpu-layers".to_string(),
             gpu_layers.to_string(),
             "--parallel".to_string(),
-            crate::rwkv_providers::llama_cpp_chat::DEFAULT_PARALLEL_REQUESTS.to_string(),
+            llama_cpp_settings.parallel_requests.to_string(),
         ];
         if gpu_layers_override.is_some() {
             // --device none fully disables Vulkan backend initialization,
@@ -990,6 +994,11 @@ mod tests {
     use crate::managed_rwkv::profile::{
         MACOS_ARM64_WEBRWKV, WINDOWS_AMD64_CUDA, WINDOWS_AMD64_LLAMACPP_VULKAN,
     };
+    use crate::rwkv_providers::llama_cpp_chat::ManagedLlamaCppRuntimeSettings;
+
+    fn default_llama_cpp_settings() -> ManagedLlamaCppRuntimeSettings {
+        ManagedLlamaCppRuntimeSettings::default()
+    }
 
     #[test]
     fn pick_ephemeral_port_returns_high_port() {
@@ -1006,6 +1015,7 @@ mod tests {
             &PathBuf::from("/data/model.prefab"),
             8765,
             None,
+            default_llama_cpp_settings(),
         );
         // Spot-check the critical args that Phase 0 hand-validated.
         assert_eq!(args[0], "/bin/rwkv-server");
@@ -1029,6 +1039,7 @@ mod tests {
             &PathBuf::from(r"C:\models\translate.pth"),
             8765,
             None,
+            default_llama_cpp_settings(),
         );
         assert!(args.iter().any(|arg| arg == "--model-path"));
         assert!(args.iter().any(|arg| arg == "--vocab-path"));
@@ -1046,19 +1057,42 @@ mod tests {
             &PathBuf::from(r"C:\models\translate.gguf"),
             8765,
             None,
+            default_llama_cpp_settings(),
         );
         assert_eq!(args[0], r"C:\runtime\llama-server.exe");
         assert!(args.iter().any(|arg| arg == "--model"));
         assert!(args.iter().any(|arg| arg == "--alias"));
         assert!(args.iter().any(|arg| arg == "rwkv-translate"));
         assert!(args.iter().any(|arg| arg == "--ctx-size"));
-        assert!(args.iter().any(|arg| arg == "4096"));
+        assert!(args.iter().any(|arg| arg == "8192"));
         assert!(args.iter().any(|arg| arg == "--gpu-layers"));
         assert!(args.iter().any(|arg| arg == "auto"));
         assert!(args.iter().any(|arg| arg == "--parallel"));
+        assert!(args.iter().any(|arg| arg == "16"));
         assert!(!args.iter().any(|arg| arg == "--tokenizer"));
         assert!(!args.iter().any(|arg| arg == "--device"));
         assert!(!args.iter().any(|arg| arg == "--backend"));
+    }
+
+    #[test]
+    fn llama_cpp_command_args_accept_runtime_experiment_settings() {
+        let args = build_command_args(
+            &WINDOWS_AMD64_LLAMACPP_VULKAN,
+            &PathBuf::from(r"C:\runtime\llama-server.exe"),
+            None,
+            &PathBuf::from(r"C:\models\translate.gguf"),
+            8765,
+            None,
+            ManagedLlamaCppRuntimeSettings {
+                server_ctx_size: 16384,
+                parallel_requests: 8,
+            },
+        );
+
+        let ctx_idx = args.iter().position(|arg| arg == "--ctx-size").unwrap();
+        assert_eq!(args[ctx_idx + 1], "16384");
+        let parallel_idx = args.iter().position(|arg| arg == "--parallel").unwrap();
+        assert_eq!(args[parallel_idx + 1], "8");
     }
 
     #[test]
@@ -1070,6 +1104,7 @@ mod tests {
             &PathBuf::from(r"C:\models\translate.gguf"),
             8765,
             Some("0"),
+            default_llama_cpp_settings(),
         );
         let idx = args.iter().position(|arg| arg == "--gpu-layers").unwrap();
         assert_eq!(args[idx + 1], "0");

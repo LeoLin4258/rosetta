@@ -16,10 +16,61 @@ const POLL_INTERVAL_MS: u64 = 50;
 const MAX_TOKENS_PER_SEGMENT: u32 = 1024;
 
 pub const DEFAULT_PARALLEL_REQUESTS: usize = 16;
+/// Total llama-server context for all slots. llama.cpp divides this across
+/// `--parallel` slots, so 8192 / 16 gives each concurrent PDF request about
+/// 512 tokens instead of the previous 256-token slot that truncated outputs.
+pub const DEFAULT_SERVER_CTX_SIZE: usize = 8192;
+pub const MANAGED_SERVER_CTX_SIZE_ENV: &str = "ROSETTA_MANAGED_LLAMA_CPP_CTX_SIZE";
+pub const MANAGED_PARALLEL_REQUESTS_ENV: &str = "ROSETTA_MANAGED_LLAMA_CPP_PARALLEL";
 pub const PROBE_TEXTS: [&str; 2] = [
     "After a blissful two weeks, Jane encounters Rochester in the gardens.",
     "That night, a bolt of lightning splits the same chestnut tree.",
 ];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ManagedLlamaCppRuntimeSettings {
+    pub server_ctx_size: usize,
+    pub parallel_requests: usize,
+}
+
+impl Default for ManagedLlamaCppRuntimeSettings {
+    fn default() -> Self {
+        Self {
+            server_ctx_size: DEFAULT_SERVER_CTX_SIZE,
+            parallel_requests: DEFAULT_PARALLEL_REQUESTS,
+        }
+    }
+}
+
+pub fn managed_runtime_settings_from_env() -> ManagedLlamaCppRuntimeSettings {
+    let defaults = ManagedLlamaCppRuntimeSettings::default();
+    ManagedLlamaCppRuntimeSettings {
+        server_ctx_size: managed_runtime_usize_env(
+            MANAGED_SERVER_CTX_SIZE_ENV,
+            defaults.server_ctx_size,
+        ),
+        parallel_requests: managed_runtime_usize_env(
+            MANAGED_PARALLEL_REQUESTS_ENV,
+            defaults.parallel_requests,
+        ),
+    }
+}
+
+fn managed_runtime_usize_env(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .as_deref()
+        .and_then(parse_positive_usize_override)
+        .unwrap_or(default)
+}
+
+fn parse_positive_usize_override(raw: &str) -> Option<usize> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    trimmed.parse::<usize>().ok().filter(|value| *value > 0)
+}
 
 #[derive(Debug, Clone)]
 pub struct LlamaCppChatConfig {
@@ -39,6 +90,10 @@ struct CompletionRequest {
 struct CompletionResponse {
     #[serde(default)]
     content: String,
+    #[serde(default)]
+    truncated: bool,
+    #[serde(default)]
+    stop_type: Option<String>,
 }
 
 pub async fn translate_batch(
@@ -303,6 +358,13 @@ fn parse_translation(response_text: &str) -> Result<String, String> {
     let response: CompletionResponse = serde_json::from_str(response_text)
         .map_err(|error| format!("JSON parse failed: {error}"))?;
     let content = response.content.trim().to_string();
+    if response.truncated || response.stop_type.as_deref() == Some("limit") {
+        return Err(format!(
+            "llama.cpp completion was truncated (truncated={}, stop_type={})",
+            response.truncated,
+            response.stop_type.as_deref().unwrap_or("unknown")
+        ));
+    }
     if content.is_empty() {
         return Err("completion returned empty content".to_string());
     }
@@ -501,6 +563,47 @@ mod tests {
         });
         let error = parse_translation(&response.to_string()).expect_err("should reject");
         assert!(error.contains("empty content"));
+    }
+
+    #[test]
+    fn managed_runtime_override_parser_accepts_positive_numbers() {
+        assert_eq!(parse_positive_usize_override("16384"), Some(16384));
+        assert_eq!(parse_positive_usize_override(" 8 "), Some(8));
+    }
+
+    #[test]
+    fn managed_runtime_override_parser_rejects_empty_zero_and_invalid_values() {
+        assert_eq!(parse_positive_usize_override(""), None);
+        assert_eq!(parse_positive_usize_override("0"), None);
+        assert_eq!(parse_positive_usize_override("-1"), None);
+        assert_eq!(parse_positive_usize_override("eight"), None);
+    }
+
+    #[test]
+    fn parse_translation_rejects_truncated_completion() {
+        let response = json!({
+            "content": "半截译文",
+            "truncated": true,
+            "stop_type": "limit"
+        });
+
+        let error = parse_translation(&response.to_string()).expect_err("should reject");
+
+        assert!(error.contains("truncated=true"));
+        assert!(error.contains("stop_type=limit"));
+    }
+
+    #[test]
+    fn parse_translation_rejects_limit_stop_type() {
+        let response = json!({
+            "content": "半截译文",
+            "truncated": false,
+            "stop_type": "limit"
+        });
+
+        let error = parse_translation(&response.to_string()).expect_err("should reject");
+
+        assert!(error.contains("stop_type=limit"));
     }
 
     #[test]

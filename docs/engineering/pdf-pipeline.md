@@ -110,6 +110,12 @@ Diagnostics:
   for PDF translation. This remains the compact summary for one translation
   run; the timeline is the ordered event log used to reconstruct the chain.
 
+The developer validation script `rosetta-app/scripts/check-pdf-translation-run.mjs`
+reads a profile, page state, timeline, and `rwkv-io-debug.jsonl` for one run.
+It exits non-zero when requested pages are not translated, any completion has
+empty output, any completion has `truncated=true`, any completion has
+`stop_type=limit`, or an optional total-duration threshold is exceeded.
+
 Diagnostic files are not job state. Repair, preview, export, and resume logic
 must continue to use `pdf_source.json`, `pdf_pages.<targetLang>.json`,
 `pdf_run.<targetLang>.json`, and page artifacts as the source of truth.
@@ -117,11 +123,39 @@ must continue to use `pdf_source.json`, `pdf_pages.<targetLang>.json`,
 ## PDF Translation Concurrency
 
 For local OpenAI-shim providers that do not report a supported batch size,
-Rosetta uses a default PDF paragraph batch width of 8. The same value is passed
-to the persistent worker as pdf2zh's `thread` count. Timeline diagnostics record
-the effective thread count in the worker `job.started` stage and record every
-`page.processPage.translateRequest`, making it possible to see whether a page
-waited on one, two, or more TextConverter translation waves.
+Rosetta uses a default PDF paragraph batch width of 8. The Windows llama.cpp
+Vulkan provider is the exception: by default it follows the managed
+llama.cpp parallel setting, currently `16`, so the small 0.4B model can keep
+all llama-server slots busy. The chosen batch width is also passed to the
+persistent worker as pdf2zh's `thread` count, capped by the PDF worker ceiling.
+
+The managed Windows llama.cpp runtime defaults to `--parallel 16` and
+`--ctx-size 8192`, giving each concurrent slot about 512 context tokens. This
+keeps the 16-way throughput target while avoiding the previous 256-token slot
+that caused `truncated=true` / `stop_type=limit` completions on long PDF text
+blocks. Local benchmark runs can override these launch and scheduling defaults
+with:
+
+```txt
+ROSETTA_MANAGED_LLAMA_CPP_CTX_SIZE=<tokens>
+ROSETTA_MANAGED_LLAMA_CPP_PARALLEL=<slots>
+```
+
+The `PARALLEL` override also caps llama.cpp client-side batching in both the
+PDF OpenAI shim and the regular text translation scheduler, keeping benchmark
+experiments aligned with llama-server's slot count.
+
+The llama.cpp PDF shim uses a more conservative chunk budget than the generic
+PDF shim path. Body/caption chunks target about 56 prompt tokens, and
+reference chunks target about 42 prompt tokens, leaving most of the 512-token
+slot for generated Chinese output. If a llama.cpp batch still fails, the shim
+retries through a smaller split backstop before surfacing the failure to
+pdf2zh.
+
+Timeline diagnostics record the effective thread count in the worker
+`job.started` stage and record every `page.processPage.translateRequest`,
+making it possible to see whether a page waited on one, two, or more
+TextConverter translation waves.
 
 ## Worker Prewarm
 
@@ -147,6 +181,12 @@ the same behavior as before; the ready log records `yoloWarmupStatus`,
 - `pending`: no committed translated page artifact.
 - `translated`: `translatedPdfPath` points to a valid page PDF.
 - `failed`: the last attempt for this page failed and can be retried.
+
+A page/run must not be finalized as successful when the PDF shim reports an
+unrecovered RWKV failure. If a pdf2zh invocation completes but its final shim
+metrics include `failedRequestCount > 0`, Rosetta clears any page artifacts
+from that invocation and marks the affected pages/run as failed instead of
+keeping a misleading translated status.
 
 The UI may receive effective statuses:
 
