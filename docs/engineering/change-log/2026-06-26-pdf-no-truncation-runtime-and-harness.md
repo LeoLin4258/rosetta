@@ -13,11 +13,13 @@ partial llama.cpp output.
 
 ## Changes
 
-- Raised the managed llama.cpp server context from `4096` to `8192` while
+- Raised the managed llama.cpp server context from `4096` to `8192`, then to
+  the current strict-correct default `16384`, while
   keeping `--parallel 16`.
-  - Expected effective slot context: about `512` tokens per concurrent request.
-  - This keeps the 16-way throughput target while giving long PDF chunks more
-    output room.
+  - Expected effective slot context at the current default: about `1024`
+    tokens per concurrent request.
+  - This keeps the 16-way throughput target while giving PDF chunks enough
+    output room for the strict no-truncation baseline.
 - Kept generic PDF OpenAI-shim providers at batch width `8`, but raised the
   llama.cpp PDF shim path to batch width `16`.
   - This matches the replay benchmark that showed client concurrency 16 nearly
@@ -41,6 +43,45 @@ partial llama.cpp output.
   - the parallel override also caps PDF shim batching/thread count and regular
     llama.cpp text translation batching so benchmark experiments are not a
     mixed server/client concurrency configuration.
+- Added a llama.cpp `/completion` generation profile for translation:
+  - default requests now use lower-entropy sampling, repetition control, and
+    language-label stop strings instead of only `temperature: 1.0`;
+  - benchmark experiments can override `temperature`, `top_k`, `top_p`,
+    `min_p`, `repeat_penalty`, `repeat_last_n`, and `n_predict` through
+    `ROSETTA_LLAMA_CPP_*` env vars;
+  - the strict checker still treats `truncated=true` and `stop_type=limit` as
+    failures, so the profile does not mask partial output.
+- Added an adaptive llama.cpp PDF shim chunk profile for the successful
+  `16384/16` correctness baseline.
+  - The managed runtime default is now `16384/16`, so packaged app users get
+    the strict-correct operating point without setting env vars.
+  - Effective slot context `>=1024` uses moderately wider body/caption chunks
+    while keeping references conservative: body `72/88`, caption `72/88`,
+    reference `42/56` target/hard prompt tokens.
+  - A wider `112/144`, `96/128`, `84/112` profile was tested against a real
+    10-page run and reduced raw completion count, but it reintroduced two raw
+    `truncated=true` / `stop_type=limit` completions and made the total slower
+    through split retries.
+  - A middle `72/88`, `72/88`, `56/72` profile was also tested and still
+    reintroduced two raw reference-list failures, including one tiny 24-char
+    reference fragment that ran to `n_predict`.
+  - Very short `[N] ...` reference fragments are now preserved by deterministic
+    passthrough instead of being sent to llama.cpp.
+  - The resulting profile passed the strict raw-completion checker in
+    `run-pdf-1782723901909`: `304` completions, `0` provider failures, `0`
+    empty outputs, `0` raw `truncated=true`, and `0` raw `stop_type=limit`.
+  - A body/caption `80/96` env sweep also passed strict correctness and reduced
+    completions to `288`, but total runtime regressed to `132397 ms`; it should
+    not replace the default `72/88` profile.
+  - Split retry backstops remain smaller (`36`, then `24`) and strict raw
+    `truncated=true` / `stop_type=limit` rejection is unchanged.
+  - Local benchmark sweeps can override those PDF shim budgets with
+    `ROSETTA_PDF_SHIM_LLAMA_BODY_TARGET`,
+    `ROSETTA_PDF_SHIM_LLAMA_BODY_HARD`,
+    `ROSETTA_PDF_SHIM_LLAMA_CAPTION_TARGET`,
+    `ROSETTA_PDF_SHIM_LLAMA_CAPTION_HARD`,
+    `ROSETTA_PDF_SHIM_LLAMA_REFERENCE_TARGET`, and
+    `ROSETTA_PDF_SHIM_LLAMA_REFERENCE_HARD`.
 - Added `rosetta-app/scripts/check-pdf-translation-run.mjs`.
   - Reads a PDF profile, page state, timeline, and `rwkv-io-debug.jsonl`.
   - Exits non-zero if requested pages are not translated, any completion has
@@ -161,6 +202,27 @@ This removed `truncated=true`, but one raw completion still stopped with
 `stop_type=limit` after hitting the request `n_predict=1024` cap. Its no-text
 shape looked like repetition runaway on a small 120-character input, and the
 split backstop recovered it before page finalization.
+
+The follow-up generation-profile code pass was validated locally with:
+
+```powershell
+cd rosetta-app
+node --check scripts/check-pdf-translation-run.mjs
+.\node_modules\.bin\tsc.CMD --noEmit
+
+cd src-tauri
+cargo fmt -- --check
+cargo check
+cargo test llama_cpp
+cargo test managed_rwkv::lifecycle
+cargo test rosetta_jobs
+```
+
+`pnpm typecheck` was attempted, but pnpm stopped before TypeScript with
+`ERR_PNPM_IGNORED_BUILDS` for dependency build approval. Direct local
+`tsc --noEmit` passed without changing pnpm approval state.
+
+No real PDF benchmark has been recorded yet for the new generation defaults.
 
 ## Follow-Up
 

@@ -130,11 +130,12 @@ all llama-server slots busy. The chosen batch width is also passed to the
 persistent worker as pdf2zh's `thread` count, capped by the PDF worker ceiling.
 
 The managed Windows llama.cpp runtime defaults to `--parallel 16` and
-`--ctx-size 8192`, giving each concurrent slot about 512 context tokens. This
-keeps the 16-way throughput target while avoiding the previous 256-token slot
-that caused `truncated=true` / `stop_type=limit` completions on long PDF text
-blocks. Local benchmark runs can override these launch and scheduling defaults
-with:
+`--ctx-size 16384`, giving each concurrent slot about 1024 context tokens. This
+is the current strict-correct PDF operating point for the Windows llama.cpp
+Vulkan runtime: it keeps the 16-way throughput target, avoids the older
+512-token slot truncation failures, and enables the adaptive PDF shim's
+1024-slot chunk profile. Local benchmark runs can override these launch and
+scheduling defaults with:
 
 ```txt
 ROSETTA_MANAGED_LLAMA_CPP_CTX_SIZE=<tokens>
@@ -145,12 +146,63 @@ The `PARALLEL` override also caps llama.cpp client-side batching in both the
 PDF OpenAI shim and the regular text translation scheduler, keeping benchmark
 experiments aligned with llama-server's slot count.
 
-The llama.cpp PDF shim uses a more conservative chunk budget than the generic
-PDF shim path. Body/caption chunks target about 56 prompt tokens, and
-reference chunks target about 42 prompt tokens, leaving most of the 512-token
-slot for generated Chinese output. If a llama.cpp batch still fails, the shim
-retries through a smaller split backstop before surfacing the failure to
-pdf2zh.
+The llama.cpp PDF shim adapts its chunk budget to the effective per-slot
+context. At the default `--ctx-size 16384 --parallel 16` operating point, body
+and caption chunks target `72` prompt tokens while references target `42`, with
+hard caps of `88`, `88`, and `56` respectively. This is the current
+strict-correct benchmark default. If local benchmark runs lower the effective
+slot context below `1024` tokens, the shim falls back to the more conservative
+`56/72` body/caption and `42/56` reference profile. The shim also deterministically
+passes through very short reference fragments such as compact `[N] ...` entries
+so tiny bibliography shards are preserved without letting the model run away.
+A wider `112/144` body profile was tested on 2026-06-29 and reduced completion
+count, but reintroduced raw llama.cpp truncation and slowed the run through
+split retries, so it remains available only through local env override
+experiments. A follow-up `72/88` body plus `56/72` reference profile still hit
+two raw reference-list failures, so references were returned to the conservative
+budget. The resulting `72/88` body/caption, `42/56` reference, and short
+reference passthrough profile passed the strict raw-completion checker on the
+10-page benchmark with 304 completions and no raw truncation. If a llama.cpp
+batch still fails, the shim retries through a smaller split backstop before
+surfacing the failure to pdf2zh.
+
+A local body/caption `80/96` sweep also passed strict correctness and reduced
+raw completions to 288, but total runtime regressed because individual
+completions were slower. Keep the default body/caption profile at `72/88`
+unless a later benchmark shows a better tradeoff.
+
+Local benchmark runs can override those llama.cpp PDF shim budgets with:
+
+```txt
+ROSETTA_PDF_SHIM_LLAMA_BODY_TARGET=<tokens>
+ROSETTA_PDF_SHIM_LLAMA_BODY_HARD=<tokens>
+ROSETTA_PDF_SHIM_LLAMA_CAPTION_TARGET=<tokens>
+ROSETTA_PDF_SHIM_LLAMA_CAPTION_HARD=<tokens>
+ROSETTA_PDF_SHIM_LLAMA_REFERENCE_TARGET=<tokens>
+ROSETTA_PDF_SHIM_LLAMA_REFERENCE_HARD=<tokens>
+```
+
+The hard cap is coerced to be at least the target. These knobs are for local
+benchmark sweeps only; the strict checker must still reject any raw
+`truncated=true`, `stop_type=limit`, or empty llama.cpp completion.
+
+llama.cpp `/completion` requests use a translation-focused generation profile
+instead of the server's generic sampling defaults. Rosetta sends low-entropy
+sampling and repetition-control fields (`temperature`, `top_k`, `top_p`,
+`min_p`, `repeat_penalty`, `repeat_last_n`) plus language-label stop strings.
+This is intended to avoid the small-input repetition runaways that can hit the
+request `n_predict` cap and produce `stop_type=limit` even when enough context
+is available. Local benchmark runs can override these generation values with:
+
+```txt
+ROSETTA_LLAMA_CPP_TEMPERATURE=<float>
+ROSETTA_LLAMA_CPP_TOP_K=<positive integer>
+ROSETTA_LLAMA_CPP_TOP_P=<0.0-1.0>
+ROSETTA_LLAMA_CPP_MIN_P=<0.0-1.0>
+ROSETTA_LLAMA_CPP_REPEAT_PENALTY=<positive float>
+ROSETTA_LLAMA_CPP_REPEAT_LAST_N=<positive integer>
+ROSETTA_LLAMA_CPP_N_PREDICT=<positive integer>
+```
 
 Timeline diagnostics record the effective thread count in the worker
 `job.started` stage and record every `page.processPage.translateRequest`,

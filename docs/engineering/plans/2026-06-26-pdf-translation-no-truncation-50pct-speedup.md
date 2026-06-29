@@ -778,3 +778,31 @@ Append every substantial step here.
     not the slot context;
   - next useful work should focus on llama.cpp generation-parameter hardening
     or a more reliable stop condition, not simply increasing total context.
+
+### 2026-06-29 llama.cpp Generation Profile Pass
+
+- Added a translation-focused llama.cpp `/completion` generation profile:
+  - `temperature: 0.25`;
+  - `top_k: 20`;
+  - `top_p: 0.9`;
+  - `min_p: 0.05`;
+  - `repeat_penalty: 1.18`;
+  - `repeat_last_n: 192`;
+  - `penalize_nl: false`;
+  - language-label stop strings for source/target role labels.
+- Added benchmark-only env overrides:
+  - `ROSETTA_LLAMA_CPP_TEMPERATURE`;
+  - `ROSETTA_LLAMA_CPP_TOP_K`;
+  - `ROSETTA_LLAMA_CPP_TOP_P`;
+  - `ROSETTA_LLAMA_CPP_MIN_P`;
+  - `ROSETTA_LLAMA_CPP_REPEAT_PENALTY`;
+  - `ROSETTA_LLAMA_CPP_REPEAT_LAST_N`;
+  - `ROSETTA_LLAMA_CPP_N_PREDICT`.
+- Added unit coverage for default request fields and override parsers.
+- Validation passed:
+  - `cargo fmt -- --check`;
+  - `cargo test llama_cpp`;
+  - `node --check scripts/check-pdf-translation-run.mjs`.
+- No real PDF benchmark has been recorded yet with the new generation profile.
+  The next run should still use the strict checker and keep
+  `stop_type=limit` / `truncated=true` as hard failures.

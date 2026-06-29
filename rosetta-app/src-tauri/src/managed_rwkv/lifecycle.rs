@@ -1064,7 +1064,7 @@ mod tests {
         assert!(args.iter().any(|arg| arg == "--alias"));
         assert!(args.iter().any(|arg| arg == "rwkv-translate"));
         assert!(args.iter().any(|arg| arg == "--ctx-size"));
-        assert!(args.iter().any(|arg| arg == "8192"));
+        assert!(args.iter().any(|arg| arg == "16384"));
         assert!(args.iter().any(|arg| arg == "--gpu-layers"));
         assert!(args.iter().any(|arg| arg == "auto"));
         assert!(args.iter().any(|arg| arg == "--parallel"));
