@@ -933,7 +933,6 @@ fn validate_runtime_hardware_after_install(
 struct RankedUrl {
     url: &'static str,
     ok: bool,
-    elapsed: Duration,
     index: usize,
 }
 
@@ -950,14 +949,8 @@ async fn ranked_download_urls(
             let url = *url;
             let proxy = proxy.clone();
             tokio::spawn(async move {
-                let started = Instant::now();
                 let ok = probe_download_url(url, expected_size, proxy.as_deref()).await;
-                RankedUrl {
-                    url,
-                    ok,
-                    elapsed: started.elapsed(),
-                    index,
-                }
+                RankedUrl { url, ok, index }
             })
         })
         .collect::<Vec<_>>();
@@ -977,10 +970,7 @@ fn sort_ranked_urls(
     original_urls: &'static [&'static str],
 ) -> Vec<&'static str> {
     ranked.sort_by(|left, right| match (left.ok, right.ok) {
-        (true, true) => left
-            .elapsed
-            .cmp(&right.elapsed)
-            .then_with(|| left.index.cmp(&right.index)),
+        (true, true) => left.index.cmp(&right.index),
         (true, false) => std::cmp::Ordering::Less,
         (false, true) => std::cmp::Ordering::Greater,
         (false, false) => left.index.cmp(&right.index),
@@ -1689,29 +1679,26 @@ mod tests {
     }
 
     #[test]
-    fn download_source_sort_prefers_fastest_valid_then_original_failures() {
+    fn download_source_sort_prefers_profile_order_for_valid_urls() {
         static URLS: &[&str] = &[
-            "https://slow.test",
+            "https://preferred.test",
             "https://failed.test",
-            "https://fast.test",
+            "https://fallback.test",
         ];
         let ranked = vec![
             RankedUrl {
                 url: URLS[0],
                 ok: true,
-                elapsed: Duration::from_millis(500),
                 index: 0,
             },
             RankedUrl {
                 url: URLS[1],
                 ok: false,
-                elapsed: Duration::from_millis(10),
                 index: 1,
             },
             RankedUrl {
                 url: URLS[2],
                 ok: true,
-                elapsed: Duration::from_millis(80),
                 index: 2,
             },
         ];
@@ -1719,8 +1706,8 @@ mod tests {
         assert_eq!(
             sort_ranked_urls(ranked, URLS),
             vec![
-                "https://fast.test",
-                "https://slow.test",
+                "https://preferred.test",
+                "https://fallback.test",
                 "https://failed.test"
             ]
         );

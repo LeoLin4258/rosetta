@@ -32,8 +32,8 @@ pub const MACOS_ARM64_PDF2ZH: Pdf2zhProfile = Pdf2zhProfile {
     pack_size_bytes: Some(318_454_908),
     pack_sha256: Some("35fcbc1485a3133008a3f556bd7a4303859a6edac8cfac959a5e3d6b2644be8c"),
     pack_download_urls: &[
-        "https://github.com/LeoLin4258/rosetta-assets/releases/download/pdf-layout-pack-macos-arm64-v2026.06.16.1/rosetta-pdf2zh-macos-arm64.tar.gz",
         "https://githubdog.com/https://github.com/LeoLin4258/rosetta-assets/releases/download/pdf-layout-pack-macos-arm64-v2026.06.16.1/rosetta-pdf2zh-macos-arm64.tar.gz",
+        "https://github.com/LeoLin4258/rosetta-assets/releases/download/pdf-layout-pack-macos-arm64-v2026.06.16.1/rosetta-pdf2zh-macos-arm64.tar.gz",
     ],
 };
 
@@ -48,8 +48,8 @@ pub const WINDOWS_AMD64_PDF2ZH: Pdf2zhProfile = Pdf2zhProfile {
     pack_size_bytes: Some(388_779_668),
     pack_sha256: Some("d3cad5c7a5d0faf9a06d746c9a0e0343dcb969fada0c5702c96a1a5efe93d529"),
     pack_download_urls: &[
-        "https://github.com/LeoLin4258/rosetta-assets/releases/download/pdf-layout-pack-windows-x64-v2026.06.18.2/rosetta-pdf2zh-windows-amd64.zip",
         "https://githubdog.com/https://github.com/LeoLin4258/rosetta-assets/releases/download/pdf-layout-pack-windows-x64-v2026.06.18.2/rosetta-pdf2zh-windows-amd64.zip",
+        "https://github.com/LeoLin4258/rosetta-assets/releases/download/pdf-layout-pack-windows-x64-v2026.06.18.2/rosetta-pdf2zh-windows-amd64.zip",
     ],
 };
 
@@ -88,32 +88,32 @@ mod tests {
     use super::{MACOS_ARM64_PDF2ZH, WINDOWS_AMD64_PDF2ZH};
 
     #[test]
-    fn macos_pdf_pack_has_mainland_download_fallback() {
+    fn macos_pdf_pack_defaults_to_mainland_download_mirror() {
+        assert!(
+            MACOS_ARM64_PDF2ZH
+                .pack_download_urls
+                .first()
+                .is_some_and(|url| url.starts_with("https://githubdog.com/https://github.com/")),
+            "githubdog mirror should be the default for mainland users"
+        );
         assert!(
             MACOS_ARM64_PDF2ZH
                 .pack_download_urls
                 .iter()
                 .any(|url| url.starts_with("https://github.com/")),
-            "primary GitHub release URL should remain available"
-        );
-        assert!(
-            MACOS_ARM64_PDF2ZH
-                .pack_download_urls
-                .iter()
-                .any(|url| url.starts_with("https://githubdog.com/https://github.com/")),
-            "githubdog mirror should be available for mainland users"
+            "GitHub release URL should remain available as fallback"
         );
     }
 
     #[test]
-    fn windows_pdf_pack_has_mainland_download_fallback() {
+    fn windows_pdf_pack_defaults_to_mainland_download_mirror() {
+        assert!(WINDOWS_AMD64_PDF2ZH
+            .pack_download_urls
+            .first()
+            .is_some_and(|url| url.starts_with("https://githubdog.com/")));
         assert!(WINDOWS_AMD64_PDF2ZH
             .pack_download_urls
             .iter()
             .any(|url| url.starts_with("https://github.com/")));
-        assert!(WINDOWS_AMD64_PDF2ZH
-            .pack_download_urls
-            .iter()
-            .any(|url| url.starts_with("https://githubdog.com/")));
     }
 }

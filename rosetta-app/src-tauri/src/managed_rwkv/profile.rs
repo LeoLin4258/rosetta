@@ -133,8 +133,8 @@ pub const MACOS_ARM64_MLX: RuntimeProfile = RuntimeProfile {
     model_size_bytes: 377_343_557,
     model_sha256: "ae1109105ce91627406972c25d618da2922f74331f773b18975c7e4e290bc226",
     model_download_urls: &[
-        "https://huggingface.co/mollysama/rwkv-mobile-models/resolve/main/mlx/rwkv7-0.4B-g1d-translate-20260607-ctx4096-mlx-6bit.zip",
         "https://hf-mirror.com/mollysama/rwkv-mobile-models/resolve/main/mlx/rwkv7-0.4B-g1d-translate-20260607-ctx4096-mlx-6bit.zip",
+        "https://huggingface.co/mollysama/rwkv-mobile-models/resolve/main/mlx/rwkv7-0.4B-g1d-translate-20260607-ctx4096-mlx-6bit.zip",
     ],
     supported_directions: &["en-zh", "zh-en"],
     model_name_arg: "rwkv-translate",
@@ -171,13 +171,11 @@ pub const MACOS_ARM64_WEBRWKV: RuntimeProfile = RuntimeProfile {
     // Matches the Content-Length the HuggingFace CDN reports.
     model_size_bytes: 1_355_373_863,
     model_sha256: "f6eeb1fff051bcba88539f641993d9a45e4f697f2db37e3bf0fcdd09bff2ef15",
-    // HuggingFace direct first; reqwest honors HTTPS_PROXY so users behind
-    // Clash / corporate proxy can still reach it. hf-mirror.com was unreliable
-    // on 2026-05-13 (returned LFS pointer files / empty bodies) but is kept
-    // as a fallback because it sometimes works without a proxy.
+    // hf-mirror first for mainland users; HuggingFace direct remains as a
+    // fallback and can still use HTTPS_PROXY / corporate proxy when configured.
     model_download_urls: &[
-        "https://huggingface.co/mollysama/rwkv-mobile-models/resolve/main/WebRWKV/RWKV_v7_G1c_1.5B_Translate_ctx4096_20260118-nf4.prefab",
         "https://hf-mirror.com/mollysama/rwkv-mobile-models/resolve/main/WebRWKV/RWKV_v7_G1c_1.5B_Translate_ctx4096_20260118-nf4.prefab",
+        "https://huggingface.co/mollysama/rwkv-mobile-models/resolve/main/WebRWKV/RWKV_v7_G1c_1.5B_Translate_ctx4096_20260118-nf4.prefab",
     ],
     supported_directions: &["en-zh", "zh-en"],
     model_name_arg: "rwkv-translate",
@@ -208,8 +206,8 @@ pub const WINDOWS_AMD64_LLAMACPP_VULKAN: RuntimeProfile = RuntimeProfile {
         "7c21a289304990cbbbd8ead6edb52aebbda5d3c4549604e6b5254c05cddb620b",
     ),
     runtime_download_urls: &[
-        "https://github.com/ggml-org/llama.cpp/releases/download/b9775/llama-b9775-bin-win-vulkan-x64.zip",
         "https://githubdog.com/https://github.com/ggml-org/llama.cpp/releases/download/b9775/llama-b9775-bin-win-vulkan-x64.zip",
+        "https://github.com/ggml-org/llama.cpp/releases/download/b9775/llama-b9775-bin-win-vulkan-x64.zip",
     ],
     runtime_library_dir_name: None,
     tokenizer_filename: "",
@@ -253,8 +251,8 @@ pub const WINDOWS_AMD64_CUDA: RuntimeProfile = RuntimeProfile {
         "b2a4a08cc3c1e6caa836850acd6ba86e3d03f9b2dde4fa1b65278aa00f870499",
     ),
     runtime_download_urls: &[
-        "https://github.com/LeoLin4258/rosetta-assets/releases/download/rwkv-runtime-windows-x64-v2026.06.18.21/RWKV_lightning_CUDA_sm75+_Win_MSVC.zip",
         "https://githubdog.com/https://github.com/LeoLin4258/rosetta-assets/releases/download/rwkv-runtime-windows-x64-v2026.06.18.21/RWKV_lightning_CUDA_sm75+_Win_MSVC.zip",
+        "https://github.com/LeoLin4258/rosetta-assets/releases/download/rwkv-runtime-windows-x64-v2026.06.18.21/RWKV_lightning_CUDA_sm75+_Win_MSVC.zip",
     ],
     runtime_library_dir_name: Some("lib"),
     tokenizer_filename: "rwkv_vocab_v20230424.txt",
@@ -265,8 +263,8 @@ pub const WINDOWS_AMD64_CUDA: RuntimeProfile = RuntimeProfile {
     model_sha256: "b9a1b013c3a938515f8b9bc23c28d815fa6f839eef77a943e92e7e70d35a0527",
     model_download_urls: &[
         "https://modelscope.cn/models/AlicLi/RWKV_v7_G1_Translate/resolve/master/RWKV_v7_G1d_0.4B_Translate_ctx4096_20260607.pth",
-        "https://huggingface.co/Alic-Li/RWKV_v7_G1_Translate/resolve/main/RWKV_v7_G1d_0.4B_Translate_ctx4096_20260607.pth",
         "https://hf-mirror.com/Alic-Li/RWKV_v7_G1_Translate/resolve/main/RWKV_v7_G1d_0.4B_Translate_ctx4096_20260607.pth",
+        "https://huggingface.co/Alic-Li/RWKV_v7_G1_Translate/resolve/main/RWKV_v7_G1d_0.4B_Translate_ctx4096_20260607.pth",
     ],
     supported_directions: &["en-zh", "zh-en"],
     model_name_arg: "rwkv-translate",
@@ -389,12 +387,12 @@ mod tests {
         );
         assert!(WINDOWS_AMD64_LLAMACPP_VULKAN
             .runtime_download_urls
-            .iter()
-            .any(|url| url.starts_with("https://github.com/")));
+            .first()
+            .is_some_and(|url| url.starts_with("https://githubdog.com/")));
         assert!(WINDOWS_AMD64_LLAMACPP_VULKAN
             .runtime_download_urls
             .iter()
-            .any(|url| url.starts_with("https://githubdog.com/")));
+            .any(|url| url.starts_with("https://github.com/")));
         assert!(!WINDOWS_AMD64_LLAMACPP_VULKAN.requires_tokenizer());
     }
 
@@ -411,12 +409,12 @@ mod tests {
         assert_eq!(WINDOWS_AMD64_CUDA.batch_chat_path, "/v1/batch/completions");
         assert!(WINDOWS_AMD64_CUDA
             .runtime_download_urls
-            .iter()
-            .any(|url| url.starts_with("https://github.com/")));
+            .first()
+            .is_some_and(|url| url.starts_with("https://githubdog.com/")));
         assert!(WINDOWS_AMD64_CUDA
             .runtime_download_urls
             .iter()
-            .any(|url| url.starts_with("https://githubdog.com/")));
+            .any(|url| url.starts_with("https://github.com/")));
     }
 
     #[test]
