@@ -1898,14 +1898,13 @@ async fn start_llama_cpp_chat_run(
         timeout_ms: request.timeout_ms,
     };
     let source_lang = request.source_lang.as_deref().unwrap_or("en").to_string();
+    let llama_cpp_settings = llama_cpp_chat::managed_runtime_settings_from_env();
     let requested = if request.batch_size == 0 {
-        llama_cpp_chat::DEFAULT_PARALLEL_REQUESTS
+        llama_cpp_settings.parallel_requests
     } else {
         request.batch_size
     };
-    let ceiling = requested
-        .min(llama_cpp_chat::DEFAULT_PARALLEL_REQUESTS)
-        .max(1);
+    let ceiling = requested.min(llama_cpp_settings.parallel_requests).max(1);
     let planned_batches = mobile_batch_chat::plan_batches(&targets, ceiling, |segment| {
         segment.source_text.chars().count()
     });

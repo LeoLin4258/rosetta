@@ -1554,7 +1554,28 @@ async fn translate_pdf_pages_inner(
                         })),
                 );
                 rwkv_aggregate.add(&output.rwkv_metrics);
-                if force && output.rwkv_metrics.request_count == 0 {
+                if let Some(message) = pdf_rwkv_failure_message(&output.rwkv_metrics) {
+                    diagnostics::append_timeline_event(
+                        &dir,
+                        diagnostics::PdfTimelineEvent::new(
+                            job_id,
+                            "translation",
+                            "chunk.rwkvFailed",
+                        )
+                        .run_id(&run_id)
+                        .target_lang(target_lang)
+                        .details(json!({
+                            "chunkIndex": chunk_index,
+                            "pages": chunk_pages.clone(),
+                            "error": message.clone(),
+                            "rwkv": diagnostics::rwkv_snapshot_details(&output.rwkv_metrics),
+                        })),
+                    );
+                    failure_message = Some(message);
+                    for page_number in &chunk_pages {
+                        clear_pdf_page_artifacts(&dir, &mut state, target_lang, *page_number);
+                    }
+                } else if force && output.rwkv_metrics.request_count == 0 {
                     failure_message = Some(
                         "PDF 重翻没有向翻译模型发送任何文本，已拒绝复用旧译文。请确认该页包含可提取文本后再试。"
                             .to_string(),
@@ -1703,6 +1724,17 @@ async fn translate_pdf_pages_inner(
     run_state::write_pdf_run_state(&dir, &run)?;
     finish_profile(&mut profile, "completed", &rwkv_aggregate);
     Ok(state)
+}
+
+fn pdf_rwkv_failure_message(
+    snapshot: &crate::managed_pdf2zh::openai_shim::ShimRwkvMetricsSnapshot,
+) -> Option<String> {
+    (snapshot.failed_request_count > 0).then(|| {
+        format!(
+            "PDF 翻译检测到底层模型请求失败（failedRequestCount={}），已拒绝提交本批次页面，避免截断或空译文被标记为成功。",
+            snapshot.failed_request_count
+        )
+    })
 }
 
 fn commit_pdf_page_artifact(worker_file: &Path, target_path: &Path) -> Result<(), String> {
@@ -2074,6 +2106,9 @@ pub async fn generate_rosetta_translated_pdf(
     cancel_state.end_run();
 
     let output = invoke_result.map_err(|error| error.user_message())?;
+    if let Some(message) = pdf_rwkv_failure_message(&output.rwkv_metrics) {
+        return Err(message);
+    }
     let mono_pdf = output
         .mono_pdf
         .ok_or_else(|| "翻译完成但未生成完整 PDF。".to_string())?;

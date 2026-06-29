@@ -16,14 +16,16 @@ use tokio::{
 };
 
 use crate::rwkv_providers::{
+    llama_cpp_chat,
     mobile_batch_chat::{self, MobileBatchChatConfig},
     ProviderTranslateBatch,
 };
 
 /// Default paragraph batch width for PDF providers that do not report their
-/// own supported sizes. Also drives pdf2zh's `thread` count below, so raising
-/// this from 4 to 8 reduces common first-page TextConverter waves from
-/// `4 + 4 + 1` to `8 + 1` while staying below the historical 16-thread cap.
+/// own supported sizes. Also drives pdf2zh's `thread` count below. Generic
+/// providers stay at 8 because that was the measured stable first-page point;
+/// llama.cpp follows the managed runtime's parallel setting to keep client
+/// concurrency aligned with llama-server slots during benchmark experiments.
 const DEFAULT_MAX_BATCH_SIZE: usize = 8;
 const PDF_SHIM_BODY_TARGET_PROMPT_TOKENS: usize = 150;
 const PDF_SHIM_BODY_HARD_PROMPT_TOKENS: usize = 190;
@@ -31,6 +33,30 @@ const PDF_SHIM_CAPTION_TARGET_PROMPT_TOKENS: usize = 150;
 const PDF_SHIM_CAPTION_HARD_PROMPT_TOKENS: usize = 190;
 const PDF_SHIM_REFERENCE_TARGET_PROMPT_TOKENS: usize = 130;
 const PDF_SHIM_REFERENCE_HARD_PROMPT_TOKENS: usize = 170;
+const PDF_SHIM_LLAMA_BODY_TARGET_PROMPT_TOKENS: usize = 56;
+const PDF_SHIM_LLAMA_BODY_HARD_PROMPT_TOKENS: usize = 72;
+const PDF_SHIM_LLAMA_CAPTION_TARGET_PROMPT_TOKENS: usize = 56;
+const PDF_SHIM_LLAMA_CAPTION_HARD_PROMPT_TOKENS: usize = 72;
+const PDF_SHIM_LLAMA_REFERENCE_TARGET_PROMPT_TOKENS: usize = 42;
+const PDF_SHIM_LLAMA_REFERENCE_HARD_PROMPT_TOKENS: usize = 56;
+const PDF_SHIM_LLAMA_WIDE_SLOT_CONTEXT_TOKENS: usize = 1024;
+const PDF_SHIM_LLAMA_WIDE_BODY_TARGET_PROMPT_TOKENS: usize = 72;
+const PDF_SHIM_LLAMA_WIDE_BODY_HARD_PROMPT_TOKENS: usize = 88;
+const PDF_SHIM_LLAMA_WIDE_CAPTION_TARGET_PROMPT_TOKENS: usize = 72;
+const PDF_SHIM_LLAMA_WIDE_CAPTION_HARD_PROMPT_TOKENS: usize = 88;
+const PDF_SHIM_LLAMA_WIDE_REFERENCE_TARGET_PROMPT_TOKENS: usize = 42;
+const PDF_SHIM_LLAMA_WIDE_REFERENCE_HARD_PROMPT_TOKENS: usize = 56;
+const PDF_SHIM_REFERENCE_PASSTHROUGH_MAX_CHARS: usize = 40;
+const PDF_SHIM_RETRY_TARGET_PROMPT_TOKENS: usize = 36;
+const PDF_SHIM_RETRY_HARD_PROMPT_TOKENS: usize = 36;
+const PDF_SHIM_FINAL_RETRY_TARGET_PROMPT_TOKENS: usize = 24;
+const PDF_SHIM_FINAL_RETRY_HARD_PROMPT_TOKENS: usize = 24;
+const PDF_SHIM_LLAMA_BODY_TARGET_ENV: &str = "ROSETTA_PDF_SHIM_LLAMA_BODY_TARGET";
+const PDF_SHIM_LLAMA_BODY_HARD_ENV: &str = "ROSETTA_PDF_SHIM_LLAMA_BODY_HARD";
+const PDF_SHIM_LLAMA_CAPTION_TARGET_ENV: &str = "ROSETTA_PDF_SHIM_LLAMA_CAPTION_TARGET";
+const PDF_SHIM_LLAMA_CAPTION_HARD_ENV: &str = "ROSETTA_PDF_SHIM_LLAMA_CAPTION_HARD";
+const PDF_SHIM_LLAMA_REFERENCE_TARGET_ENV: &str = "ROSETTA_PDF_SHIM_LLAMA_REFERENCE_TARGET";
+const PDF_SHIM_LLAMA_REFERENCE_HARD_ENV: &str = "ROSETTA_PDF_SHIM_LLAMA_REFERENCE_HARD";
 
 /// Upper bound on `pdf2zh --thread`. pdf2zh.py spawns this many Python
 /// multiprocessing workers; pushing it too high makes the worker-pool setup
@@ -195,11 +221,19 @@ struct PendingTranslation {
     result_tx: oneshot::Sender<Result<String, String>>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PdfChunkProfile {
+    body: PdfChunkBudget,
+    caption: PdfChunkBudget,
+    reference: PdfChunkBudget,
+}
+
 struct ShimState {
     batch_tx: mpsc::Sender<PendingTranslation>,
     log_file: PathBuf,
     debug: bool,
     target_lang: String,
+    chunk_profile: PdfChunkProfile,
 }
 
 #[derive(Debug, Deserialize)]
@@ -243,7 +277,7 @@ pub async fn spawn_shim(
     debug_context: Option<String>,
 ) -> Result<OpenAiShim, String> {
     let metrics = Arc::new(ShimRwkvMetrics::default());
-    let (max_batch_size, batch_handle) = match provider {
+    let (max_batch_size, batch_handle, chunk_profile) = match provider {
         ShimProviderConfig::MobileBatch(rwkv) => {
             mobile_batch_chat::set_chat_roles_for_pair(&rwkv, &source_lang, &target_lang, None)
                 .await?;
@@ -262,7 +296,11 @@ pub async fn spawn_shim(
                 Arc::clone(&metrics),
                 debug_context.clone(),
             ));
-            (max_batch_size, (batch_tx, handle))
+            (
+                max_batch_size,
+                (batch_tx, handle),
+                standard_pdf_chunk_profile(),
+            )
         }
         ShimProviderConfig::Lightning(lightning) => {
             let max_batch_size = DEFAULT_MAX_BATCH_SIZE;
@@ -276,10 +314,16 @@ pub async fn spawn_shim(
                 Arc::clone(&metrics),
                 debug_context.clone(),
             ));
-            (max_batch_size, (batch_tx, handle))
+            (
+                max_batch_size,
+                (batch_tx, handle),
+                standard_pdf_chunk_profile(),
+            )
         }
         ShimProviderConfig::LlamaCpp(llama) => {
-            let max_batch_size = DEFAULT_MAX_BATCH_SIZE;
+            let max_batch_size = llama_cpp_chat::managed_runtime_settings_from_env()
+                .parallel_requests
+                .max(1);
             let (batch_tx, batch_rx) = mpsc::channel(max_batch_size * 4);
             let handle = tokio::spawn(llama_cpp_batch_processor(
                 batch_rx,
@@ -290,7 +334,11 @@ pub async fn spawn_shim(
                 Arc::clone(&metrics),
                 debug_context.clone(),
             ));
-            (max_batch_size, (batch_tx, handle))
+            (
+                max_batch_size,
+                (batch_tx, handle),
+                llama_cpp_pdf_chunk_profile(),
+            )
         }
     };
     let (batch_tx, batch_handle) = (batch_handle.0, batch_handle.1);
@@ -306,8 +354,16 @@ pub async fn spawn_shim(
         debug,
         &log_file,
         &format!(
-            "spawn shim source_lang={} target_lang={} max_batch_size={}",
-            source_lang, target_lang, max_batch_size
+            "spawn shim source_lang={} target_lang={} max_batch_size={} chunk_profile=body:{}/{} caption:{}/{} reference:{}/{}",
+            source_lang,
+            target_lang,
+            max_batch_size,
+            chunk_profile.body.target,
+            chunk_profile.body.hard,
+            chunk_profile.caption.target,
+            chunk_profile.caption.hard,
+            chunk_profile.reference.target,
+            chunk_profile.reference.hard
         ),
     );
     let state = Arc::new(ShimState {
@@ -315,6 +371,7 @@ pub async fn spawn_shim(
         log_file,
         debug,
         target_lang,
+        chunk_profile,
     });
     let app = Router::new()
         .route("/v1/chat/completions", post(chat_completions))
@@ -514,13 +571,11 @@ async fn llama_cpp_batch_processor(
         );
         let source_texts: Vec<String> = batch.iter().map(|p| p.text.clone()).collect();
         let request_started = Instant::now();
-        let result = crate::rwkv_api::translate_batch_via_llama_cpp(
-            &config.base_url,
-            config.timeout_ms,
+        let result = translate_llama_cpp_batch_with_backstop(
+            &config,
             &source_lang,
             &target_lang,
             &source_texts,
-            None,
             debug_context.as_deref().or(Some("pdf2zh-shim")),
         )
         .await;
@@ -555,6 +610,159 @@ async fn llama_cpp_batch_processor(
                 }
             }
         }
+    }
+}
+
+async fn translate_llama_cpp_batch_with_backstop(
+    config: &LlamaCppApiConfig,
+    source_lang: &str,
+    target_lang: &str,
+    source_texts: &[String],
+    debug_context: Option<&str>,
+) -> Result<Vec<String>, String> {
+    let result = request_llama_cpp_translations(
+        config,
+        source_lang,
+        target_lang,
+        source_texts,
+        debug_context,
+    )
+    .await;
+    match result {
+        Ok(translations) => Ok(translations),
+        Err(first_error) => {
+            eprintln!(
+                "[pdf2zh-llama-cpp] batch failed, retrying {} item(s) with split backstop: {}",
+                source_texts.len(),
+                first_error
+            );
+            let mut translations = Vec::with_capacity(source_texts.len());
+            for source in source_texts {
+                translations.push(
+                    translate_llama_cpp_text_with_backstop(
+                        config,
+                        source_lang,
+                        target_lang,
+                        source,
+                        debug_context,
+                    )
+                    .await
+                    .map_err(|retry_error| {
+                        format!("{first_error}; split retry failed: {retry_error}")
+                    })?,
+                );
+            }
+            Ok(translations)
+        }
+    }
+}
+
+async fn translate_llama_cpp_text_with_backstop(
+    config: &LlamaCppApiConfig,
+    source_lang: &str,
+    target_lang: &str,
+    source_text: &str,
+    debug_context: Option<&str>,
+) -> Result<String, String> {
+    let retry_chunks = split_pdf_shim_text_for_retry(source_text, 0);
+    if retry_chunks.len() > 1 {
+        eprintln!(
+            "[pdf2zh-llama-cpp] retry split item into {} chunk(s)",
+            retry_chunks.len()
+        );
+        match request_llama_cpp_translations(
+            config,
+            source_lang,
+            target_lang,
+            &retry_chunks,
+            debug_context,
+        )
+        .await
+        {
+            Ok(translations) => return Ok(join_translated_chunks(translations, target_lang)),
+            Err(error) => {
+                eprintln!(
+                    "[pdf2zh-llama-cpp] retry split batch failed, using final serial split: {error}"
+                );
+            }
+        }
+
+        let final_chunks = split_pdf_shim_text_for_retry(source_text, 1);
+        if final_chunks.len() > retry_chunks.len() {
+            let translations = request_llama_cpp_translations_serial(
+                config,
+                source_lang,
+                target_lang,
+                &final_chunks,
+                debug_context,
+            )
+            .await?;
+            return Ok(join_translated_chunks(translations, target_lang));
+        }
+    }
+
+    let single = vec![source_text.to_string()];
+    let translations =
+        request_llama_cpp_translations(config, source_lang, target_lang, &single, debug_context)
+            .await?;
+    translations
+        .into_iter()
+        .next()
+        .ok_or_else(|| "llama.cpp split retry returned no translation".to_string())
+}
+
+async fn request_llama_cpp_translations_serial(
+    config: &LlamaCppApiConfig,
+    source_lang: &str,
+    target_lang: &str,
+    source_texts: &[String],
+    debug_context: Option<&str>,
+) -> Result<Vec<String>, String> {
+    let mut translations = Vec::with_capacity(source_texts.len());
+    for source_text in source_texts {
+        let single = vec![source_text.clone()];
+        let mut result = request_llama_cpp_translations(
+            config,
+            source_lang,
+            target_lang,
+            &single,
+            debug_context,
+        )
+        .await?;
+        translations.push(
+            result.pop().ok_or_else(|| {
+                "llama.cpp serial split retry returned no translation".to_string()
+            })?,
+        );
+    }
+    Ok(translations)
+}
+
+async fn request_llama_cpp_translations(
+    config: &LlamaCppApiConfig,
+    source_lang: &str,
+    target_lang: &str,
+    source_texts: &[String],
+    debug_context: Option<&str>,
+) -> Result<Vec<String>, String> {
+    let translations = crate::rwkv_api::translate_batch_via_llama_cpp(
+        &config.base_url,
+        config.timeout_ms,
+        source_lang,
+        target_lang,
+        source_texts,
+        None,
+        debug_context,
+    )
+    .await?;
+    if translations.len() == source_texts.len() {
+        Ok(translations)
+    } else {
+        Err(format!(
+            "翻译结果数量不匹配（期望 {}，实际 {}）",
+            source_texts.len(),
+            translations.len()
+        ))
     }
 }
 
@@ -593,6 +801,14 @@ async fn chat_completions(
         );
         return Ok(openai_response(text));
     }
+    if should_passthrough_pdf_reference_fragment(&text) {
+        append_log(
+            state.debug,
+            &state.log_file,
+            &format!("reference fragment passthrough={}", preview(&text)),
+        );
+        return Ok(openai_response(text));
+    }
     if text.trim().is_empty() {
         append_log(state.debug, &state.log_file, "empty source passthrough");
         return Ok(Json(ChatCompletionResponse {
@@ -610,7 +826,7 @@ async fn chat_completions(
         }));
     }
 
-    let chunks = split_pdf_shim_text(&text);
+    let chunks = split_pdf_shim_text_for_profile(&text, state.chunk_profile);
     if chunks.len() > 1 {
         let chunk_tokens = chunks
             .iter()
@@ -710,14 +926,19 @@ fn extract_pdf2zh_source_text(content: &str) -> Option<String> {
     Some(after_source[..source_end].trim().to_string())
 }
 
+#[cfg(test)]
 fn split_pdf_shim_text(text: &str) -> Vec<String> {
+    split_pdf_shim_text_for_profile(text, standard_pdf_chunk_profile())
+}
+
+fn split_pdf_shim_text_for_profile(text: &str, profile: PdfChunkProfile) -> Vec<String> {
     let normalized = normalize_pdf_source_text(text);
     let trimmed = normalized.trim();
     if trimmed.is_empty() {
         return vec![trimmed.to_string()];
     }
 
-    let budget = pdf_chunk_budget_for_text(trimmed);
+    let budget = pdf_chunk_budget_for_text(trimmed, profile);
     if estimate_prompt_tokens(trimmed) <= budget.hard {
         return vec![trimmed.to_string()];
     }
@@ -726,7 +947,7 @@ fn split_pdf_shim_text(text: &str) -> Vec<String> {
     let mut chunks = Vec::new();
     let mut current = String::new();
     for unit in units {
-        push_pdf_text_unit(&mut chunks, &mut current, &unit, budget);
+        push_pdf_text_unit(&mut chunks, &mut current, &unit, budget, profile);
     }
     if !current.trim().is_empty() {
         chunks.push(current.trim().to_string());
@@ -734,11 +955,34 @@ fn split_pdf_shim_text(text: &str) -> Vec<String> {
     chunks
         .into_iter()
         .flat_map(|chunk| {
-            let chunk_budget = min_pdf_chunk_budget(budget, pdf_chunk_budget_for_text(&chunk));
+            let chunk_budget =
+                min_pdf_chunk_budget(budget, pdf_chunk_budget_for_text(&chunk, profile));
             split_oversized_pdf_chunk(chunk, chunk_budget)
         })
         .filter(|chunk| !chunk.trim().is_empty())
         .collect()
+}
+
+fn split_pdf_shim_text_for_retry(text: &str, retry_index: usize) -> Vec<String> {
+    let budget = if retry_index == 0 {
+        PdfChunkBudget {
+            target: PDF_SHIM_RETRY_TARGET_PROMPT_TOKENS,
+            hard: PDF_SHIM_RETRY_HARD_PROMPT_TOKENS,
+        }
+    } else {
+        PdfChunkBudget {
+            target: PDF_SHIM_FINAL_RETRY_TARGET_PROMPT_TOKENS,
+            hard: PDF_SHIM_FINAL_RETRY_HARD_PROMPT_TOKENS,
+        }
+    };
+    split_pdf_shim_text_for_profile(
+        text,
+        PdfChunkProfile {
+            body: budget,
+            caption: budget,
+            reference: budget,
+        },
+    )
 }
 
 fn push_pdf_text_unit(
@@ -746,17 +990,18 @@ fn push_pdf_text_unit(
     current: &mut String,
     unit: &str,
     parent_budget: PdfChunkBudget,
+    profile: PdfChunkProfile,
 ) {
     let unit = unit.trim();
     if unit.is_empty() {
         return;
     }
-    let budget = min_pdf_chunk_budget(parent_budget, pdf_chunk_budget_for_text(unit));
+    let budget = min_pdf_chunk_budget(parent_budget, pdf_chunk_budget_for_text(unit, profile));
     if estimate_prompt_tokens(unit) > budget.hard {
         let sub_units = split_pdf_sentences(unit);
         if sub_units.len() > 1 {
             for sub_unit in sub_units {
-                push_pdf_text_unit(chunks, current, &sub_unit, budget);
+                push_pdf_text_unit(chunks, current, &sub_unit, budget, profile);
             }
             return;
         }
@@ -782,29 +1027,136 @@ fn push_pdf_text_unit(
     current.push_str(unit);
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PdfChunkBudget {
     target: usize,
     hard: usize,
 }
 
-fn pdf_chunk_budget_for_text(text: &str) -> PdfChunkBudget {
-    if is_reference_item(text) {
-        return PdfChunkBudget {
-            target: PDF_SHIM_REFERENCE_TARGET_PROMPT_TOKENS,
-            hard: PDF_SHIM_REFERENCE_HARD_PROMPT_TOKENS,
-        };
-    }
-    if starts_with_caption_label(text) {
-        return PdfChunkBudget {
+fn standard_pdf_chunk_profile() -> PdfChunkProfile {
+    PdfChunkProfile {
+        body: PdfChunkBudget {
+            target: PDF_SHIM_BODY_TARGET_PROMPT_TOKENS,
+            hard: PDF_SHIM_BODY_HARD_PROMPT_TOKENS,
+        },
+        caption: PdfChunkBudget {
             target: PDF_SHIM_CAPTION_TARGET_PROMPT_TOKENS,
             hard: PDF_SHIM_CAPTION_HARD_PROMPT_TOKENS,
-        };
+        },
+        reference: PdfChunkBudget {
+            target: PDF_SHIM_REFERENCE_TARGET_PROMPT_TOKENS,
+            hard: PDF_SHIM_REFERENCE_HARD_PROMPT_TOKENS,
+        },
     }
+}
+
+fn llama_cpp_pdf_chunk_profile() -> PdfChunkProfile {
+    let settings = llama_cpp_chat::managed_runtime_settings_from_env();
+    let effective_slot_context = settings.server_ctx_size / settings.parallel_requests.max(1);
+    apply_llama_cpp_pdf_chunk_env_overrides(llama_cpp_pdf_chunk_profile_for_effective_context(
+        effective_slot_context,
+    ))
+}
+
+fn llama_cpp_pdf_chunk_profile_for_effective_context(
+    effective_slot_context: usize,
+) -> PdfChunkProfile {
+    if effective_slot_context >= PDF_SHIM_LLAMA_WIDE_SLOT_CONTEXT_TOKENS {
+        return wide_llama_cpp_pdf_chunk_profile();
+    }
+    conservative_llama_cpp_pdf_chunk_profile()
+}
+
+fn conservative_llama_cpp_pdf_chunk_profile() -> PdfChunkProfile {
+    PdfChunkProfile {
+        body: PdfChunkBudget {
+            target: PDF_SHIM_LLAMA_BODY_TARGET_PROMPT_TOKENS,
+            hard: PDF_SHIM_LLAMA_BODY_HARD_PROMPT_TOKENS,
+        },
+        caption: PdfChunkBudget {
+            target: PDF_SHIM_LLAMA_CAPTION_TARGET_PROMPT_TOKENS,
+            hard: PDF_SHIM_LLAMA_CAPTION_HARD_PROMPT_TOKENS,
+        },
+        reference: PdfChunkBudget {
+            target: PDF_SHIM_LLAMA_REFERENCE_TARGET_PROMPT_TOKENS,
+            hard: PDF_SHIM_LLAMA_REFERENCE_HARD_PROMPT_TOKENS,
+        },
+    }
+}
+
+fn wide_llama_cpp_pdf_chunk_profile() -> PdfChunkProfile {
+    PdfChunkProfile {
+        body: PdfChunkBudget {
+            target: PDF_SHIM_LLAMA_WIDE_BODY_TARGET_PROMPT_TOKENS,
+            hard: PDF_SHIM_LLAMA_WIDE_BODY_HARD_PROMPT_TOKENS,
+        },
+        caption: PdfChunkBudget {
+            target: PDF_SHIM_LLAMA_WIDE_CAPTION_TARGET_PROMPT_TOKENS,
+            hard: PDF_SHIM_LLAMA_WIDE_CAPTION_HARD_PROMPT_TOKENS,
+        },
+        reference: PdfChunkBudget {
+            target: PDF_SHIM_LLAMA_WIDE_REFERENCE_TARGET_PROMPT_TOKENS,
+            hard: PDF_SHIM_LLAMA_WIDE_REFERENCE_HARD_PROMPT_TOKENS,
+        },
+    }
+}
+
+fn apply_llama_cpp_pdf_chunk_env_overrides(profile: PdfChunkProfile) -> PdfChunkProfile {
+    PdfChunkProfile {
+        body: pdf_chunk_budget_from_env(
+            profile.body,
+            PDF_SHIM_LLAMA_BODY_TARGET_ENV,
+            PDF_SHIM_LLAMA_BODY_HARD_ENV,
+        ),
+        caption: pdf_chunk_budget_from_env(
+            profile.caption,
+            PDF_SHIM_LLAMA_CAPTION_TARGET_ENV,
+            PDF_SHIM_LLAMA_CAPTION_HARD_ENV,
+        ),
+        reference: pdf_chunk_budget_from_env(
+            profile.reference,
+            PDF_SHIM_LLAMA_REFERENCE_TARGET_ENV,
+            PDF_SHIM_LLAMA_REFERENCE_HARD_ENV,
+        ),
+    }
+}
+
+fn pdf_chunk_budget_from_env(
+    fallback: PdfChunkBudget,
+    target_env: &str,
+    hard_env: &str,
+) -> PdfChunkBudget {
+    let target = positive_usize_env(target_env).unwrap_or(fallback.target);
+    let hard = positive_usize_env(hard_env).unwrap_or(fallback.hard);
     PdfChunkBudget {
-        target: PDF_SHIM_BODY_TARGET_PROMPT_TOKENS,
-        hard: PDF_SHIM_BODY_HARD_PROMPT_TOKENS,
+        target,
+        hard: hard.max(target),
     }
+}
+
+fn positive_usize_env(name: &str) -> Option<usize> {
+    std::env::var(name)
+        .ok()
+        .as_deref()
+        .and_then(parse_positive_usize)
+}
+
+fn parse_positive_usize(raw: &str) -> Option<usize> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    trimmed.parse::<usize>().ok().filter(|value| *value > 0)
+}
+
+fn pdf_chunk_budget_for_text(text: &str, profile: PdfChunkProfile) -> PdfChunkBudget {
+    if is_reference_item(text) {
+        return profile.reference;
+    }
+    if starts_with_caption_label(text) {
+        return profile.caption;
+    }
+    profile.body
 }
 
 fn min_pdf_chunk_budget(left: PdfChunkBudget, right: PdfChunkBudget) -> PdfChunkBudget {
@@ -1182,6 +1534,18 @@ fn is_pdf2zh_placeholder_only(text: &str) -> bool {
     saw_placeholder
 }
 
+fn should_passthrough_pdf_reference_fragment(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.chars().count() > PDF_SHIM_REFERENCE_PASSTHROUGH_MAX_CHARS {
+        return false;
+    }
+    if !is_reference_item(trimmed) {
+        return false;
+    }
+    let words = trimmed.split_whitespace().count();
+    words <= 6 && trimmed.chars().any(|ch| ch.is_ascii_digit())
+}
+
 fn append_log(enabled: bool, path: &PathBuf, line: &str) {
     if !enabled {
         return;
@@ -1257,6 +1621,22 @@ mod tests {
     }
 
     #[test]
+    fn short_reference_fragments_are_preserved_without_model_translation() {
+        assert!(should_passthrough_pdf_reference_fragment(
+            "[41] Nature 2024."
+        ));
+        assert!(should_passthrough_pdf_reference_fragment(
+            "[7] Proc. CVPR 2025."
+        ));
+        assert!(!should_passthrough_pdf_reference_fragment(
+            "[41] This reference title contains enough prose that it should still go through the translator."
+        ));
+        assert!(!should_passthrough_pdf_reference_fragment(
+            "Value is [41] Nature 2024."
+        ));
+    }
+
+    #[test]
     fn long_pdf_text_is_split_before_reaching_tiny_context_provider() {
         let text = "$v25$ Record quarterly revenue of $15.2 million, a 46% increase compared to the prior quarter and up 17x from the same period last year, driven by increased production volumes. Factory shipments increased 122% quarter-over-quarter, with 50% of the production volume delivered for a strategic customer project. $v26$ Gross loss of $31.0 million, a 32-point margin improvement from the prior quarter, driven by increased production volumes and operational efficiencies partially offset by one-time lower than average selling prices. $v27$ Operating expenses totaled $32.9 million, a decrease from prior quarter excluding $5.4 million in one-time non-recurring items. $v28$ $222.9 million net loss attributable to shareholders driven by $151.8 million non-cash changes in fair value tied to mark-to-market adjustments related to the Company’s increased stock price as of June 30, 2025, loss recorded for the repurchase of the Company’s outstanding 2026 convertible notes, and loss recorded as part of the prepayment under the Delayed Draw Term Loan.";
 
@@ -1274,6 +1654,113 @@ mod tests {
         let text = "For visual feature extraction, we replaced the RWKV module with a purely convolutional counterpart, as specified in config (I) of Table 3. The results clearly indicate a significant performance decline with the convolutional architecture, underscoring the limitations of traditional convolution module in visual feature modeling. This also highlights the effectiveness of RWKV in capturing longrange dependencies, contributing to more accurate pest recognition.";
 
         assert_eq!(split_pdf_shim_text(text), vec![text]);
+    }
+
+    #[test]
+    fn llama_cpp_pdf_profile_splits_medium_text_for_output_room() {
+        let text = "For visual feature extraction, we replaced the RWKV module with a purely convolutional counterpart, as specified in config (I) of Table 3. The results clearly indicate a significant performance decline with the convolutional architecture, underscoring the limitations of traditional convolution module in visual feature modeling. This also highlights the effectiveness of RWKV in capturing longrange dependencies, contributing to more accurate pest recognition.";
+
+        let chunks =
+            split_pdf_shim_text_for_profile(text, conservative_llama_cpp_pdf_chunk_profile());
+
+        assert!(chunks.len() > 1);
+        assert!(
+            chunks
+                .iter()
+                .all(|chunk| estimate_prompt_tokens(chunk)
+                    <= PDF_SHIM_LLAMA_BODY_TARGET_PROMPT_TOKENS)
+        );
+    }
+
+    #[test]
+    fn llama_cpp_pdf_profile_uses_conservative_budget_for_512_token_slots() {
+        let profile = llama_cpp_pdf_chunk_profile_for_effective_context(512);
+
+        assert_eq!(
+            profile.body,
+            PdfChunkBudget {
+                target: PDF_SHIM_LLAMA_BODY_TARGET_PROMPT_TOKENS,
+                hard: PDF_SHIM_LLAMA_BODY_HARD_PROMPT_TOKENS,
+            }
+        );
+        assert_eq!(
+            profile.reference,
+            PdfChunkBudget {
+                target: PDF_SHIM_LLAMA_REFERENCE_TARGET_PROMPT_TOKENS,
+                hard: PDF_SHIM_LLAMA_REFERENCE_HARD_PROMPT_TOKENS,
+            }
+        );
+    }
+
+    #[test]
+    fn llama_cpp_pdf_profile_uses_wider_budget_for_1024_token_slots() {
+        let profile = llama_cpp_pdf_chunk_profile_for_effective_context(1024);
+
+        assert_eq!(
+            profile.body,
+            PdfChunkBudget {
+                target: PDF_SHIM_LLAMA_WIDE_BODY_TARGET_PROMPT_TOKENS,
+                hard: PDF_SHIM_LLAMA_WIDE_BODY_HARD_PROMPT_TOKENS,
+            }
+        );
+        assert_eq!(
+            profile.caption,
+            PdfChunkBudget {
+                target: PDF_SHIM_LLAMA_WIDE_CAPTION_TARGET_PROMPT_TOKENS,
+                hard: PDF_SHIM_LLAMA_WIDE_CAPTION_HARD_PROMPT_TOKENS,
+            }
+        );
+        assert_eq!(
+            profile.reference,
+            PdfChunkBudget {
+                target: PDF_SHIM_LLAMA_WIDE_REFERENCE_TARGET_PROMPT_TOKENS,
+                hard: PDF_SHIM_LLAMA_WIDE_REFERENCE_HARD_PROMPT_TOKENS,
+            }
+        );
+        assert_eq!(
+            profile.reference,
+            PdfChunkBudget {
+                target: PDF_SHIM_LLAMA_REFERENCE_TARGET_PROMPT_TOKENS,
+                hard: PDF_SHIM_LLAMA_REFERENCE_HARD_PROMPT_TOKENS,
+            }
+        );
+    }
+
+    #[test]
+    fn wider_llama_cpp_profile_merges_medium_text_for_fewer_completions() {
+        let text = "For visual feature extraction, we replaced the RWKV module with a purely convolutional counterpart, as specified in config (I) of Table 3. The results clearly indicate a significant performance decline with the convolutional architecture, underscoring the limitations of traditional convolution module in visual feature modeling. This also highlights the effectiveness of RWKV in capturing longrange dependencies, contributing to more accurate pest recognition.";
+
+        let conservative_chunks =
+            split_pdf_shim_text_for_profile(text, conservative_llama_cpp_pdf_chunk_profile());
+        let wide_chunks = split_pdf_shim_text_for_profile(text, wide_llama_cpp_pdf_chunk_profile());
+
+        assert!(conservative_chunks.len() > wide_chunks.len());
+        assert!(wide_chunks
+            .iter()
+            .all(|chunk| estimate_prompt_tokens(chunk)
+                <= PDF_SHIM_LLAMA_WIDE_BODY_HARD_PROMPT_TOKENS));
+    }
+
+    #[test]
+    fn positive_usize_parser_rejects_empty_zero_and_invalid_values() {
+        assert_eq!(parse_positive_usize("112"), Some(112));
+        assert_eq!(parse_positive_usize(" 84 "), Some(84));
+        assert_eq!(parse_positive_usize(""), None);
+        assert_eq!(parse_positive_usize("0"), None);
+        assert_eq!(parse_positive_usize("-1"), None);
+        assert_eq!(parse_positive_usize("wide"), None);
+    }
+
+    #[test]
+    fn retry_split_uses_smaller_backstop_budget() {
+        let text = "The results clearly indicate a significant performance decline with the convolutional architecture, underscoring the limitations of traditional convolution module in visual feature modeling and document translation workloads. This also highlights the effectiveness of RWKV in capturing longrange dependencies, contributing to more accurate pest recognition.";
+
+        let chunks = split_pdf_shim_text_for_retry(text, 0);
+
+        assert!(chunks.len() > 1);
+        assert!(chunks
+            .iter()
+            .all(|chunk| estimate_prompt_tokens(chunk) <= PDF_SHIM_RETRY_TARGET_PROMPT_TOKENS));
     }
 
     #[test]

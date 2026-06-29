@@ -14,12 +14,166 @@ const COMPLETION_PATH: &str = "/completion";
 const RESPONSE_PREVIEW_CHARS: usize = 2_000;
 const POLL_INTERVAL_MS: u64 = 50;
 const MAX_TOKENS_PER_SEGMENT: u32 = 1024;
+const DEFAULT_TEMPERATURE: f64 = 0.25;
+const DEFAULT_TOP_K: u32 = 20;
+const DEFAULT_TOP_P: f64 = 0.9;
+const DEFAULT_MIN_P: f64 = 0.05;
+const DEFAULT_REPEAT_PENALTY: f64 = 1.18;
+const DEFAULT_REPEAT_LAST_N: u32 = 192;
+const DEFAULT_PENALIZE_NL: bool = false;
 
 pub const DEFAULT_PARALLEL_REQUESTS: usize = 16;
+/// Total llama-server context for all slots. llama.cpp divides this across
+/// `--parallel` slots, so 16384 / 16 gives each concurrent PDF request about
+/// 1024 tokens. That is the current strict-correct PDF baseline for the
+/// Windows llama.cpp Vulkan runtime.
+pub const DEFAULT_SERVER_CTX_SIZE: usize = 16384;
+pub const MANAGED_SERVER_CTX_SIZE_ENV: &str = "ROSETTA_MANAGED_LLAMA_CPP_CTX_SIZE";
+pub const MANAGED_PARALLEL_REQUESTS_ENV: &str = "ROSETTA_MANAGED_LLAMA_CPP_PARALLEL";
+pub const GENERATION_TEMPERATURE_ENV: &str = "ROSETTA_LLAMA_CPP_TEMPERATURE";
+pub const GENERATION_TOP_K_ENV: &str = "ROSETTA_LLAMA_CPP_TOP_K";
+pub const GENERATION_TOP_P_ENV: &str = "ROSETTA_LLAMA_CPP_TOP_P";
+pub const GENERATION_MIN_P_ENV: &str = "ROSETTA_LLAMA_CPP_MIN_P";
+pub const GENERATION_REPEAT_PENALTY_ENV: &str = "ROSETTA_LLAMA_CPP_REPEAT_PENALTY";
+pub const GENERATION_REPEAT_LAST_N_ENV: &str = "ROSETTA_LLAMA_CPP_REPEAT_LAST_N";
+pub const GENERATION_N_PREDICT_ENV: &str = "ROSETTA_LLAMA_CPP_N_PREDICT";
 pub const PROBE_TEXTS: [&str; 2] = [
     "After a blissful two weeks, Jane encounters Rochester in the gardens.",
     "That night, a bolt of lightning splits the same chestnut tree.",
 ];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ManagedLlamaCppRuntimeSettings {
+    pub server_ctx_size: usize,
+    pub parallel_requests: usize,
+}
+
+impl Default for ManagedLlamaCppRuntimeSettings {
+    fn default() -> Self {
+        Self {
+            server_ctx_size: DEFAULT_SERVER_CTX_SIZE,
+            parallel_requests: DEFAULT_PARALLEL_REQUESTS,
+        }
+    }
+}
+
+pub fn managed_runtime_settings_from_env() -> ManagedLlamaCppRuntimeSettings {
+    let defaults = ManagedLlamaCppRuntimeSettings::default();
+    ManagedLlamaCppRuntimeSettings {
+        server_ctx_size: managed_runtime_usize_env(
+            MANAGED_SERVER_CTX_SIZE_ENV,
+            defaults.server_ctx_size,
+        ),
+        parallel_requests: managed_runtime_usize_env(
+            MANAGED_PARALLEL_REQUESTS_ENV,
+            defaults.parallel_requests,
+        ),
+    }
+}
+
+fn managed_runtime_usize_env(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .as_deref()
+        .and_then(parse_positive_usize_override)
+        .unwrap_or(default)
+}
+
+fn parse_positive_usize_override(raw: &str) -> Option<usize> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    trimmed.parse::<usize>().ok().filter(|value| *value > 0)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct LlamaCppGenerationSettings {
+    n_predict: u32,
+    temperature: f64,
+    top_k: u32,
+    top_p: f64,
+    min_p: f64,
+    repeat_penalty: f64,
+    repeat_last_n: u32,
+    penalize_nl: bool,
+}
+
+impl Default for LlamaCppGenerationSettings {
+    fn default() -> Self {
+        Self {
+            n_predict: MAX_TOKENS_PER_SEGMENT,
+            temperature: DEFAULT_TEMPERATURE,
+            top_k: DEFAULT_TOP_K,
+            top_p: DEFAULT_TOP_P,
+            min_p: DEFAULT_MIN_P,
+            repeat_penalty: DEFAULT_REPEAT_PENALTY,
+            repeat_last_n: DEFAULT_REPEAT_LAST_N,
+            penalize_nl: DEFAULT_PENALIZE_NL,
+        }
+    }
+}
+
+fn generation_settings_from_env() -> LlamaCppGenerationSettings {
+    let defaults = LlamaCppGenerationSettings::default();
+    LlamaCppGenerationSettings {
+        n_predict: generation_u32_env(GENERATION_N_PREDICT_ENV, defaults.n_predict),
+        temperature: generation_f64_env(
+            GENERATION_TEMPERATURE_ENV,
+            defaults.temperature,
+            |value| (0.0..=2.0).contains(&value),
+        ),
+        top_k: generation_u32_env(GENERATION_TOP_K_ENV, defaults.top_k),
+        top_p: generation_f64_env(GENERATION_TOP_P_ENV, defaults.top_p, |value| {
+            (0.0..=1.0).contains(&value)
+        }),
+        min_p: generation_f64_env(GENERATION_MIN_P_ENV, defaults.min_p, |value| {
+            (0.0..=1.0).contains(&value)
+        }),
+        repeat_penalty: generation_f64_env(
+            GENERATION_REPEAT_PENALTY_ENV,
+            defaults.repeat_penalty,
+            |value| value > 0.0,
+        ),
+        repeat_last_n: generation_u32_env(GENERATION_REPEAT_LAST_N_ENV, defaults.repeat_last_n),
+        penalize_nl: defaults.penalize_nl,
+    }
+}
+
+fn generation_u32_env(name: &str, default: u32) -> u32 {
+    std::env::var(name)
+        .ok()
+        .as_deref()
+        .and_then(parse_positive_u32_override)
+        .unwrap_or(default)
+}
+
+fn generation_f64_env(name: &str, default: f64, is_valid: impl Fn(f64) -> bool) -> f64 {
+    std::env::var(name)
+        .ok()
+        .as_deref()
+        .and_then(|raw| parse_f64_override(raw, &is_valid))
+        .unwrap_or(default)
+}
+
+fn parse_positive_u32_override(raw: &str) -> Option<u32> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    trimmed.parse::<u32>().ok().filter(|value| *value > 0)
+}
+
+fn parse_f64_override(raw: &str, is_valid: impl Fn(f64) -> bool) -> Option<f64> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    trimmed
+        .parse::<f64>()
+        .ok()
+        .filter(|value| value.is_finite() && is_valid(*value))
+}
 
 #[derive(Debug, Clone)]
 pub struct LlamaCppChatConfig {
@@ -32,6 +186,13 @@ struct CompletionRequest {
     prompt: String,
     n_predict: u32,
     temperature: f64,
+    top_k: u32,
+    top_p: f64,
+    min_p: f64,
+    repeat_penalty: f64,
+    repeat_last_n: u32,
+    penalize_nl: bool,
+    stop: Vec<String>,
     stream: bool,
 }
 
@@ -39,6 +200,10 @@ struct CompletionRequest {
 struct CompletionResponse {
     #[serde(default)]
     content: String,
+    #[serde(default)]
+    truncated: bool,
+    #[serde(default)]
+    stop_type: Option<String>,
 }
 
 pub async fn translate_batch(
@@ -291,18 +456,44 @@ fn build_completion_request(
 ) -> CompletionRequest {
     let source_label = role_label_for_lang(source_lang);
     let target_label = role_label_for_lang(target_lang);
+    let generation = generation_settings_from_env();
     CompletionRequest {
         prompt: format!("{source_label}: {source_text}\n\n{target_label}:"),
-        n_predict: MAX_TOKENS_PER_SEGMENT,
-        temperature: 1.0,
+        n_predict: generation.n_predict,
+        temperature: generation.temperature,
+        top_k: generation.top_k,
+        top_p: generation.top_p,
+        min_p: generation.min_p,
+        repeat_penalty: generation.repeat_penalty,
+        repeat_last_n: generation.repeat_last_n,
+        penalize_nl: generation.penalize_nl,
+        stop: translation_stop_sequences(source_label, target_label),
         stream: false,
     }
+}
+
+fn translation_stop_sequences(source_label: &str, target_label: &str) -> Vec<String> {
+    [
+        format!("\n\n{source_label}:"),
+        format!("\n{source_label}:"),
+        format!("\n\n{target_label}:"),
+        format!("\n{target_label}:"),
+    ]
+    .into_iter()
+    .collect()
 }
 
 fn parse_translation(response_text: &str) -> Result<String, String> {
     let response: CompletionResponse = serde_json::from_str(response_text)
         .map_err(|error| format!("JSON parse failed: {error}"))?;
     let content = response.content.trim().to_string();
+    if response.truncated || response.stop_type.as_deref() == Some("limit") {
+        return Err(format!(
+            "llama.cpp completion was truncated (truncated={}, stop_type={})",
+            response.truncated,
+            response.stop_type.as_deref().unwrap_or("unknown")
+        ));
+    }
     if content.is_empty() {
         return Err("completion returned empty content".to_string());
     }
@@ -504,6 +695,47 @@ mod tests {
     }
 
     #[test]
+    fn managed_runtime_override_parser_accepts_positive_numbers() {
+        assert_eq!(parse_positive_usize_override("16384"), Some(16384));
+        assert_eq!(parse_positive_usize_override(" 8 "), Some(8));
+    }
+
+    #[test]
+    fn managed_runtime_override_parser_rejects_empty_zero_and_invalid_values() {
+        assert_eq!(parse_positive_usize_override(""), None);
+        assert_eq!(parse_positive_usize_override("0"), None);
+        assert_eq!(parse_positive_usize_override("-1"), None);
+        assert_eq!(parse_positive_usize_override("eight"), None);
+    }
+
+    #[test]
+    fn parse_translation_rejects_truncated_completion() {
+        let response = json!({
+            "content": "半截译文",
+            "truncated": true,
+            "stop_type": "limit"
+        });
+
+        let error = parse_translation(&response.to_string()).expect_err("should reject");
+
+        assert!(error.contains("truncated=true"));
+        assert!(error.contains("stop_type=limit"));
+    }
+
+    #[test]
+    fn parse_translation_rejects_limit_stop_type() {
+        let response = json!({
+            "content": "半截译文",
+            "truncated": false,
+            "stop_type": "limit"
+        });
+
+        let error = parse_translation(&response.to_string()).expect_err("should reject");
+
+        assert!(error.contains("stop_type=limit"));
+    }
+
+    #[test]
     fn parse_translation_rejects_non_json() {
         let error = parse_translation("not json").expect_err("should reject");
         assert!(error.contains("JSON parse failed"));
@@ -514,6 +746,22 @@ mod tests {
         let request = build_completion_request("Hello.", "en", "zh-CN");
         assert_eq!(request.prompt, "English: Hello.\n\nChinese:");
         assert_eq!(request.n_predict, MAX_TOKENS_PER_SEGMENT);
+        assert_eq!(request.temperature, DEFAULT_TEMPERATURE);
+        assert_eq!(request.top_k, DEFAULT_TOP_K);
+        assert_eq!(request.top_p, DEFAULT_TOP_P);
+        assert_eq!(request.min_p, DEFAULT_MIN_P);
+        assert_eq!(request.repeat_penalty, DEFAULT_REPEAT_PENALTY);
+        assert_eq!(request.repeat_last_n, DEFAULT_REPEAT_LAST_N);
+        assert_eq!(request.penalize_nl, DEFAULT_PENALIZE_NL);
+        assert_eq!(
+            request.stop,
+            vec![
+                "\n\nEnglish:".to_string(),
+                "\nEnglish:".to_string(),
+                "\n\nChinese:".to_string(),
+                "\nChinese:".to_string(),
+            ]
+        );
         assert!(!request.stream);
     }
 
@@ -521,6 +769,32 @@ mod tests {
     fn completion_request_reverse_direction() {
         let request = build_completion_request("你好世界", "zh-CN", "en");
         assert_eq!(request.prompt, "Chinese: 你好世界\n\nEnglish:");
+    }
+
+    #[test]
+    fn generation_override_parser_accepts_valid_values() {
+        assert_eq!(parse_positive_u32_override("1024"), Some(1024));
+        assert_eq!(parse_positive_u32_override(" 16 "), Some(16));
+        assert_eq!(parse_f64_override("0.25", |value| value > 0.0), Some(0.25));
+        assert_eq!(
+            parse_f64_override(" 1.18 ", |value| value > 0.0),
+            Some(1.18)
+        );
+    }
+
+    #[test]
+    fn generation_override_parser_rejects_empty_zero_invalid_and_out_of_range_values() {
+        assert_eq!(parse_positive_u32_override(""), None);
+        assert_eq!(parse_positive_u32_override("0"), None);
+        assert_eq!(parse_positive_u32_override("-1"), None);
+        assert_eq!(parse_positive_u32_override("many"), None);
+        assert_eq!(parse_f64_override("", |value| value > 0.0), None);
+        assert_eq!(parse_f64_override("0", |value| value > 0.0), None);
+        assert_eq!(parse_f64_override("nope", |value| value > 0.0), None);
+        assert_eq!(
+            parse_f64_override("1.5", |value| (0.0..=1.0).contains(&value)),
+            None
+        );
     }
 
     #[test]
