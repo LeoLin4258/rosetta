@@ -1,7 +1,11 @@
-import { AlertCircle, Download, LoaderCircle, X } from "lucide-react";
+import { useMemo, useState } from "react";
+import { AlertCircle, Check, Copy, Download, LoaderCircle, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import type { ManagedRuntimeInstallProgress } from "@/types/rosetta";
+import type {
+  ManagedRuntimeInstallProgress,
+  ManagedRuntimeLogsSummary,
+} from "@/types/rosetta";
 
 import { OnboardingStepShell } from "./OnboardingStepShell";
 
@@ -18,6 +22,8 @@ type InstallProgressLike = Pick<
 type InstallStepProps = {
   progress: InstallProgressLike | null;
   errorMessage: string | null;
+  diagnostics?: Record<string, string | number | boolean | null | undefined>;
+  logs?: ManagedRuntimeLogsSummary | null;
   onCancel: () => void;
   onRetry: () => void;
   onSkip: () => void;
@@ -43,6 +49,8 @@ const ACTIVE_PHASES = new Set([
 export function InstallStep({
   progress,
   errorMessage,
+  diagnostics,
+  logs,
   onCancel,
   onRetry,
   onSkip,
@@ -56,6 +64,9 @@ export function InstallStep({
   skipLabel = "使用自己的翻译 API →",
   stepLabel,
 }: InstallStepProps) {
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">(
+    "idle"
+  );
   const percent = installPercent(progress);
   const isActive = !!progress && ACTIVE_PHASES.has(progress.phase);
   const isPostDownloadPhase =
@@ -64,6 +75,26 @@ export function InstallStep({
     progress?.phase === "writing-manifest" ||
     progress?.phase === "preparing";
   const speed = progress?.speedBytesPerSec ?? 0;
+  const errorSummary = useMemo(
+    () => summarizeErrorMessage(errorMessage),
+    [errorMessage]
+  );
+  const diagnosticText = useMemo(
+    () => buildDiagnosticText(errorMessage, progress, diagnostics, logs),
+    [diagnostics, errorMessage, logs, progress]
+  );
+
+  const handleCopyDiagnostics = async () => {
+    if (!diagnosticText) return;
+    try {
+      await navigator.clipboard.writeText(diagnosticText);
+      setCopyState("copied");
+      window.setTimeout(() => setCopyState("idle"), 1800);
+    } catch {
+      setCopyState("failed");
+      window.setTimeout(() => setCopyState("idle"), 2400);
+    }
+  };
 
   if (errorMessage) {
     return (
@@ -71,12 +102,38 @@ export function InstallStep({
         stepLabel={stepLabel ?? "安装出错"}
         progressValue={progressValue}
         title={errorTitle}
-        description={errorMessage}
+        description={errorSummary}
         align="start"
       >
         <div className="flex items-center gap-2 text-destructive">
           <AlertCircle className="size-4" strokeWidth={1.75} />
-          <span className="text-xs font-medium">需要重试或跳过</span>
+          <span className="text-xs font-medium">需要重试或复制错误信息</span>
+        </div>
+        <div className="w-full space-y-3 rounded-lg border border-border bg-card p-3">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-xs font-medium text-foreground">错误信息</p>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={handleCopyDiagnostics}
+              className="gap-1.5"
+            >
+              {copyState === "copied" ? (
+                <Check className="size-3.5" />
+              ) : (
+                <Copy className="size-3.5" />
+              )}
+              {copyState === "copied"
+                ? "已复制"
+                : copyState === "failed"
+                  ? "复制失败"
+                  : "复制错误信息"}
+            </Button>
+          </div>
+          <pre className="max-h-28 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-2 font-mono text-[11px] leading-5 text-muted-foreground">
+            {errorMessage}
+          </pre>
         </div>
         <Button size="lg" onClick={onRetry} className="h-11 w-full gap-2">
           <Download className="size-4" /> {retryLabel}
@@ -195,6 +252,86 @@ function postDownloadCaption(
     default:
       return "正在完成安装";
   }
+}
+
+function summarizeErrorMessage(message: string | null): string {
+  if (!message) {
+    return "安装没有完成。请重试，或复制错误信息发给开发者排查。";
+  }
+
+  const firstMeaningfulLine =
+    message
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find((line) => line && !line.startsWith("---")) ?? "";
+
+  const logLike =
+    message.includes("slot load_model") ||
+    message.includes("srv load_model") ||
+    message.includes("llama_server") ||
+    message.includes("--- sidecar log ---");
+
+  if (logLike) {
+    return "本地翻译引擎启动没有完成。下面保留了可复制的错误信息，方便发给开发者排查。";
+  }
+
+  if (!firstMeaningfulLine) {
+    return "安装没有完成。请重试，或复制错误信息发给开发者排查。";
+  }
+
+  return truncateForSummary(firstMeaningfulLine);
+}
+
+function truncateForSummary(text: string): string {
+  const maxLength = 120;
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, maxLength).trimEnd()}…`;
+}
+
+function buildDiagnosticText(
+  errorMessage: string | null,
+  progress: InstallProgressLike | null,
+  diagnostics: InstallStepProps["diagnostics"],
+  logs: ManagedRuntimeLogsSummary | null | undefined
+): string {
+  const lines = [
+    "Rosetta onboarding error",
+    `time: ${new Date().toISOString()}`,
+  ];
+
+  if (progress) {
+    lines.push(`phase: ${progress.phase}`);
+    lines.push(`bytes: ${progress.bytesDone}/${progress.bytesTotal}`);
+    if (progress.speedBytesPerSec > 0) {
+      lines.push(`speedBytesPerSec: ${progress.speedBytesPerSec}`);
+    }
+    if (progress.message) {
+      lines.push(`progressMessage: ${progress.message}`);
+    }
+    if (progress.lastError) {
+      lines.push(`progressLastError: ${progress.lastError}`);
+    }
+  }
+
+  if (diagnostics) {
+    for (const [key, value] of Object.entries(diagnostics)) {
+      if (value == null || value === "") continue;
+      lines.push(`${key}: ${String(value)}`);
+    }
+  }
+
+  if (logs) {
+    lines.push("", "runtimeLog:");
+    lines.push(`logFile: ${logs.logFile}`);
+    lines.push(`logMessage: ${logs.message}`);
+    if (logs.logTail.length > 0) {
+      lines.push("--- tail ---");
+      lines.push(...logs.logTail.slice(-80));
+    }
+  }
+
+  lines.push("", "error:", errorMessage ?? "");
+  return lines.join("\n");
 }
 
 function formatBytes(bytes: number): string {

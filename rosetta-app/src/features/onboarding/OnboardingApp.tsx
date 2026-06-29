@@ -15,6 +15,7 @@ import {
 } from "@/lib/pdf2zhRuntime";
 import { useManagedRwkvRuntime } from "@/lib/useManagedRwkvRuntime";
 import { cn } from "@/lib/utils";
+import type { ManagedRuntimeLogsSummary } from "@/types/rosetta";
 
 import { DoneStep } from "./DoneStep";
 import { InstallStep } from "./InstallStep";
@@ -26,6 +27,16 @@ type OnboardingStep =
   | "pdf"
   | "installing-pdf"
   | "welcome";
+
+type OnboardingDebugState = {
+  flow: string | null;
+  lastAction: string | null;
+  lastEventAt: string | null;
+  installResult: string | null;
+  startResult: string | null;
+  probeResult: string | null;
+  lastCaughtError: string | null;
+};
 
 const appWindow = getCurrentWindow();
 
@@ -74,6 +85,18 @@ export function OnboardingApp() {
   const [pdfWorkerStatus, setPdfWorkerStatus] =
     useState<Pdf2zhWorkerStatus | null>(null);
   const [pdfWarmupElapsed, setPdfWarmupElapsed] = useState(0);
+  const [rwkvLogs, setRwkvLogs] = useState<ManagedRuntimeLogsSummary | null>(
+    null
+  );
+  const [debugState, setDebugState] = useState<OnboardingDebugState>({
+    flow: null,
+    lastAction: null,
+    lastEventAt: null,
+    installResult: null,
+    startResult: null,
+    probeResult: null,
+    lastCaughtError: null,
+  });
   const rwkvInstallFlowActiveRef = useRef(false);
   const [decision, setDecision] = useState<{
     modelSizeBytes: number | null;
@@ -151,6 +174,13 @@ export function OnboardingApp() {
     setErrorMessage(null);
     setIsPrewarmingPdf(false);
     setStep("installing-pdf");
+    setDebugState((prev) => ({
+      ...prev,
+      flow: "pdf-setup",
+      lastAction: "beginPdfSetup",
+      lastEventAt: isoNow(),
+      lastCaughtError: null,
+    }));
 
     try {
       const existing = await pdfRuntime.refreshStatus();
@@ -167,7 +197,14 @@ export function OnboardingApp() {
       setSkippedPdfInstall(false);
       setStep("welcome");
     } catch (error) {
-      setErrorMessage(toMessage(error));
+      const message = toMessage(error);
+      setDebugState((prev) => ({
+        ...prev,
+        lastAction: "beginPdfSetup.catch",
+        lastEventAt: isoNow(),
+        lastCaughtError: message,
+      }));
+      setErrorMessage(message);
     } finally {
       setIsPrewarmingPdf(false);
     }
@@ -175,34 +212,90 @@ export function OnboardingApp() {
 
   const installLocalRuntime = useCallback(async () => {
     if (rwkvInstallFlowActiveRef.current) {
+      setDebugState((prev) => ({
+        ...prev,
+        flow: "rwkv-install",
+        lastAction: "installLocalRuntime.ignoredActiveFlow",
+        lastEventAt: isoNow(),
+      }));
       return;
     }
 
     rwkvInstallFlowActiveRef.current = true;
     setErrorMessage(null);
+    setRwkvLogs(null);
+    setDebugState({
+      flow: "rwkv-install",
+      lastAction: "installLocalRuntime.begin",
+      lastEventAt: isoNow(),
+      installResult: null,
+      startResult: null,
+      probeResult: null,
+      lastCaughtError: null,
+    });
     setStep("installing-runtime");
 
     try {
       const installed = await runtime.install({ repair: false });
+      setDebugState((prev) => ({
+        ...prev,
+        lastAction: "runtime.install.returned",
+        lastEventAt: isoNow(),
+        installResult: summarizeValue(installed),
+      }));
       if (!installed) {
         setErrorMessage(null);
         return;
       }
 
       const started = await runtime.start();
+      setDebugState((prev) => ({
+        ...prev,
+        lastAction: "runtime.start.returned",
+        lastEventAt: isoNow(),
+        startResult: summarizeValue(started),
+      }));
       if (!started) {
+        const logs = await runtime.readLogs();
+        setRwkvLogs(logs);
         setErrorMessage(null);
         return;
       }
 
       const probe = await runtime.probe();
+      setDebugState((prev) => ({
+        ...prev,
+        lastAction: "runtime.probe.returned",
+        lastEventAt: isoNow(),
+        probeResult: summarizeValue(probe),
+      }));
       if (!probe?.ok) {
-        setErrorMessage(probe?.message ?? "本地翻译引擎探活没有完成。");
+        const logs = await runtime.readLogs();
+        setRwkvLogs(logs);
+        const message = probe?.message ?? "本地翻译引擎探活没有完成。";
+        setDebugState((prev) => ({
+          ...prev,
+          lastAction: "runtime.probe.notOk",
+          lastEventAt: isoNow(),
+          lastCaughtError: message,
+        }));
+        setErrorMessage(message);
         return;
       }
 
       setSkippedLocalInstall(false);
       setStep("pdf");
+    } catch (error) {
+      const message = toMessage(error);
+      const logs = await runtime.readLogs();
+      setRwkvLogs(logs);
+      setDebugState((prev) => ({
+        ...prev,
+        lastAction: "installLocalRuntime.catch",
+        lastEventAt: isoNow(),
+        lastCaughtError: message,
+      }));
+      setErrorMessage(message);
     } finally {
       rwkvInstallFlowActiveRef.current = false;
     }
@@ -347,6 +440,39 @@ export function OnboardingApp() {
           <InstallStep
             progress={runtime.progress}
             errorMessage={errorMessage ?? runtime.lastError}
+            logs={rwkvLogs}
+            diagnostics={{
+              component: "managed-rwkv",
+              onboardingStep: step,
+              flow: debugState.flow,
+              lastAction: debugState.lastAction,
+              lastEventAt: debugState.lastEventAt,
+              installResult: debugState.installResult,
+              startResult: debugState.startResult,
+              probeResult: debugState.probeResult,
+              lastCaughtError: debugState.lastCaughtError,
+              isInstalling: runtime.isInstalling,
+              isStarting: runtime.isStarting,
+              isProbing: runtime.isProbing,
+              isRefreshing: runtime.isRefreshing,
+              statusState: runtime.status?.state,
+              statusMessage: runtime.status?.message,
+              runtimeProfile: runtime.status?.profile?.id,
+              provider: runtime.status?.profile?.providerId,
+              backend: runtime.status?.profile?.backend,
+              healthPath: runtime.status?.profile?.batchChatPath,
+              bindHost: runtime.status?.profile?.bindHost,
+              processPid: runtime.status?.process.pid,
+              processBaseUrl: runtime.status?.process.baseUrl,
+              processStartedAt: runtime.status?.process.startedAt,
+              processCpuFallback: runtime.status?.process.cpuFallback,
+              processLastError: runtime.status?.process.lastError,
+              installPlanReady: runtime.status?.installPlan?.ready,
+              installPlanMessage: runtime.status?.installPlan?.message,
+              modelFile: runtime.status?.paths?.modelFile,
+              runtimeDir: runtime.status?.paths?.runtimeDir,
+              logsDir: runtime.status?.paths?.logsDir,
+            }}
             onCancel={handleCancel}
             onRetry={handleRetry}
             onSkip={handleSkipLocalInstall}
@@ -378,6 +504,28 @@ export function OnboardingApp() {
           <InstallStep
             progress={pdfProgress}
             errorMessage={errorMessage ?? pdfRuntime.lastError}
+            diagnostics={{
+              component: "managed-pdf2zh",
+              onboardingStep: step,
+              flow: debugState.flow,
+              lastAction: debugState.lastAction,
+              lastEventAt: debugState.lastEventAt,
+              lastCaughtError: debugState.lastCaughtError,
+              statusState: pdfRuntime.status?.state,
+              statusMessage: pdfRuntime.status?.message,
+              installPlanReady: pdfRuntime.status?.installPlan?.ready,
+              installPlanMessage: pdfRuntime.status?.installPlan?.message,
+              packDir: pdfRuntime.status?.paths?.packDir,
+              bin: pdfRuntime.status?.paths?.bin,
+              logsDir: pdfRuntime.status?.paths?.logsDir,
+              workerState: pdfWorkerStatus?.state,
+              workerMessage: pdfWorkerStatus?.message,
+              workerImportMs: pdfWorkerStatus?.importMs,
+              warmupStep: pdfWorkerStatus?.warmupStep,
+              warmupTotalSteps: pdfWorkerStatus?.warmupTotalSteps,
+              warmupLabel: pdfWorkerStatus?.warmupLabel,
+              warmupElapsedSeconds: pdfWarmupElapsed,
+            }}
             onCancel={handleCancel}
             onRetry={handleRetry}
             onSkip={handleSkipPdf}
@@ -412,6 +560,19 @@ function toMessage(error: unknown): string {
     return error;
   }
   return JSON.stringify(error);
+}
+
+function isoNow(): string {
+  return new Date().toISOString();
+}
+
+function summarizeValue(value: unknown): string {
+  if (value == null) return String(value);
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }
 
 function formatPdfWarmupMessage(
