@@ -874,6 +874,8 @@ Validation performed:
 - `cd rosetta-app/src-tauri && cargo test rosetta_jobs`
 - Manual UI verification was not run because repo instructions say not to start
   dev servers unless explicitly requested.
+- User verification on 2026-07-02 reported the remaining onboarding install and
+  translation flow passed.
 
 Remaining:
 

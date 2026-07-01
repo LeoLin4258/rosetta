@@ -101,7 +101,7 @@ export function WelcomeStep({
         />
       )}
 
-      <div className="flex flex-col items-start gap-4 pt-1">
+      <div className="flex w-full flex-wrap items-center justify-between gap-x-4 gap-y-3 pt-1">
         {showProxyConfig && !showProxyField && (
           <button
             type="button"
@@ -114,7 +114,7 @@ export function WelcomeStep({
         <button
           type="button"
           onClick={onSkip}
-          className="text-xs text-muted-foreground/35 transition-colors hover:text-muted-foreground/60"
+          className="ml-auto text-xs text-muted-foreground/35 transition-colors hover:text-muted-foreground/60"
         >
           {skipLabel}
         </button>

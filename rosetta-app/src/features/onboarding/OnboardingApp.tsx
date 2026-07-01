@@ -443,11 +443,11 @@ export function OnboardingApp() {
   const runtimeDisplayName =
     selectedRuntimeProfile?.runtimeLabel ?? "RWKV local runtime";
   const rwkvTitle = decision?.isReturningUser
-    ? `Download ${runtimeDisplayName}`
-    : `Set up ${runtimeDisplayName}`;
+    ? `下载 ${runtimeDisplayName}`
+    : `安装 ${runtimeDisplayName}`;
   const rwkvDescription = decision?.isReturningUser
-    ? "Install the current local translation runtime for this machine."
-    : "Rosetta installs the runtime and translation model in local app data.";
+    ? "安装适合这台设备的本地翻译运行时。"
+    : "Rosetta 会把运行时和翻译模型安装在本机应用数据目录。";
   const pdfProgress = isPrewarmingPdf
     ? {
         phase: "preparing" as const,
@@ -459,18 +459,18 @@ export function OnboardingApp() {
       }
     : pdfRuntime.progress;
   const runtimePrimaryLabel = isCheckingLocalInstallSupport
-    ? "Checking local runtime support"
+    ? "正在检测本机支持"
     : localInstallSupported
-      ? `Install ${runtimeDisplayName}`
-      : "Continue";
+      ? `安装 ${runtimeDisplayName}`
+      : "继续";
   const runtimePrimaryCaption = isCheckingLocalInstallSupport
-    ? "Rosetta is checking whether this machine can run a managed local translator."
+    ? "Rosetta 正在检测这台设备是否可以运行托管的本地翻译服务。"
     : localInstallSupported
       ? formatDownloadCaption(selectedModelSizeBytes)
       : localInstallSupport?.message ??
-        "This machine cannot install the selected local runtime. You can continue and configure a remote API later.";
+        "这台设备不能安装当前选择的本地运行时。你可以先继续，之后再配置远程 API。";
   const llamaFallbackCaption =
-    "Broader Windows compatibility. You can still switch back to Lightning later.";
+    "兼容更多 Windows 设备。之后仍可在设置里切回 Lightning。";
 
   return (
     <div
@@ -504,7 +504,7 @@ export function OnboardingApp() {
             primaryIcon={localInstallSupported ? "download" : "arrow"}
             secondaryLabel={
               showLlamaFallback && selectedRuntimeIsLightning
-                ? "Use llama.cpp Vulkan instead"
+                ? "改用 llama.cpp Vulkan"
                 : undefined
             }
             secondaryCaption={
@@ -567,7 +567,7 @@ export function OnboardingApp() {
             }
             fallbackLabel={
               showLlamaFallback && selectedRuntimeIsLightning
-                ? "Install llama.cpp Vulkan instead"
+                ? "改装 llama.cpp Vulkan"
                 : undefined
             }
             fallbackDescription={
@@ -579,7 +579,7 @@ export function OnboardingApp() {
             progressValue={33}
             defaultCaption={formatDownloadCaption(selectedModelSizeBytes)}
             downloadingCaption={formatDownloadCaption(selectedModelSizeBytes)}
-            title={`Preparing ${runtimeDisplayName}`}
+            title={`正在准备 ${runtimeDisplayName}`}
             stepLabel="步骤 1 / 3"
             skipLabel="跳过 RWKV，继续下一步"
           />
