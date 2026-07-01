@@ -1,8 +1,9 @@
 use std::{
+    collections::BTreeMap,
     path::PathBuf,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc,
+        Arc, Mutex,
     },
 };
 
@@ -11,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use tokio::{
     net::TcpListener,
     sync::{mpsc, oneshot},
-    task::JoinHandle,
+    task::{JoinHandle, JoinSet},
     time::{timeout_at, Duration, Instant},
 };
 
@@ -22,17 +23,34 @@ use crate::rwkv_providers::{
 };
 
 /// Default paragraph batch width for PDF providers that do not report their
-/// own supported sizes. Also drives pdf2zh's `thread` count below. Generic
-/// providers stay at 8 because that was the measured stable first-page point;
-/// llama.cpp follows the managed runtime's parallel setting to keep client
-/// concurrency aligned with llama-server slots during benchmark experiments.
+/// own supported sizes. Generic providers stay at 8 because that was the
+/// measured stable first-page point; llama.cpp follows the managed runtime's
+/// parallel setting to keep client concurrency aligned with llama-server slots
+/// during benchmark experiments.
 const DEFAULT_MAX_BATCH_SIZE: usize = 8;
+/// Lightning's CUDA runtime can accept much wider native batches than the
+/// older sidecar paths. Keep this aggressive default scoped to Lightning so
+/// llama.cpp Vulkan and MLX do not inherit pdf2zh worker-pool risk.
+const DEFAULT_LIGHTNING_MAX_BATCH_SIZE: usize = 256;
+const LIGHTNING_BATCH_SIZE_CEILING: usize = 1024;
+const DEFAULT_LIGHTNING_PDF2ZH_THREAD_COUNT: usize = 100;
+const LIGHTNING_PDF2ZH_THREAD_COUNT_CEILING: usize = 1_000;
+const DEFAULT_LIGHTNING_IN_FLIGHT_REQUESTS: usize = 32;
+const LIGHTNING_IN_FLIGHT_REQUESTS_CEILING: usize = 64;
+const DEFAULT_LIGHTNING_BATCH_WINDOW_MS: u64 = 80;
+const LIGHTNING_BATCH_WINDOW_MS_CEILING: u64 = 5_000;
 const PDF_SHIM_BODY_TARGET_PROMPT_TOKENS: usize = 150;
 const PDF_SHIM_BODY_HARD_PROMPT_TOKENS: usize = 190;
 const PDF_SHIM_CAPTION_TARGET_PROMPT_TOKENS: usize = 150;
 const PDF_SHIM_CAPTION_HARD_PROMPT_TOKENS: usize = 190;
 const PDF_SHIM_REFERENCE_TARGET_PROMPT_TOKENS: usize = 130;
 const PDF_SHIM_REFERENCE_HARD_PROMPT_TOKENS: usize = 170;
+const PDF_SHIM_LIGHTNING_BODY_TARGET_PROMPT_TOKENS: usize = 150;
+const PDF_SHIM_LIGHTNING_BODY_HARD_PROMPT_TOKENS: usize = 190;
+const PDF_SHIM_LIGHTNING_CAPTION_TARGET_PROMPT_TOKENS: usize = 150;
+const PDF_SHIM_LIGHTNING_CAPTION_HARD_PROMPT_TOKENS: usize = 190;
+const PDF_SHIM_LIGHTNING_REFERENCE_TARGET_PROMPT_TOKENS: usize = 130;
+const PDF_SHIM_LIGHTNING_REFERENCE_HARD_PROMPT_TOKENS: usize = 170;
 const PDF_SHIM_LLAMA_BODY_TARGET_PROMPT_TOKENS: usize = 56;
 const PDF_SHIM_LLAMA_BODY_HARD_PROMPT_TOKENS: usize = 72;
 const PDF_SHIM_LLAMA_CAPTION_TARGET_PROMPT_TOKENS: usize = 56;
@@ -57,6 +75,20 @@ const PDF_SHIM_LLAMA_CAPTION_TARGET_ENV: &str = "ROSETTA_PDF_SHIM_LLAMA_CAPTION_
 const PDF_SHIM_LLAMA_CAPTION_HARD_ENV: &str = "ROSETTA_PDF_SHIM_LLAMA_CAPTION_HARD";
 const PDF_SHIM_LLAMA_REFERENCE_TARGET_ENV: &str = "ROSETTA_PDF_SHIM_LLAMA_REFERENCE_TARGET";
 const PDF_SHIM_LLAMA_REFERENCE_HARD_ENV: &str = "ROSETTA_PDF_SHIM_LLAMA_REFERENCE_HARD";
+const PDF_SHIM_LIGHTNING_MAX_BATCH_SIZE_ENV: &str = "ROSETTA_PDF_SHIM_LIGHTNING_MAX_BATCH_SIZE";
+const PDF_SHIM_LIGHTNING_THREAD_COUNT_ENV: &str = "ROSETTA_PDF_SHIM_LIGHTNING_THREAD_COUNT";
+const PDF_SHIM_LIGHTNING_IN_FLIGHT_REQUESTS_ENV: &str =
+    "ROSETTA_PDF_SHIM_LIGHTNING_IN_FLIGHT_REQUESTS";
+const PDF_SHIM_LIGHTNING_ASSEMBLE_BATCHES_ENV: &str = "ROSETTA_PDF_SHIM_LIGHTNING_ASSEMBLE_BATCHES";
+const PDF_SHIM_LIGHTNING_DIRECT_CONCURRENT_ENV: &str =
+    "ROSETTA_PDF_SHIM_LIGHTNING_DIRECT_CONCURRENT";
+const PDF_SHIM_LIGHTNING_BATCH_WINDOW_MS_ENV: &str = "ROSETTA_PDF_SHIM_LIGHTNING_BATCH_WINDOW_MS";
+const PDF_SHIM_LIGHTNING_BODY_TARGET_ENV: &str = "ROSETTA_PDF_SHIM_LIGHTNING_BODY_TARGET";
+const PDF_SHIM_LIGHTNING_BODY_HARD_ENV: &str = "ROSETTA_PDF_SHIM_LIGHTNING_BODY_HARD";
+const PDF_SHIM_LIGHTNING_CAPTION_TARGET_ENV: &str = "ROSETTA_PDF_SHIM_LIGHTNING_CAPTION_TARGET";
+const PDF_SHIM_LIGHTNING_CAPTION_HARD_ENV: &str = "ROSETTA_PDF_SHIM_LIGHTNING_CAPTION_HARD";
+const PDF_SHIM_LIGHTNING_REFERENCE_TARGET_ENV: &str = "ROSETTA_PDF_SHIM_LIGHTNING_REFERENCE_TARGET";
+const PDF_SHIM_LIGHTNING_REFERENCE_HARD_ENV: &str = "ROSETTA_PDF_SHIM_LIGHTNING_REFERENCE_HARD";
 
 /// Upper bound on `pdf2zh --thread`. pdf2zh.py spawns this many Python
 /// multiprocessing workers; pushing it too high makes the worker-pool setup
@@ -130,12 +162,25 @@ pub struct ShimRwkvMetrics {
     pub failed_request_count: AtomicU64,
     pub total_request_ms: AtomicU64,
     pub max_request_ms: AtomicU64,
+    pub total_batch_items: AtomicU64,
+    pub total_assembly_wait_ms: AtomicU64,
+    pub max_assembly_wait_ms: AtomicU64,
     pub total_input_chars: AtomicU64,
     pub total_output_chars: AtomicU64,
+    request_latencies_ms: Mutex<Vec<u64>>,
+    batch_size_distribution: Mutex<BTreeMap<u64, u64>>,
 }
 
 impl ShimRwkvMetrics {
-    fn record(&self, elapsed_ms: u64, ok: bool, input_chars: u64, output_chars: u64) {
+    fn record(
+        &self,
+        elapsed_ms: u64,
+        ok: bool,
+        input_chars: u64,
+        output_chars: u64,
+        batch_size: u64,
+        assembly_wait_ms: u64,
+    ) {
         self.request_count.fetch_add(1, Ordering::Relaxed);
         if !ok {
             self.failed_request_count.fetch_add(1, Ordering::Relaxed);
@@ -143,15 +188,49 @@ impl ShimRwkvMetrics {
         self.total_request_ms
             .fetch_add(elapsed_ms, Ordering::Relaxed);
         self.max_request_ms.fetch_max(elapsed_ms, Ordering::Relaxed);
+        self.total_batch_items
+            .fetch_add(batch_size, Ordering::Relaxed);
+        self.total_assembly_wait_ms
+            .fetch_add(assembly_wait_ms, Ordering::Relaxed);
+        self.max_assembly_wait_ms
+            .fetch_max(assembly_wait_ms, Ordering::Relaxed);
         self.total_input_chars
             .fetch_add(input_chars, Ordering::Relaxed);
         self.total_output_chars
             .fetch_add(output_chars, Ordering::Relaxed);
+        if let Ok(mut latencies) = self.request_latencies_ms.lock() {
+            latencies.push(elapsed_ms);
+        }
+        if let Ok(mut distribution) = self.batch_size_distribution.lock() {
+            *distribution.entry(batch_size).or_insert(0) += 1;
+        }
     }
 
     pub fn snapshot(&self) -> ShimRwkvMetricsSnapshot {
         let request_count = self.request_count.load(Ordering::Relaxed);
         let total_request_ms = self.total_request_ms.load(Ordering::Relaxed);
+        let total_batch_items = self.total_batch_items.load(Ordering::Relaxed);
+        let total_assembly_wait_ms = self.total_assembly_wait_ms.load(Ordering::Relaxed);
+        let mut latencies = self
+            .request_latencies_ms
+            .lock()
+            .map(|latencies| latencies.clone())
+            .unwrap_or_default();
+        latencies.sort_unstable();
+        let p95_request_ms = percentile_ms(&latencies, 95);
+        let batch_size_distribution = self
+            .batch_size_distribution
+            .lock()
+            .map(|distribution| {
+                distribution
+                    .iter()
+                    .map(|(batch_size, request_count)| ShimBatchSizeBucket {
+                        batch_size: *batch_size,
+                        request_count: *request_count,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         ShimRwkvMetricsSnapshot {
             request_count,
             failed_request_count: self.failed_request_count.load(Ordering::Relaxed),
@@ -162,13 +241,44 @@ impl ShimRwkvMetrics {
                 0
             },
             max_request_ms: self.max_request_ms.load(Ordering::Relaxed),
+            p95_request_ms,
+            total_batch_items,
+            average_batch_size: if request_count > 0 {
+                total_batch_items as f64 / request_count as f64
+            } else {
+                0.0
+            },
+            batch_size_distribution,
+            total_assembly_wait_ms,
+            average_assembly_wait_ms: if request_count > 0 {
+                total_assembly_wait_ms / request_count
+            } else {
+                0
+            },
+            max_assembly_wait_ms: self.max_assembly_wait_ms.load(Ordering::Relaxed),
             total_input_chars: self.total_input_chars.load(Ordering::Relaxed),
             total_output_chars: self.total_output_chars.load(Ordering::Relaxed),
         }
     }
 }
 
+fn percentile_ms(sorted_values: &[u64], percentile: usize) -> u64 {
+    if sorted_values.is_empty() {
+        return 0;
+    }
+    let percentile = percentile.clamp(1, 100);
+    let rank = (sorted_values.len() * percentile).div_ceil(100);
+    sorted_values[rank.saturating_sub(1)]
+}
+
 #[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShimBatchSizeBucket {
+    pub batch_size: u64,
+    pub request_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ShimRwkvMetricsSnapshot {
     pub request_count: u64,
@@ -176,6 +286,13 @@ pub struct ShimRwkvMetricsSnapshot {
     pub total_request_ms: u64,
     pub average_request_ms: u64,
     pub max_request_ms: u64,
+    pub p95_request_ms: u64,
+    pub total_batch_items: u64,
+    pub average_batch_size: f64,
+    pub batch_size_distribution: Vec<ShimBatchSizeBucket>,
+    pub total_assembly_wait_ms: u64,
+    pub average_assembly_wait_ms: u64,
+    pub max_assembly_wait_ms: u64,
     pub total_input_chars: u64,
     pub total_output_chars: u64,
 }
@@ -193,8 +310,9 @@ pub struct OpenAiShim {
     #[allow(dead_code)]
     pub batch_size: usize,
     /// What to pass as pdf2zh's `--thread` argument. Capped lower than
-    /// `batch_size` so pdf2zh's Python multiprocessing pool doesn't blow up
-    /// on small inputs. See `PDF2ZH_THREAD_CEILING`.
+    /// `batch_size` for non-Lightning providers so pdf2zh's Python
+    /// multiprocessing pool doesn't blow up on small inputs. Lightning opts
+    /// into a separate high-concurrency path.
     pub pdf2zh_thread_count: usize,
     /// RWKV request timing collected while this shim is alive. Snapshot it
     /// before dropping the shim to feed the diagnostics profile.
@@ -277,7 +395,7 @@ pub async fn spawn_shim(
     debug_context: Option<String>,
 ) -> Result<OpenAiShim, String> {
     let metrics = Arc::new(ShimRwkvMetrics::default());
-    let (max_batch_size, batch_handle, chunk_profile) = match provider {
+    let (max_batch_size, pdf2zh_thread_count, batch_handle, chunk_profile) = match provider {
         ShimProviderConfig::MobileBatch(rwkv) => {
             mobile_batch_chat::set_chat_roles_for_pair(&rwkv, &source_lang, &target_lang, None)
                 .await?;
@@ -298,12 +416,14 @@ pub async fn spawn_shim(
             ));
             (
                 max_batch_size,
+                max_batch_size.min(PDF2ZH_THREAD_CEILING).max(1),
                 (batch_tx, handle),
                 standard_pdf_chunk_profile(),
             )
         }
         ShimProviderConfig::Lightning(lightning) => {
-            let max_batch_size = DEFAULT_MAX_BATCH_SIZE;
+            let max_batch_size = lightning_pdf_max_batch_size();
+            let pdf2zh_thread_count = lightning_pdf_thread_count(max_batch_size);
             let (batch_tx, batch_rx) = mpsc::channel(max_batch_size * 4);
             let handle = tokio::spawn(lightning_batch_processor(
                 batch_rx,
@@ -316,8 +436,9 @@ pub async fn spawn_shim(
             ));
             (
                 max_batch_size,
+                pdf2zh_thread_count,
                 (batch_tx, handle),
-                standard_pdf_chunk_profile(),
+                lightning_pdf_chunk_profile(),
             )
         }
         ShimProviderConfig::LlamaCpp(llama) => {
@@ -336,6 +457,7 @@ pub async fn spawn_shim(
             ));
             (
                 max_batch_size,
+                max_batch_size.min(PDF2ZH_THREAD_CEILING).max(1),
                 (batch_tx, handle),
                 llama_cpp_pdf_chunk_profile(),
             )
@@ -381,7 +503,6 @@ pub async fn spawn_shim(
             eprintln!("[pdf2zh-shim] server exited: {error}");
         }
     });
-    let pdf2zh_thread_count = max_batch_size.min(PDF2ZH_THREAD_CEILING).max(1);
     Ok(OpenAiShim {
         port,
         batch_size: max_batch_size,
@@ -390,6 +511,68 @@ pub async fn spawn_shim(
         server_handle,
         batch_handle,
     })
+}
+
+fn lightning_pdf_max_batch_size() -> usize {
+    std::env::var(PDF_SHIM_LIGHTNING_MAX_BATCH_SIZE_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_LIGHTNING_MAX_BATCH_SIZE)
+        .min(LIGHTNING_BATCH_SIZE_CEILING)
+        .max(1)
+}
+
+fn lightning_pdf_batch_window_ms() -> u64 {
+    std::env::var(PDF_SHIM_LIGHTNING_BATCH_WINDOW_MS_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_LIGHTNING_BATCH_WINDOW_MS)
+        .min(LIGHTNING_BATCH_WINDOW_MS_CEILING)
+        .max(1)
+}
+
+fn lightning_pdf_thread_count(max_batch_size: usize) -> usize {
+    std::env::var(PDF_SHIM_LIGHTNING_THREAD_COUNT_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(max_batch_size.min(DEFAULT_LIGHTNING_PDF2ZH_THREAD_COUNT))
+        .min(LIGHTNING_PDF2ZH_THREAD_COUNT_CEILING)
+        .max(1)
+}
+
+fn lightning_pdf_in_flight_requests() -> usize {
+    std::env::var(PDF_SHIM_LIGHTNING_IN_FLIGHT_REQUESTS_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_LIGHTNING_IN_FLIGHT_REQUESTS)
+        .min(LIGHTNING_IN_FLIGHT_REQUESTS_CEILING)
+        .max(1)
+}
+
+fn lightning_pdf_assemble_batches() -> bool {
+    std::env::var(PDF_SHIM_LIGHTNING_ASSEMBLE_BATCHES_ENV)
+        .ok()
+        .is_some_and(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+}
+
+fn lightning_pdf_direct_concurrent() -> bool {
+    std::env::var(PDF_SHIM_LIGHTNING_DIRECT_CONCURRENT_ENV)
+        .ok()
+        .is_some_and(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
 }
 
 async fn mobile_batch_processor(
@@ -405,6 +588,7 @@ async fn mobile_batch_processor(
         let Some(first) = rx.recv().await else {
             break;
         };
+        let assembly_started = Instant::now();
         let mut batch = vec![first];
 
         let deadline = Instant::now() + Duration::from_millis(BATCH_WINDOW_MS);
@@ -414,6 +598,7 @@ async fn mobile_batch_processor(
                 _ => break,
             }
         }
+        let assembly_wait_ms = assembly_started.elapsed().as_millis() as u64;
 
         eprintln!("[pdf2zh-batch] assembled {} item(s) in batch", batch.len());
         let source_texts: Vec<String> = batch.iter().map(|p| p.text.clone()).collect();
@@ -439,6 +624,8 @@ async fn mobile_batch_processor(
                 .iter()
                 .map(|t| t.chars().count() as u64)
                 .sum(),
+            source_texts.len() as u64,
+            assembly_wait_ms,
         );
 
         eprintln!(
@@ -476,19 +663,150 @@ async fn lightning_batch_processor(
     metrics: Arc<ShimRwkvMetrics>,
     debug_context: Option<String>,
 ) {
+    if !lightning_pdf_direct_concurrent() {
+        lightning_batch_processor_serial(
+            rx,
+            config,
+            source_lang,
+            target_lang,
+            max_batch_size,
+            metrics,
+            debug_context,
+        )
+        .await;
+        return;
+    }
+
+    let batch_window_ms = lightning_pdf_batch_window_ms();
+    let max_in_flight = lightning_pdf_in_flight_requests();
+    let assemble_batches = lightning_pdf_assemble_batches();
+    let mut requests = JoinSet::new();
+    loop {
+        while requests.len() >= max_in_flight {
+            if requests.join_next().await.is_none() {
+                break;
+            }
+        }
+
+        let Some(first) = rx.recv().await else {
+            break;
+        };
+        let assembly_started = Instant::now();
+        let mut batch = vec![first];
+
+        if assemble_batches {
+            let deadline = Instant::now() + Duration::from_millis(batch_window_ms);
+            while batch.len() < max_batch_size {
+                match timeout_at(deadline, rx.recv()).await {
+                    Ok(Some(item)) => batch.push(item),
+                    _ => break,
+                }
+            }
+        }
+        let assembly_wait_ms = assembly_started.elapsed().as_millis() as u64;
+
+        eprintln!(
+            "[pdf2zh-lightning] assembled {} item(s) in batch",
+            batch.len()
+        );
+        requests.spawn(process_lightning_batch(
+            batch,
+            config.clone(),
+            source_lang.clone(),
+            target_lang.clone(),
+            Arc::clone(&metrics),
+            debug_context.clone(),
+            assembly_wait_ms,
+        ));
+    }
+
+    while requests.join_next().await.is_some() {}
+}
+
+async fn process_lightning_batch(
+    batch: Vec<PendingTranslation>,
+    config: LightningApiConfig,
+    source_lang: String,
+    target_lang: String,
+    metrics: Arc<ShimRwkvMetrics>,
+    debug_context: Option<String>,
+    assembly_wait_ms: u64,
+) {
+    let source_texts: Vec<String> = batch.iter().map(|p| p.text.clone()).collect();
+    let request_started = Instant::now();
+    let result = crate::rwkv_api::translate_batch_via_lightning(
+        &config.base_url,
+        &config.endpoint,
+        &config.internal_token,
+        &config.body_password,
+        config.timeout_ms,
+        &source_lang,
+        &target_lang,
+        &source_texts,
+        debug_context.as_deref().or(Some("pdf2zh-shim")),
+    )
+    .await;
+    metrics.record(
+        request_started.elapsed().as_millis() as u64,
+        result.is_ok(),
+        source_texts.iter().map(|t| t.chars().count() as u64).sum(),
+        result
+            .as_ref()
+            .map(|translations| translations.iter().map(|t| t.chars().count() as u64).sum())
+            .unwrap_or(0),
+        source_texts.len() as u64,
+        assembly_wait_ms,
+    );
+    match result {
+        Ok(translations) if translations.len() == batch.len() => {
+            for (pending, translation) in batch.into_iter().zip(translations) {
+                let _ = pending.result_tx.send(Ok(translation));
+            }
+        }
+        Ok(translations) => {
+            let error_msg = format!(
+                "translation result count mismatch (expected {}, got {})",
+                batch.len(),
+                translations.len()
+            );
+            for pending in batch {
+                let _ = pending.result_tx.send(Err(error_msg.clone()));
+            }
+        }
+        Err(message) => {
+            for pending in batch {
+                let _ = pending.result_tx.send(Err(message.clone()));
+            }
+        }
+    }
+}
+
+#[allow(dead_code)]
+async fn lightning_batch_processor_serial(
+    mut rx: mpsc::Receiver<PendingTranslation>,
+    config: LightningApiConfig,
+    source_lang: String,
+    target_lang: String,
+    max_batch_size: usize,
+    metrics: Arc<ShimRwkvMetrics>,
+    debug_context: Option<String>,
+) {
+    let batch_window_ms = lightning_pdf_batch_window_ms();
     loop {
         let Some(first) = rx.recv().await else {
             break;
         };
+        let assembly_started = Instant::now();
         let mut batch = vec![first];
 
-        let deadline = Instant::now() + Duration::from_millis(BATCH_WINDOW_MS);
+        let deadline = Instant::now() + Duration::from_millis(batch_window_ms);
         while batch.len() < max_batch_size {
             match timeout_at(deadline, rx.recv()).await {
                 Ok(Some(item)) => batch.push(item),
                 _ => break,
             }
         }
+        let assembly_wait_ms = assembly_started.elapsed().as_millis() as u64;
 
         eprintln!(
             "[pdf2zh-lightning] assembled {} item(s) in batch",
@@ -516,6 +834,8 @@ async fn lightning_batch_processor(
                 .as_ref()
                 .map(|translations| translations.iter().map(|t| t.chars().count() as u64).sum())
                 .unwrap_or(0),
+            source_texts.len() as u64,
+            assembly_wait_ms,
         );
         match result {
             Ok(translations) if translations.len() == batch.len() => {
@@ -555,6 +875,7 @@ async fn llama_cpp_batch_processor(
         let Some(first) = rx.recv().await else {
             break;
         };
+        let assembly_started = Instant::now();
         let mut batch = vec![first];
 
         let deadline = Instant::now() + Duration::from_millis(BATCH_WINDOW_MS);
@@ -564,6 +885,7 @@ async fn llama_cpp_batch_processor(
                 _ => break,
             }
         }
+        let assembly_wait_ms = assembly_started.elapsed().as_millis() as u64;
 
         eprintln!(
             "[pdf2zh-llama-cpp] assembled {} item(s) in batch",
@@ -587,6 +909,8 @@ async fn llama_cpp_batch_processor(
                 .as_ref()
                 .map(|translations| translations.iter().map(|t| t.chars().count() as u64).sum())
                 .unwrap_or(0),
+            source_texts.len() as u64,
+            assembly_wait_ms,
         );
         match result {
             Ok(translations) if translations.len() == batch.len() => {
@@ -1050,6 +1374,23 @@ fn standard_pdf_chunk_profile() -> PdfChunkProfile {
     }
 }
 
+fn lightning_pdf_chunk_profile() -> PdfChunkProfile {
+    apply_lightning_pdf_chunk_env_overrides(PdfChunkProfile {
+        body: PdfChunkBudget {
+            target: PDF_SHIM_LIGHTNING_BODY_TARGET_PROMPT_TOKENS,
+            hard: PDF_SHIM_LIGHTNING_BODY_HARD_PROMPT_TOKENS,
+        },
+        caption: PdfChunkBudget {
+            target: PDF_SHIM_LIGHTNING_CAPTION_TARGET_PROMPT_TOKENS,
+            hard: PDF_SHIM_LIGHTNING_CAPTION_HARD_PROMPT_TOKENS,
+        },
+        reference: PdfChunkBudget {
+            target: PDF_SHIM_LIGHTNING_REFERENCE_TARGET_PROMPT_TOKENS,
+            hard: PDF_SHIM_LIGHTNING_REFERENCE_HARD_PROMPT_TOKENS,
+        },
+    })
+}
+
 fn llama_cpp_pdf_chunk_profile() -> PdfChunkProfile {
     let settings = llama_cpp_chat::managed_runtime_settings_from_env();
     let effective_slot_context = settings.server_ctx_size / settings.parallel_requests.max(1);
@@ -1098,6 +1439,26 @@ fn wide_llama_cpp_pdf_chunk_profile() -> PdfChunkProfile {
             target: PDF_SHIM_LLAMA_WIDE_REFERENCE_TARGET_PROMPT_TOKENS,
             hard: PDF_SHIM_LLAMA_WIDE_REFERENCE_HARD_PROMPT_TOKENS,
         },
+    }
+}
+
+fn apply_lightning_pdf_chunk_env_overrides(profile: PdfChunkProfile) -> PdfChunkProfile {
+    PdfChunkProfile {
+        body: pdf_chunk_budget_from_env(
+            profile.body,
+            PDF_SHIM_LIGHTNING_BODY_TARGET_ENV,
+            PDF_SHIM_LIGHTNING_BODY_HARD_ENV,
+        ),
+        caption: pdf_chunk_budget_from_env(
+            profile.caption,
+            PDF_SHIM_LIGHTNING_CAPTION_TARGET_ENV,
+            PDF_SHIM_LIGHTNING_CAPTION_HARD_ENV,
+        ),
+        reference: pdf_chunk_budget_from_env(
+            profile.reference,
+            PDF_SHIM_LIGHTNING_REFERENCE_TARGET_ENV,
+            PDF_SHIM_LIGHTNING_REFERENCE_HARD_ENV,
+        ),
     }
 }
 

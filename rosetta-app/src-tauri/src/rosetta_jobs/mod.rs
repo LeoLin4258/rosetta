@@ -37,6 +37,10 @@ use model::{
     TranslationRevisionReason, TranslationSegment,
 };
 
+const LIGHTNING_PDF_RUN_CHUNK_SIZE_DEFAULT: usize = 100;
+const LIGHTNING_PDF_RUN_CHUNK_SIZE_CEILING: usize = 1_000;
+const LIGHTNING_PDF_RUN_CHUNK_SIZE_ENV: &str = "ROSETTA_PDF_LIGHTNING_PAGE_CHUNK_SIZE";
+
 /// Cancellation for the (single) active PDF translation run.
 ///
 /// `cancelled` is level-triggered: it stays set until the run loop observes it,
@@ -1113,6 +1117,19 @@ fn shim_provider_from_parts(
     }
 }
 
+fn pdf_run_chunk_size_for_provider(provider: &ShimProviderConfig) -> usize {
+    if matches!(provider, ShimProviderConfig::Lightning(_)) {
+        return std::env::var(LIGHTNING_PDF_RUN_CHUNK_SIZE_ENV)
+            .ok()
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(LIGHTNING_PDF_RUN_CHUNK_SIZE_DEFAULT)
+            .min(LIGHTNING_PDF_RUN_CHUNK_SIZE_CEILING)
+            .max(1);
+    }
+    formats::pdf::run_state::PDF_RUN_CHUNK_SIZE
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn translate_pdf_pages_inner(
     app: &AppHandle,
@@ -1176,6 +1193,7 @@ async fn translate_pdf_pages_inner(
         provider_body_password,
         timeout,
     );
+    let pdf_run_chunk_size = pdf_run_chunk_size_for_provider(&provider);
     let force = force.unwrap_or(false);
     let mode = if force && pages.len() as u32 == page_count {
         "retranslate-all"
@@ -1254,7 +1272,7 @@ async fn translate_pdf_pages_inner(
                 "mode": mode,
                 "requestedPages": pages_to_process.clone(),
                 "requestedPageCount": total_pages_to_process,
-                "chunkSize": run_state::PDF_RUN_CHUNK_SIZE,
+                "chunkSize": pdf_run_chunk_size,
                 "ownerSessionId": cancel_state.session_id(),
             })),
     );
@@ -1339,10 +1357,7 @@ async fn translate_pdf_pages_inner(
     let mut failure_message: Option<String> = None;
     let mut cancelled = false;
 
-    for (chunk_index, chunk) in pages_to_process
-        .chunks(run_state::PDF_RUN_CHUNK_SIZE)
-        .enumerate()
-    {
+    for (chunk_index, chunk) in pages_to_process.chunks(pdf_run_chunk_size).enumerate() {
         if cancel_state.is_pdf_run_cancelled(&run_key, &run_id) {
             cancelled = true;
             break;

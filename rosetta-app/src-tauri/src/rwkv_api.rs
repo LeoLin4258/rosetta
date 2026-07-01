@@ -506,7 +506,9 @@ async fn request_translations(
 ) -> RwkvTranslationApiTranslateResult {
     let started_at = Instant::now();
     let url = api_url(base_url, endpoint);
+    let prepare_started = Instant::now();
     let body = build_chat_completions_request(source_texts, body_password, "en", "zh-CN");
+    let prepare_request_ms = prepare_started.elapsed().as_millis() as u64;
     let source_lang = "en";
     let target_lang = "zh-CN";
     let debug_context = Some("lightning-probe");
@@ -516,6 +518,23 @@ async fn request_translations(
     {
         Ok(client) => client,
         Err(error) => {
+            let message = format!("unable to create reqwest client: {error}");
+            log_lightning_perf(
+                debug_context,
+                &url,
+                source_lang,
+                target_lang,
+                source_texts,
+                &[],
+                None,
+                false,
+                Some(&message),
+                prepare_request_ms,
+                0,
+                0,
+                0,
+                started_at.elapsed().as_millis() as u64,
+            );
             return translation_error(
                 None,
                 "",
@@ -528,6 +547,7 @@ async fn request_translations(
         }
     };
 
+    let http_started = Instant::now();
     let response = client
         .post(&url)
         .header("X-Internal-Token", internal_token)
@@ -536,10 +556,28 @@ async fn request_translations(
         .json(&body)
         .send()
         .await;
+    let http_send_ms = http_started.elapsed().as_millis() as u64;
 
     let response = match response {
         Ok(response) => response,
         Err(error) => {
+            let message = format!("request failed: {error}");
+            log_lightning_perf(
+                debug_context,
+                &url,
+                source_lang,
+                target_lang,
+                source_texts,
+                &[],
+                None,
+                false,
+                Some(&message),
+                prepare_request_ms,
+                http_send_ms,
+                0,
+                0,
+                started_at.elapsed().as_millis() as u64,
+            );
             return translation_error(
                 None,
                 "",
@@ -553,9 +591,27 @@ async fn request_translations(
     };
 
     let status_code = response.status().as_u16();
+    let response_read_started = Instant::now();
     let response_text = match response.text().await {
         Ok(response_text) => response_text,
         Err(error) => {
+            let message = format!("unable to read response: {error}");
+            log_lightning_perf(
+                debug_context,
+                &url,
+                source_lang,
+                target_lang,
+                source_texts,
+                &[],
+                Some(status_code),
+                false,
+                Some(&message),
+                prepare_request_ms,
+                http_send_ms,
+                response_read_started.elapsed().as_millis() as u64,
+                0,
+                started_at.elapsed().as_millis() as u64,
+            );
             return translation_error(
                 Some(status_code),
                 "",
@@ -567,6 +623,7 @@ async fn request_translations(
             );
         }
     };
+    let response_read_ms = response_read_started.elapsed().as_millis() as u64;
 
     if !(200..300).contains(&status_code) {
         log_lightning_rwkv_io(
@@ -581,6 +638,22 @@ async fn request_translations(
             &[],
             Some(&response_text),
         );
+        log_lightning_perf(
+            debug_context,
+            &url,
+            source_lang,
+            target_lang,
+            source_texts,
+            &[],
+            Some(status_code),
+            false,
+            Some("HTTP error"),
+            prepare_request_ms,
+            http_send_ms,
+            response_read_ms,
+            0,
+            started_at.elapsed().as_millis() as u64,
+        );
         return translation_error(
             Some(status_code),
             &response_text,
@@ -592,32 +665,70 @@ async fn request_translations(
         );
     }
 
+    let parse_started = Instant::now();
     let parsed_translations = parse_translations(&response_text, source_texts.len());
+    let response_parse_ms = parse_started.elapsed().as_millis() as u64;
     match &parsed_translations {
-        Ok(translations) => log_lightning_rwkv_io(
-            debug_context,
-            &url,
-            source_lang,
-            target_lang,
-            &body.contents,
-            Some(status_code),
-            true,
-            None,
-            translations,
-            Some(&response_text),
-        ),
-        Err(error) => log_lightning_rwkv_io(
-            debug_context,
-            &url,
-            source_lang,
-            target_lang,
-            &body.contents,
-            Some(status_code),
-            false,
-            Some(error),
-            &[],
-            Some(&response_text),
-        ),
+        Ok(translations) => {
+            log_lightning_rwkv_io(
+                debug_context,
+                &url,
+                source_lang,
+                target_lang,
+                &body.contents,
+                Some(status_code),
+                true,
+                None,
+                translations,
+                Some(&response_text),
+            );
+            log_lightning_perf(
+                debug_context,
+                &url,
+                source_lang,
+                target_lang,
+                source_texts,
+                translations,
+                Some(status_code),
+                true,
+                None,
+                prepare_request_ms,
+                http_send_ms,
+                response_read_ms,
+                response_parse_ms,
+                started_at.elapsed().as_millis() as u64,
+            );
+        }
+        Err(error) => {
+            log_lightning_rwkv_io(
+                debug_context,
+                &url,
+                source_lang,
+                target_lang,
+                &body.contents,
+                Some(status_code),
+                false,
+                Some(error),
+                &[],
+                Some(&response_text),
+            );
+            log_lightning_perf(
+                debug_context,
+                &url,
+                source_lang,
+                target_lang,
+                source_texts,
+                &[],
+                Some(status_code),
+                false,
+                Some(error),
+                prepare_request_ms,
+                http_send_ms,
+                response_read_ms,
+                response_parse_ms,
+                started_at.elapsed().as_millis() as u64,
+            );
+        }
     }
 
     match parsed_translations {
@@ -685,14 +796,33 @@ async fn request_translations_for_language_pair_with_cancel(
 ) -> RwkvTranslationApiTranslateResult {
     let started_at = Instant::now();
     let url = api_url(base_url, endpoint);
+    let prepare_started = Instant::now();
     let body =
         build_chat_completions_request(source_texts, body_password, source_lang, target_lang);
+    let prepare_request_ms = prepare_started.elapsed().as_millis() as u64;
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_millis(timeout_ms))
         .build()
     {
         Ok(client) => client,
         Err(error) => {
+            let message = format!("unable to create reqwest client: {error}");
+            log_lightning_perf(
+                debug_context,
+                &url,
+                source_lang,
+                target_lang,
+                source_texts,
+                &[],
+                None,
+                false,
+                Some(&message),
+                prepare_request_ms,
+                0,
+                0,
+                0,
+                started_at.elapsed().as_millis() as u64,
+            );
             return translation_error(
                 None,
                 "",
@@ -706,6 +836,22 @@ async fn request_translations_for_language_pair_with_cancel(
     };
 
     if is_cancelled(cancel.as_ref()) {
+        log_lightning_perf(
+            debug_context,
+            &url,
+            source_lang,
+            target_lang,
+            source_texts,
+            &[],
+            None,
+            false,
+            Some("cancelled before request"),
+            prepare_request_ms,
+            0,
+            0,
+            0,
+            started_at.elapsed().as_millis() as u64,
+        );
         return translation_error(
             None,
             "",
@@ -717,6 +863,7 @@ async fn request_translations_for_language_pair_with_cancel(
         );
     }
 
+    let http_started = Instant::now();
     let response_future = client
         .post(&url)
         .header("X-Internal-Token", internal_token)
@@ -730,6 +877,22 @@ async fn request_translations_for_language_pair_with_cancel(
         loop {
             if cancel.load(Ordering::SeqCst) {
                 handle.abort();
+                log_lightning_perf(
+                    debug_context,
+                    &url,
+                    source_lang,
+                    target_lang,
+                    source_texts,
+                    &[],
+                    None,
+                    false,
+                    Some("cancelled during request"),
+                    prepare_request_ms,
+                    http_started.elapsed().as_millis() as u64,
+                    0,
+                    0,
+                    started_at.elapsed().as_millis() as u64,
+                );
                 return translation_error(
                     None,
                     "",
@@ -744,6 +907,23 @@ async fn request_translations_for_language_pair_with_cancel(
                 break match handle.await {
                     Ok(response) => response,
                     Err(error) => {
+                        let message = format!("request task failed: {error}");
+                        log_lightning_perf(
+                            debug_context,
+                            &url,
+                            source_lang,
+                            target_lang,
+                            source_texts,
+                            &[],
+                            None,
+                            false,
+                            Some(&message),
+                            prepare_request_ms,
+                            http_started.elapsed().as_millis() as u64,
+                            0,
+                            0,
+                            started_at.elapsed().as_millis() as u64,
+                        );
                         return translation_error(
                             None,
                             "",
@@ -761,10 +941,28 @@ async fn request_translations_for_language_pair_with_cancel(
     } else {
         response_future.await
     };
+    let http_send_ms = http_started.elapsed().as_millis() as u64;
 
     let response = match response {
         Ok(response) => response,
         Err(error) => {
+            let message = format!("request failed: {error}");
+            log_lightning_perf(
+                debug_context,
+                &url,
+                source_lang,
+                target_lang,
+                source_texts,
+                &[],
+                None,
+                false,
+                Some(&message),
+                prepare_request_ms,
+                http_send_ms,
+                0,
+                0,
+                started_at.elapsed().as_millis() as u64,
+            );
             return translation_error(
                 None,
                 "",
@@ -778,6 +976,7 @@ async fn request_translations_for_language_pair_with_cancel(
     };
 
     let status_code = response.status().as_u16();
+    let response_read_started = Instant::now();
     let response_text = match response_text_with_cancel(
         response,
         cancel.clone(),
@@ -789,8 +988,27 @@ async fn request_translations_for_language_pair_with_cancel(
     .await
     {
         Ok(response_text) => response_text,
-        Err(error_result) => return error_result,
+        Err(error_result) => {
+            log_lightning_perf(
+                debug_context,
+                &url,
+                source_lang,
+                target_lang,
+                source_texts,
+                &[],
+                Some(status_code),
+                false,
+                Some(error_result.message.as_str()),
+                prepare_request_ms,
+                http_send_ms,
+                response_read_started.elapsed().as_millis() as u64,
+                0,
+                started_at.elapsed().as_millis() as u64,
+            );
+            return error_result;
+        }
     };
+    let response_read_ms = response_read_started.elapsed().as_millis() as u64;
 
     if !(200..300).contains(&status_code) {
         log_lightning_rwkv_io(
@@ -805,6 +1023,22 @@ async fn request_translations_for_language_pair_with_cancel(
             &[],
             Some(&response_text),
         );
+        log_lightning_perf(
+            debug_context,
+            &url,
+            source_lang,
+            target_lang,
+            source_texts,
+            &[],
+            Some(status_code),
+            false,
+            Some("HTTP error"),
+            prepare_request_ms,
+            http_send_ms,
+            response_read_ms,
+            0,
+            started_at.elapsed().as_millis() as u64,
+        );
         return translation_error(
             Some(status_code),
             &response_text,
@@ -816,32 +1050,70 @@ async fn request_translations_for_language_pair_with_cancel(
         );
     }
 
+    let parse_started = Instant::now();
     let parsed_translations = parse_translations(&response_text, source_texts.len());
+    let response_parse_ms = parse_started.elapsed().as_millis() as u64;
     match &parsed_translations {
-        Ok(translations) => log_lightning_rwkv_io(
-            debug_context,
-            &url,
-            source_lang,
-            target_lang,
-            &body.contents,
-            Some(status_code),
-            true,
-            None,
-            translations,
-            Some(&response_text),
-        ),
-        Err(error) => log_lightning_rwkv_io(
-            debug_context,
-            &url,
-            source_lang,
-            target_lang,
-            &body.contents,
-            Some(status_code),
-            false,
-            Some(error),
-            &[],
-            Some(&response_text),
-        ),
+        Ok(translations) => {
+            log_lightning_rwkv_io(
+                debug_context,
+                &url,
+                source_lang,
+                target_lang,
+                &body.contents,
+                Some(status_code),
+                true,
+                None,
+                translations,
+                Some(&response_text),
+            );
+            log_lightning_perf(
+                debug_context,
+                &url,
+                source_lang,
+                target_lang,
+                source_texts,
+                translations,
+                Some(status_code),
+                true,
+                None,
+                prepare_request_ms,
+                http_send_ms,
+                response_read_ms,
+                response_parse_ms,
+                started_at.elapsed().as_millis() as u64,
+            );
+        }
+        Err(error) => {
+            log_lightning_rwkv_io(
+                debug_context,
+                &url,
+                source_lang,
+                target_lang,
+                &body.contents,
+                Some(status_code),
+                false,
+                Some(error),
+                &[],
+                Some(&response_text),
+            );
+            log_lightning_perf(
+                debug_context,
+                &url,
+                source_lang,
+                target_lang,
+                source_texts,
+                &[],
+                Some(status_code),
+                false,
+                Some(error),
+                prepare_request_ms,
+                http_send_ms,
+                response_read_ms,
+                response_parse_ms,
+                started_at.elapsed().as_millis() as u64,
+            );
+        }
     }
 
     match parsed_translations {
@@ -916,6 +1188,52 @@ fn log_lightning_rwkv_io(
         inputs: inputs.iter().map(String::as_str).collect(),
         outputs: translations.iter().map(String::as_str).collect(),
         raw_response,
+    });
+}
+
+#[allow(clippy::too_many_arguments)]
+fn log_lightning_perf(
+    debug_context: Option<&str>,
+    endpoint: &str,
+    source_lang: &str,
+    target_lang: &str,
+    source_texts: &[String],
+    translations: &[String],
+    status_code: Option<u16>,
+    ok: bool,
+    error: Option<&str>,
+    prepare_request_ms: u64,
+    http_send_ms: u64,
+    response_read_ms: u64,
+    response_parse_ms: u64,
+    latency_ms: u64,
+) {
+    if !crate::rwkv_perf_debug::enabled() {
+        return;
+    }
+    crate::rwkv_perf_debug::log_record(crate::rwkv_perf_debug::RwkvPerfRecord {
+        provider: "rwkv-lightning-contents",
+        context: debug_context,
+        endpoint: Some(endpoint),
+        source_lang: Some(source_lang),
+        target_lang: Some(target_lang),
+        batch_size: source_texts.len(),
+        input_chars: source_texts
+            .iter()
+            .map(|text| text.chars().count() as u64)
+            .sum(),
+        output_chars: translations
+            .iter()
+            .map(|text| text.chars().count() as u64)
+            .sum(),
+        status_code,
+        ok,
+        error,
+        prepare_request_ms,
+        http_send_ms,
+        response_read_ms,
+        response_parse_ms,
+        latency_ms,
     });
 }
 

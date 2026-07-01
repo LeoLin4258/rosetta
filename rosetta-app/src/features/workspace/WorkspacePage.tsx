@@ -25,6 +25,7 @@ import {
   runTranslationBatches,
   translationTargetsForStatuses,
 } from "@/lib/translationRunner";
+import { textBatchSizeForProvider } from "@/lib/translationBatchPolicy";
 import { defaultExportFilename, exportFormatForSource } from "@/lib/rosettaExport";
 import { useRosettaStore } from "@/store/useRosettaStore";
 import type {
@@ -41,7 +42,6 @@ import {
 import { WorkspaceEmpty } from "./WorkspaceEmpty";
 import { WorkspaceTopbar } from "./WorkspaceTopbar";
 
-const BATCH_SIZE = 16;
 const DEFAULT_SOURCE_LANG = "en";
 
 function normalizeSourceLang(lang?: string | null) {
@@ -376,11 +376,12 @@ export function WorkspacePage() {
         targetSegmentIds: targets.map((t) => t.id),
       });
 
+      const provider = buildProvider();
       const result = await runTranslationBatches({
-        batchSize: BATCH_SIZE,
+        batchSize: textBatchSizeForProvider(provider),
         cancelPromise,
         jobId: activeJobId,
-        provider: buildProvider(),
+        provider,
         request: {
           baseUrl: rwkv.baseUrl,
           endpoint: rwkv.endpoint,
@@ -594,11 +595,12 @@ export function WorkspacePage() {
         targetSegmentIds: targets.map((t) => t.id),
       });
 
+      const provider = buildProvider();
       await runTranslationBatches({
-        batchSize: BATCH_SIZE,
+        batchSize: textBatchSizeForProvider(provider),
         cancelPromise,
         jobId: activeJobId,
-        provider: buildProvider(),
+        provider,
         request: {
           baseUrl: rwkv.baseUrl,
           endpoint: rwkv.endpoint,
@@ -699,11 +701,12 @@ export function WorkspacePage() {
         targetSegmentIds: targets.map((t) => t.id),
       });
 
+      const provider = buildProvider();
       const result = await runTranslationBatches({
-        batchSize: BATCH_SIZE,
+        batchSize: textBatchSizeForProvider(provider),
         cancelPromise,
         jobId: activeJobId,
-        provider: buildProvider(),
+        provider,
         request: {
           baseUrl: rwkv.baseUrl,
           endpoint: rwkv.endpoint,

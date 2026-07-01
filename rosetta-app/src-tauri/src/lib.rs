@@ -6,6 +6,7 @@ mod onboarding;
 mod rosetta_jobs;
 mod rwkv_api;
 mod rwkv_io_debug;
+mod rwkv_perf_debug;
 mod rwkv_providers;
 #[allow(dead_code)]
 mod rwkv_runtime;
@@ -25,6 +26,7 @@ use tauri::{Emitter, Manager};
 pub fn run() {
     app_log::init();
     rwkv_io_debug::init();
+    rwkv_perf_debug::init();
 
     let exit_cleanup_started = Arc::new(AtomicBool::new(false));
 

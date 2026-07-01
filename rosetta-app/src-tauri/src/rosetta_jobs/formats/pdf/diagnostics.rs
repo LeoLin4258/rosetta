@@ -11,7 +11,7 @@ use std::{fs::OpenOptions, io::Write, path::Path};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::managed_pdf2zh::openai_shim::ShimRwkvMetricsSnapshot;
+use crate::managed_pdf2zh::openai_shim::{ShimBatchSizeBucket, ShimRwkvMetricsSnapshot};
 use crate::rosetta_jobs::model::SCHEMA_VERSION;
 
 pub(crate) const PDF_TIMELINE_FILENAME: &str = "pdf-timeline.jsonl";
@@ -64,6 +64,13 @@ pub(crate) struct RwkvAggregate {
     pub total_request_ms: u64,
     pub average_request_ms: u64,
     pub max_request_ms: u64,
+    pub p95_request_ms: u64,
+    pub total_batch_items: u64,
+    pub average_batch_size: f64,
+    pub batch_size_distribution: Vec<ShimBatchSizeBucket>,
+    pub total_assembly_wait_ms: u64,
+    pub average_assembly_wait_ms: u64,
+    pub max_assembly_wait_ms: u64,
     pub total_input_chars: u64,
     pub total_output_chars: u64,
 }
@@ -74,6 +81,14 @@ impl RwkvAggregate {
         self.failed_request_count += snapshot.failed_request_count;
         self.total_request_ms += snapshot.total_request_ms;
         self.max_request_ms = self.max_request_ms.max(snapshot.max_request_ms);
+        self.p95_request_ms = self.p95_request_ms.max(snapshot.p95_request_ms);
+        self.total_batch_items += snapshot.total_batch_items;
+        merge_batch_size_distribution(
+            &mut self.batch_size_distribution,
+            &snapshot.batch_size_distribution,
+        );
+        self.total_assembly_wait_ms += snapshot.total_assembly_wait_ms;
+        self.max_assembly_wait_ms = self.max_assembly_wait_ms.max(snapshot.max_assembly_wait_ms);
         self.total_input_chars += snapshot.total_input_chars;
         self.total_output_chars += snapshot.total_output_chars;
         self.average_request_ms = if self.request_count > 0 {
@@ -81,7 +96,34 @@ impl RwkvAggregate {
         } else {
             0
         };
+        self.average_batch_size = if self.request_count > 0 {
+            self.total_batch_items as f64 / self.request_count as f64
+        } else {
+            0.0
+        };
+        self.average_assembly_wait_ms = if self.request_count > 0 {
+            self.total_assembly_wait_ms / self.request_count
+        } else {
+            0
+        };
     }
+}
+
+fn merge_batch_size_distribution(
+    aggregate: &mut Vec<ShimBatchSizeBucket>,
+    snapshot: &[ShimBatchSizeBucket],
+) {
+    for bucket in snapshot {
+        if let Some(existing) = aggregate
+            .iter_mut()
+            .find(|existing| existing.batch_size == bucket.batch_size)
+        {
+            existing.request_count += bucket.request_count;
+        } else {
+            aggregate.push(*bucket);
+        }
+    }
+    aggregate.sort_by_key(|bucket| bucket.batch_size);
 }
 
 pub(crate) fn new_profile(
@@ -214,6 +256,13 @@ pub(crate) fn rwkv_snapshot_details(snapshot: &ShimRwkvMetricsSnapshot) -> Value
         "totalRequestMs": snapshot.total_request_ms,
         "averageRequestMs": snapshot.average_request_ms,
         "maxRequestMs": snapshot.max_request_ms,
+        "p95RequestMs": snapshot.p95_request_ms,
+        "totalBatchItems": snapshot.total_batch_items,
+        "averageBatchSize": snapshot.average_batch_size,
+        "batchSizeDistribution": snapshot.batch_size_distribution,
+        "totalAssemblyWaitMs": snapshot.total_assembly_wait_ms,
+        "averageAssemblyWaitMs": snapshot.average_assembly_wait_ms,
+        "maxAssemblyWaitMs": snapshot.max_assembly_wait_ms,
         "totalInputChars": snapshot.total_input_chars,
         "totalOutputChars": snapshot.total_output_chars,
     })
@@ -226,6 +275,13 @@ pub(crate) fn rwkv_aggregate_details(aggregate: &RwkvAggregate) -> Value {
         "totalRequestMs": aggregate.total_request_ms,
         "averageRequestMs": aggregate.average_request_ms,
         "maxRequestMs": aggregate.max_request_ms,
+        "p95RequestMs": aggregate.p95_request_ms,
+        "totalBatchItems": aggregate.total_batch_items,
+        "averageBatchSize": aggregate.average_batch_size,
+        "batchSizeDistribution": aggregate.batch_size_distribution,
+        "totalAssemblyWaitMs": aggregate.total_assembly_wait_ms,
+        "averageAssemblyWaitMs": aggregate.average_assembly_wait_ms,
+        "maxAssemblyWaitMs": aggregate.max_assembly_wait_ms,
         "totalInputChars": aggregate.total_input_chars,
         "totalOutputChars": aggregate.total_output_chars,
     })
@@ -244,6 +300,16 @@ mod tests {
             total_request_ms: 4000,
             average_request_ms: 1000,
             max_request_ms: 2100,
+            p95_request_ms: 2000,
+            total_batch_items: 16,
+            average_batch_size: 4.0,
+            batch_size_distribution: vec![ShimBatchSizeBucket {
+                batch_size: 4,
+                request_count: 4,
+            }],
+            total_assembly_wait_ms: 320,
+            average_assembly_wait_ms: 80,
+            max_assembly_wait_ms: 82,
             total_input_chars: 800,
             total_output_chars: 700,
         });
@@ -253,6 +319,22 @@ mod tests {
             total_request_ms: 3000,
             average_request_ms: 500,
             max_request_ms: 900,
+            p95_request_ms: 800,
+            total_batch_items: 36,
+            average_batch_size: 6.0,
+            batch_size_distribution: vec![
+                ShimBatchSizeBucket {
+                    batch_size: 4,
+                    request_count: 2,
+                },
+                ShimBatchSizeBucket {
+                    batch_size: 8,
+                    request_count: 4,
+                },
+            ],
+            total_assembly_wait_ms: 480,
+            average_assembly_wait_ms: 80,
+            max_assembly_wait_ms: 85,
             total_input_chars: 1200,
             total_output_chars: 1100,
         });
@@ -261,6 +343,19 @@ mod tests {
         assert_eq!(agg.total_request_ms, 7000);
         assert_eq!(agg.average_request_ms, 700);
         assert_eq!(agg.max_request_ms, 2100);
+        assert_eq!(agg.p95_request_ms, 2000);
+        assert_eq!(agg.total_batch_items, 52);
+        assert_eq!(agg.average_batch_size, 5.2);
+        assert_eq!(
+            agg.batch_size_distribution
+                .iter()
+                .map(|bucket| (bucket.batch_size, bucket.request_count))
+                .collect::<Vec<_>>(),
+            vec![(4, 6), (8, 4)]
+        );
+        assert_eq!(agg.total_assembly_wait_ms, 800);
+        assert_eq!(agg.average_assembly_wait_ms, 80);
+        assert_eq!(agg.max_assembly_wait_ms, 85);
         assert_eq!(agg.total_input_chars, 2000);
         assert_eq!(agg.total_output_chars, 1800);
     }
@@ -292,6 +387,16 @@ mod tests {
                     total_request_ms: 900,
                     average_request_ms: 450,
                     max_request_ms: 500,
+                    p95_request_ms: 500,
+                    total_batch_items: 8,
+                    average_batch_size: 4.0,
+                    batch_size_distribution: vec![ShimBatchSizeBucket {
+                        batch_size: 4,
+                        request_count: 2,
+                    }],
+                    total_assembly_wait_ms: 160,
+                    average_assembly_wait_ms: 80,
+                    max_assembly_wait_ms: 80,
                     total_input_chars: 100,
                     total_output_chars: 80,
                 })

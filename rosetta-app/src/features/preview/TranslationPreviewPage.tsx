@@ -39,6 +39,7 @@ import {
   runTranslationBatches,
   translationTargetsForStatuses,
 } from "@/lib/translationRunner";
+import { textBatchSizeForProvider } from "@/lib/translationBatchPolicy";
 import { cn } from "@/lib/utils";
 import { useRosettaStore } from "@/store/useRosettaStore";
 import type {
@@ -50,7 +51,6 @@ import type {
 } from "@/types/rosetta";
 
 const appWindow = getCurrentWindow();
-const BATCH_SIZE = 16;
 const LIVE_REFRESH_INTERVAL_MS = 1_000;
 
 export function TranslationPreviewPage() {
@@ -289,20 +289,22 @@ export function TranslationPreviewPage() {
       );
       setJobBundle(revisionBundle);
 
+      const provider = selectProvider({
+        config: rwkv,
+        managedRuntimeReady: isManagedRuntimeProfileReady(selectedRuntimeStatus),
+        managedRuntimeProviderId: selectedRuntimeStatus?.profile.providerId,
+        managedRuntimeBaseUrl:
+          selectedRuntimeStatus?.process.baseUrl ?? undefined,
+        managedRuntimeEndpoint:
+          selectedRuntimeStatus?.profile.batchChatPath ?? undefined,
+      });
+
       const result = await runTranslationBatches({
-        batchSize: BATCH_SIZE,
+        batchSize: textBatchSizeForProvider(provider),
         cancelPromise: cancelled,
         jobId,
         onTranslationFileSaved: setTranslationBundle,
-        provider: selectProvider({
-          config: rwkv,
-          managedRuntimeReady: isManagedRuntimeProfileReady(selectedRuntimeStatus),
-          managedRuntimeProviderId: selectedRuntimeStatus?.profile.providerId,
-          managedRuntimeBaseUrl:
-            selectedRuntimeStatus?.process.baseUrl ?? undefined,
-          managedRuntimeEndpoint:
-            selectedRuntimeStatus?.profile.batchChatPath ?? undefined,
-        }),
+        provider,
         request: {
           baseUrl: rwkv.baseUrl,
           endpoint: rwkv.endpoint,

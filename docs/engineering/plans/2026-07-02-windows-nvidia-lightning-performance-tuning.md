@@ -2,7 +2,9 @@
 
 Date: 2026-07-02
 
-Status: planned; documentation-only setup, no implementation started.
+Status: in progress; Task 1 instrumentation and local summary method added.
+First Windows NVIDIA Lightning Markdown and PDF baselines recorded. First
+Lightning-only throughput tuning pass implemented.
 
 ## Summary
 
@@ -232,11 +234,40 @@ Output:
 
 - A repeatable local-only benchmark method for Lightning Markdown and PDF.
 - A baseline table committed to docs.
+- Privacy-safe `rwkv-performance.jsonl` instrumentation for Lightning request
+  timing.
+- PDF shim batch distribution and assembly-wait metrics in job diagnostics.
+- A local summary script for Markdown and PDF Lightning runs.
+- `ROSETTA_PDF_SHIM_LIGHTNING_MAX_BATCH_SIZE` for local PDF batch-width sweeps
+  without changing llama.cpp Vulkan or macOS MLX.
+- Lightning-only ordinary-document batch width raised from 16 to 100.
+- Lightning-only PDF default shim batch width raised from 8 to 256.
+- Lightning-only PDF pdf2zh worker count defaults to 100 and is decoupled from
+  shim batch width after `thread=512` proved slower.
+- Lightning-only PDF direct concurrent worker requests were tested and rolled
+  back from the default path after the Lightning runtime returned immediate
+  HTTP 409 responses under concurrent `/v1/batch/completions` requests.
+- Lightning-only PDF now keeps the stable serial assembled-request shim by
+  default. Direct concurrent requests require the explicit experimental env
+  `ROSETTA_PDF_SHIM_LIGHTNING_DIRECT_CONCURRENT=1`.
+- Lightning-only PDF page chunk size raised from 10 to 100 pages.
+- Lightning-only PDF shim aggregation window remains 80 ms after a 250 ms sweep
+  increased wait time without improving observed batch size.
+- Lightning-only PDF shim text chunk budgets remain at the smaller proven
+  values after wider chunks caused `~9.5s` p95 request latency.
 
 Validation:
 
 - Harness does not log source text, translated text, or prompts.
 - Results include enough metadata to reproduce the run.
+- First realistic PDF baseline is recorded.
+- A real long Markdown run is recorded: 571 segments in `15.232s`, with 36
+  Lightning requests and no failures.
+- A real 18-page PDF run is recorded: 211 shim items in `42.059s`, with
+  `thread=100`, 20 Lightning requests, and no failures.
+- The latest PDF data shows the configured Lightning ceiling is not yet the
+  limiting factor for this workload: max observed shim batch was 24 even with
+  `thread=100`.
 
 ### Task 2: Markdown Lightning Throughput Baseline
 
@@ -246,6 +277,13 @@ Output:
 - Request count and batch size distribution.
 - Clear comparison between cold and warm runtime behavior.
 
+Current evidence:
+
+- A long Markdown run has been captured for `rosetta_project_plan.md`.
+- The run translated 571 segments in `15.232s` observed wall time with
+  `35x16 + 1x11` Lightning batch distribution and zero failed requests.
+- Small Markdown and cold/warm separation are still pending.
+
 ### Task 3: PDF Lightning Throughput Baseline
 
 Output:
@@ -254,6 +292,15 @@ Output:
 - Shim aggregation timings and batch size distribution.
 - Split between PDF layout/render time and Lightning provider time.
 
+Current evidence:
+
+- Two realistic PDF baselines have been captured.
+- The 10-page `thread=100` run was `30.4%` faster than the 10-page batch-8
+  baseline.
+- The 18-page `thread=100` run completed in `42.059s` with two pdf2zh chunks,
+  20 Lightning requests, average batch size 10.55, and max observed batch 24.
+- Small PDF is still pending.
+
 ### Task 4: Batch Width Experiment
 
 Output:
@@ -261,6 +308,24 @@ Output:
 - Batch-size sweep for Lightning.
 - Recommended Lightning batch width for Markdown and PDF, if different.
 - Notes about quality, ordering, stalls, or memory pressure.
+
+Current implementation after the RTX 5070 PDF 409 rollback:
+
+- Markdown/TXT through `rwkv-lightning-contents`: batch 100.
+- PDF through `rwkv-lightning-contents`: stable serial assembled shim requests,
+  pdf2zh worker count 100, 100-page pdf2zh chunks, and smaller proven PDF text
+  chunk budgets.
+- MLX and llama.cpp retain their existing conservative values.
+- The failed direct-concurrent PDF run translated page 1 and then stopped with
+  repeated HTTP 409 responses. Perf logs showed many immediate `batchSize=1`
+  409s while a few requests were still running normally, indicating the
+  Lightning runtime rejects overlapping generation requests even when it
+  supports wide native batches inside a single request.
+- Next benchmark should not sweep PDF in-flight request counts through the
+  current shim. The next likely speedup needs a pdf2zh-side integration change:
+  collect many pdf2zh translation units into one Lightning batch request, or
+  fork/patch pdf2zh so page workers feed a Rosetta-owned scheduler instead of
+  independently calling the OpenAI-compatible shim.
 
 ### Task 5: Targeted Implementation
 
