@@ -693,6 +693,41 @@ Handoff:
 
 ### Task 4: Per-Profile Runtime Status
 
+Status: completed on 2026-07-01.
+
+Handoff notes:
+
+- `get_managed_rwkv_runtime_status(profileId?)` now keeps the previous
+  selected-profile status fields and adds `profileStatuses`.
+- Each `profileStatuses[]` entry includes:
+  - `profile`
+  - `state`
+  - `message`
+  - `paths`
+  - `installPlan`
+  - `hardware`
+  - `process`
+- `process.profileId` records which managed runtime profile owns the current
+  lifecycle state. `ready`, `starting`, `failed`, and `stopped` are applied only
+  to that owning profile, so Settings can show Lightning and llama.cpp
+  independently without falsely marking both as running.
+- The existing `candidateProfiles` metadata array remains available for older
+  UI code, but new multi-runtime UI should prefer `profileStatuses`.
+- Representative field semantics:
+  - NVIDIA Windows with Lightning supported: `profileStatuses` contains both
+    `windows-amd64-llamacpp-vulkan` and
+    `windows-amd64-rwkv-lightning-cuda`; Lightning hardware has
+    `supported: true` and becomes `ready` only when
+    `process.profileId === "windows-amd64-rwkv-lightning-cuda"`.
+  - Windows without supported NVIDIA hardware: the Lightning entry is present
+    with `state: "unsupported"` and the hardware message explains the NVIDIA /
+    SM75 requirement; the llama.cpp entry remains independently installable.
+  - macOS Apple Silicon: `profileStatuses` contains `macos-arm64-mlx` with the
+    existing MLX profile metadata and install plan.
+- TypeScript types in `src/types/rosetta.ts` now mirror the Rust serialization
+  shape, including `ManagedRuntimeProfileStatus` and
+  `ManagedRuntimeProcessSnapshot.profileId`.
+
 Entry criteria:
 
 - Profile-aware runtime commands exist.
@@ -726,25 +761,50 @@ Handoff:
 
 ### Task 5: Persisted Active Local Runtime Selection
 
+Status: completed on 2026-07-02 for persisted selection state and translation
+dispatch wiring.
+
+Handoff notes:
+
+- The selected local runtime profile is persisted in Zustand under:
+  `rosetta-app-settings.rwkv.managedRuntimeProfileId`.
+- `providerPreference` remains the high-level `local` versus `remote-api`
+  switch. `managedRuntimeProfileId` is only consulted for the local managed
+  runtime path.
+- If `managedRuntimeProfileId` is missing or invalid for the current platform,
+  frontend fallback selection uses `profileStatuses`:
+  - `windows-amd64-rwkv-lightning-cuda` when present and hardware-supported.
+  - `macos-arm64-mlx` on Apple Silicon.
+  - `windows-amd64-llamacpp-vulkan` for other supported Windows x64 machines.
+  - Otherwise the first non-unsupported profile, then the first candidate.
+- Workspace translation dispatch now builds its provider from the selected
+  profile status. This also covers visual PDF translation because the PDF
+  command receives `providerId`, `rwkvBaseUrl`, endpoint, and credentials from
+  the same `buildProvider()` path.
+- The independent translation preview window now uses the same selected
+  profile status for local readiness and retranslation provider selection.
+- App-level runtime auto-start and startup/status refresh pass the selected
+  profile id when one is persisted, and otherwise use the derived default from
+  `profileStatuses`.
+- `useManagedRwkvRuntime()` now defaults refresh / install / start / stop /
+  probe / log calls to the persisted or derived active profile id unless the
+  caller passes an explicit `profileId`.
+- Task 6 has since wired onboarding to the same selected-profile model and
+  explicit runtime calls.
+
 Entry criteria:
 
 - Frontend can inspect multiple runtime profiles.
 
-Current blocker / handoff note:
+Follow-up note:
 
-- As of 2026-07-01, the dev onboarding "install local translation engine"
-  button still installs the default Windows profile, which is
-  `windows-amd64-llamacpp-vulkan`.
-- The screenshot showing approximately `478 MB` is therefore the llama.cpp GGUF
-  model path (`501498208` bytes shown as MiB), not Lightning.
-- Do not use the current onboarding button as evidence that Lightning default
-  onboarding works.
-- The Rust command layer and TypeScript wrappers already accept explicit
-  `profileId`, so the next implementation step is frontend state / flow wiring,
-  not new artifact work.
-- Until Task 5 / Task 6 are implemented, Lightning can only be tested through an
-  explicit `profileId: "windows-amd64-rwkv-lightning-cuda"` path or a temporary
-  diagnostic invocation.
+- Before Task 6, the dev onboarding button installed the default Windows
+  profile, `windows-amd64-llamacpp-vulkan`, so older screenshots showing
+  approximately `478 MB` refer to the llama.cpp GGUF model path
+  (`501498208` bytes shown as MiB), not Lightning.
+- After Task 6, onboarding derives and persists the active profile from
+  `profileStatuses` before install and passes explicit profile ids through the
+  managed runtime flow.
 
 Scope:
 
@@ -781,6 +841,43 @@ Handoff:
 - Record the selected-profile storage key and fallback rules.
 
 ### Task 6: NVIDIA Onboarding UX
+
+Status: completed on 2026-07-02 for onboarding profile selection and explicit
+profile-id runtime calls.
+
+Handoff notes:
+
+- On NVIDIA SM75+ Windows, onboarding derives
+  `windows-amd64-rwkv-lightning-cuda` from `profileStatuses`, persists it in
+  `rosetta-app-settings.rwkv.managedRuntimeProfileId`, and names the selected
+  runtime on the first RWKV setup screen.
+- The first RWKV setup screen presents `windows-amd64-llamacpp-vulkan` as a
+  visually quieter secondary option when Lightning is selected and llama.cpp is
+  available.
+- The RWKV install flow passes the selected profile id through install, start,
+  probe, and log retrieval. The shared runtime hook also refreshes status for
+  the target profile after install and start / stop actions.
+- If Lightning install or startup fails, the error page keeps retry for
+  Lightning and offers a secondary fallback to install llama.cpp Vulkan.
+- Unsupported or non-NVIDIA Windows keeps the Task 5 fallback behavior and does
+  not expose Lightning as the installable primary path.
+
+Validation performed:
+
+- `cd rosetta-app && node_modules/.bin/tsc.CMD --noEmit`
+- `cd rosetta-app && pnpm typecheck` was attempted but stopped before
+  TypeScript execution on `ERR_PNPM_IGNORED_BUILDS` for `esbuild@0.25.12` and
+  `msw@2.14.3`.
+- `cd rosetta-app/src-tauri && cargo fmt`
+- `cd rosetta-app/src-tauri && cargo check`
+- `cd rosetta-app/src-tauri && cargo test managed_rwkv`
+- `cd rosetta-app/src-tauri && cargo test rosetta_jobs`
+- Manual UI verification was not run because repo instructions say not to start
+  dev servers unless explicitly requested.
+
+Remaining:
+
+- Task 8 Switching, Cleanup, And Reset Hardening.
 
 Entry criteria:
 
@@ -834,6 +931,38 @@ Handoff:
   entry.
 
 ### Task 7: Settings Runtime Management UX
+
+Status: completed on 2026-07-02 for profile-aware Settings runtime management.
+
+Handoff notes:
+
+- `LocalRwkvPanel` now renders every entry in `ManagedRuntimeStatus.profileStatuses`
+  instead of only the compatibility `status.profile` field.
+- Each runtime card shows whether it is current, recommended, installed,
+  running, stopped, failed, unsupported, or missing, with model size, backend,
+  provider id, endpoint, hardware details, paths, hashes, and per-profile logs in
+  an expanded technical area.
+- Users can install, repair, activate, start, stop, and inspect Lightning CUDA
+  and llama.cpp Vulkan independently. Every runtime operation passes that card's
+  profile id explicitly.
+- Settings provider readiness now follows the selected profile status via
+  `selectManagedRuntimeProfileStatus()` and `isManagedRuntimeProfileReady()`.
+- Runtime mutation actions are disabled while a document or PDF translation run
+  is active, matching the existing provider-switching guard.
+- Activating a profile persists
+  `rosetta-app-settings.rwkv.managedRuntimeProfileId` and refreshes status for
+  that profile. Task 8 still owns the deeper handoff behavior for stopping an
+  already-running sidecar before starting another profile.
+
+Validation performed:
+
+- `cd rosetta-app && node_modules/.bin/tsc.CMD --noEmit`
+- `cd rosetta-app/src-tauri && cargo fmt`
+- `cd rosetta-app/src-tauri && cargo check`
+- `cd rosetta-app/src-tauri && cargo test managed_rwkv`
+- `cd rosetta-app/src-tauri && cargo test rosetta_jobs`
+- Manual UI verification was not run because repo instructions say not to start
+  dev servers unless explicitly requested.
 
 Entry criteria:
 

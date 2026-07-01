@@ -36,6 +36,7 @@ pub struct ManagedRwkvRuntimeRegistry {
 #[derive(Default)]
 struct RuntimeInner {
     child: Option<Child>,
+    profile_id: Option<String>,
     port: Option<u16>,
     base_url: Option<String>,
     pid: Option<u32>,
@@ -83,6 +84,7 @@ pub async fn current_process_snapshot(
     reap_exited_child(&mut guard);
 
     let snapshot = ManagedRuntimeProcessSnapshot {
+        profile_id: guard.profile_id.clone(),
         pid: guard.pid,
         port: guard.port,
         base_url: guard.base_url.clone(),
@@ -104,6 +106,7 @@ pub async fn start_sidecar(
 ) -> Result<ManagedRuntimeStartResult, String> {
     let mut guard = registry.inner.lock().await;
     reap_exited_child(&mut guard);
+    guard.profile_id = Some(profile.id.to_string());
 
     if guard.child.is_some() {
         return Err("本地 RWKV 运行时已在运行；如需重启请先停止。".to_string());
@@ -380,6 +383,9 @@ pub async fn stop_sidecar(
     model_path: Option<&Path>,
 ) -> Result<String, String> {
     let mut guard = registry.inner.lock().await;
+    if let Some(profile) = profile {
+        guard.profile_id = Some(profile.id.to_string());
+    }
     let Some(mut child) = guard.child.take() else {
         guard.state = Some(ManagedRuntimeState::Stopped);
         drop(guard);

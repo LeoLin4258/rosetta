@@ -11,6 +11,7 @@ import {
   stopManagedRwkvRuntime,
   subscribeManagedRwkvInstallProgress,
 } from "@/lib/rwkvRuntime";
+import { selectManagedRuntimeProfileStatus } from "@/lib/managedRuntimeSelection";
 import { useRosettaStore } from "@/store/useRosettaStore";
 import type {
   ManagedRuntimeInstallOptions,
@@ -33,6 +34,9 @@ import type {
  */
 export function useManagedRwkvRuntime() {
   const status = useRosettaStore((s) => s.managedRuntime.status);
+  const selectedProfileId = useRosettaStore(
+    (s) => s.rwkv.managedRuntimeProfileId
+  );
   const progress = useRosettaStore((s) => s.managedRuntime.progress);
   const lastError = useRosettaStore((s) => s.managedRuntime.lastError);
   const setStatus = useRosettaStore((s) => s.setManagedRuntimeStatus);
@@ -44,11 +48,17 @@ export function useManagedRwkvRuntime() {
   const [isStarting, setIsStarting] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
   const [isProbing, setIsProbing] = useState(false);
+  const activeProfileId =
+    selectManagedRuntimeProfileStatus(status, selectedProfileId)?.profile.id ??
+    selectedProfileId ??
+    undefined;
 
-  const refreshStatus = useCallback(async (): Promise<ManagedRuntimeStatus | null> => {
+  const refreshStatus = useCallback(async (
+    profileId?: string | null
+  ): Promise<ManagedRuntimeStatus | null> => {
     setIsRefreshing(true);
     try {
-      const next = await getManagedRwkvRuntimeStatus();
+      const next = await getManagedRwkvRuntimeStatus(profileId ?? selectedProfileId);
       setStatus(next);
       return next;
     } catch (error) {
@@ -57,7 +67,7 @@ export function useManagedRwkvRuntime() {
     } finally {
       setIsRefreshing(false);
     }
-  }, [setStatus, setError]);
+  }, [selectedProfileId, setStatus, setError]);
 
   // On mount: probe status + subscribe to progress events.
   useEffect(() => {
@@ -93,28 +103,30 @@ export function useManagedRwkvRuntime() {
     async (options?: ManagedRuntimeInstallOptions): Promise<ManagedRuntimeInstallResult | null> => {
       setIsInstalling(true);
       setError(null);
+      const targetProfileId = options?.profileId ?? activeProfileId;
       try {
         // Inject the user-configured download proxy unless the caller
         // explicitly passed `proxyUrl` (e.g. for a one-off override). Empty
         // string → no proxy, so the Rust side falls back to env / no-proxy.
         const merged: ManagedRuntimeInstallOptions = {
           ...options,
+          profileId: targetProfileId,
           proxyUrl: options?.proxyUrl ?? proxyUrl,
         };
         const result = await installManagedRwkvRuntime(merged);
         // Refresh status after install — model file existence + install plan
         // both flip when this succeeds.
-        await refreshStatus();
+        await refreshStatus(targetProfileId);
         return result;
       } catch (error) {
         setError(toMessage(error));
-        await refreshStatus();
+        await refreshStatus(targetProfileId);
         return null;
       } finally {
         setIsInstalling(false);
       }
     },
-    [refreshStatus, setError, proxyUrl]
+    [activeProfileId, refreshStatus, setError, proxyUrl]
   );
 
   const cancelInstall = useCallback(async (): Promise<boolean> => {
@@ -127,28 +139,32 @@ export function useManagedRwkvRuntime() {
     }
   }, [setError]);
 
-  const start = useCallback(async (): Promise<ManagedRuntimeStartResult | null> => {
+  const start = useCallback(async (
+    profileId?: string | null
+  ): Promise<ManagedRuntimeStartResult | null> => {
+    const targetProfileId = profileId ?? activeProfileId;
     setIsStarting(true);
     setError(null);
     try {
-      const result = await startManagedRwkvRuntime();
-      await refreshStatus();
+      const result = await startManagedRwkvRuntime(targetProfileId);
+      await refreshStatus(targetProfileId);
       return result;
     } catch (error) {
       setError(toMessage(error));
-      await refreshStatus();
+      await refreshStatus(targetProfileId);
       return null;
     } finally {
       setIsStarting(false);
     }
-  }, [refreshStatus, setError]);
+  }, [activeProfileId, refreshStatus, setError]);
 
-  const stop = useCallback(async (): Promise<boolean> => {
+  const stop = useCallback(async (profileId?: string | null): Promise<boolean> => {
+    const targetProfileId = profileId ?? activeProfileId;
     setIsStopping(true);
     setError(null);
     try {
-      await stopManagedRwkvRuntime();
-      await refreshStatus();
+      await stopManagedRwkvRuntime(targetProfileId);
+      await refreshStatus(targetProfileId);
       return true;
     } catch (error) {
       setError(toMessage(error));
@@ -156,12 +172,15 @@ export function useManagedRwkvRuntime() {
     } finally {
       setIsStopping(false);
     }
-  }, [refreshStatus, setError]);
+  }, [activeProfileId, refreshStatus, setError]);
 
-  const probe = useCallback(async (): Promise<ManagedRuntimeProbeResult | null> => {
+  const probe = useCallback(async (
+    profileId?: string | null
+  ): Promise<ManagedRuntimeProbeResult | null> => {
+    const targetProfileId = profileId ?? activeProfileId;
     setIsProbing(true);
     try {
-      const result = await probeManagedRwkvRuntime();
+      const result = await probeManagedRwkvRuntime(targetProfileId);
       return result;
     } catch (error) {
       setError(toMessage(error));
@@ -169,16 +188,19 @@ export function useManagedRwkvRuntime() {
     } finally {
       setIsProbing(false);
     }
-  }, [setError]);
+  }, [activeProfileId, setError]);
 
-  const readLogs = useCallback(async (): Promise<ManagedRuntimeLogsSummary | null> => {
+  const readLogs = useCallback(async (
+    profileId?: string | null
+  ): Promise<ManagedRuntimeLogsSummary | null> => {
+    const targetProfileId = profileId ?? activeProfileId;
     try {
-      return await getManagedRwkvRuntimeLogsSummary();
+      return await getManagedRwkvRuntimeLogsSummary(targetProfileId);
     } catch (error) {
       setError(toMessage(error));
       return null;
     }
-  }, [setError]);
+  }, [activeProfileId, setError]);
 
   return {
     status,

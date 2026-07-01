@@ -332,6 +332,7 @@ export const useRosettaStore = create<RosettaState>()(
         timeoutMs: 120_000,
         mode: "balanced",
         providerPreference: "local",
+        managedRuntimeProfileId: null,
       },
       jobs: [],
       activeJobId: null,

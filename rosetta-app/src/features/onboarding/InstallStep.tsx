@@ -26,11 +26,14 @@ type InstallStepProps = {
   logs?: ManagedRuntimeLogsSummary | null;
   onCancel: () => void;
   onRetry: () => void;
+  onFallback?: () => void;
   onSkip: () => void;
   progressValue: number;
   title?: string;
   errorTitle?: string;
   retryLabel?: string;
+  fallbackLabel?: string;
+  fallbackDescription?: string;
   cancelLabel?: string;
   defaultCaption?: string;
   downloadingCaption?: string;
@@ -53,11 +56,14 @@ export function InstallStep({
   logs,
   onCancel,
   onRetry,
+  onFallback,
   onSkip,
   progressValue,
   title = "正在下载翻译模型",
   errorTitle = "下载没有完成",
   retryLabel = "重新下载",
+  fallbackLabel,
+  fallbackDescription,
   cancelLabel = "取消",
   defaultCaption = "下载完成后无需再联网",
   downloadingCaption = "下载完成后无需再联网",
@@ -138,6 +144,25 @@ export function InstallStep({
         <Button size="lg" onClick={onRetry} className="h-11 w-full gap-2">
           <Download className="size-4" /> {retryLabel}
         </Button>
+        {onFallback && fallbackLabel ? (
+          <div className="w-full rounded-lg border border-border/60 bg-muted/20 p-3">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={onFallback}
+              className="w-full gap-2"
+            >
+              <Download className="size-4" />
+              {fallbackLabel}
+            </Button>
+            {fallbackDescription ? (
+              <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                {fallbackDescription}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
         <button
           type="button"
           onClick={onSkip}

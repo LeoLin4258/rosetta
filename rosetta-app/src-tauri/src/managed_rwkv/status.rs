@@ -101,6 +101,7 @@ pub struct ManagedRuntimePaths {
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManagedRuntimeProcessSnapshot {
+    pub profile_id: Option<String>,
     pub pid: Option<u32>,
     pub port: Option<u16>,
     pub base_url: Option<String>,
@@ -116,9 +117,22 @@ pub struct ManagedRuntimeStatus {
     pub message: String,
     pub profile: Option<RuntimeProfileSummary>,
     pub candidate_profiles: Vec<RuntimeProfileSummary>,
+    pub profile_statuses: Vec<ManagedRuntimeProfileStatus>,
     pub paths: Option<ManagedRuntimePaths>,
     pub install_plan: Option<ManagedRuntimeInstallPlan>,
     pub hardware: Option<HardwareSupport>,
+    pub process: ManagedRuntimeProcessSnapshot,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedRuntimeProfileStatus {
+    pub profile: RuntimeProfileSummary,
+    pub state: ManagedRuntimeState,
+    pub message: String,
+    pub paths: ManagedRuntimePaths,
+    pub install_plan: ManagedRuntimeInstallPlan,
+    pub hardware: HardwareSupport,
     pub process: ManagedRuntimeProcessSnapshot,
 }
 
@@ -182,6 +196,20 @@ pub fn build_static_status_for_profile(
     })
 }
 
+pub fn build_profile_statuses(
+    app: &AppHandle,
+    process: &ManagedRuntimeProcessSnapshot,
+    lifecycle_state: Option<ManagedRuntimeState>,
+) -> Result<Vec<ManagedRuntimeProfileStatus>, String> {
+    current_profile_candidates()
+        .into_iter()
+        .map(|profile| {
+            build_static_status_for_profile(app, profile)
+                .map(|status| status.into_profile_status(process, lifecycle_state))
+        })
+        .collect()
+}
+
 /// Intermediate value handed to the lifecycle layer so it can decorate with
 /// live process info before serializing back to the frontend.
 pub struct StaticStatus {
@@ -209,15 +237,14 @@ impl StaticStatus {
             install_plan: ManagedRuntimeInstallPlan {
                 ready: false,
                 items: Vec::new(),
-                message:
-                    "当前平台暂不支持本地 RWKV 运行时。支持 macOS Apple Silicon 与 Windows NVIDIA SM75+。"
-                        .to_string(),
+                message: "Current platform does not support managed RWKV runtime. Supported targets are macOS Apple Silicon and Windows x64 managed runtime profiles."
+                    .to_string(),
             },
             hardware: HardwareSupport {
                 supported: false,
                 gpu_name: None,
                 compute_capability: None,
-                message: "当前平台暂不支持本地 RWKV 运行时。".to_string(),
+                message: "Current platform does not support managed RWKV runtime.".to_string(),
             },
             initial_state: ManagedRuntimeState::Unsupported,
         }
@@ -230,6 +257,7 @@ impl StaticStatus {
                 message: self.install_plan.message,
                 profile: None,
                 candidate_profiles: Vec::new(),
+                profile_statuses: Vec::new(),
                 paths: None,
                 install_plan: None,
                 hardware: Some(self.hardware),
@@ -237,30 +265,9 @@ impl StaticStatus {
             };
         }
 
-        // For zip profiles, after install the zip is deleted and the model is
-        // the extracted directory. Prefer that as the "model path" the user
-        // sees when it exists, so the Settings panel doesn't keep showing a
-        // path to a file that's been deleted.
-        let model_display_path = self
-            .layout
-            .model_extracted_dir
-            .as_ref()
-            .filter(|d| d.exists())
-            .map(|d| d.display().to_string())
-            .unwrap_or_else(|| self.layout.model_file.display().to_string());
-        let paths = ManagedRuntimePaths {
-            sidecar: self.sidecar_path.map(|p| p.display().to_string()),
-            tokenizer: self.tokenizer_path.map(|p| p.display().to_string()),
-            model_file: model_display_path,
-            runtime_dir: self
-                .layout
-                .runtime_dir
-                .as_ref()
-                .map(|path| path.display().to_string()),
-            logs_dir: self.layout.logs_dir.display().to_string(),
-        };
+        let paths = self.paths();
         let message = if self.install_plan.ready {
-            "本地 RWKV 运行时已安装，可启动。".to_string()
+            "Managed RWKV runtime is installed and can be started.".to_string()
         } else {
             self.install_plan.message.clone()
         };
@@ -273,11 +280,99 @@ impl StaticStatus {
                 .into_iter()
                 .map(RuntimeProfileSummary::from_profile)
                 .collect(),
+            profile_statuses: Vec::new(),
             paths: Some(paths),
             install_plan: Some(self.install_plan),
             hardware: Some(self.hardware),
             process,
         }
+    }
+
+    pub fn into_profile_status(
+        self,
+        process: &ManagedRuntimeProcessSnapshot,
+        lifecycle_state: Option<ManagedRuntimeState>,
+    ) -> ManagedRuntimeProfileStatus {
+        let state = lifecycle_state_for_profile(
+            self.profile.id,
+            self.initial_state,
+            process,
+            lifecycle_state,
+        );
+        let process = if process_belongs_to_profile(process, self.profile.id) {
+            process.clone()
+        } else {
+            ManagedRuntimeProcessSnapshot::default()
+        };
+        let message = if matches!(state, ManagedRuntimeState::Unsupported) {
+            self.hardware.message.clone()
+        } else if self.install_plan.ready {
+            "Managed RWKV runtime is installed and can be started.".to_string()
+        } else {
+            self.install_plan.message.clone()
+        };
+
+        ManagedRuntimeProfileStatus {
+            profile: RuntimeProfileSummary::from_profile(self.profile),
+            state,
+            message,
+            paths: self.paths(),
+            install_plan: self.install_plan,
+            hardware: self.hardware,
+            process,
+        }
+    }
+
+    fn paths(&self) -> ManagedRuntimePaths {
+        // For zip profiles, after install the zip is deleted and the model is
+        // the extracted directory. Prefer that as the "model path" the user
+        // sees when it exists, so the Settings panel doesn't keep showing a
+        // path to a file that's been deleted.
+        let model_display_path = self
+            .layout
+            .model_extracted_dir
+            .as_ref()
+            .filter(|d| d.exists())
+            .map(|d| d.display().to_string())
+            .unwrap_or_else(|| self.layout.model_file.display().to_string());
+        ManagedRuntimePaths {
+            sidecar: self.sidecar_path.as_ref().map(|p| p.display().to_string()),
+            tokenizer: self
+                .tokenizer_path
+                .as_ref()
+                .map(|p| p.display().to_string()),
+            model_file: model_display_path,
+            runtime_dir: self
+                .layout
+                .runtime_dir
+                .as_ref()
+                .map(|path| path.display().to_string()),
+            logs_dir: self.layout.logs_dir.display().to_string(),
+        }
+    }
+}
+
+pub fn lifecycle_state_for_profile(
+    profile_id: &str,
+    initial_state: ManagedRuntimeState,
+    process: &ManagedRuntimeProcessSnapshot,
+    lifecycle_state: Option<ManagedRuntimeState>,
+) -> ManagedRuntimeState {
+    if matches!(initial_state, ManagedRuntimeState::Unsupported) {
+        return ManagedRuntimeState::Unsupported;
+    }
+    if let Some(state) = lifecycle_state {
+        if process_belongs_to_profile(process, profile_id) {
+            return state;
+        }
+    }
+    initial_state
+}
+
+fn process_belongs_to_profile(process: &ManagedRuntimeProcessSnapshot, profile_id: &str) -> bool {
+    match process.profile_id.as_deref() {
+        Some(owner) => owner == profile_id,
+        None => process.pid.is_some() || process.base_url.is_some(),
     }
 }
 
@@ -612,6 +707,85 @@ mod tests {
             StaticStatus::unsupported().into_status(ManagedRuntimeProcessSnapshot::default());
         assert_eq!(status.state, ManagedRuntimeState::Unsupported);
         assert!(status.profile.is_none());
+        assert!(status.profile_statuses.is_empty());
         assert!(status.paths.is_none());
+    }
+
+    #[test]
+    fn lifecycle_state_only_applies_to_owning_profile() {
+        let process = ManagedRuntimeProcessSnapshot {
+            profile_id: Some("windows-amd64-rwkv-lightning-cuda".to_string()),
+            ..ManagedRuntimeProcessSnapshot::default()
+        };
+
+        assert_eq!(
+            lifecycle_state_for_profile(
+                "windows-amd64-rwkv-lightning-cuda",
+                ManagedRuntimeState::Installed,
+                &process,
+                Some(ManagedRuntimeState::Ready),
+            ),
+            ManagedRuntimeState::Ready
+        );
+        assert_eq!(
+            lifecycle_state_for_profile(
+                "windows-amd64-llamacpp-vulkan",
+                ManagedRuntimeState::Installed,
+                &process,
+                Some(ManagedRuntimeState::Ready),
+            ),
+            ManagedRuntimeState::Installed
+        );
+        assert_eq!(
+            lifecycle_state_for_profile(
+                "windows-amd64-rwkv-lightning-cuda",
+                ManagedRuntimeState::Unsupported,
+                &process,
+                Some(ManagedRuntimeState::Ready),
+            ),
+            ManagedRuntimeState::Unsupported
+        );
+    }
+
+    #[test]
+    fn profile_status_serializes_with_camel_case_fields() {
+        let status = ManagedRuntimeProfileStatus {
+            profile: RuntimeProfileSummary::from_profile(&MACOS_ARM64_WEBRWKV),
+            state: ManagedRuntimeState::NotInstalled,
+            message: "missing".to_string(),
+            paths: ManagedRuntimePaths {
+                sidecar: None,
+                tokenizer: None,
+                model_file: "/tmp/model".to_string(),
+                runtime_dir: None,
+                logs_dir: "/tmp/logs".to_string(),
+            },
+            install_plan: ManagedRuntimeInstallPlan {
+                ready: false,
+                items: Vec::new(),
+                message: "install required".to_string(),
+            },
+            hardware: HardwareSupport {
+                supported: true,
+                gpu_name: None,
+                compute_capability: None,
+                message: "Apple Silicon".to_string(),
+            },
+            process: ManagedRuntimeProcessSnapshot {
+                profile_id: Some("macos-arm64-webrwkv".to_string()),
+                ..ManagedRuntimeProcessSnapshot::default()
+            },
+        };
+
+        let value = serde_json::to_value(status).expect("serialize profile status");
+        assert!(value.get("installPlan").is_some());
+        assert!(value.get("profile").is_some());
+        assert_eq!(
+            value
+                .get("process")
+                .and_then(|process| process.get("profileId"))
+                .and_then(|profile_id| profile_id.as_str()),
+            Some("macos-arm64-webrwkv")
+        );
     }
 }

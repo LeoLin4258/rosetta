@@ -17,7 +17,10 @@ import {
   updateTxtSourceFile,
 } from "@/lib/rosettaJobs";
 import { selectProvider } from "@/lib/providers";
-import { isManagedRuntimeReady } from "@/lib/useManagedRwkvRuntime";
+import {
+  isManagedRuntimeProfileReady,
+  selectManagedRuntimeProfileStatus,
+} from "@/lib/managedRuntimeSelection";
 import {
   runTranslationBatches,
   translationTargetsForStatuses,
@@ -168,18 +171,22 @@ export function WorkspacePage() {
     pdf2zhWorkerStatus?.message ??
     pdf2zhRuntime.status?.message ??
     "PDF 组件未安装，请在设置中安装后再翻译。";
-  const managedRuntimeReady = isManagedRuntimeReady(managedRuntimeStatus);
+  const selectedRuntimeStatus = selectManagedRuntimeProfileStatus(
+    managedRuntimeStatus,
+    rwkv.managedRuntimeProfileId
+  );
+  const managedRuntimeReady = isManagedRuntimeProfileReady(selectedRuntimeStatus);
   const localRuntimeRequired = rwkv.providerPreference === "local";
   const localRuntimeUnavailable = localRuntimeRequired && !managedRuntimeReady;
   const localRuntimeStarting =
     localRuntimeUnavailable &&
-    managedRuntimeStatus?.state !== "failed" &&
-    managedRuntimeStatus?.state !== "unsupported";
+    selectedRuntimeStatus?.state !== "failed" &&
+    selectedRuntimeStatus?.state !== "unsupported";
   const localRuntimeUnavailableMessage =
-    managedRuntimeStatus?.state === "failed"
-      ? managedRuntimeStatus.message
-      : managedRuntimeStatus?.state === "unsupported"
-        ? managedRuntimeStatus.message
+    selectedRuntimeStatus?.state === "failed"
+      ? selectedRuntimeStatus.message
+      : selectedRuntimeStatus?.state === "unsupported"
+        ? selectedRuntimeStatus.message
         : "本地翻译模型正在启动，请稍候。";
 
   // Prewarm the persistent pdf2zh worker as soon as a PDF document is open,
@@ -285,12 +292,11 @@ export function WorkspacePage() {
   function buildProvider() {
     return selectProvider({
       config: rwkv,
-      managedRuntimeReady: isManagedRuntimeReady(managedRuntimeStatus),
-      managedRuntimeProviderId:
-        managedRuntimeStatus?.profile?.providerId ?? undefined,
-      managedRuntimeBaseUrl: managedRuntimeStatus?.process.baseUrl ?? undefined,
+      managedRuntimeReady: isManagedRuntimeProfileReady(selectedRuntimeStatus),
+      managedRuntimeProviderId: selectedRuntimeStatus?.profile.providerId,
+      managedRuntimeBaseUrl: selectedRuntimeStatus?.process.baseUrl ?? undefined,
       managedRuntimeEndpoint:
-        managedRuntimeStatus?.profile?.batchChatPath ?? undefined,
+        selectedRuntimeStatus?.profile.batchChatPath ?? undefined,
     });
   }
 

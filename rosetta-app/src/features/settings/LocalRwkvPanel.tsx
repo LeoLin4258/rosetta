@@ -23,14 +23,15 @@ import {
 } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { selectManagedRuntimeProfileStatus } from "@/lib/managedRuntimeSelection";
 import { cn } from "@/lib/utils";
 import { useManagedRwkvRuntime } from "@/lib/useManagedRwkvRuntime";
 import { useRosettaStore } from "@/store/useRosettaStore";
 import type {
   ManagedRuntimeInstallPhase,
   ManagedRuntimeLogsSummary,
+  ManagedRuntimeProfileStatus,
   ManagedRuntimeState,
-  ManagedRuntimeStatus,
 } from "@/types/rosetta";
 
 const INSTALL_ACTIVE_PHASES: ReadonlySet<ManagedRuntimeInstallPhase> = new Set([
@@ -41,22 +42,116 @@ const INSTALL_ACTIVE_PHASES: ReadonlySet<ManagedRuntimeInstallPhase> = new Set([
   "writing-manifest",
 ]);
 
-export function LocalRwkvPanel({ className }: { className?: string }) {
+type LocalRwkvPanelProps = {
+  className?: string;
+  isTranslationRunning?: boolean;
+};
+
+export function LocalRwkvPanel({
+  className,
+  isTranslationRunning = false,
+}: LocalRwkvPanelProps) {
   const rt = useManagedRwkvRuntime();
   const status = rt.status;
-  const [detailsOpen, setDetailsOpen] = useState(false);
-  const [logs, setLogs] = useState<ManagedRuntimeLogsSummary | null>(null);
+  const selectedProfileId = useRosettaStore(
+    (state) => state.rwkv.managedRuntimeProfileId
+  );
+  const updateRwkvConfig = useRosettaStore((state) => state.updateRwkvConfig);
+  const [detailsOpenByProfileId, setDetailsOpenByProfileId] = useState<
+    Record<string, boolean>
+  >({});
+  const [logsByProfileId, setLogsByProfileId] = useState<
+    Record<string, ManagedRuntimeLogsSummary | null>
+  >({});
+  const [logsLoadingProfileId, setLogsLoadingProfileId] = useState<string | null>(
+    null
+  );
+  const [actionProfileId, setActionProfileId] = useState<string | null>(null);
 
-  const state: ManagedRuntimeState | null = status?.state ?? null;
-  const isUnsupported = state === "unsupported";
+  const profileStatuses = status?.profileStatuses ?? [];
+  const selectedStatus = selectManagedRuntimeProfileStatus(
+    status,
+    selectedProfileId
+  );
+  const activeProfileId =
+    selectedStatus?.profile.id ?? selectedProfileId ?? status?.profile?.id ?? null;
   const installPhase = rt.progress?.phase ?? null;
   const isInstallActive = !!installPhase && INSTALL_ACTIVE_PHASES.has(installPhase);
+  const actionsDisabled =
+    isTranslationRunning ||
+    rt.isInstalling ||
+    rt.isStarting ||
+    rt.isStopping ||
+    isInstallActive;
 
-  async function openDetails(next: boolean) {
-    setDetailsOpen(next);
-    if (next && !logs && status && !isUnsupported) {
-      const summary = await rt.readLogs();
-      setLogs(summary);
+  async function activateProfile(profileId: string) {
+    if (isTranslationRunning || profileId === activeProfileId) {
+      return;
+    }
+    updateRwkvConfig({ managedRuntimeProfileId: profileId });
+    await rt.refreshStatus(profileId);
+  }
+
+  async function installProfile(profileId: string, repair: boolean) {
+    if (actionsDisabled) {
+      return;
+    }
+    setActionProfileId(profileId);
+    try {
+      await rt.install({ profileId, repair });
+    } finally {
+      setActionProfileId(null);
+    }
+  }
+
+  async function startProfile(profileId: string) {
+    if (actionsDisabled) {
+      return;
+    }
+    setActionProfileId(profileId);
+    updateRwkvConfig({ managedRuntimeProfileId: profileId });
+    try {
+      await rt.start(profileId);
+    } finally {
+      setActionProfileId(null);
+    }
+  }
+
+  async function stopProfile(profileId: string) {
+    if (actionsDisabled) {
+      return;
+    }
+    setActionProfileId(profileId);
+    try {
+      await rt.stop(profileId);
+    } finally {
+      setActionProfileId(null);
+    }
+  }
+
+  async function cancelInstall() {
+    await rt.cancelInstall();
+  }
+
+  async function setProfileDetailsOpen(profileId: string, nextOpen: boolean) {
+    setDetailsOpenByProfileId((current) => ({
+      ...current,
+      [profileId]: nextOpen,
+    }));
+
+    if (!nextOpen || logsByProfileId[profileId] !== undefined) {
+      return;
+    }
+
+    setLogsLoadingProfileId(profileId);
+    try {
+      const logs = await rt.readLogs(profileId);
+      setLogsByProfileId((current) => ({
+        ...current,
+        [profileId]: logs,
+      }));
+    } finally {
+      setLogsLoadingProfileId(null);
     }
   }
 
@@ -75,44 +170,24 @@ export function LocalRwkvPanel({ className }: { className?: string }) {
           </div>
           <div className="min-w-0">
             <h3 className="text-sm font-semibold tracking-normal">
-              管理本地模型
+              管理本地翻译运行时
             </h3>
-            <p className="mt-1 text-sm text-muted-foreground">
-              下载或启动 Rosetta 管理的本地模型。翻译请求在本机处理。
+            <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+              安装、切换并检查 Rosetta 管理的本机翻译后端。翻译请求只发送到本机服务。
             </p>
           </div>
         </div>
-        <RuntimeBadge state={state} isInstallActive={isInstallActive} />
+        <RuntimeBadge status={selectedStatus} isInstallActive={isInstallActive} />
       </div>
 
       <div className="flex flex-col gap-4 border-t pt-4">
-        <StatusRow
-          state={state}
-          status={status}
-          isInstallActive={isInstallActive}
-        />
-
-        {isInstallActive && (
-          <InstallProgressRow
-            percent={installPercent(rt.progress)}
-            message={rt.progress?.message ?? ""}
-            speedBytesPerSec={rt.progress?.speedBytesPerSec ?? 0}
-          />
-        )}
-
-        <RuntimeControls
-          state={state}
-          isInstallActive={isInstallActive}
-          isStarting={rt.isStarting}
-          isStopping={rt.isStopping}
-          onStart={() => void rt.start()}
-          onStop={() => void rt.stop()}
-          onCancel={() => void rt.cancelInstall()}
-          isUnsupported={isUnsupported}
-        />
-
-        {showProxyInput(state, isInstallActive) && (
-          <DownloadProxyField disabled={isInstallActive} />
+        {isTranslationRunning && (
+          <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-300">
+            <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+            <span>
+              正在翻译。完成或暂停当前任务后，才能切换、启动、停止或修复本地运行时。
+            </span>
+          </div>
         )}
 
         {rt.lastError && (
@@ -122,24 +197,181 @@ export function LocalRwkvPanel({ className }: { className?: string }) {
           </div>
         )}
 
-        {state === "ready" && status?.process.cpuFallback && (
-          <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-300">
-            <AlertTriangle className="mt-0.5 size-4 shrink-0" />
-            <div className="flex flex-col gap-1">
-              <span>
-                你的设备有 GPU，但因显卡驱动较旧，Vulkan
-                初始化失败，当前以 CPU 模式运行。更新显卡驱动后重启 Rosetta
-                即可恢复 GPU 加速。
-              </span>
-              <span className="select-all font-mono text-xs opacity-80">
-                https://www.amd.com/en/support/download/drivers.html
-              </span>
-            </div>
+        {isInstallActive && (
+          <InstallProgressRow
+            percent={installPercent(rt.progress)}
+            message={rt.progress?.message ?? ""}
+            speedBytesPerSec={rt.progress?.speedBytesPerSec ?? 0}
+            onCancel={cancelInstall}
+          />
+        )}
+
+        {profileStatuses.length > 0 ? (
+          <div className="grid gap-3">
+            {profileStatuses.map((profileStatus) => (
+              <RuntimeProfileCard
+                key={profileStatus.profile.id}
+                status={profileStatus}
+                isSelected={profileStatus.profile.id === activeProfileId}
+                isActionTarget={profileStatus.profile.id === actionProfileId}
+                actionsDisabled={actionsDisabled}
+                selectionDisabled={isTranslationRunning}
+                detailsOpen={
+                  detailsOpenByProfileId[profileStatus.profile.id] ?? false
+                }
+                logs={logsByProfileId[profileStatus.profile.id] ?? null}
+                logsLoading={
+                  logsLoadingProfileId === profileStatus.profile.id &&
+                  logsByProfileId[profileStatus.profile.id] === undefined
+                }
+                onActivate={() => void activateProfile(profileStatus.profile.id)}
+                onInstall={() => void installProfile(profileStatus.profile.id, false)}
+                onRepair={() => void installProfile(profileStatus.profile.id, true)}
+                onStart={() => void startProfile(profileStatus.profile.id)}
+                onStop={() => void stopProfile(profileStatus.profile.id)}
+                onDetailsOpenChange={(open) =>
+                  void setProfileDetailsOpen(profileStatus.profile.id, open)
+                }
+              />
+            ))}
+          </div>
+        ) : (
+          <div className="flex items-center gap-2 rounded-md border bg-muted/20 p-3 text-sm text-muted-foreground">
+            <LoaderCircle className="size-4 animate-spin" />
+            正在读取本地运行时状态
           </div>
         )}
 
+        {showProxyInput(profileStatuses, isInstallActive) && (
+          <DownloadProxyField disabled={isInstallActive} />
+        )}
+      </div>
+    </section>
+  );
+}
+
+function RuntimeProfileCard({
+  status,
+  isSelected,
+  isActionTarget,
+  actionsDisabled,
+  selectionDisabled,
+  detailsOpen,
+  logs,
+  logsLoading,
+  onActivate,
+  onInstall,
+  onRepair,
+  onStart,
+  onStop,
+  onDetailsOpenChange,
+}: {
+  status: ManagedRuntimeProfileStatus;
+  isSelected: boolean;
+  isActionTarget: boolean;
+  actionsDisabled: boolean;
+  selectionDisabled: boolean;
+  detailsOpen: boolean;
+  logs: ManagedRuntimeLogsSummary | null;
+  logsLoading: boolean;
+  onActivate: () => void;
+  onInstall: () => void;
+  onRepair: () => void;
+  onStart: () => void;
+  onStop: () => void;
+  onDetailsOpenChange: (open: boolean) => void;
+}) {
+  const isUnsupported = status.state === "unsupported";
+  const isBusy = isActionTarget && actionsDisabled;
+  const summary = resolveStatus(status.state, status);
+
+  return (
+    <article
+      className={cn(
+        "rounded-lg border bg-card/70 p-4 transition-colors",
+        isSelected
+          ? "border-foreground/20 ring-1 ring-foreground/10"
+          : "border-border"
+      )}
+    >
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0 space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <h4 className="text-sm font-semibold tracking-normal">
+              {status.profile.runtimeLabel}
+            </h4>
+            {status.profile.recommended && (
+              <Badge variant="secondary" className="h-5 px-1.5 text-[11px]">
+                推荐
+              </Badge>
+            )}
+            {isSelected && (
+              <Badge variant="outline" className="h-5 px-1.5 text-[11px]">
+                当前
+              </Badge>
+            )}
+            <StateBadge state={status.state} />
+          </div>
+          <p className="max-w-2xl text-xs leading-5 text-muted-foreground">
+            {runtimeDescription(status)}
+          </p>
+          {status.profile.runtimeWarning && (
+            <p className="max-w-2xl text-xs leading-5 text-amber-700 dark:text-amber-300">
+              {status.profile.runtimeWarning}
+            </p>
+          )}
+          <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
+            <span>{status.profile.backend}</span>
+            <span>{status.profile.providerId}</span>
+            <span>{formatBytes(status.profile.modelSizeBytes)}</span>
+            {status.hardware.gpuName && <span>{status.hardware.gpuName}</span>}
+            {status.hardware.computeCapability && (
+              <span>SM {status.hardware.computeCapability}</span>
+            )}
+          </div>
+        </div>
+
+        <div className="flex shrink-0 flex-wrap gap-2 lg:justify-end">
+          <Button
+            type="button"
+            size="sm"
+            variant={isSelected ? "secondary" : "outline"}
+            disabled={isSelected || isUnsupported || selectionDisabled}
+            onClick={onActivate}
+          >
+            {isSelected ? "已设为当前" : "设为当前"}
+          </Button>
+          <RuntimeActionButtons
+            state={status.state}
+            isBusy={isBusy}
+            disabled={actionsDisabled || isUnsupported}
+            onInstall={onInstall}
+            onRepair={onRepair}
+            onStart={onStart}
+            onStop={onStop}
+          />
+        </div>
+      </div>
+
+      <div className="mt-4 flex flex-col gap-2 border-t pt-3">
+        <div className="flex items-start gap-2">
+          {summary.spinning ? (
+            <LoaderCircle className="mt-0.5 size-3.5 shrink-0 animate-spin text-muted-foreground" />
+          ) : (
+            <div className={cn("mt-1.5 size-2 shrink-0 rounded-full", summary.dot)} />
+          )}
+          <div className="min-w-0">
+            <p className="text-xs font-medium">{summary.label}</p>
+            {summary.sub && (
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                {summary.sub}
+              </p>
+            )}
+          </div>
+        </div>
+
         {!isUnsupported && (
-          <Collapsible open={detailsOpen} onOpenChange={openDetails}>
+          <Collapsible open={detailsOpen} onOpenChange={onDetailsOpenChange}>
             <CollapsibleTrigger asChild>
               <button
                 type="button"
@@ -155,264 +387,115 @@ export function LocalRwkvPanel({ className }: { className?: string }) {
               </button>
             </CollapsibleTrigger>
             <CollapsibleContent>
-              <div className="mt-2 grid gap-4 border-t pt-4 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,0.8fr)]">
-                <div className="flex min-w-0 flex-col gap-4">
-                  <RepairActions
-                    state={state}
-                    installPhase={installPhase}
-                    isInstallActive={isInstallActive}
-                    isInstalling={rt.isInstalling}
-                    modelSizeBytes={status?.profile?.modelSizeBytes ?? null}
-                    onInstall={() => void rt.install({ repair: false })}
-                    onRepair={() => void rt.install({ repair: true })}
-                  />
-                  {status && <ModelInfoRows status={status} />}
-                </div>
-
-                {status && (
-                  <div className="flex min-w-0 flex-col gap-2">
-                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                      <TerminalSquare className="size-3.5" />
-                      运行日志
-                    </div>
-                    <LogsSummaryBlock logs={logs} />
+              <div className="grid gap-4 border-t pt-4 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,0.8fr)]">
+                <ModelInfoRows status={status} />
+                <div className="flex min-w-0 flex-col gap-2">
+                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <TerminalSquare className="size-3.5" />
+                    运行日志
                   </div>
-                )}
+                  <LogsSummaryBlock logs={logs} isLoading={logsLoading} />
+                </div>
               </div>
             </CollapsibleContent>
           </Collapsible>
         )}
       </div>
-    </section>
+    </article>
   );
 }
 
-// ─── Status dot + one-line text ───────────────────────────────────────────────
-
-function StatusRow({
+function RuntimeActionButtons({
   state,
-  status,
-  isInstallActive,
-}: {
-  state: ManagedRuntimeState | null;
-  status: ManagedRuntimeStatus | null;
-  isInstallActive: boolean;
-}) {
-  const { dot, label, sub, spinning } = resolveStatus(state, status, isInstallActive);
-  return (
-    <div className="flex flex-col gap-1">
-      <div className="flex items-center gap-2.5">
-        {spinning ? (
-          <LoaderCircle className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
-        ) : (
-          <div className={cn("size-2 shrink-0 rounded-full", dot)} />
-        )}
-        <span className="text-sm font-medium">{label}</span>
-      </div>
-      {sub && <p className="pl-4 text-xs text-muted-foreground">{sub}</p>}
-    </div>
-  );
-}
-
-function resolveStatus(
-  state: ManagedRuntimeState | null,
-  status: ManagedRuntimeStatus | null,
-  isInstallActive: boolean
-): { dot: string; label: string; sub?: string; spinning?: boolean } {
-  if (isInstallActive) {
-    return {
-      dot: "bg-blue-500",
-      label: "正在安装本地翻译引擎",
-      sub: "运行包和模型校验完成后可离线使用。",
-      spinning: true,
-    };
-  }
-  switch (state) {
-    case "ready":
-      if (status?.process.cpuFallback) {
-        return {
-          dot: "bg-amber-400",
-          label: "本地模型正在运行（CPU 模式）",
-          sub: "检测到 GPU 但 Vulkan 启动失败，已回退到 CPU。更新显卡驱动可恢复 GPU 加速。",
-        };
-      }
-      return {
-        dot: "bg-emerald-500",
-        label: "本地模型正在运行",
-        sub: status?.process.baseUrl
-          ? "翻译请求会发送到本机服务，不会离开这台设备。"
-          : undefined,
-      };
-    case "starting":
-      return {
-        dot: "bg-blue-500",
-        label: "正在启动本地模型",
-        spinning: true,
-      };
-    case "installed":
-    case "stopped":
-      return {
-        dot: "bg-amber-400",
-        label: "本地模型已安装，需要启动后才能翻译",
-      };
-    case "failed":
-      return {
-        dot: "bg-destructive",
-        label: "本地模型启动失败。展开技术信息查看日志。",
-      };
-    case "unsupported":
-      return {
-        dot: "bg-muted-foreground/40",
-        label: "当前设备不支持本地翻译",
-        sub:
-          status?.hardware?.message ??
-          "你仍可显式配置自己的翻译 API。",
-      };
-    case "not-installed":
-      return {
-        dot: "bg-muted-foreground/30",
-        label: "本地模型尚未下载",
-        sub: "展开技术信息可手动下载，或重启 Rosetta 进入安装向导。",
-      };
-    default:
-      return {
-        dot: "bg-muted-foreground/30",
-        label: "正在检查本地模型状态",
-        spinning: true,
-      };
-  }
-}
-
-// ─── Runtime controls (start / stop / cancel install) — NOT install/repair ───
-
-function RuntimeControls({
-  state,
-  isInstallActive,
-  isStarting,
-  isStopping,
+  isBusy,
+  disabled,
+  onInstall,
+  onRepair,
   onStart,
   onStop,
-  onCancel,
-  isUnsupported,
 }: {
-  state: ManagedRuntimeState | null;
-  isInstallActive: boolean;
-  isStarting: boolean;
-  isStopping: boolean;
+  state: ManagedRuntimeState;
+  isBusy: boolean;
+  disabled: boolean;
+  onInstall: () => void;
+  onRepair: () => void;
   onStart: () => void;
   onStop: () => void;
-  onCancel: () => void;
-  isUnsupported: boolean;
 }) {
-  if (isUnsupported || state === "not-installed") return null;
-
-  if (isInstallActive) {
+  if (state === "not-installed") {
     return (
-      <div className="flex flex-wrap items-center gap-2">
-        <Button variant="outline" size="sm" onClick={onCancel}>
-          <X className="size-4" /> 取消下载
-        </Button>
-        <span className="text-xs text-muted-foreground">
-          取消后，下次下载会从中断处继续。
-        </span>
-      </div>
+      <Button type="button" size="sm" onClick={onInstall} disabled={disabled}>
+        {isBusy ? (
+          <LoaderCircle className="size-4 animate-spin" />
+        ) : (
+          <Download className="size-4" />
+        )}
+        下载安装
+      </Button>
     );
   }
 
   if (state === "ready") {
     return (
-      <Button variant="outline" size="sm" onClick={onStop} disabled={isStopping}>
-        <Square className="size-4" /> 停止翻译服务
-      </Button>
-    );
-  }
-
-  if (state === "starting") {
-    return (
-      <Button variant="outline" size="sm" disabled>
-        <LoaderCircle className="size-4 animate-spin" /> 正在启动
-      </Button>
+      <>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          onClick={onRepair}
+          disabled={disabled}
+        >
+          <RefreshCw className="size-4" />
+          校验修复
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          onClick={onStop}
+          disabled={disabled}
+        >
+          {isBusy ? (
+            <LoaderCircle className="size-4 animate-spin" />
+          ) : (
+            <Square className="size-4" />
+          )}
+          停止
+        </Button>
+      </>
     );
   }
 
   if (state === "installed" || state === "stopped" || state === "failed") {
     return (
-      <Button size="sm" onClick={onStart} disabled={isStarting}>
-        {isStarting ? (
-          <LoaderCircle className="size-4 animate-spin" />
-        ) : (
-          <Play className="size-4" />
-        )}
-        启动本地翻译
-      </Button>
-    );
-  }
-
-  return null;
-}
-
-// ─── Install / repair actions (inside details collapsible) ────────────────────
-
-function RepairActions({
-  state,
-  installPhase,
-  isInstallActive,
-  isInstalling,
-  modelSizeBytes,
-  onInstall,
-  onRepair,
-}: {
-  state: ManagedRuntimeState | null;
-  installPhase: ManagedRuntimeInstallPhase | null;
-  isInstallActive: boolean;
-  isInstalling: boolean;
-  modelSizeBytes: number | null;
-  onInstall: () => void;
-  onRepair: () => void;
-}) {
-  if (isInstallActive) return null;
-
-  if (state === "not-installed") {
-    const sizeLabel = modelSizeBytes
-      ? `约 ${formatBytes(modelSizeBytes)}`
-      : "大小未知";
-    return (
-      <div className="flex flex-col items-start gap-2">
-        <p className="text-xs text-muted-foreground">
-          如果跳过了安装向导，或模型文件被删除，可以在这里重新下载。
-        </p>
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={onInstall}
-          disabled={isInstalling || installPhase === "preflight"}
-        >
-          {isInstalling ? (
+      <>
+        <Button type="button" size="sm" onClick={onStart} disabled={disabled}>
+          {isBusy ? (
             <LoaderCircle className="size-4 animate-spin" />
           ) : (
-            <Download className="size-4" />
+            <Play className="size-4" />
           )}
-          下载本地模型（{sizeLabel}）
+          启动
         </Button>
-      </div>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          onClick={onRepair}
+          disabled={disabled}
+        >
+          <RefreshCw className="size-4" />
+          校验修复
+        </Button>
+      </>
     );
   }
 
-  if (
-    state === "installed" ||
-    state === "stopped" ||
-    state === "failed" ||
-    state === "ready"
-  ) {
+  if (state === "starting") {
     return (
-      <Button
-        variant="outline"
-        size="sm"
-        onClick={onRepair}
-        disabled={isInstalling}
-        className="w-fit"
-      >
-        <RefreshCw className="size-4" /> 校验并修复模型
+      <Button type="button" size="sm" disabled>
+        <LoaderCircle className="size-4 animate-spin" />
+        正在启动
       </Button>
     );
   }
@@ -420,13 +503,11 @@ function RepairActions({
   return null;
 }
 
-// ─── Header badge ─────────────────────────────────────────────────────────────
-
 function RuntimeBadge({
-  state,
+  status,
   isInstallActive,
 }: {
-  state: ManagedRuntimeState | null;
+  status: ManagedRuntimeProfileStatus | null;
   isInstallActive: boolean;
 }) {
   if (isInstallActive) {
@@ -439,17 +520,18 @@ function RuntimeBadge({
       </Badge>
     );
   }
-  if (state === "ready") {
+  if (!status) return null;
+  if (status.state === "ready") {
     return (
       <Badge
         variant="outline"
         className="gap-1 border-transparent bg-emerald-500/12 text-emerald-700 ring-1 ring-inset ring-black/5 dark:ring-white/6 dark:text-emerald-300"
       >
-        <CheckCircle2 className="size-3" /> 运行中
+        <CheckCircle2 className="size-3" /> 当前运行中
       </Badge>
     );
   }
-  if (state === "starting") {
+  if (status.state === "starting") {
     return (
       <Badge
         variant="outline"
@@ -462,24 +544,105 @@ function RuntimeBadge({
   return null;
 }
 
-// ─── Proxy, model info, logs ──────────────────────────────────────────────────
+function StateBadge({ state }: { state: ManagedRuntimeState }) {
+  const label = stateLabel(state);
+  if (!label) return null;
+  return (
+    <Badge variant="outline" className="h-5 px-1.5 text-[11px] font-normal">
+      {label}
+    </Badge>
+  );
+}
+
+function resolveStatus(
+  state: ManagedRuntimeState,
+  status: ManagedRuntimeProfileStatus
+): { dot: string; label: string; sub?: string; spinning?: boolean } {
+  switch (state) {
+    case "ready":
+      return {
+        dot: status.process.cpuFallback ? "bg-amber-400" : "bg-emerald-500",
+        label: status.process.cpuFallback
+          ? "运行中，当前为 CPU 回退模式"
+          : "运行中，可用于本地翻译",
+        sub: status.process.baseUrl
+          ? `监听 ${status.process.baseUrl}`
+          : undefined,
+      };
+    case "starting":
+      return {
+        dot: "bg-blue-500",
+        label: "正在启动本地服务",
+        spinning: true,
+      };
+    case "installed":
+      return {
+        dot: "bg-amber-400",
+        label: "已安装，启动后可以用于翻译",
+      };
+    case "stopped":
+      return {
+        dot: "bg-muted-foreground/50",
+        label: "已停止",
+      };
+    case "failed":
+      return {
+        dot: "bg-destructive",
+        label: "启动失败",
+        sub: status.process.lastError ?? status.message,
+      };
+    case "unsupported":
+      return {
+        dot: "bg-muted-foreground/30",
+        label: "当前设备不支持",
+        sub: status.hardware.message,
+      };
+    case "not-installed":
+      return {
+        dot: "bg-muted-foreground/30",
+        label: "尚未安装",
+        sub: status.installPlan.message,
+      };
+    default:
+      return {
+        dot: "bg-muted-foreground/30",
+        label: "正在读取状态",
+        spinning: true,
+      };
+  }
+}
+
+function runtimeDescription(status: ManagedRuntimeProfileStatus): string {
+  if (!status.hardware.supported) {
+    return status.hardware.message;
+  }
+  if (status.profile.hardwareRequirement) {
+    return status.profile.hardwareRequirement;
+  }
+  return "本机运行的 Rosetta 托管翻译后端。";
+}
 
 function showProxyInput(
-  state: ManagedRuntimeState | null,
+  profileStatuses: ManagedRuntimeProfileStatus[],
   isInstallActive: boolean
 ): boolean {
   if (isInstallActive) return true;
-  return state === "not-installed" || state === "failed";
+  return profileStatuses.some(
+    (status) => status.state === "not-installed" || status.state === "failed"
+  );
 }
 
 function DownloadProxyField({ disabled }: { disabled: boolean }) {
-  const proxyUrl = useRosettaStore((s) => s.downloadProxy.url);
-  const setProxyUrl = useRosettaStore((s) => s.setDownloadProxyUrl);
+  const proxyUrl = useRosettaStore((state) => state.downloadProxy.url);
+  const setProxyUrl = useRosettaStore((state) => state.setDownloadProxyUrl);
 
   return (
     <div className="flex flex-col gap-1.5 rounded-md border bg-muted/30 p-3">
       <div className="flex items-baseline justify-between gap-3">
-        <Label htmlFor="managed-rwkv-download-proxy" className="text-xs font-medium">
+        <Label
+          htmlFor="managed-rwkv-download-proxy"
+          className="text-xs font-medium"
+        >
           下载代理（可选）
         </Label>
         <span className="text-[11px] text-muted-foreground">只影响模型下载</span>
@@ -487,54 +650,54 @@ function DownloadProxyField({ disabled }: { disabled: boolean }) {
       <Input
         id="managed-rwkv-download-proxy"
         type="text"
-        placeholder="例如 http://127.0.0.1:7897 或留空"
+        placeholder="例如 http://127.0.0.1:7897，留空自动检测"
         value={proxyUrl}
         disabled={disabled}
         spellCheck={false}
         autoComplete="off"
-        onChange={(e) => setProxyUrl(e.target.value)}
+        onChange={(event) => setProxyUrl(event.target.value)}
         className="h-8 font-mono text-xs"
       />
     </div>
   );
 }
 
-function ModelInfoRows({ status }: { status: ManagedRuntimeStatus }) {
-  if (!status.profile && !status.paths) return null;
+function ModelInfoRows({ status }: { status: ManagedRuntimeProfileStatus }) {
+  const rows: Array<{ label: string; value: string }> = [
+    {
+      label: "Profile",
+      value: status.profile.id,
+    },
+    {
+      label: "模型文件",
+      value: `${status.profile.modelFilename} (${formatBytes(
+        status.profile.modelSizeBytes
+      )})`,
+    },
+    {
+      label: "校验",
+      value: `SHA-256 ${status.profile.modelSha256.slice(0, 16)}...`,
+    },
+    {
+      label: "接口",
+      value: status.profile.batchChatPath,
+    },
+    {
+      label: "模型路径",
+      value: status.paths.modelFile,
+    },
+    {
+      label: "日志路径",
+      value: status.paths.logsDir,
+    },
+  ];
 
-  const rows: Array<{ label: string; value: string }> = [];
-  if (status.profile) {
-    rows.push(
-      { label: "模型文件", value: `${status.profile.modelFilename} (${formatBytes(status.profile.modelSizeBytes)})` },
-      { label: "校验", value: `SHA-256 ${status.profile.modelSha256.slice(0, 16)}…` },
-      { label: "运行后端", value: `${status.profile.backend} (${status.profile.providerId})` }
-    );
-  }
-  const optionalProfiles = status.candidateProfiles.filter(
-    (profile) => status.profile == null || profile.id !== status.profile.id
-  );
-  optionalProfiles.forEach((profile) => {
-    rows.push({
-      label: "次选后端",
-      value: profile.runtimeWarning
-        ? `${profile.runtimeLabel}: ${profile.runtimeWarning}`
-        : profile.runtimeLabel,
-    });
-  });
-  if (status.paths) {
-    rows.push(
-      { label: "模型路径", value: status.paths.modelFile },
-      { label: "日志路径", value: status.paths.logsDir }
-    );
-  }
-  if (status.process.baseUrl) {
-    rows.push({ label: "监听地址", value: status.process.baseUrl });
+  if (status.paths.runtimeDir) {
+    rows.push({ label: "运行包", value: status.paths.runtimeDir });
   }
   if (status.process.pid) {
     rows.push({ label: "进程 PID", value: String(status.process.pid) });
   }
-
-  if (rows.length === 0) return null;
 
   return (
     <dl className="grid min-w-0 gap-1.5 text-xs">
@@ -544,24 +707,35 @@ function ModelInfoRows({ status }: { status: ManagedRuntimeStatus }) {
           className="grid min-w-0 grid-cols-[5rem_minmax(0,1fr)] gap-3"
         >
           <dt className="text-muted-foreground">{row.label}</dt>
-          <dd className="truncate font-mono text-[11px] text-foreground/70">{row.value}</dd>
+          <dd className="truncate font-mono text-[11px] text-foreground/70">
+            {row.value}
+          </dd>
         </div>
       ))}
     </dl>
   );
 }
 
-function LogsSummaryBlock({ logs }: { logs: ManagedRuntimeLogsSummary | null }) {
-  if (!logs) {
+function LogsSummaryBlock({
+  logs,
+  isLoading,
+}: {
+  logs: ManagedRuntimeLogsSummary | null;
+  isLoading: boolean;
+}) {
+  if (isLoading) {
     return <p className="text-xs text-muted-foreground">正在读取日志</p>;
+  }
+  if (!logs) {
+    return <p className="text-xs text-muted-foreground">展开后读取日志。</p>;
   }
   if (logs.logTail.length === 0) {
     return <p className="text-xs text-muted-foreground">{logs.message}</p>;
   }
   return (
     <div className="max-h-40 overflow-auto rounded-md border bg-muted/40 p-3 font-mono text-[11px] leading-relaxed text-muted-foreground">
-      {logs.logTail.map((line, idx) => (
-        <div key={idx} className="whitespace-pre-wrap break-all">
+      {logs.logTail.map((line, index) => (
+        <div key={`${index}-${line}`} className="whitespace-pre-wrap break-all">
           {line}
         </div>
       ))}
@@ -569,21 +743,21 @@ function LogsSummaryBlock({ logs }: { logs: ManagedRuntimeLogsSummary | null }) 
   );
 }
 
-// ─── Install progress bar ─────────────────────────────────────────────────────
-
 function InstallProgressRow({
   percent,
   message,
   speedBytesPerSec,
+  onCancel,
 }: {
   percent: number;
   message: string;
   speedBytesPerSec: number;
+  onCancel: () => void;
 }) {
   return (
-    <div className="flex flex-col gap-2">
-      <div className="flex items-center justify-between text-xs text-muted-foreground">
-        <span className="truncate">{message}</span>
+    <div className="flex flex-col gap-3 rounded-md border bg-muted/20 p-3">
+      <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+        <span className="truncate">{message || "正在安装本地运行时"}</span>
         <span className="shrink-0 tabular-nums">
           {percent}%{speedBytesPerSec > 0 ? ` · ${formatSpeed(speedBytesPerSec)}` : ""}
         </span>
@@ -594,6 +768,16 @@ function InstallProgressRow({
           style={{ width: `${percent}%` }}
         />
       </div>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={onCancel}
+        className="w-fit"
+      >
+        <X className="size-4" />
+        取消下载
+      </Button>
     </div>
   );
 }
@@ -605,21 +789,40 @@ function installPercent(
   return Math.min(100, Math.floor((progress.bytesDone * 100) / progress.bytesTotal));
 }
 
-// ─── Utilities ────────────────────────────────────────────────────────────────
+function stateLabel(state: ManagedRuntimeState): string | null {
+  switch (state) {
+    case "ready":
+      return "运行中";
+    case "starting":
+      return "启动中";
+    case "installed":
+      return "已安装";
+    case "stopped":
+      return "已停止";
+    case "failed":
+      return "失败";
+    case "unsupported":
+      return "不支持";
+    case "not-installed":
+      return "未安装";
+    default:
+      return null;
+  }
+}
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   const units = ["KB", "MB", "GB"];
   let value = bytes / 1024;
   let unit = units[0];
-  for (let i = 1; i < units.length && value >= 1024; i++) {
+  for (let index = 1; index < units.length && value >= 1024; index += 1) {
     value /= 1024;
-    unit = units[i];
+    unit = units[index];
   }
   return `${value.toFixed(value >= 10 ? 0 : 1)} ${unit}`;
 }
 
 function formatSpeed(bytesPerSec: number): string {
-  if (bytesPerSec <= 0) return "—";
+  if (bytesPerSec <= 0) return "-";
   return `${formatBytes(bytesPerSec)}/s`;
 }

@@ -44,7 +44,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { isManagedRuntimeReady } from "@/lib/useManagedRwkvRuntime";
+import {
+  isManagedRuntimeProfileReady,
+  selectManagedRuntimeProfileStatus,
+} from "@/lib/managedRuntimeSelection";
 import { getReleaseNote, type ReleaseNote } from "../../data/releaseNotes";
 import {
   clearRosettaLocalData,
@@ -57,6 +60,7 @@ import { LocalRwkvPanel } from "./LocalRwkvPanel";
 import { Pdf2zhPanel } from "./Pdf2zhPanel";
 import type {
   AppThemeMode,
+  ManagedRuntimeProfileStatus,
   ManagedRuntimeStatus,
   RwkvConnectionConfig,
   RwkvProviderPreference,
@@ -369,11 +373,15 @@ function TranslationAiSection({
   const [localSettingsOpen, setLocalSettingsOpen] = useState(false);
   const [switchingTo, setSwitchingTo] =
     useState<RwkvProviderPreference | null>(null);
-  const localReady = isManagedRuntimeReady(managedRuntimeStatus);
+  const selectedRuntimeStatus = selectManagedRuntimeProfileStatus(
+    managedRuntimeStatus,
+    rwkv.managedRuntimeProfileId
+  );
+  const localReady = isManagedRuntimeProfileReady(selectedRuntimeStatus);
   const selectedLocal = rwkv.providerPreference === "local";
   const selectedProviderReady = selectedLocal ? localReady : remoteApiConfigured;
   const isSwitchingProvider = switchingTo != null;
-  const state = managedRuntimeStatus?.state ?? null;
+  const state = selectedRuntimeStatus?.state ?? managedRuntimeStatus?.state ?? null;
   const switchDisabled = isSwitchingProvider || isTranslationRunning;
   const currentEngineLabel = selectedLocal ? "本地模型" : "远程服务";
   const currentEngineTone = selectedProviderReady ? "selected" : "warning";
@@ -425,7 +433,7 @@ function TranslationAiSection({
 
           <div className="grid gap-4 md:grid-cols-2">
             <BackendChoiceCard
-              description={localServiceDescription(state, managedRuntimeStatus)}
+              description={localServiceDescription(state, selectedRuntimeStatus)}
               icon={<Cpu className="size-4" />}
               label="本地模型"
               onSelect={() => selectProviderPreference("local")}
@@ -518,7 +526,7 @@ function TranslationAiSection({
           >
             <CollapsibleContent>
               <div className="border-t border-black/8 pt-6 dark:border-white/8">
-                <LocalRwkvPanel />
+                <LocalRwkvPanel isTranslationRunning={isTranslationRunning} />
               </div>
             </CollapsibleContent>
           </Collapsible>
@@ -833,9 +841,9 @@ function localServiceSelectedProblemLabel(
 
 function localServiceDescription(
   state: ManagedRuntimeStatus["state"] | null,
-  status: ManagedRuntimeStatus | null
+  status: ManagedRuntimeProfileStatus | null
 ) {
-  if (isManagedRuntimeReady(status)) {
+  if (isManagedRuntimeProfileReady(status)) {
     return status?.process.baseUrl
       ? `正在本机运行：${status.process.baseUrl}`
       : "本地模型正在运行。";

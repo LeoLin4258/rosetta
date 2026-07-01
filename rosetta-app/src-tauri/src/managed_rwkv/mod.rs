@@ -31,8 +31,9 @@ use lifecycle::{
     ManagedRuntimeProbeResult, ManagedRuntimeStartResult,
 };
 use status::{
-    build_static_status, build_static_status_for_profile, ManagedRuntimeInstallPlan,
-    ManagedRuntimeState, ManagedRuntimeStatus,
+    build_profile_statuses, build_static_status, build_static_status_for_profile,
+    lifecycle_state_for_profile, ManagedRuntimeInstallPlan, ManagedRuntimeState,
+    ManagedRuntimeStatus,
 };
 
 /// Re-export so `lib.rs` can manage the registry as Tauri state.
@@ -80,15 +81,14 @@ pub async fn get_managed_rwkv_runtime_status(
     let profile = resolve_command_profile(profile_id.as_deref())?;
     let static_status = build_static_status_for_profile(&app, profile)?;
     let (process_snapshot, lifecycle_state) = current_process_snapshot(&registry).await;
+    let profile_statuses = build_profile_statuses(&app, &process_snapshot, lifecycle_state)?;
 
-    let mut status = static_status.into_status(process_snapshot);
+    let mut status = static_status.into_status(process_snapshot.clone());
     // Lifecycle state (Starting / Ready / Failed / Stopped) overrides the
-    // static "Installed / NotInstalled" if the sidecar is alive or just was.
-    if let Some(live) = lifecycle_state {
-        if !matches!(status.state, ManagedRuntimeState::Unsupported) {
-            status.state = live;
-        }
-    }
+    // static "Installed / NotInstalled" only for the profile that owns it.
+    status.state =
+        lifecycle_state_for_profile(profile.id, status.state, &process_snapshot, lifecycle_state);
+    status.profile_statuses = profile_statuses;
     Ok(status)
 }
 

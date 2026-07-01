@@ -8,14 +8,20 @@ import {
   useManagedPdf2zhRuntime,
 } from "@/lib/useManagedPdf2zhRuntime";
 import {
+  WINDOWS_LIGHTNING_PROFILE_ID,
+  WINDOWS_LLAMACPP_PROFILE_ID,
+  selectManagedRuntimeProfileStatus,
+} from "@/lib/managedRuntimeSelection";
+import {
   getPdf2zhWorkerStatus,
   prewarmPdf2zhWorker,
   subscribePdf2zhWorkerStatus,
   type Pdf2zhWorkerStatus,
 } from "@/lib/pdf2zhRuntime";
 import { useManagedRwkvRuntime } from "@/lib/useManagedRwkvRuntime";
+import { useRosettaStore } from "@/store/useRosettaStore";
 import { cn } from "@/lib/utils";
-import type { ManagedRuntimeLogsSummary } from "@/types/rosetta";
+import type { ManagedRuntimeLogsSummary, ManagedRuntimeProfileStatus } from "@/types/rosetta";
 
 import { DoneStep } from "./DoneStep";
 import { InstallStep } from "./InstallStep";
@@ -65,6 +71,7 @@ function formatDownloadCaption(modelSizeBytes: number | null): string {
 export function OnboardingApp() {
   const runtime = useManagedRwkvRuntime();
   const pdfRuntime = useManagedPdf2zhRuntime();
+  const updateRwkvConfig = useRosettaStore((state) => state.updateRwkvConfig);
   const [systemPrefersDark, setSystemPrefersDark] = useState(
     () => window.matchMedia("(prefers-color-scheme: dark)").matches
   );
@@ -85,6 +92,8 @@ export function OnboardingApp() {
   const [pdfWorkerStatus, setPdfWorkerStatus] =
     useState<Pdf2zhWorkerStatus | null>(null);
   const [pdfWarmupElapsed, setPdfWarmupElapsed] = useState(0);
+  const [selectedRuntimeProfileId, setSelectedRuntimeProfileId] =
+    useState<string | null>(null);
   const [rwkvLogs, setRwkvLogs] = useState<ManagedRuntimeLogsSummary | null>(
     null
   );
@@ -170,6 +179,43 @@ export function OnboardingApp() {
     return () => window.clearInterval(interval);
   }, [isPrewarmingPdf]);
 
+  const profileStatuses = runtime.status?.profileStatuses ?? [];
+  const lightningStatus = findProfileStatus(
+    profileStatuses,
+    WINDOWS_LIGHTNING_PROFILE_ID
+  );
+  const llamaCppStatus = findProfileStatus(
+    profileStatuses,
+    WINDOWS_LLAMACPP_PROFILE_ID
+  );
+  const selectedRuntimeStatus = selectManagedRuntimeProfileStatus(
+    runtime.status,
+    selectedRuntimeProfileId
+  );
+  const selectedRuntimeProfile =
+    selectedRuntimeStatus?.profile ?? runtime.status?.profile ?? null;
+  const selectedModelSizeBytes =
+    selectedRuntimeProfile?.modelSizeBytes ?? decision?.modelSizeBytes ?? null;
+  const lightningSupported = lightningStatus?.hardware.supported ?? false;
+  const showLlamaFallback =
+    lightningSupported &&
+    !!llamaCppStatus &&
+    llamaCppStatus.state !== "unsupported";
+  const selectedRuntimeIsLightning =
+    selectedRuntimeProfile?.id === WINDOWS_LIGHTNING_PROFILE_ID;
+
+  useEffect(() => {
+    if (selectedRuntimeProfileId) {
+      return;
+    }
+    const nextProfileId = selectedRuntimeStatus?.profile.id;
+    if (!nextProfileId) {
+      return;
+    }
+    setSelectedRuntimeProfileId(nextProfileId);
+    updateRwkvConfig({ managedRuntimeProfileId: nextProfileId });
+  }, [selectedRuntimeProfileId, selectedRuntimeStatus?.profile.id, updateRwkvConfig]);
+
   const beginPdfSetup = useCallback(async () => {
     setErrorMessage(null);
     setIsPrewarmingPdf(false);
@@ -210,7 +256,14 @@ export function OnboardingApp() {
     }
   }, [pdfRuntime]);
 
-  const installLocalRuntime = useCallback(async () => {
+  const installLocalRuntime = useCallback(async (profileId?: string | null) => {
+    const targetProfileId =
+      profileId ?? selectedRuntimeProfileId ?? selectedRuntimeStatus?.profile.id;
+    if (targetProfileId) {
+      setSelectedRuntimeProfileId(targetProfileId);
+      updateRwkvConfig({ managedRuntimeProfileId: targetProfileId });
+    }
+
     if (rwkvInstallFlowActiveRef.current) {
       setDebugState((prev) => ({
         ...prev,
@@ -236,7 +289,10 @@ export function OnboardingApp() {
     setStep("installing-runtime");
 
     try {
-      const installed = await runtime.install({ repair: false });
+      const installed = await runtime.install({
+        repair: false,
+        profileId: targetProfileId,
+      });
       setDebugState((prev) => ({
         ...prev,
         lastAction: "runtime.install.returned",
@@ -248,7 +304,7 @@ export function OnboardingApp() {
         return;
       }
 
-      const started = await runtime.start();
+      const started = await runtime.start(targetProfileId);
       setDebugState((prev) => ({
         ...prev,
         lastAction: "runtime.start.returned",
@@ -256,13 +312,13 @@ export function OnboardingApp() {
         startResult: summarizeValue(started),
       }));
       if (!started) {
-        const logs = await runtime.readLogs();
+        const logs = await runtime.readLogs(targetProfileId);
         setRwkvLogs(logs);
         setErrorMessage(null);
         return;
       }
 
-      const probe = await runtime.probe();
+      const probe = await runtime.probe(targetProfileId);
       setDebugState((prev) => ({
         ...prev,
         lastAction: "runtime.probe.returned",
@@ -270,7 +326,7 @@ export function OnboardingApp() {
         probeResult: summarizeValue(probe),
       }));
       if (!probe?.ok) {
-        const logs = await runtime.readLogs();
+        const logs = await runtime.readLogs(targetProfileId);
         setRwkvLogs(logs);
         const message = probe?.message ?? "本地翻译引擎探活没有完成。";
         setDebugState((prev) => ({
@@ -287,7 +343,7 @@ export function OnboardingApp() {
       setStep("pdf");
     } catch (error) {
       const message = toMessage(error);
-      const logs = await runtime.readLogs();
+      const logs = await runtime.readLogs(targetProfileId);
       setRwkvLogs(logs);
       setDebugState((prev) => ({
         ...prev,
@@ -299,11 +355,23 @@ export function OnboardingApp() {
     } finally {
       rwkvInstallFlowActiveRef.current = false;
     }
-  }, [runtime]);
+  }, [
+    runtime,
+    selectedRuntimeProfileId,
+    selectedRuntimeStatus?.profile.id,
+    updateRwkvConfig,
+  ]);
 
   const handleBeginInstall = useCallback(() => {
-    void installLocalRuntime();
-  }, [installLocalRuntime]);
+    void installLocalRuntime(selectedRuntimeProfileId);
+  }, [installLocalRuntime, selectedRuntimeProfileId]);
+
+  const handleUseLlamaCpp = useCallback(() => {
+    setSelectedRuntimeProfileId(WINDOWS_LLAMACPP_PROFILE_ID);
+    updateRwkvConfig({ managedRuntimeProfileId: WINDOWS_LLAMACPP_PROFILE_ID });
+    setErrorMessage(null);
+    void installLocalRuntime(WINDOWS_LLAMACPP_PROFILE_ID);
+  }, [installLocalRuntime, updateRwkvConfig]);
 
   const handleBeginPdfInstall = useCallback(() => {
     void beginPdfSetup();
@@ -316,8 +384,8 @@ export function OnboardingApp() {
       return;
     }
 
-    void installLocalRuntime();
-  }, [beginPdfSetup, installLocalRuntime, step]);
+    void installLocalRuntime(selectedRuntimeProfileId);
+  }, [beginPdfSetup, installLocalRuntime, selectedRuntimeProfileId, step]);
 
   const handleCancel = useCallback(() => {
     if (step === "installing-pdf") {
@@ -367,16 +435,19 @@ export function OnboardingApp() {
     []
   );
 
-  const localInstallSupport = runtime.status?.hardware;
+  const localInstallSupport =
+    selectedRuntimeStatus?.hardware ?? runtime.status?.hardware;
   const localInstallSupported = localInstallSupport?.supported ?? false;
   const isCheckingLocalInstallSupport =
-    runtime.isRefreshing && localInstallSupport == null;
+    runtime.isRefreshing && !selectedRuntimeStatus;
+  const runtimeDisplayName =
+    selectedRuntimeProfile?.runtimeLabel ?? "RWKV local runtime";
   const rwkvTitle = decision?.isReturningUser
-    ? "下载新的 RWKV 翻译引擎"
-    : "下载 RWKV 翻译引擎";
+    ? `Download ${runtimeDisplayName}`
+    : `Set up ${runtimeDisplayName}`;
   const rwkvDescription = decision?.isReturningUser
-    ? "新版本已切换到更小更快的本地模型。"
-    : "翻译引擎和模型会安装在本机。";
+    ? "Install the current local translation runtime for this machine."
+    : "Rosetta installs the runtime and translation model in local app data.";
   const pdfProgress = isPrewarmingPdf
     ? {
         phase: "preparing" as const,
@@ -387,6 +458,19 @@ export function OnboardingApp() {
         lastError: null,
       }
     : pdfRuntime.progress;
+  const runtimePrimaryLabel = isCheckingLocalInstallSupport
+    ? "Checking local runtime support"
+    : localInstallSupported
+      ? `Install ${runtimeDisplayName}`
+      : "Continue";
+  const runtimePrimaryCaption = isCheckingLocalInstallSupport
+    ? "Rosetta is checking whether this machine can run a managed local translator."
+    : localInstallSupported
+      ? formatDownloadCaption(selectedModelSizeBytes)
+      : localInstallSupport?.message ??
+        "This machine cannot install the selected local runtime. You can continue and configure a remote API later.";
+  const llamaFallbackCaption =
+    "Broader Windows compatibility. You can still switch back to Lightning later.";
 
   return (
     <div
@@ -407,23 +491,8 @@ export function OnboardingApp() {
             progressValue={33}
             title={rwkvTitle}
             description={rwkvDescription}
-            primaryLabel={
-              isCheckingLocalInstallSupport
-                ? "正在检测本机支持"
-                : localInstallSupported
-                ? decision?.isReturningUser
-                  ? "下载新模型"
-                  : "安装本地翻译引擎"
-                : "继续下一步"
-            }
-            primaryCaption={
-              isCheckingLocalInstallSupport
-                ? "正在检测本机翻译引擎支持情况…"
-                : localInstallSupported
-                ? formatDownloadCaption(decision?.modelSizeBytes ?? null)
-                : localInstallSupport?.message ??
-                  "当前设备不支持本地翻译引擎，可先继续下一步。"
-            }
+            primaryLabel={runtimePrimaryLabel}
+            primaryCaption={runtimePrimaryCaption}
             onPrimary={
               localInstallSupported ? handleBeginInstall : handleSkipLocalInstall
             }
@@ -433,6 +502,22 @@ export function OnboardingApp() {
               (isCheckingLocalInstallSupport && !localInstallSupported)
             }
             primaryIcon={localInstallSupported ? "download" : "arrow"}
+            secondaryLabel={
+              showLlamaFallback && selectedRuntimeIsLightning
+                ? "Use llama.cpp Vulkan instead"
+                : undefined
+            }
+            secondaryCaption={
+              showLlamaFallback && selectedRuntimeIsLightning
+                ? llamaFallbackCaption
+                : undefined
+            }
+            onSecondary={
+              showLlamaFallback && selectedRuntimeIsLightning
+                ? handleUseLlamaCpp
+                : undefined
+            }
+            isSecondaryDisabled={runtime.isInstalling}
             skipLabel="暂时跳过 RWKV"
           />
         )}
@@ -455,31 +540,46 @@ export function OnboardingApp() {
               isStarting: runtime.isStarting,
               isProbing: runtime.isProbing,
               isRefreshing: runtime.isRefreshing,
-              statusState: runtime.status?.state,
-              statusMessage: runtime.status?.message,
-              runtimeProfile: runtime.status?.profile?.id,
-              provider: runtime.status?.profile?.providerId,
-              backend: runtime.status?.profile?.backend,
-              healthPath: runtime.status?.profile?.batchChatPath,
-              bindHost: runtime.status?.profile?.bindHost,
-              processPid: runtime.status?.process.pid,
-              processBaseUrl: runtime.status?.process.baseUrl,
-              processStartedAt: runtime.status?.process.startedAt,
-              processCpuFallback: runtime.status?.process.cpuFallback,
-              processLastError: runtime.status?.process.lastError,
-              installPlanReady: runtime.status?.installPlan?.ready,
-              installPlanMessage: runtime.status?.installPlan?.message,
-              modelFile: runtime.status?.paths?.modelFile,
-              runtimeDir: runtime.status?.paths?.runtimeDir,
-              logsDir: runtime.status?.paths?.logsDir,
+              statusState: selectedRuntimeStatus?.state,
+              statusMessage: selectedRuntimeStatus?.message,
+              runtimeProfile: selectedRuntimeStatus?.profile.id,
+              provider: selectedRuntimeStatus?.profile.providerId,
+              backend: selectedRuntimeStatus?.profile.backend,
+              healthPath: selectedRuntimeStatus?.profile.batchChatPath,
+              bindHost: selectedRuntimeStatus?.profile.bindHost,
+              processPid: selectedRuntimeStatus?.process.pid,
+              processBaseUrl: selectedRuntimeStatus?.process.baseUrl,
+              processStartedAt: selectedRuntimeStatus?.process.startedAt,
+              processCpuFallback: selectedRuntimeStatus?.process.cpuFallback,
+              processLastError: selectedRuntimeStatus?.process.lastError,
+              installPlanReady: selectedRuntimeStatus?.installPlan?.ready,
+              installPlanMessage: selectedRuntimeStatus?.installPlan?.message,
+              modelFile: selectedRuntimeStatus?.paths.modelFile,
+              runtimeDir: selectedRuntimeStatus?.paths.runtimeDir,
+              logsDir: selectedRuntimeStatus?.paths.logsDir,
             }}
             onCancel={handleCancel}
             onRetry={handleRetry}
+            onFallback={
+              showLlamaFallback && selectedRuntimeIsLightning
+                ? handleUseLlamaCpp
+                : undefined
+            }
+            fallbackLabel={
+              showLlamaFallback && selectedRuntimeIsLightning
+                ? "Install llama.cpp Vulkan instead"
+                : undefined
+            }
+            fallbackDescription={
+              showLlamaFallback && selectedRuntimeIsLightning
+                ? llamaFallbackCaption
+                : undefined
+            }
             onSkip={handleSkipLocalInstall}
             progressValue={33}
-            defaultCaption={formatDownloadCaption(decision?.modelSizeBytes ?? null)}
-            downloadingCaption={formatDownloadCaption(decision?.modelSizeBytes ?? null)}
-            title="正在准备本地翻译引擎"
+            defaultCaption={formatDownloadCaption(selectedModelSizeBytes)}
+            downloadingCaption={formatDownloadCaption(selectedModelSizeBytes)}
+            title={`Preparing ${runtimeDisplayName}`}
             stepLabel="步骤 1 / 3"
             skipLabel="跳过 RWKV，继续下一步"
           />
@@ -560,6 +660,15 @@ function toMessage(error: unknown): string {
     return error;
   }
   return JSON.stringify(error);
+}
+
+function findProfileStatus(
+  profileStatuses: ManagedRuntimeProfileStatus[],
+  profileId: string
+): ManagedRuntimeProfileStatus | null {
+  return (
+    profileStatuses.find((entry) => entry.profile.id === profileId) ?? null
+  );
 }
 
 function isoNow(): string {

@@ -24,6 +24,7 @@ import {
   subscribePdf2zhWorkerStatus,
   type Pdf2zhWorkerStatus,
 } from "@/lib/pdf2zhRuntime";
+import { selectManagedRuntimeProfileStatus } from "@/lib/managedRuntimeSelection";
 import { getManagedRwkvRuntimeStatus, startManagedRwkvRuntime } from "@/lib/rwkvRuntime";
 import { useMenuEvents } from "@/lib/useMenuEvents";
 import { useRosettaStore } from "@/store/useRosettaStore";
@@ -58,6 +59,7 @@ async function bootstrapJobList() {
 
 function useOnboardingCompleted() {
   const clearJobHistory = useRosettaStore((s) => s.clearJobHistory);
+  const rwkv = useRosettaStore((s) => s.rwkv);
   const setManagedRuntimeStatus = useRosettaStore(
     (s) => s.setManagedRuntimeStatus
   );
@@ -71,7 +73,7 @@ function useOnboardingCompleted() {
       // the runtime, so its store may still contain the boot-time
       // "not-installed" snapshot. Refresh immediately before the user can
       // start a translation in the newly shown workspace.
-      void getManagedRwkvRuntimeStatus()
+      void getManagedRwkvRuntimeStatus(rwkv.managedRuntimeProfileId)
         .then(setManagedRuntimeStatus)
         .catch(() => {});
 
@@ -86,7 +88,7 @@ function useOnboardingCompleted() {
     }).catch(console.error);
 
     return () => { unmounted = true; unlisten?.(); };
-  }, [clearJobHistory, setManagedRuntimeStatus]);
+  }, [clearJobHistory, rwkv.managedRuntimeProfileId, setManagedRuntimeStatus]);
 }
 
 /// App-level subscription to pdf2zh progress events. Lives here (not in
@@ -388,6 +390,7 @@ function AppHeader({
 export function AppShell() {
   const location = useLocation();
   const themeMode = useRosettaStore((state) => state.themeMode);
+  const rwkv = useRosettaStore((state) => state.rwkv);
   const activeDocument = useRosettaStore((state) => state.activeDocument);
   const activeJobId = useRosettaStore((state) => state.activeJobId);
   const managedRuntimeStatus = useRosettaStore((state) => state.managedRuntime.status);
@@ -402,6 +405,10 @@ export function AppShell() {
   const isDark = themeMode === "system" ? systemPrefersDark : themeMode === "dark";
   const title = pageTitles[location.pathname] ?? activeDocument?.filename ?? "Rosetta";
   const titlebarHeight = isMacPlatform ? "0px" : "2.25rem";
+  const selectedRuntimeStatus = selectManagedRuntimeProfileStatus(
+    managedRuntimeStatus,
+    rwkv.managedRuntimeProfileId
+  );
 
   async function startHeaderDrag(event: React.MouseEvent<HTMLElement>) {
     if (!isMacPlatform || event.button !== 0) {
@@ -466,7 +473,7 @@ export function AppShell() {
 
   // Probe managed runtime status on startup so WorkspacePage can use it.
   useEffect(() => {
-    void getManagedRwkvRuntimeStatus()
+    void getManagedRwkvRuntimeStatus(rwkv.managedRuntimeProfileId)
       .then(setManagedRuntimeStatus)
       .catch(() => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -479,35 +486,38 @@ export function AppShell() {
   useEffect(() => {
     if (runtimeAutoStartedRef.current) return;
     if (!activeDocument) return;
-    const state = managedRuntimeStatus?.state;
+    const state = selectedRuntimeStatus?.state;
     if (state !== "installed" && state !== "stopped") return;
+    const profileId = selectedRuntimeStatus?.profile.id ?? null;
 
     runtimeAutoStartedRef.current = true;
-    void startManagedRwkvRuntime()
+    void startManagedRwkvRuntime(profileId)
       // Onboarding may already have started the process while this hidden
       // main window still held a stale "installed" snapshot. Treat
       // "already running" as a cue to refresh, not as a terminal failure.
       .catch(() => null)
-      .then(() => getManagedRwkvRuntimeStatus())
+      .then(() => getManagedRwkvRuntimeStatus(profileId))
       .then(setManagedRuntimeStatus)
       .catch(() => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeDocument?.id, managedRuntimeStatus?.state]);
+  }, [activeDocument?.id, selectedRuntimeStatus?.profile.id, selectedRuntimeStatus?.state]);
 
   // Poll every 1.5 s while the runtime is starting until it reaches a terminal state.
   useEffect(() => {
-    if (managedRuntimeStatus?.state !== "starting") return;
+    if (selectedRuntimeStatus?.state !== "starting") return;
+    const profileId = selectedRuntimeStatus.profile.id;
 
     const id = setInterval(() => {
-      void getManagedRwkvRuntimeStatus().then((s) => {
+      void getManagedRwkvRuntimeStatus(profileId).then((s) => {
         setManagedRuntimeStatus(s);
-        if (s.state !== "starting") clearInterval(id);
+        const nextSelected = selectManagedRuntimeProfileStatus(s, profileId);
+        if (nextSelected?.state !== "starting") clearInterval(id);
       }).catch(() => clearInterval(id));
     }, 1500);
 
     return () => clearInterval(id);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [managedRuntimeStatus?.state]);
+  }, [selectedRuntimeStatus?.profile.id, selectedRuntimeStatus?.state]);
 
   return (
     <TooltipProvider>

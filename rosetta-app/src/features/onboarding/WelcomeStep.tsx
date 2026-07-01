@@ -18,6 +18,10 @@ type WelcomeStepProps = {
   onSkip: () => void;
   isPrimaryDisabled?: boolean;
   primaryIcon?: "download" | "arrow";
+  secondaryLabel?: string;
+  secondaryCaption?: string;
+  onSecondary?: () => void;
+  isSecondaryDisabled?: boolean;
   skipLabel: string;
   showProxyConfig?: boolean;
 };
@@ -33,6 +37,10 @@ export function WelcomeStep({
   onSkip,
   isPrimaryDisabled = false,
   primaryIcon = "download",
+  secondaryLabel,
+  secondaryCaption,
+  onSecondary,
+  isSecondaryDisabled = false,
   skipLabel,
   showProxyConfig = true,
 }: WelcomeStepProps) {
@@ -65,6 +73,24 @@ export function WelcomeStep({
         <p className="text-xs leading-5 text-muted-foreground">
           {primaryCaption}
         </p>
+        {secondaryLabel && onSecondary ? (
+          <div className="rounded-lg border border-border/60 bg-muted/20 p-3">
+            <button
+              type="button"
+              onClick={onSecondary}
+              disabled={isSecondaryDisabled}
+              className="inline-flex items-center gap-2 text-sm font-medium text-foreground transition-colors hover:text-foreground/75 disabled:pointer-events-none disabled:opacity-45"
+            >
+              <ArrowRight className="size-4" />
+              {secondaryLabel}
+            </button>
+            {secondaryCaption ? (
+              <p className="mt-1.5 text-xs leading-5 text-muted-foreground">
+                {secondaryCaption}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
       </div>
 
       {showProxyConfig && showProxyField && (

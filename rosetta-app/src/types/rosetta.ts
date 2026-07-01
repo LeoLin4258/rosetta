@@ -242,6 +242,7 @@ export type RwkvConnectionConfig = {
   timeoutMs: number;
   mode: TranslationMode;
   providerPreference: RwkvProviderPreference;
+  managedRuntimeProfileId?: string | null;
 };
 
 export type RwkvProviderPreference = "local" | "remote-api";
@@ -647,6 +648,7 @@ export type ManagedRuntimeHardwareSupport = {
 };
 
 export type ManagedRuntimeProcessSnapshot = {
+  profileId: string | null;
   pid: number | null;
   port: number | null;
   baseUrl: string | null;
@@ -655,11 +657,22 @@ export type ManagedRuntimeProcessSnapshot = {
   cpuFallback: boolean;
 };
 
+export type ManagedRuntimeProfileStatus = {
+  profile: ManagedRuntimeProfileSummary;
+  state: ManagedRuntimeState;
+  message: string;
+  paths: ManagedRuntimePaths;
+  installPlan: ManagedRuntimeInstallPlan;
+  hardware: ManagedRuntimeHardwareSupport;
+  process: ManagedRuntimeProcessSnapshot;
+};
+
 export type ManagedRuntimeStatus = {
   state: ManagedRuntimeState;
   message: string;
   profile: ManagedRuntimeProfileSummary | null;
   candidateProfiles: ManagedRuntimeProfileSummary[];
+  profileStatuses: ManagedRuntimeProfileStatus[];
   paths: ManagedRuntimePaths | null;
   installPlan: ManagedRuntimeInstallPlan | null;
   hardware: ManagedRuntimeHardwareSupport | null;

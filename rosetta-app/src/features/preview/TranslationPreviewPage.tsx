@@ -26,7 +26,10 @@ import { defaultExportFilename, exportFormatForSource } from "@/lib/rosettaExpor
 import { isRwkvConfigReady } from "@/lib/languages";
 import { selectProvider } from "@/lib/providers";
 import {
-  isManagedRuntimeReady,
+  isManagedRuntimeProfileReady,
+  selectManagedRuntimeProfileStatus,
+} from "@/lib/managedRuntimeSelection";
+import {
   useManagedRwkvRuntime,
 } from "@/lib/useManagedRwkvRuntime";
 import {
@@ -56,6 +59,10 @@ export function TranslationPreviewPage() {
   const rwkv = useRosettaStore((state) => state.rwkv);
   const managedRuntime = useManagedRwkvRuntime();
   const managedRuntimeStatus = managedRuntime.status;
+  const selectedRuntimeStatus = selectManagedRuntimeProfileStatus(
+    managedRuntimeStatus,
+    rwkv.managedRuntimeProfileId
+  );
   const [systemPrefersDark, setSystemPrefersDark] = useState(true);
   const [jobBundle, setJobBundle] = useState<RosettaJobBundle | null>(null);
   const [translationBundle, setTranslationBundle] =
@@ -94,7 +101,7 @@ export function TranslationPreviewPage() {
     translationFile.failedSegments === 0;
   const rwkvConfigReady = isRwkvConfigReady(
     rwkv,
-    isManagedRuntimeReady(managedRuntimeStatus)
+    isManagedRuntimeProfileReady(selectedRuntimeStatus)
   );
   const canRetranslate =
     jobId != null &&
@@ -289,13 +296,12 @@ export function TranslationPreviewPage() {
         onTranslationFileSaved: setTranslationBundle,
         provider: selectProvider({
           config: rwkv,
-          managedRuntimeReady: isManagedRuntimeReady(managedRuntimeStatus),
-          managedRuntimeProviderId:
-            managedRuntimeStatus?.profile?.providerId ?? undefined,
+          managedRuntimeReady: isManagedRuntimeProfileReady(selectedRuntimeStatus),
+          managedRuntimeProviderId: selectedRuntimeStatus?.profile.providerId,
           managedRuntimeBaseUrl:
-            managedRuntimeStatus?.process.baseUrl ?? undefined,
+            selectedRuntimeStatus?.process.baseUrl ?? undefined,
           managedRuntimeEndpoint:
-            managedRuntimeStatus?.profile?.batchChatPath ?? undefined,
+            selectedRuntimeStatus?.profile.batchChatPath ?? undefined,
         }),
         request: {
           baseUrl: rwkv.baseUrl,
