@@ -27,13 +27,12 @@ use tauri::{AppHandle, Manager, State};
 use install::{install_model, InstallOptions, InstallProgress, InstallResult};
 use layout::RuntimeLayout;
 use lifecycle::{
-    current_process_snapshot, probe_sidecar, read_log_tail, start_sidecar, stop_sidecar,
-    ManagedRuntimeProbeResult, ManagedRuntimeStartResult,
+    cleanup_stale_sidecars, current_process_snapshot, probe_sidecar, read_log_tail, start_sidecar,
+    stop_registered_sidecar, stop_sidecar, ManagedRuntimeProbeResult, ManagedRuntimeStartResult,
 };
 use status::{
-    build_profile_statuses, build_static_status, build_static_status_for_profile,
-    lifecycle_state_for_profile, ManagedRuntimeInstallPlan, ManagedRuntimeState,
-    ManagedRuntimeStatus,
+    build_profile_statuses, build_static_status_for_profile, lifecycle_state_for_profile,
+    ManagedRuntimeInstallPlan, ManagedRuntimeState, ManagedRuntimeStatus,
 };
 
 /// Re-export so `lib.rs` can manage the registry as Tauri state.
@@ -242,6 +241,8 @@ pub async fn start_managed_rwkv_runtime(
     let metallib = static_status.metallib_path.clone();
 
     static_status.layout.ensure_dirs()?;
+    stop_registered_sidecar(&registry).await?;
+    cleanup_stale_sidecars_for_current_profiles(&app).await?;
     start_sidecar(
         &registry, profile, sidecar, tokenizer, model, log_file, metallib,
     )
@@ -258,7 +259,11 @@ pub async fn stop_managed_rwkv_runtime(
     let static_status = build_static_status_for_profile(&app, profile)?;
     let sidecar = static_status.sidecar_path.as_deref();
     let tokenizer = static_status.tokenizer_path.as_deref();
-    let model = static_status.layout.model_file.as_path();
+    let model = static_status
+        .layout
+        .model_extracted_dir
+        .as_deref()
+        .unwrap_or(static_status.layout.model_file.as_path());
     stop_sidecar(
         &registry,
         Some(static_status.profile),
@@ -274,30 +279,57 @@ pub async fn shutdown_managed_rwkv_runtime_for_exit(app: &AppHandle) {
         return;
     };
 
-    let static_status = build_static_status(app);
-    let result = match static_status {
-        Ok(status) => {
-            let sidecar = status.sidecar_path.as_deref();
-            let tokenizer = status.tokenizer_path.as_deref();
-            let model = status
-                .layout
-                .model_extracted_dir
-                .as_deref()
-                .unwrap_or(status.layout.model_file.as_path());
-            stop_sidecar(
-                &registry,
-                Some(status.profile),
-                sidecar,
-                tokenizer,
-                Some(model),
-            )
-            .await
-        }
-        Err(_) => stop_sidecar(&registry, None, None, None, None).await,
-    };
-
-    if let Err(error) = result {
+    if let Err(error) = stop_all_managed_rwkv_runtimes(app, &registry).await {
         eprintln!("[managed-rwkv] app-exit cleanup failed: {error}");
+    }
+}
+
+pub async fn stop_all_managed_rwkv_runtimes(
+    app: &AppHandle,
+    registry: &Registry,
+) -> Result<usize, String> {
+    let stopped_registered = stop_registered_sidecar(registry).await? as usize;
+    let cleaned_stale = cleanup_stale_sidecars_for_current_profiles(app).await?;
+    Ok(stopped_registered + cleaned_stale)
+}
+
+async fn cleanup_stale_sidecars_for_current_profiles(app: &AppHandle) -> Result<usize, String> {
+    let mut cleaned = 0usize;
+    let mut errors = Vec::new();
+
+    for profile in profile::current_profile_candidates() {
+        let status = match build_static_status_for_profile(app, profile) {
+            Ok(status) => status,
+            Err(error) => {
+                errors.push(format!("{}: {error}", profile.id));
+                continue;
+            }
+        };
+        let Some(sidecar) = status.sidecar_path.as_deref() else {
+            continue;
+        };
+        let model = status
+            .layout
+            .model_extracted_dir
+            .as_deref()
+            .unwrap_or(status.layout.model_file.as_path());
+        match cleanup_stale_sidecars(
+            status.profile,
+            sidecar,
+            status.tokenizer_path.as_deref(),
+            model,
+        )
+        .await
+        {
+            Ok(count) => cleaned += count,
+            Err(error) => errors.push(format!("{}: {error}", status.profile.id)),
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(cleaned)
+    } else {
+        Err(errors.join("; "))
     }
 }
 

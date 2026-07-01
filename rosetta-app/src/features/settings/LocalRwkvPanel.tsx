@@ -83,13 +83,32 @@ export function LocalRwkvPanel({
     rt.isStarting ||
     rt.isStopping ||
     isInstallActive;
+  const runningProfileStatus =
+    profileStatuses.find((entry) => isRuntimeRunningState(entry.state)) ?? null;
+
+  async function stopRunningProfileBeforeSwitch(profileId: string) {
+    if (
+      runningProfileStatus &&
+      runningProfileStatus.profile.id !== profileId
+    ) {
+      return rt.stop(runningProfileStatus.profile.id);
+    }
+    return true;
+  }
 
   async function activateProfile(profileId: string) {
-    if (isTranslationRunning || profileId === activeProfileId) {
+    if (actionsDisabled || profileId === activeProfileId) {
       return;
     }
-    updateRwkvConfig({ managedRuntimeProfileId: profileId });
-    await rt.refreshStatus(profileId);
+    setActionProfileId(profileId);
+    try {
+      const stopped = await stopRunningProfileBeforeSwitch(profileId);
+      if (!stopped) return;
+      updateRwkvConfig({ managedRuntimeProfileId: profileId });
+      await rt.refreshStatus(profileId);
+    } finally {
+      setActionProfileId(null);
+    }
   }
 
   async function installProfile(profileId: string, repair: boolean) {
@@ -109,8 +128,10 @@ export function LocalRwkvPanel({
       return;
     }
     setActionProfileId(profileId);
-    updateRwkvConfig({ managedRuntimeProfileId: profileId });
     try {
+      const stopped = await stopRunningProfileBeforeSwitch(profileId);
+      if (!stopped) return;
+      updateRwkvConfig({ managedRuntimeProfileId: profileId });
       await rt.start(profileId);
     } finally {
       setActionProfileId(null);
@@ -215,7 +236,7 @@ export function LocalRwkvPanel({
                 isSelected={profileStatus.profile.id === activeProfileId}
                 isActionTarget={profileStatus.profile.id === actionProfileId}
                 actionsDisabled={actionsDisabled}
-                selectionDisabled={isTranslationRunning}
+                selectionDisabled={actionsDisabled}
                 detailsOpen={
                   detailsOpenByProfileId[profileStatus.profile.id] ?? false
                 }
@@ -630,6 +651,10 @@ function showProxyInput(
   return profileStatuses.some(
     (status) => status.state === "not-installed" || status.state === "failed"
   );
+}
+
+function isRuntimeRunningState(state: ManagedRuntimeState): boolean {
+  return state === "ready" || state === "starting";
 }
 
 function DownloadProxyField({ disabled }: { disabled: boolean }) {

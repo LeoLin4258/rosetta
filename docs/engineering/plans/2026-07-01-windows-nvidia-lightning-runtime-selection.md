@@ -1003,6 +1003,41 @@ Handoff:
 
 ### Task 8: Switching, Cleanup, And Reset Hardening
 
+Status: completed on 2026-07-02 for profile switch handoff and cleanup
+hardening.
+
+Handoff notes:
+
+- Settings now stops any currently running or starting managed RWKV profile
+  before activating or starting a different profile.
+- `start_managed_rwkv_runtime(profileId)` now stops the registered managed
+  sidecar before launching the requested profile, then scans all enabled
+  current-platform runtime profiles for stale sidecar processes before spawn.
+- Stale sidecar cleanup is profile-aware and runs against every enabled
+  current-platform profile during start, app exit cleanup, and local data reset.
+  On Windows this covers both `rwkv_lighting_cuda.exe` and `llama-server.exe`
+  when their command line matches Rosetta's profile-specific sidecar/model
+  signature.
+- `stop_managed_rwkv_runtime(profileId)` now uses the extracted model directory
+  for zip-based profiles when matching stale sidecars, preserving the macOS MLX
+  cleanup path.
+- Local data reset still removes the whole `managed-rwkv` root, so both runtime
+  installs and both model families are deleted after all managed sidecars have
+  been stopped.
+
+Validation performed:
+
+- `cd rosetta-app && node_modules/.bin/tsc.CMD --noEmit`
+- `cd rosetta-app && pnpm typecheck` was attempted but stopped before
+  TypeScript execution on `ERR_PNPM_IGNORED_BUILDS` for `esbuild@0.25.12` and
+  `msw@2.14.3`.
+- `cd rosetta-app/src-tauri && cargo fmt`
+- `cd rosetta-app/src-tauri && cargo check`
+- `cd rosetta-app/src-tauri && cargo test managed_rwkv`
+- `cd rosetta-app/src-tauri && cargo test rosetta_jobs`
+- Manual Windows process checks were not run in this pass; Task 9 still owns
+  NVIDIA-machine switching, app-exit, and local-data-reset validation.
+
 Entry criteria:
 
 - Settings can switch active runtime profiles.

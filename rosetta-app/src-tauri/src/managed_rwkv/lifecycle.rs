@@ -95,6 +95,21 @@ pub async fn current_process_snapshot(
     (snapshot, guard.state)
 }
 
+pub async fn stop_registered_sidecar(
+    registry: &ManagedRwkvRuntimeRegistry,
+) -> Result<bool, String> {
+    let mut guard = registry.inner.lock().await;
+    reap_exited_child(&mut guard);
+    let Some(mut child) = guard.child.take() else {
+        guard.state = Some(ManagedRuntimeState::Stopped);
+        return Ok(false);
+    };
+
+    kill_child(&mut child).await;
+    clear_process_fields_after_stop(&mut guard);
+    Ok(true)
+}
+
 pub async fn start_sidecar(
     registry: &ManagedRwkvRuntimeRegistry,
     profile: &RuntimeProfile,
@@ -104,13 +119,16 @@ pub async fn start_sidecar(
     log_file: PathBuf,
     metallib_source: Option<PathBuf>,
 ) -> Result<ManagedRuntimeStartResult, String> {
+    if stop_registered_sidecar(registry).await? {
+        eprintln!(
+            "[rwkv-lifecycle] stopped existing managed sidecar before starting {}",
+            profile.id
+        );
+    }
+
     let mut guard = registry.inner.lock().await;
     reap_exited_child(&mut guard);
     guard.profile_id = Some(profile.id.to_string());
-
-    if guard.child.is_some() {
-        return Err("本地 RWKV 运行时已在运行；如需重启请先停止。".to_string());
-    }
 
     // Sanity: required artifacts present. Lifecycle never lies — if any of
     // these is missing the user should have seen Install Plan say so.
@@ -326,8 +344,7 @@ pub async fn start_sidecar(
             }
             Err(error) => {
                 if let Some(mut child) = guard.child.take() {
-                    let _ = child.kill().await;
-                    let _ = child.wait().await;
+                    kill_child(&mut child).await;
                 }
                 guard.port = None;
                 guard.base_url = None;
@@ -405,16 +422,8 @@ pub async fn stop_sidecar(
 
     // Try graceful kill (SIGKILL via tokio for now — rwkv_server has no
     // documented graceful shutdown mechanism). Always wait() to reap.
-    let _ = child.kill().await;
-    let _ = child.wait().await;
-
-    guard.port = None;
-    guard.base_url = None;
-    guard.pid = None;
-    guard.started_at_iso = None;
-    guard.state = Some(ManagedRuntimeState::Stopped);
-    guard.last_error = None;
-    guard.cpu_fallback = false;
+    kill_child(&mut child).await;
+    clear_process_fields_after_stop(&mut guard);
     drop(guard);
 
     let cleaned = cleanup_stale_sidecars_if_signature_available(
@@ -630,6 +639,21 @@ fn open_log_file(path: &std::path::Path) -> std::io::Result<std::fs::File> {
         .open(path)
 }
 
+async fn kill_child(child: &mut Child) {
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+}
+
+fn clear_process_fields_after_stop(inner: &mut RuntimeInner) {
+    inner.port = None;
+    inner.base_url = None;
+    inner.pid = None;
+    inner.started_at_iso = None;
+    inner.state = Some(ManagedRuntimeState::Stopped);
+    inner.last_error = None;
+    inner.cpu_fallback = false;
+}
+
 async fn wait_for_health_with_process_check(
     base_url: &str,
     health_path: &str,
@@ -718,7 +742,7 @@ struct SidecarProcess {
     command: String,
 }
 
-async fn cleanup_stale_sidecars(
+pub(crate) async fn cleanup_stale_sidecars(
     profile: &RuntimeProfile,
     sidecar_path: &Path,
     tokenizer_path: Option<&Path>,

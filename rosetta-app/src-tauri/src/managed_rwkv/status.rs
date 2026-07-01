@@ -138,6 +138,7 @@ pub struct ManagedRuntimeProfileStatus {
 
 /// Compute everything but the live process snapshot. Lifecycle layers the
 /// process snapshot on top before returning the status to the frontend.
+#[allow(dead_code)]
 pub fn build_static_status(app: &AppHandle) -> Result<StaticStatus, String> {
     let Some(profile) = current_profile() else {
         return Ok(StaticStatus::unsupported());
@@ -227,6 +228,7 @@ pub struct StaticStatus {
 }
 
 impl StaticStatus {
+    #[allow(dead_code)]
     fn unsupported() -> Self {
         Self {
             profile: &super::profile::MACOS_ARM64_WEBRWKV,
