@@ -1071,6 +1071,25 @@ Handoff:
 
 ### Task 9: End-To-End Validation And Final Engineering Record
 
+Status: partially validated by the user on 2026-07-02; remaining process
+cleanup checks are deferred.
+
+Validated on NVIDIA Windows:
+
+- Clean onboarding installs Lightning by default.
+- Markdown translation works through Lightning.
+- PDF translation works through Lightning.
+- Settings installs llama.cpp.
+- Switching Lightning -> llama.cpp changes the translation provider.
+- Switching llama.cpp -> Lightning changes the translation provider back.
+
+Deferred validation:
+
+- App exit leaves no stale `rwkv_lighting_cuda.exe` or `llama-server.exe`
+  process.
+- Local data reset leaves no stale managed runtime process.
+- Local data reset removes both runtime installs and both model families.
+
 Entry criteria:
 
 - Implementation tasks are complete.
@@ -1109,3 +1128,8 @@ Handoff:
 
 - Link the final change-log or ADR from this plan.
 - Note whether the implementation is ready for release packaging.
+
+Follow-up:
+
+- Runtime selection is now ready for Lightning performance tuning. See
+  `docs/engineering/plans/2026-07-02-windows-nvidia-lightning-performance-tuning.md`.
