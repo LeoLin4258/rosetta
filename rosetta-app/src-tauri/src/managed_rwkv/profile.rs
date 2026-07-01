@@ -244,15 +244,17 @@ pub const WINDOWS_AMD64_CUDA: RuntimeProfile = RuntimeProfile {
     backend: "cuda-openai",
     launch_kind: RuntimeLaunchKind::LightningCuda,
     sidecar_binary_name: "rwkv_lighting_cuda.exe",
-    managed_runtime_directory_name: Some("rwkv-lightning-cuda-sm75-msvc"),
-    runtime_archive_filename: Some("RWKV_lightning_CUDA_sm75+_Win_MSVC.zip"),
-    runtime_archive_size_bytes: Some(404_318_341),
+    managed_runtime_directory_name: Some("rwkv-lightning-cuda-sm75-msvc-v1.0.2"),
+    runtime_archive_filename: Some(
+        "RWKV_lightning_CUDA_sm75+_Win_MSVC_V1.0.2_rosetta-loopback.zip",
+    ),
+    runtime_archive_size_bytes: Some(404_846_501),
     runtime_archive_sha256: Some(
-        "b2a4a08cc3c1e6caa836850acd6ba86e3d03f9b2dde4fa1b65278aa00f870499",
+        "54ed31261492cd89d800852ee369f745ad75a9690cfcdcceada4eacfc58aeca2",
     ),
     runtime_download_urls: &[
-        "https://githubdog.com/https://github.com/LeoLin4258/rosetta-assets/releases/download/rwkv-runtime-windows-x64-v2026.06.18.21/RWKV_lightning_CUDA_sm75+_Win_MSVC.zip",
-        "https://github.com/LeoLin4258/rosetta-assets/releases/download/rwkv-runtime-windows-x64-v2026.06.18.21/RWKV_lightning_CUDA_sm75+_Win_MSVC.zip",
+        "https://githubdog.com/https://github.com/LeoLin4258/rosetta-assets/releases/download/rwkv-lightning-cuda-windows-x64-v2026.07.01.1/RWKV_lightning_CUDA_sm75+_Win_MSVC_V1.0.2_rosetta-loopback.zip",
+        "https://github.com/LeoLin4258/rosetta-assets/releases/download/rwkv-lightning-cuda-windows-x64-v2026.07.01.1/RWKV_lightning_CUDA_sm75+_Win_MSVC_V1.0.2_rosetta-loopback.zip",
     ],
     runtime_library_dir_name: Some("lib"),
     tokenizer_filename: "rwkv_vocab_v20230424.txt",
@@ -295,6 +297,10 @@ pub fn current_profile_candidates() -> Vec<&'static RuntimeProfile> {
             profile.enabled && profile.platform_os == os && profile.platform_arch == arch
         })
         .collect()
+}
+
+pub fn profile_by_id(id: &str) -> Option<&'static RuntimeProfile> {
+    ALL_PROFILES.iter().find(|profile| profile.id == id)
 }
 
 /// Profile-summary shape exposed to the frontend.
@@ -407,6 +413,22 @@ mod tests {
         assert!(WINDOWS_AMD64_CUDA.hardware_requirement.contains("SM75"));
         assert_eq!(WINDOWS_AMD64_CUDA.bind_host, "[::1]");
         assert_eq!(WINDOWS_AMD64_CUDA.batch_chat_path, "/v1/batch/completions");
+        assert_eq!(
+            WINDOWS_AMD64_CUDA.managed_runtime_directory_name,
+            Some("rwkv-lightning-cuda-sm75-msvc-v1.0.2")
+        );
+        assert_eq!(
+            WINDOWS_AMD64_CUDA.runtime_archive_filename,
+            Some("RWKV_lightning_CUDA_sm75+_Win_MSVC_V1.0.2_rosetta-loopback.zip")
+        );
+        assert_eq!(
+            WINDOWS_AMD64_CUDA.runtime_archive_size_bytes,
+            Some(404_846_501)
+        );
+        assert_eq!(
+            WINDOWS_AMD64_CUDA.runtime_archive_sha256,
+            Some("54ed31261492cd89d800852ee369f745ad75a9690cfcdcceada4eacfc58aeca2")
+        );
         assert!(WINDOWS_AMD64_CUDA
             .runtime_download_urls
             .first()
@@ -415,6 +437,10 @@ mod tests {
             .runtime_download_urls
             .iter()
             .any(|url| url.starts_with("https://github.com/")));
+        assert!(WINDOWS_AMD64_CUDA
+            .runtime_download_urls
+            .iter()
+            .all(|url| url.contains("rwkv-lightning-cuda-windows-x64-v2026.07.01.1")));
     }
 
     #[test]

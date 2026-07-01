@@ -100,6 +100,9 @@ impl InstallProgress {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct InstallOptions {
+    /// Optional target runtime profile id. Missing preserves the platform
+    /// default for backward compatibility.
+    pub profile_id: Option<String>,
     /// When true, delete any existing model + `.part` + `.part.broken` before
     /// starting. Used by the "Repair" button after SHA256 fails.
     pub repair: bool,
@@ -113,6 +116,10 @@ pub struct InstallOptions {
     /// Development override for the Windows runtime ZIP. When omitted, the
     /// installer tries the profile URLs, then the user's Downloads folder.
     pub runtime_pack_path: Option<String>,
+    /// Expected SHA256 for a local Windows runtime ZIP override.
+    pub runtime_pack_sha256: Option<String>,
+    /// Expected byte size for a local Windows runtime ZIP override.
+    pub runtime_pack_size_bytes: Option<u64>,
 }
 
 impl InstallOptions {
@@ -584,11 +591,9 @@ async fn install_runtime_pack(
     let filename = profile
         .runtime_archive_filename
         .ok_or_else(|| "Windows runtime profile 缺少 ZIP 文件名。".to_string())?;
-    let expected_size = profile
-        .runtime_archive_size_bytes
+    let expected_size = effective_runtime_pack_size(profile, options)
         .ok_or_else(|| "Windows runtime profile 缺少 ZIP 文件大小。".to_string())?;
-    let expected_sha = profile
-        .runtime_archive_sha256
+    let expected_sha = effective_runtime_pack_sha(profile, options)
         .ok_or_else(|| "Windows runtime profile 缺少 ZIP SHA256。".to_string())?;
     let archive_path = layout
         .runtime_archive_file
@@ -682,7 +687,7 @@ async fn install_runtime_pack(
     })
     .await;
     emit_progress(app, registry).await;
-    verify_runtime_pack(archive_path, expected_size, expected_sha, cancel).await?;
+    verify_runtime_pack(archive_path, expected_size, &expected_sha, cancel).await?;
 
     update_progress(registry, |progress| {
         progress.phase = InstallPhase::Extracting;
@@ -702,7 +707,7 @@ async fn install_runtime_pack(
         .map_err(|error| format!("解压 Windows RWKV 运行包失败: {error}"))?;
     validate_runtime_pack(layout, profile)?;
     validate_runtime_hardware_after_install(layout, profile)?;
-    write_runtime_manifest(layout, profile, &source, expected_size, expected_sha)?;
+    write_runtime_manifest(layout, profile, &source, expected_size, &expected_sha)?;
     let _ = std::fs::remove_file(archive_path);
     Ok(())
 }
@@ -775,6 +780,36 @@ fn resolve_downloads_runtime_pack(filename: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
         .map(|home| home.join("Downloads").join(filename))
         .filter(|path| path.is_file())
+}
+
+fn effective_runtime_pack_sha(
+    profile: &RuntimeProfile,
+    options: &InstallOptions,
+) -> Option<String> {
+    options
+        .runtime_pack_sha256
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            std::env::var("ROSETTA_RWKV_RUNTIME_PACK_SHA256")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
+        .or_else(|| profile.runtime_archive_sha256.map(str::to_string))
+}
+
+fn effective_runtime_pack_size(profile: &RuntimeProfile, options: &InstallOptions) -> Option<u64> {
+    options
+        .runtime_pack_size_bytes
+        .or_else(|| {
+            std::env::var("ROSETTA_RWKV_RUNTIME_PACK_SIZE_BYTES")
+                .ok()
+                .and_then(|value| value.trim().parse::<u64>().ok())
+        })
+        .or(profile.runtime_archive_size_bytes)
 }
 
 async fn download_runtime_pack(

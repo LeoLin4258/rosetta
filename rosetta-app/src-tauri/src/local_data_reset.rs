@@ -47,7 +47,8 @@ pub async fn clear_rosetta_local_data(
     let cancelled_pdf_translation = cancel_pdf_translation(pdf_translation_cancel_state);
     managed_pdf2zh::shutdown_worker(&app).await;
 
-    let stop_result = managed_rwkv::stop_managed_rwkv_runtime(app.clone(), rwkv_registry).await;
+    let stop_result =
+        managed_rwkv::stop_managed_rwkv_runtime(app.clone(), rwkv_registry, None).await;
     let (stopped_runtime, runtime_stop_error) = match stop_result {
         Ok(_) => (true, None),
         Err(error) => (false, Some(error)),

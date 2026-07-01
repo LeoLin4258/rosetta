@@ -36,12 +36,16 @@ function rejectPausedRuntime<T>(): Promise<T> {
 // which remain "paused" until the Windows path resumes in Phase 8.
 // -----------------------------------------------------------------------------
 
-export function getManagedRwkvRuntimeStatus() {
-  return invoke<ManagedRuntimeStatus>("get_managed_rwkv_runtime_status");
+export function getManagedRwkvRuntimeStatus(profileId?: string | null) {
+  return invoke<ManagedRuntimeStatus>("get_managed_rwkv_runtime_status", {
+    profileId,
+  });
 }
 
-export function getManagedRwkvInstallPlan() {
-  return invoke<ManagedRuntimeInstallPlan>("get_managed_rwkv_install_plan");
+export function getManagedRwkvInstallPlan(profileId?: string | null) {
+  return invoke<ManagedRuntimeInstallPlan>("get_managed_rwkv_install_plan", {
+    profileId,
+  });
 }
 
 export function installManagedRwkvRuntime(
@@ -82,21 +86,26 @@ export function subscribeManagedRwkvInstallProgress(
   );
 }
 
-export function startManagedRwkvRuntime() {
-  return invoke<ManagedRuntimeStartResult>("start_managed_rwkv_runtime");
+export function startManagedRwkvRuntime(profileId?: string | null) {
+  return invoke<ManagedRuntimeStartResult>("start_managed_rwkv_runtime", {
+    profileId,
+  });
 }
 
-export function stopManagedRwkvRuntime() {
-  return invoke<string>("stop_managed_rwkv_runtime");
+export function stopManagedRwkvRuntime(profileId?: string | null) {
+  return invoke<string>("stop_managed_rwkv_runtime", { profileId });
 }
 
-export function probeManagedRwkvRuntime() {
-  return invoke<ManagedRuntimeProbeResult>("probe_managed_rwkv_runtime");
+export function probeManagedRwkvRuntime(profileId?: string | null) {
+  return invoke<ManagedRuntimeProbeResult>("probe_managed_rwkv_runtime", {
+    profileId,
+  });
 }
 
-export function getManagedRwkvRuntimeLogsSummary() {
+export function getManagedRwkvRuntimeLogsSummary(profileId?: string | null) {
   return invoke<ManagedRuntimeLogsSummary>(
-    "get_managed_rwkv_runtime_logs_summary"
+    "get_managed_rwkv_runtime_logs_summary",
+    { profileId }
   );
 }
 

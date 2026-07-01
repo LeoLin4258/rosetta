@@ -51,3 +51,25 @@ preparing an official ZIP package.
 - The staged ZIP must be uploaded as a Rosetta-controlled release artifact
   before Windows distribution; the app must never download and execute an
   unverified runtime archive.
+
+## 2026-07-01 Amendment
+
+Rosetta will continue using Rosetta-controlled Windows CUDA runtime artifacts
+for the V1.0.2 line. We are no longer waiting for an upstream
+`rwkv_lightning_cuda` release that includes Rosetta's loopback-host PR before
+updating the managed runtime profile.
+
+The accepted release path is:
+
+- Build the Windows x64 SM75+ Lightning runtime from the Rosetta-validated
+  source branch.
+- Package the runtime as a deterministic ZIP with the same local-only launch
+  contract: Rosetta passes an explicit loopback `--host` value and rejects any
+  runtime package that cannot preserve that boundary.
+- Publish the ZIP to `LeoLin4258/rosetta-assets`.
+- Pin the Rosetta profile to the uploaded filename, byte size, SHA256, a
+  githubdog URL as the default download URL for mainland China network
+  compatibility, and the direct GitHub Release URL as a fallback.
+
+The app should still never download and execute the upstream ZIP directly
+unless a future ADR explicitly replaces this artifact-control policy.

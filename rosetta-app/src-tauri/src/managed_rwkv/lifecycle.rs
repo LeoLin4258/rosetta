@@ -536,6 +536,8 @@ fn build_command_args(
             model_path.display().to_string(),
             "--vocab-path".to_string(),
             tokenizer_path.display().to_string(),
+            "--host".to_string(),
+            command_bind_host(profile),
             "--port".to_string(),
             port.to_string(),
         ];
@@ -548,7 +550,7 @@ fn build_command_args(
             "--model".to_string(),
             model_path.display().to_string(),
             "--host".to_string(),
-            profile.bind_host.to_string(),
+            command_bind_host(profile),
             "--port".to_string(),
             port.to_string(),
             "--alias".to_string(),
@@ -578,12 +580,21 @@ fn build_command_args(
         "--backend".to_string(),
         profile.backend.to_string(),
         "--host".to_string(),
-        profile.bind_host.to_string(),
+        command_bind_host(profile),
         "--port".to_string(),
         port.to_string(),
         "--model-name".to_string(),
         profile.model_name_arg.to_string(),
     ]
+}
+
+fn command_bind_host(profile: &RuntimeProfile) -> String {
+    profile
+        .bind_host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(profile.bind_host)
+        .to_string()
 }
 
 fn is_vulkan_device_error(line: &str) -> bool {
@@ -1043,7 +1054,8 @@ mod tests {
         );
         assert!(args.iter().any(|arg| arg == "--model-path"));
         assert!(args.iter().any(|arg| arg == "--vocab-path"));
-        assert!(!args.iter().any(|arg| arg == "--host"));
+        let host_idx = args.iter().position(|arg| arg == "--host").unwrap();
+        assert_eq!(args[host_idx + 1], "::1");
         assert!(!args.iter().any(|arg| arg == "--backend"));
         assert!(!args.iter().any(|arg| arg == "--model-name"));
     }
@@ -1191,10 +1203,10 @@ mod tests {
     #[test]
     fn matching_windows_sidecar_paths_are_case_insensitive() {
         let sidecar = PathBuf::from(
-            r"C:\Users\Leo\AppData\Local\com.rosetta.desktop\managed-rwkv\runtimes\rwkv-lightning-cuda-sm75-msvc\rwkv_lighting_cuda.exe",
+            r"C:\Users\Leo\AppData\Local\com.rosetta.desktop\managed-rwkv\runtimes\rwkv-lightning-cuda-sm75-msvc-v1.0.2\rwkv_lighting_cuda.exe",
         );
         let tokenizer = PathBuf::from(
-            r"C:\Users\Leo\AppData\Local\com.rosetta.desktop\managed-rwkv\runtimes\rwkv-lightning-cuda-sm75-msvc\rwkv_vocab_v20230424.txt",
+            r"C:\Users\Leo\AppData\Local\com.rosetta.desktop\managed-rwkv\runtimes\rwkv-lightning-cuda-sm75-msvc-v1.0.2\rwkv_vocab_v20230424.txt",
         );
         let model = PathBuf::from(
             r"C:\Users\Leo\AppData\Local\com.rosetta.desktop\managed-rwkv\models\rwkv7-0.4b-translate-windows-pth\model.pth",

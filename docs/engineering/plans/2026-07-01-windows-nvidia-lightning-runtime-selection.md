@@ -7,8 +7,10 @@ Date: 2026-07-01
 Windows now has two viable local RWKV runtime paths:
 
 - `llama.cpp Vulkan`: Windows x64 default for Intel, AMD, and NVIDIA GPUs.
-- `RWKV Lightning CUDA`: Windows x64 NVIDIA-only runtime, now unblocked by the
-  upstream `rwkv_lightning_cuda` `V1.0.2` release.
+- `RWKV Lightning CUDA`: Windows x64 NVIDIA-only runtime. Rosetta will use a
+  Rosetta-owned source-built runtime artifact hosted in
+  `LeoLin4258/rosetta-assets`, rather than waiting for an upstream
+  `rwkv_lightning_cuda` release that contains the loopback-host fix.
 
 For NVIDIA Windows users, Rosetta should prefer the Lightning path during
 first-run onboarding, while still keeping llama.cpp available as a lower-visual
@@ -82,7 +84,7 @@ The codebase already contains most of the low-level Lightning support:
 - The Lightning profile uses provider id `rwkv-lightning-contents`.
 - The Lightning profile uses `/v1/batch/completions`.
 - `lifecycle.rs` already knows how to launch Lightning with
-  `--model-path`, `--vocab-path`, and `--port`.
+  `--model-path`, `--vocab-path`, `--host`, and `--port`.
 - The frontend provider resolver already supports
   `rwkv-lightning-contents`, `rwkv-mobile-batch-chat`, and
   `llama-cpp-chat-completions`.
@@ -128,6 +130,42 @@ This is different from the older Rosetta-pinned Lightning artifact:
   from `0.0.0.0` to IPv6 loopback `::1`.
 - That patch was necessary because the old runtime did not accept `--host`
   and binding to `0.0.0.0` violates Rosetta's local-only boundary.
+
+## Rosetta-Owned Runtime Artifact Decision
+
+Decision updated on 2026-07-01:
+
+- Do not wait for a future upstream `rwkv_lightning_cuda` release that merges
+  Rosetta's loopback-host PR.
+- Build the Windows NVIDIA Lightning runtime from the Rosetta-validated source
+  branch ourselves.
+- Publish the resulting ZIP to
+  `LeoLin4258/rosetta-assets`.
+- Keep Rosetta's runtime profile pinned to a Rosetta-controlled URL, byte size,
+  and SHA256.
+- Use the githubdog URL as the default download URL for mainland China network
+  compatibility, with the direct GitHub Release URL as a fallback.
+
+The release artifact must still be a general SM75+ Windows x64 build, not the
+local `sm120` development package validated on the RTX 5070 test machine.
+The intended CUDA architecture list is:
+
+```txt
+75;80;86;87;89;90;100;120
+```
+
+The new release-pack script is:
+
+```txt
+rosetta-app/src-tauri/scripts/build-rwkv-lightning-cuda-windows-release-zip.ps1
+```
+
+It builds `bundle_rwkv_lighting_cuda`, copies the vocab and CUDA runtime DLLs,
+removes DLLs outside Rosetta's runtime allowlist, writes
+`rosetta-runtime-manifest.json`, and emits the final ZIP size and SHA256.
+After uploading the ZIP to `rosetta-assets`, Task 2 should update the checked-in
+Lightning profile metadata to the uploaded filename, size, SHA256, release tag,
+and a new runtime directory name.
 
 Before switching Rosetta to V1.0.2, the new ZIP must be validated on a real
 NVIDIA Windows machine. In particular:
@@ -337,8 +375,9 @@ cargo test managed_rwkv
 
 Manual validation is required:
 
-1. Download and inspect `RWKV_lightning_CUDA_sm75+_Win_MSVC_V1.0.2.zip`.
-2. Start the runtime manually with the `.pth` translation model.
+1. Download and inspect the hosted Rosetta-owned Lightning V1.0.2 ZIP.
+2. Start the runtime manually with the `.pth` translation model and explicit
+   loopback `--host`.
 3. Confirm loopback binding behavior with `netstat`.
 4. Probe `/v1/models`.
 5. Probe `/v1/batch/completions` with two texts.
@@ -354,13 +393,10 @@ Manual validation is required:
 
 ## Open Questions
 
-- Does upstream V1.0.2 still bind to `0.0.0.0` by default?
-- Does upstream V1.0.2 support `--host`?
-- Does V1.0.2 still need the runtime DLL allowlist used by the V1.0.0
-  staging script?
-- Should Rosetta publish a repackaged, SHA256-pinned V1.0.2 ZIP in
-  `rosetta-assets`, or can it safely pin and download the upstream ZIP
-  directly after validation?
+- What final filename, release tag, size, and SHA256 will the Rosetta-owned
+  SM75+ Lightning V1.0.2 ZIP use in `rosetta-assets`?
+- Does the Rosetta-owned general SM75+ ZIP validate on both the RTX 5070 test
+  machine and at least one older supported NVIDIA architecture before release?
 - Should onboarding install only the selected runtime, or offer an advanced
   option to download both Lightning and llama.cpp during first run?
 - Should the active local runtime profile be stored only in frontend persisted
@@ -369,16 +405,17 @@ Manual validation is required:
 
 ## Recommended Implementation Order
 
-1. Validate the upstream V1.0.2 Windows ZIP on the NVIDIA Windows machine.
-2. Decide whether Rosetta needs a repackaged / patched V1.0.2 runtime artifact.
-3. Update the Lightning profile artifact metadata and runtime directory name.
-4. Add selected managed runtime profile state.
-5. Make Rust managed runtime commands profile-aware.
-6. Add per-profile status summaries.
-7. Update onboarding: NVIDIA defaults to Lightning, llama.cpp is secondary.
-8. Update Settings: install both, switch active profile.
-9. Validate Markdown and PDF translation on both Lightning and llama.cpp.
-10. Record the accepted result in an ADR or change-log once implemented.
+1. Build the general SM75+ Rosetta-owned Lightning runtime ZIP from source.
+2. Upload the ZIP to `LeoLin4258/rosetta-assets`.
+3. Validate the uploaded ZIP on the NVIDIA Windows machine.
+4. Update the Lightning profile artifact metadata and runtime directory name.
+5. Add selected managed runtime profile state.
+6. Make Rust managed runtime commands profile-aware.
+7. Add per-profile status summaries.
+8. Update onboarding: NVIDIA defaults to Lightning, llama.cpp is secondary.
+9. Update Settings: install both, switch active profile.
+10. Validate Markdown and PDF translation on both Lightning and llama.cpp.
+11. Record the accepted result in an ADR or change-log once implemented.
 
 ## Agent Task Breakdown
 
@@ -390,6 +427,88 @@ task when an upstream task has unresolved blockers that affect runtime
 artifacts, command interfaces, or selected-profile behavior.
 
 ### Task 1: Lightning V1.0.2 Artifact Validation
+
+Status: partially validated on 2026-07-01 on a Windows NVIDIA machine; do not
+use the upstream ZIP directly.
+
+Validation notes:
+
+- Test machine: Windows x64 with `NVIDIA GeForce RTX 5070`, compute capability
+  `12.0`, driver `596.21`.
+- Upstream file tested:
+  `C:\Users\Leo\Downloads\RWKV_lightning_CUDA_sm75+_Win_MSVC_V1.0.2.zip`.
+- Size: `484112749` bytes.
+- SHA256:
+  `9520f7d4aec4774f29b597a1e66d8f29a012af04345d54f430fcf157d37633e9`.
+- Archive layout: single top-level `rwkv_lighting_cuda/` directory containing
+  `rwkv_lighting_cuda.exe`, `rwkv_vocab_v20230424.txt`, and `lib/` with CUDA
+  runtime libraries including `cublas64_13.dll`, `cublasLt64_13.dll`, and
+  `cudart64_13.dll`.
+- The existing Rosetta `.pth` translation model was available locally at
+  `AppData\Local\com.rosetta.desktop\managed-rwkv\models\rwkv7-0.4b-translate-windows-pth\RWKV_v7_G1d_0.4B_Translate_ctx4096_20260607.pth`
+  with size `901775740` bytes.
+- Starting V1.0.2 with `--model-path`, `--vocab-path`, `--host ::1`, and
+  `--port 28901` exited within a few seconds with Windows process exit code
+  `-1073740791` and did not serve `/v1/models`. This indicates that the
+  current Rosetta-safe loopback-host launch contract is not supported by the
+  upstream binary.
+- Starting without `--host` launched `rwkv_lighting_cuda.exe` and left a
+  running process with `--port 28902`, but validation was stopped before using
+  the process as an accepted endpoint because Microsoft Defender raised a
+  severe `Trojan:Win32/PowhidSubExec.B` detection against the PowerShell
+  command line used for the runtime test. Defender reported
+  `DidThreatExecute: False`, `IsActive: False`, and `ActionSuccess: True`.
+  The residual `rwkv_lighting_cuda.exe` process and a stale interrupted
+  `curl.exe` download process were manually stopped, and the temporary
+  validation directory
+  `AppData\Local\Temp\rosetta-lightning-v1.0.2-validation` was deleted.
+
+Decision:
+
+- Do not pin or execute the upstream V1.0.2 ZIP directly in Rosetta.
+- Task 2 must use a Rosetta-pinned artifact path, and the artifact must preserve
+  Rosetta's local-only boundary by supporting an explicit loopback bind or by
+  being patched to avoid `0.0.0.0`.
+- Before packaging a replacement artifact, repeat endpoint validation from a
+  clean staging directory with security tooling satisfied, then verify
+  `/v1/models` and `/v1/batch/completions`.
+- A local patched artifact now exists for development validation. Downstream
+  code tasks can continue against that local artifact, but release packaging
+  still needs a final hosted Rosetta-pinned artifact URL before the Lightning
+  profile metadata can be updated for general users.
+
+Local patched build notes:
+
+- Source repo:
+  `C:\Users\Leo\Documents\GitHub\rwkv_lightning_cuda`.
+- Local upstream fix branch has been submitted as a PR by the user.
+- Local build output:
+  `C:\Users\Leo\Documents\GitHub\rwkv_lightning_cuda\build_local_sm120\bundle\rwkv_lighting_cuda`.
+- Built for this test machine only with `CMAKE_CUDA_ARCHITECTURES=120`; do not
+  treat this package as a general `SM75+` release artifact.
+- Built executable SHA256:
+  `da404edf2b4b7568a9da96907a698c504059a7afbe791db2e47704382a21674d`.
+- Minimal Rosetta runtime ZIP:
+  `C:\Users\Leo\Documents\GitHub\rwkv_lightning_cuda\build_local_sm120\RWKV_lightning_CUDA_sm120_Win_MSVC_V1.0.2_rosetta-loopback-local.zip`.
+- Minimal ZIP size: `398159251` bytes.
+- Minimal ZIP SHA256:
+  `f598a748ad88581a23fe6dfa2d02155cf32a1cbac1bcae94596b5f85d80e22bf`.
+- Minimal DLL set contains 17 DLLs under `lib/`, including Drogon/Trantor,
+  OpenSSL, sqlite, brotli, zlib, VC runtime, and CUDA 13.3 runtime libraries.
+- Validation from the minimal package succeeded with `--host 127.0.0.1`:
+  `/v1/models` returned the expected model id, netstat showed only
+  `127.0.0.1:<port>`, and `/v1/batch/completions` returned ordered
+  translations for two prompts.
+- Validation from the app-data runtime directory succeeded with `--host ::1`:
+  `/v1/models` returned 200 at `http://[::1]:<port>/v1/models`,
+  `http://127.0.0.1:<port>/v1/models` did not respond, and netstat showed
+  only `[::1]:<port>`.
+- Windows Defender recent detections remained limited to the earlier upstream
+  ZIP test commands under the temp validation directory; no new Defender alert
+  was observed from the repo-built local package.
+- The local patched runtime was installed into this machine's Rosetta app data
+  directory for follow-up testing:
+  `C:\Users\Leo\AppData\Local\com.rosetta.desktop\managed-rwkv\runtimes\rwkv-lightning-cuda-sm75-msvc`.
 
 Entry criteria:
 
@@ -432,9 +551,60 @@ Handoff:
 
 ### Task 2: Lightning Profile Artifact Update
 
+Status: completed on 2026-07-01 for the initial hosted artifact and checked-in
+profile metadata update.
+
+Handoff notes:
+
+- Do not wait for the upstream PR to appear in an upstream release.
+- Build a Rosetta-owned general SM75+ package from source and publish it to
+  `LeoLin4258/rosetta-assets`.
+- Use
+  `rosetta-app/src-tauri/scripts/build-rwkv-lightning-cuda-windows-release-zip.ps1`
+  for the release package. The local `sm120` ZIP remains development-only.
+- Rosetta now supports a hash-pinned local runtime-pack override through
+  `runtimePackPath`, `runtimePackSha256`, and `runtimePackSizeBytes`, plus the
+  matching environment variables `ROSETTA_RWKV_RUNTIME_PACK`,
+  `ROSETTA_RWKV_RUNTIME_PACK_SHA256`, and
+  `ROSETTA_RWKV_RUNTIME_PACK_SIZE_BYTES`.
+- The Lightning launch contract has been updated to pass `--host` explicitly.
+  Because `WINDOWS_AMD64_CUDA.bind_host` is `[::1]` for URL formatting, the
+  lifecycle command builder strips IPv6 URL brackets and passes `::1` to the
+  runtime CLI.
+- The checked-in Lightning profile metadata now points to the hosted
+  Rosetta-owned V1.0.2 artifact.
+- The runtime directory name is now
+  `rwkv-lightning-cuda-sm75-msvc-v1.0.2`, so older V1.0.0-derived installs are
+  not mistaken for the V1.0.2 source-built runtime.
+- The general SM75+ source-built ZIP was prepared locally and uploaded to
+  `LeoLin4258/rosetta-assets`:
+  - Source commit: `fbac9e4 Add --host option and default bind to 127.0.0.1`
+  - CUDA architectures: `75;80;86;87;89;90;100;120`
+  - Release tag:
+    `rwkv-lightning-cuda-windows-x64-v2026.07.01.1`
+  - Filename:
+    `RWKV_lightning_CUDA_sm75+_Win_MSVC_V1.0.2_rosetta-loopback.zip`
+  - Local path:
+    `rosetta-app/dist/rwkv-runtime/RWKV_lightning_CUDA_sm75+_Win_MSVC_V1.0.2_rosetta-loopback.zip`
+  - Size: `404846501` bytes
+  - SHA256:
+    `54ed31261492cd89d800852ee369f745ad75a9690cfcdcceada4eacfc58aeca2`
+  - Server executable SHA256:
+    `945c384cb85fa6a93b6d480036367798a47aaccff7e00dca635b9e5cfcc277d1`
+  - Default githubdog URL:
+    `https://githubdog.com/https://github.com/LeoLin4258/rosetta-assets/releases/download/rwkv-lightning-cuda-windows-x64-v2026.07.01.1/RWKV_lightning_CUDA_sm75+_Win_MSVC_V1.0.2_rosetta-loopback.zip`
+  - Direct GitHub fallback URL:
+    `https://github.com/LeoLin4258/rosetta-assets/releases/download/rwkv-lightning-cuda-windows-x64-v2026.07.01.1/RWKV_lightning_CUDA_sm75+_Win_MSVC_V1.0.2_rosetta-loopback.zip`
+  - ZIP structure and SHA256 were rechecked after packaging.
+  - A temp-directory extraction probe loaded the executable and reached the
+    expected missing-model error, confirming the packaged runtime DLL set is
+    sufficient for process startup.
+  - Both the default githubdog URL and direct GitHub fallback returned HTTP 200
+    with `Content-Length: 404846501`.
+
 Entry criteria:
 
-- Task 1 has decided whether the artifact is upstream-direct or Rosetta-pinned.
+- Task 1 has rejected the upstream ZIP as a direct Rosetta dependency.
 - Final artifact filename, size, SHA256, and download URL are known.
 
 Scope:
@@ -447,7 +617,8 @@ Scope:
 
 Output:
 
-- Lightning profile points to the V1.0.2 runtime artifact.
+- Lightning profile points to the Rosetta-owned V1.0.2 runtime artifact in
+  `rosetta-assets`.
 - Profile tests cover the expected filename, directory name, endpoint, provider
   id, and bind host.
 
@@ -459,10 +630,31 @@ Validation:
 Handoff:
 
 - Record the final artifact source.
-- Record whether loopback safety is native to upstream V1.0.2 or provided by a
-  Rosetta patch.
+- Record that loopback safety is provided by Rosetta's source-built runtime
+  branch until the upstream project ships an equivalent release.
 
 ### Task 3: Profile-Aware Runtime Commands
+
+Status: initial command surface completed on 2026-07-01.
+
+Handoff notes:
+
+- `get_managed_rwkv_runtime_status(profileId?)`,
+  `get_managed_rwkv_install_plan(profileId?)`,
+  `start_managed_rwkv_runtime(profileId?)`,
+  `stop_managed_rwkv_runtime(profileId?)`,
+  `probe_managed_rwkv_runtime(profileId?)`, and
+  `get_managed_rwkv_runtime_logs_summary(profileId?)` now accept an optional
+  profile id while preserving the default-profile fallback when omitted.
+- `install_managed_rwkv_runtime(options?)` now accepts
+  `options.profileId`, keeping all install parameters inside the existing
+  options object.
+- The Rust command resolver rejects unknown, disabled, and platform-mismatched
+  profile ids with explicit errors.
+- The TypeScript wrapper functions in `src/lib/rwkvRuntime.ts` expose the same
+  optional `profileId` argument.
+- This task intentionally does not yet expose per-profile status summaries or
+  active runtime selection. Those remain Task 4 and Task 5.
 
 Entry criteria:
 
@@ -538,6 +730,22 @@ Entry criteria:
 
 - Frontend can inspect multiple runtime profiles.
 
+Current blocker / handoff note:
+
+- As of 2026-07-01, the dev onboarding "install local translation engine"
+  button still installs the default Windows profile, which is
+  `windows-amd64-llamacpp-vulkan`.
+- The screenshot showing approximately `478 MB` is therefore the llama.cpp GGUF
+  model path (`501498208` bytes shown as MiB), not Lightning.
+- Do not use the current onboarding button as evidence that Lightning default
+  onboarding works.
+- The Rust command layer and TypeScript wrappers already accept explicit
+  `profileId`, so the next implementation step is frontend state / flow wiring,
+  not new artifact work.
+- Until Task 5 / Task 6 are implemented, Lightning can only be tested through an
+  explicit `profileId: "windows-amd64-rwkv-lightning-cuda"` path or a temporary
+  diagnostic invocation.
+
 Scope:
 
 - Add app-level persisted selected managed runtime profile state, separate from
@@ -576,7 +784,12 @@ Handoff:
 
 Entry criteria:
 
-- Selected runtime profile can drive install and start commands.
+- Managed runtime commands can be called with an explicit profile id.
+- Lightning V1.0.2 profile metadata is hosted and stable.
+- Task 5 selected-profile persistence is preferred before this task, but this
+  task may proceed first if onboarding keeps its selected profile in local
+  component state and passes it explicitly through install / status / start /
+  probe.
 
 Scope:
 
@@ -586,6 +799,19 @@ Scope:
 - On unsupported NVIDIA or non-NVIDIA Windows, keep llama.cpp as the default
   local runtime path.
 - Keep the existing option to skip RWKV setup.
+- Make every managed-runtime call in the onboarding flow use the selected
+  profile id:
+  - `getManagedRwkvRuntimeStatus(profileId)`
+  - `installManagedRwkvRuntime({ profileId, ... })`
+  - `startManagedRwkvRuntime(profileId)`
+  - `probeManagedRwkvRuntime(profileId)`
+  - `getManagedRwkvRuntimeLogsSummary(profileId)`
+- Do not rely on the default `current_profile()` fallback for NVIDIA
+  onboarding, because on Windows that fallback currently resolves to
+  `windows-amd64-llamacpp-vulkan`.
+- The user-facing first screen must make it clear which runtime will be
+  installed. The primary NVIDIA path should name `RWKV Lightning CUDA`, and the
+  secondary fallback should name `llama.cpp Vulkan`.
 
 Output:
 

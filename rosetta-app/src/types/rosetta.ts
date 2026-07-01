@@ -725,11 +725,17 @@ export type ManagedRuntimeInstallProgress = {
  *   downloads** (HuggingFace). Empty string / undefined → no Rosetta-managed
  *   proxy (reqwest still falls back to `HTTPS_PROXY` env if present). Loopback
  *   sidecar traffic always bypasses this.
+ * - `runtimePackPath` / `runtimePackSha256` / `runtimePackSizeBytes`: local
+ *   Windows runtime ZIP override for development validation before publishing
+ *   a new Rosetta-pinned runtime artifact.
  */
 export type ManagedRuntimeInstallOptions = {
+  profileId?: string | null;
   repair?: boolean;
   proxyUrl?: string | null;
   runtimePackPath?: string | null;
+  runtimePackSha256?: string | null;
+  runtimePackSizeBytes?: number | null;
 };
 
 /**

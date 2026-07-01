@@ -128,7 +128,13 @@ pub fn build_static_status(app: &AppHandle) -> Result<StaticStatus, String> {
     let Some(profile) = current_profile() else {
         return Ok(StaticStatus::unsupported());
     };
+    build_static_status_for_profile(app, profile)
+}
 
+pub fn build_static_status_for_profile(
+    app: &AppHandle,
+    profile: &'static RuntimeProfile,
+) -> Result<StaticStatus, String> {
     let layout = RuntimeLayout::from_app(app, profile)?;
     let hardware = hardware::inspect(profile);
     let sidecar_path = layout

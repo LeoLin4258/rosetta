@@ -31,7 +31,8 @@ use lifecycle::{
     ManagedRuntimeProbeResult, ManagedRuntimeStartResult,
 };
 use status::{
-    build_static_status, ManagedRuntimeInstallPlan, ManagedRuntimeState, ManagedRuntimeStatus,
+    build_static_status, build_static_status_for_profile, ManagedRuntimeInstallPlan,
+    ManagedRuntimeState, ManagedRuntimeStatus,
 };
 
 /// Re-export so `lib.rs` can manage the registry as Tauri state.
@@ -74,8 +75,10 @@ pub fn get_managed_rwkv_hardware_support() -> Result<hardware::HardwareSupport, 
 pub async fn get_managed_rwkv_runtime_status(
     app: AppHandle,
     registry: State<'_, Registry>,
+    profile_id: Option<String>,
 ) -> Result<ManagedRuntimeStatus, String> {
-    let static_status = build_static_status(&app)?;
+    let profile = resolve_command_profile(profile_id.as_deref())?;
+    let static_status = build_static_status_for_profile(&app, profile)?;
     let (process_snapshot, lifecycle_state) = current_process_snapshot(&registry).await;
 
     let mut status = static_status.into_status(process_snapshot);
@@ -90,8 +93,12 @@ pub async fn get_managed_rwkv_runtime_status(
 }
 
 #[tauri::command]
-pub fn get_managed_rwkv_install_plan(app: AppHandle) -> Result<ManagedRuntimeInstallPlan, String> {
-    let static_status = build_static_status(&app)?;
+pub fn get_managed_rwkv_install_plan(
+    app: AppHandle,
+    profile_id: Option<String>,
+) -> Result<ManagedRuntimeInstallPlan, String> {
+    let profile = resolve_command_profile(profile_id.as_deref())?;
+    let static_status = build_static_status_for_profile(&app, profile)?;
     Ok(static_status.install_plan)
 }
 
@@ -102,12 +109,10 @@ pub async fn install_managed_rwkv_runtime(
     runtime_registry: State<'_, Registry>,
     options: Option<InstallOptions>,
 ) -> Result<InstallResult, String> {
-    let Some(profile) = profile::current_profile() else {
-        return Err("当前平台不支持本地 RWKV 运行时。".to_string());
-    };
+    let options = options.unwrap_or_default();
+    let profile = resolve_command_profile(options.profile_id.as_deref())?;
     hardware::ensure_supported(profile)?;
     let layout = RuntimeLayout::from_app(&app, profile)?;
-    let options = options.unwrap_or_default();
 
     let replacing_runtime_pack = profile.managed_runtime_directory_name.is_some()
         && (options.repair || !layout.is_runtime_installed(profile));
@@ -160,9 +165,11 @@ pub async fn cancel_managed_rwkv_install(
 pub async fn start_managed_rwkv_runtime(
     app: AppHandle,
     registry: State<'_, Registry>,
+    profile_id: Option<String>,
 ) -> Result<ManagedRuntimeStartResult, String> {
     eprintln!("[rwkv-start] === start_managed_rwkv_runtime ===");
-    let static_status = build_static_status(&app).map_err(|e| {
+    let profile = resolve_command_profile(profile_id.as_deref())?;
+    let static_status = build_static_status_for_profile(&app, profile).map_err(|e| {
         eprintln!("[rwkv-start] build_static_status failed: {e}");
         e
     })?;
@@ -245,8 +252,10 @@ pub async fn start_managed_rwkv_runtime(
 pub async fn stop_managed_rwkv_runtime(
     app: AppHandle,
     registry: State<'_, Registry>,
+    profile_id: Option<String>,
 ) -> Result<String, String> {
-    let static_status = build_static_status(&app)?;
+    let profile = resolve_command_profile(profile_id.as_deref())?;
+    let static_status = build_static_status_for_profile(&app, profile)?;
     let sidecar = static_status.sidecar_path.as_deref();
     let tokenizer = static_status.tokenizer_path.as_deref();
     let model = static_status.layout.model_file.as_path();
@@ -296,8 +305,10 @@ pub async fn shutdown_managed_rwkv_runtime_for_exit(app: &AppHandle) {
 pub async fn probe_managed_rwkv_runtime(
     app: AppHandle,
     registry: State<'_, Registry>,
+    profile_id: Option<String>,
 ) -> Result<ManagedRuntimeProbeResult, String> {
-    let static_status = build_static_status(&app)?;
+    let profile = resolve_command_profile(profile_id.as_deref())?;
+    let static_status = build_static_status_for_profile(&app, profile)?;
     if matches!(
         static_status.initial_state,
         ManagedRuntimeState::Unsupported
@@ -310,8 +321,10 @@ pub async fn probe_managed_rwkv_runtime(
 #[tauri::command]
 pub fn get_managed_rwkv_runtime_logs_summary(
     app: AppHandle,
+    profile_id: Option<String>,
 ) -> Result<ManagedRuntimeLogsSummary, String> {
-    let static_status = build_static_status(&app)?;
+    let profile = resolve_command_profile(profile_id.as_deref())?;
+    let static_status = build_static_status_for_profile(&app, profile)?;
     let log_path = static_status.layout.runtime_log_file.clone();
     let tail = read_log_tail(&log_path)?;
     let message = if tail.is_empty() {
@@ -324,4 +337,30 @@ pub fn get_managed_rwkv_runtime_logs_summary(
         log_tail: tail,
         message,
     })
+}
+
+fn resolve_command_profile(
+    profile_id: Option<&str>,
+) -> Result<&'static profile::RuntimeProfile, String> {
+    let Some(requested) = profile_id.map(str::trim).filter(|value| !value.is_empty()) else {
+        return profile::current_profile()
+            .ok_or_else(|| "Current platform does not support managed RWKV runtime.".to_string());
+    };
+    let profile = profile::profile_by_id(requested)
+        .ok_or_else(|| format!("Unknown managed RWKV runtime profile: {requested}"))?;
+    if !profile.enabled {
+        return Err(format!(
+            "Managed RWKV runtime profile is disabled: {requested}"
+        ));
+    }
+    if profile.platform_os != std::env::consts::OS
+        || profile.platform_arch != std::env::consts::ARCH
+    {
+        return Err(format!(
+            "Managed RWKV runtime profile {requested} is not valid for {}-{}.",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        ));
+    }
+    Ok(profile)
 }
