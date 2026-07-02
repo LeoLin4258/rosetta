@@ -108,6 +108,7 @@ function usePdfRunProgressEvents() {
       percent: number | null;
       currentPage?: number;
       totalPages?: number;
+      completedPages?: number;
       translatedChars?: number;
     }>("rosetta-pdf2zh-progress", (event) => {
       setPdfRunProgress(event.payload.jobId, {
@@ -115,6 +116,7 @@ function usePdfRunProgressEvents() {
         percent: event.payload.percent,
         currentPage: event.payload.currentPage ?? null,
         totalPages: event.payload.totalPages ?? null,
+        completedPages: event.payload.completedPages ?? null,
         translatedChars: event.payload.translatedChars ?? null,
       });
     }).then((fn) => {

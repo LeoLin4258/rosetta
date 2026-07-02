@@ -63,8 +63,11 @@ export type ManagedRuntimeSlice = {
 export type PdfRunProgress = {
   phase: string;
   percent: number | null;
+  /** Page currently being processed by pdf2zh, not necessarily committed. */
   currentPage: number | null;
   totalPages: number | null;
+  /** Translated page artifacts durably committed for the current run. */
+  completedPages: number | null;
   /** Cumulative characters returned by RWKV in the current run. */
   translatedChars: number | null;
 };
@@ -851,6 +854,8 @@ export const useRosettaStore = create<RosettaState>()(
               percent: progress.percent ?? previous?.percent ?? null,
               currentPage: progress.currentPage ?? previous?.currentPage ?? null,
               totalPages: progress.totalPages ?? previous?.totalPages ?? null,
+              completedPages:
+                progress.completedPages ?? previous?.completedPages ?? null,
               translatedChars:
                 progress.translatedChars ?? previous?.translatedChars ?? null,
               phase: progress.phase,

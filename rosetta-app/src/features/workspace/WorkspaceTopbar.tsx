@@ -66,6 +66,7 @@ type WorkspaceTopbarProps = {
     percent: number | null;
     currentPage: number | null;
     totalPages: number | null;
+    completedPages?: number | null;
     translatedChars?: number | null;
   } | null;
   sourceLang: string;
@@ -370,8 +371,8 @@ export function WorkspaceTopbar({
       : PDF_PHASE_LABELS.warmup
     : "翻译中";
   const runPageLabel =
-    isPdf && pdfProgress?.currentPage != null && pdfProgress?.totalPages != null
-      ? `${pdfProgress.currentPage}/${pdfProgress.totalPages} 页`
+    isPdf && pdfProgress?.completedPages != null && pdfProgress?.totalPages != null
+      ? `${pdfProgress.completedPages}/${pdfProgress.totalPages} 页`
       : null;
   const runCountValue = isPdf
     ? pdfProgress?.translatedChars != null

@@ -42,6 +42,11 @@ pub(crate) struct Pdf2zhProgressPayload {
     /// UI can render "第 X/Y 页".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total_pages: Option<u32>,
+    /// Pages whose translated page artifact has actually been committed.
+    /// This is distinct from `current_page`: pdf2zh may report that it has
+    /// processed every page before Rosetta has durable translated page PDFs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_pages: Option<u32>,
     /// Cumulative translated characters returned by RWKV during this
     /// invocation. Keeps the status bar visibly moving even while pdf2zh's
     /// own output is quiet.
@@ -699,6 +704,7 @@ fn emit_progress(
             message: message.to_string(),
             current_page,
             total_pages,
+            completed_pages: None,
             translated_chars,
         },
     );
@@ -752,6 +758,33 @@ pub(crate) fn emit_progress_phase(
             } else {
                 None
             },
+            completed_pages: if total_pages > 0 { Some(0) } else { None },
+            translated_chars: None,
+        },
+    );
+}
+
+pub(crate) fn emit_completed_page_progress(
+    app: &AppHandle,
+    job_id: &str,
+    total_pages: u32,
+    completed_pages: u32,
+    page_number: u32,
+) {
+    let _ = app.emit(
+        PDF2ZH_PROGRESS_EVENT,
+        Pdf2zhProgressPayload {
+            job_id: job_id.to_string(),
+            phase: "translate".to_string(),
+            percent: None,
+            message: format!("page {page_number} committed"),
+            current_page: None,
+            total_pages: if total_pages > 0 {
+                Some(total_pages)
+            } else {
+                None
+            },
+            completed_pages: Some(completed_pages.min(total_pages)),
             translated_chars: None,
         },
     );

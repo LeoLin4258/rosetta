@@ -86,6 +86,7 @@ export function DocumentPreview({
     percent: number | null;
     currentPage: number | null;
     totalPages: number | null;
+    completedPages?: number | null;
   } | null;
   /// PDF-specific: error message from the last failed PDF generation.
   pdfError?: string | null;

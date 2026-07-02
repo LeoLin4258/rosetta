@@ -27,6 +27,7 @@ type PdfProgress = {
   percent: number | null;
   currentPage: number | null;
   totalPages: number | null;
+  completedPages?: number | null;
   translatedChars?: number | null;
 };
 
@@ -480,9 +481,9 @@ function displayPageActivity(
 ) {
   if (status === "failed") return "failed";
   if (status === "translated") return "translated";
+  if (currentTranslatingPageNumber === pageNumber) return "translating";
   if (status === "translating") return "translating";
   if (status === "queued") return "queued";
-  if (currentTranslatingPageNumber === pageNumber) return "translating";
   if (isTranslating && activePageNumberSet.has(pageNumber)) return "queued";
   return "pending";
 }

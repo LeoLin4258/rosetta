@@ -3,8 +3,8 @@ use std::{
     path::{Component, Path},
     str::FromStr,
     sync::{
-        atomic::{AtomicBool, Ordering},
-        Mutex,
+        atomic::{AtomicBool, AtomicU32, Ordering},
+        Arc, Mutex,
     },
 };
 
@@ -1384,6 +1384,7 @@ async fn translate_pdf_pages_inner(
     let mut translated_chars_offset = 0u64;
     let mut failure_message: Option<String> = None;
     let mut cancelled = false;
+    let completed_pages_for_progress = Arc::new(AtomicU32::new(0));
 
     for (chunk_index, chunk) in pages_to_process.chunks(pdf_run_chunk_size).enumerate() {
         if cancel_state.is_pdf_run_cancelled(&run_key, &run_id) {
@@ -1415,7 +1416,7 @@ async fn translate_pdf_pages_inner(
                 target_lang,
                 &run_id,
                 *page_number,
-                "translating",
+                "queued",
             );
         }
 
@@ -1435,6 +1436,8 @@ async fn translate_pdf_pages_inner(
         let job_id_for_cb = job_id.to_string();
         let target_lang_for_cb = target_lang.to_string();
         let run_id_for_cb = run_id.clone();
+        let completed_pages_for_cb = Arc::clone(&completed_pages_for_progress);
+        let total_pages_for_cb = total_pages_to_process;
         let state_for_cb: &mut formats::pdf::page_state::PdfPageTranslationState = &mut state;
         let mut on_page_done = move |page_number: u32, worker_file: std::path::PathBuf| {
             let relative_path =
@@ -1466,6 +1469,15 @@ async fn translate_pdf_pages_inner(
                         None,
                     );
                     let _ = page_state::write_pdf_page_translation_state(&dir_for_cb, state_for_cb);
+                    let completed_pages =
+                        completed_pages_for_cb.fetch_add(1, Ordering::Relaxed) + 1;
+                    pdf2zh_invoke::emit_completed_page_progress(
+                        &app_for_cb,
+                        &job_id_for_cb,
+                        total_pages_for_cb,
+                        completed_pages,
+                        page_number,
+                    );
                     let _ = app_for_cb.emit(
                         PDF_PAGE_PROGRESS_EVENT,
                         PdfPageProgressPayload {
