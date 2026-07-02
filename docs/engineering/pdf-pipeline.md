@@ -10,9 +10,10 @@ Rosetta's PDF path is a local visual PDF translation pipeline:
 
 1. Import copies the user's PDF into a job-local `source.pdf`.
 2. The source PDF remains the authoritative source file.
-3. Translation uses the local `pdf2zh` component through Rosetta's local
-   Rosetta batch endpoint. The legacy OpenAI-compatible shim remains an
-   engineering fallback.
+3. Translation uses the local `pdf2zh` component. Windows NVIDIA Lightning uses
+   Rosetta's local batch endpoint for cross-page batching. llama.cpp, MLX, and
+   other non-Lightning providers use the page-local OpenAI-compatible shim so
+   translated page artifacts can be committed incrementally.
 4. Translation commits one page-level PDF artifact at a time.
 5. Export assembles a full PDF from `source.pdf` plus completed page artifacts.
 
@@ -380,8 +381,10 @@ Run states:
    - `retranslate-selected`
    - `retranslate-all`
 4. Backend creates `PdfTranslationRun` and writes `pdf_run.<targetLang>.json`.
-5. Pages are processed in chunks of 10 unless a local benchmark override raises
-   the PDF chunk size.
+5. Pages are processed in chunks. Non-Lightning providers use the durable
+   10-page default. Lightning uses a larger 100-page chunk for small and medium
+   PDFs, but large runs with more than 50 pages automatically fall back to
+   10-page chunks to avoid long time-to-first-page and large UI event bursts.
 6. For `rosetta-batch`, the persistent worker uses a two-pass chunk-local
    pipeline:
    - collect pass: run pdfminer/pdf2zh layout for the requested pages with a
@@ -403,8 +406,11 @@ Run states:
 The default continue path never overwrites translated pages. Explicit
 retranslation clears the relevant page artifacts first.
 
-Cross-page batching is scoped to `service="rosetta-batch"`. It can be disabled
-for local diagnosis with either:
+Cross-page batching is scoped to Lightning's `service="rosetta-batch"` path.
+Non-Lightning providers intentionally stay on the page-local
+`service="openai:rwkv"` path so slow llama.cpp / MLX devices can show each page
+as soon as that page's artifact is committed. Cross-page batching can be
+disabled for local Lightning diagnosis with either:
 
 ```txt
 ROSETTA_PDF_CROSS_PAGE_BATCH=0

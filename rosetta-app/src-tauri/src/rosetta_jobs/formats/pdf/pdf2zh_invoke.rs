@@ -174,7 +174,7 @@ pub(crate) async fn invoke_pdf2zh(
     let shim_ref = &shim;
 
     let openai_base_url = shim_ref.base_url();
-    let worker_service = pdf2zh_worker_service();
+    let worker_service = pdf2zh_worker_service(&options.provider);
     let thread_count = shim_ref.pdf2zh_thread_count;
     std::fs::write(
         output_dir.join("rosetta-pdf2zh-command.log"),
@@ -801,11 +801,14 @@ fn pdf2zh_debug_enabled() -> bool {
         })
 }
 
-fn pdf2zh_worker_service() -> &'static str {
+fn pdf2zh_worker_service(provider: &ShimProviderConfig) -> &'static str {
     if env_flag("ROSETTA_PDF_FORCE_OPENAI_SHIM") {
-        "openai:rwkv"
-    } else {
+        return "openai:rwkv";
+    }
+    if matches!(provider, ShimProviderConfig::Lightning(_)) {
         "rosetta-batch"
+    } else {
+        "openai:rwkv"
     }
 }
 
@@ -821,6 +824,10 @@ fn env_flag(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{env_flag, parse_tqdm_fraction, pdf2zh_worker_service};
+    use crate::{
+        managed_pdf2zh::openai_shim::{LlamaCppApiConfig, ShimProviderConfig},
+        rwkv_providers::mobile_batch_chat::MobileBatchChatConfig,
+    };
 
     #[test]
     fn parses_tqdm_progress_fraction() {
@@ -857,12 +864,46 @@ mod tests {
     }
 
     #[test]
-    fn rosetta_batch_is_default_pdf_worker_service_unless_openai_shim_is_forced() {
+    fn lightning_uses_rosetta_batch_pdf_worker_service_unless_openai_shim_is_forced() {
         std::env::remove_var("ROSETTA_PDF_FORCE_OPENAI_SHIM");
-        assert_eq!(pdf2zh_worker_service(), "rosetta-batch");
+        assert_eq!(
+            pdf2zh_worker_service(&lightning_provider()),
+            "rosetta-batch"
+        );
 
         std::env::set_var("ROSETTA_PDF_FORCE_OPENAI_SHIM", "1");
-        assert_eq!(pdf2zh_worker_service(), "openai:rwkv");
+        assert_eq!(pdf2zh_worker_service(&lightning_provider()), "openai:rwkv");
         std::env::remove_var("ROSETTA_PDF_FORCE_OPENAI_SHIM");
+    }
+
+    #[test]
+    fn non_lightning_pdf_worker_service_stays_page_local_for_incremental_pages() {
+        std::env::remove_var("ROSETTA_PDF_FORCE_OPENAI_SHIM");
+        assert_eq!(pdf2zh_worker_service(&llama_provider()), "openai:rwkv");
+        assert_eq!(pdf2zh_worker_service(&mobile_provider()), "openai:rwkv");
+    }
+
+    fn lightning_provider() -> ShimProviderConfig {
+        ShimProviderConfig::Lightning(crate::managed_pdf2zh::openai_shim::LightningApiConfig {
+            base_url: "http://127.0.0.1:1".to_string(),
+            endpoint: "/v1/batch/completions".to_string(),
+            internal_token: "token".to_string(),
+            body_password: "password".to_string(),
+            timeout_ms: 1,
+        })
+    }
+
+    fn llama_provider() -> ShimProviderConfig {
+        ShimProviderConfig::LlamaCpp(LlamaCppApiConfig {
+            base_url: "http://127.0.0.1:1".to_string(),
+            timeout_ms: 1,
+        })
+    }
+
+    fn mobile_provider() -> ShimProviderConfig {
+        ShimProviderConfig::MobileBatch(MobileBatchChatConfig {
+            base_url: "http://127.0.0.1:1".to_string(),
+            timeout_ms: 1,
+        })
     }
 }

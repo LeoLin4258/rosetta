@@ -40,6 +40,8 @@ use model::{
 const LIGHTNING_PDF_RUN_CHUNK_SIZE_DEFAULT: usize = 100;
 const LIGHTNING_PDF_RUN_CHUNK_SIZE_CEILING: usize = 1_000;
 const LIGHTNING_PDF_RUN_CHUNK_SIZE_ENV: &str = "ROSETTA_PDF_LIGHTNING_PAGE_CHUNK_SIZE";
+const LIGHTNING_PDF_LARGE_RUN_PAGE_THRESHOLD: usize = 50;
+const LIGHTNING_PDF_LARGE_RUN_CHUNK_SIZE: usize = 10;
 
 /// Cancellation for the (single) active PDF translation run.
 ///
@@ -1138,15 +1140,24 @@ fn shim_provider_from_parts(
     }
 }
 
-fn pdf_run_chunk_size_for_provider(provider: &ShimProviderConfig) -> usize {
+fn pdf_run_chunk_size_for_provider(
+    provider: &ShimProviderConfig,
+    pages_to_process: usize,
+) -> usize {
     if matches!(provider, ShimProviderConfig::Lightning(_)) {
-        return std::env::var(LIGHTNING_PDF_RUN_CHUNK_SIZE_ENV)
+        if let Some(override_size) = std::env::var(LIGHTNING_PDF_RUN_CHUNK_SIZE_ENV)
             .ok()
             .and_then(|value| value.trim().parse::<usize>().ok())
             .filter(|value| *value > 0)
-            .unwrap_or(LIGHTNING_PDF_RUN_CHUNK_SIZE_DEFAULT)
-            .min(LIGHTNING_PDF_RUN_CHUNK_SIZE_CEILING)
-            .max(1);
+        {
+            return override_size
+                .min(LIGHTNING_PDF_RUN_CHUNK_SIZE_CEILING)
+                .max(1);
+        }
+        if pages_to_process > LIGHTNING_PDF_LARGE_RUN_PAGE_THRESHOLD {
+            return LIGHTNING_PDF_LARGE_RUN_CHUNK_SIZE;
+        }
+        return LIGHTNING_PDF_RUN_CHUNK_SIZE_DEFAULT;
     }
     formats::pdf::run_state::PDF_RUN_CHUNK_SIZE
 }
@@ -1214,7 +1225,6 @@ async fn translate_pdf_pages_inner(
         provider_body_password,
         timeout,
     );
-    let pdf_run_chunk_size = pdf_run_chunk_size_for_provider(&provider);
     let force = force.unwrap_or(false);
     let mode = if force && pages.len() as u32 == page_count {
         "retranslate-all"
@@ -1238,6 +1248,7 @@ async fn translate_pdf_pages_inner(
             })
         })
         .collect();
+    let pdf_run_chunk_size = pdf_run_chunk_size_for_provider(&provider, pages_to_process.len());
     let total_pages_to_process = pages_to_process.len() as u32;
     diagnostics::append_timeline_event(
         &dir,
