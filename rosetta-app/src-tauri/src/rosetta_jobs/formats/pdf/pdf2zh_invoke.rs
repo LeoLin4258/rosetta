@@ -65,6 +65,7 @@ pub(crate) struct PageProgressContext {
 #[derive(Debug, Clone)]
 pub(crate) struct Pdf2zhInvokeOptions {
     pub job_id: String,
+    pub run_id: Option<String>,
     pub provider: ShimProviderConfig,
     pub source_lang: String,
     pub target_lang: String,
@@ -140,7 +141,7 @@ pub(crate) async fn invoke_pdf2zh(
         .ok_or_else(|| PdfError::RuntimeMissing("找不到 PDF 版面处理组件。".to_string()))?;
     let doclayout_model = status.doclayout_model_path.clone().ok_or_else(|| {
         PdfError::RuntimeMissing(
-            "PDF 版面处理组件缺少内置 DocLayout-YOLO 模型，请更新 PDF 组件。".to_string(),
+            "PDF 版面处理组件缺少内置 ONNX 版面模型，请更新 PDF 组件。".to_string(),
         )
     })?;
     status
@@ -150,13 +151,17 @@ pub(crate) async fn invoke_pdf2zh(
     let debug = pdf2zh_debug_enabled();
     emit("warmup", Some(20), "正在启动本地翻译 shim…");
     let shim_log_file = output_dir.join("rosetta-pdf2zh-shim.log");
+    let debug_context = match options.run_id.as_deref() {
+        Some(run_id) => format!("pdf-job:{};run:{}", options.job_id, run_id),
+        None => format!("pdf-job:{}", options.job_id),
+    };
     let shim = managed_pdf2zh::openai_shim::spawn_shim(
         options.provider.clone(),
         options.source_lang.clone(),
         options.target_lang.clone(),
         shim_log_file,
         debug,
-        Some(format!("pdf-job:{}", options.job_id)),
+        Some(debug_context),
     )
     .await
     .map_err(PdfError::Pdf2zhFailed)?;
@@ -164,16 +169,21 @@ pub(crate) async fn invoke_pdf2zh(
     let shim_ref = &shim;
 
     let openai_base_url = shim_ref.base_url();
+    let worker_service = pdf2zh_worker_service();
     let thread_count = shim_ref.pdf2zh_thread_count;
     std::fs::write(
         output_dir.join("rosetta-pdf2zh-command.log"),
         format!(
-            "bin={}\nsource={}\noutput_dir={}\ntemp_dir={}\nopenai_base_url={}\nservice=openai:rwkv\nsource_lang={}\ntarget_lang={}\nthreads={}\ndebug={}\nignore_cache={}\n",
+            "bin={}\nsource={}\noutput_dir={}\ntemp_dir={}\nopenai_base_url={}\nrosetta_batch_base_url={}\nservice={}\njob_id={}\nrun_id={}\nsource_lang={}\ntarget_lang={}\nthreads={}\ndebug={}\nignore_cache={}\n",
             bin.display(),
             source_path.display(),
             output_dir.display(),
             temp_dir.display(),
             openai_base_url,
+            openai_base_url,
+            worker_service,
+            options.job_id,
+            options.run_id.as_deref().unwrap_or(""),
             options.source_lang,
             options.target_lang,
             thread_count,
@@ -241,8 +251,8 @@ pub(crate) async fn invoke_pdf2zh(
             .ok(),
     ));
 
-    // Preferred path: the persistent worker, which keeps the ~13 s Python
-    // import (torch + doclayout) warm across invocations. Falls back to the
+    // Preferred path: the persistent worker, which keeps the Python import and
+    // ONNX layout warmup cost paid once per app session. Falls back to the
     // one-shot CLI below when the worker can't be started (broken pack, no
     // bundled python, …).
     let worker_payload = serde_json::json!({
@@ -252,13 +262,16 @@ pub(crate) async fn invoke_pdf2zh(
         "pages": options.pages.clone(),
         "langIn": pdf2zh_lang(&options.source_lang),
         "langOut": pdf2zh_lang(&options.target_lang),
-        "service": "openai:rwkv",
+        "service": worker_service,
         "thread": thread_count,
         "ignoreCache": options.ignore_cache,
         "env": {
             "OPENAI_BASE_URL": openai_base_url.clone(),
             "OPENAI_API_KEY": "rosetta-local",
             "OPENAI_MODEL": "rwkv",
+            "ROSETTA_BATCH_BASE_URL": openai_base_url.clone(),
+            "ROSETTA_BATCH_JOB_ID": options.job_id.clone(),
+            "ROSETTA_BATCH_RUN_ID": options.run_id.clone().unwrap_or_default(),
             "ROSETTA_PDF2ZH_IGNORE_CACHE": if options.ignore_cache { "1" } else { "0" },
         },
     });
@@ -337,13 +350,19 @@ pub(crate) async fn invoke_pdf2zh(
             .arg("-lo")
             .arg(pdf2zh_lang(&options.target_lang))
             .arg("-s")
-            .arg("openai:rwkv")
+            .arg(worker_service)
             .arg("-t")
             .arg(thread_count.to_string())
             .current_dir(output_dir)
             .env("OPENAI_BASE_URL", &openai_base_url)
             .env("OPENAI_API_KEY", "rosetta-local")
             .env("OPENAI_MODEL", "rwkv")
+            .env("ROSETTA_BATCH_BASE_URL", &openai_base_url)
+            .env("ROSETTA_BATCH_JOB_ID", &options.job_id)
+            .env(
+                "ROSETTA_BATCH_RUN_ID",
+                options.run_id.as_deref().unwrap_or(""),
+            )
             .env(
                 "ROSETTA_PDF2ZH_IGNORE_CACHE",
                 if options.ignore_cache { "1" } else { "0" },
@@ -749,9 +768,26 @@ fn pdf2zh_debug_enabled() -> bool {
         })
 }
 
+fn pdf2zh_worker_service() -> &'static str {
+    if env_flag("ROSETTA_PDF_FORCE_OPENAI_SHIM") {
+        "openai:rwkv"
+    } else {
+        "rosetta-batch"
+    }
+}
+
+fn env_flag(name: &str) -> bool {
+    std::env::var(name).ok().is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::parse_tqdm_fraction;
+    use super::{env_flag, parse_tqdm_fraction, pdf2zh_worker_service};
 
     #[test]
     fn parses_tqdm_progress_fraction() {
@@ -775,5 +811,25 @@ mod tests {
         assert_eq!(parse_tqdm_fraction("date 2026/06/11 done"), None);
         assert_eq!(parse_tqdm_fraction("rate 3.9s/it without bracket"), None);
         assert_eq!(parse_tqdm_fraction(""), None);
+    }
+
+    #[test]
+    fn env_flag_accepts_only_explicit_truthy_values() {
+        std::env::set_var("ROSETTA_TEST_FLAG", "true");
+        assert!(env_flag("ROSETTA_TEST_FLAG"));
+        std::env::set_var("ROSETTA_TEST_FLAG", "0");
+        assert!(!env_flag("ROSETTA_TEST_FLAG"));
+        std::env::remove_var("ROSETTA_TEST_FLAG");
+        assert!(!env_flag("ROSETTA_TEST_FLAG"));
+    }
+
+    #[test]
+    fn rosetta_batch_is_default_pdf_worker_service_unless_openai_shim_is_forced() {
+        std::env::remove_var("ROSETTA_PDF_FORCE_OPENAI_SHIM");
+        assert_eq!(pdf2zh_worker_service(), "rosetta-batch");
+
+        std::env::set_var("ROSETTA_PDF_FORCE_OPENAI_SHIM", "1");
+        assert_eq!(pdf2zh_worker_service(), "openai:rwkv");
+        std::env::remove_var("ROSETTA_PDF_FORCE_OPENAI_SHIM");
     }
 }

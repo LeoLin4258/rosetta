@@ -677,6 +677,13 @@ fn repair_pdf_job_inner(
         }
         page_state::write_pdf_page_translation_state(&dir, &state)?;
         sync_pdf_page_translation_summary(app, job_id, &target_lang, &state)?;
+        formats::pdf::page_artifact_compression::schedule_background_compression(
+            app,
+            job_id,
+            &target_lang,
+            page_count,
+            None,
+        );
     }
     if cleanup_stale_pdf_run_tmp_dirs(&dir, &active_run_ids)? {
         repaired = true;
@@ -839,6 +846,10 @@ fn repair_pdf_page_artifacts(
     let mut repaired = false;
     let mut known_pages = std::collections::BTreeSet::new();
 
+    if formats::pdf::page_artifact_compression::cleanup_stale_compression_files(dir, target_lang)? {
+        repaired = true;
+    }
+
     for page in &mut state.pages {
         known_pages.insert(page.page_number);
         if page.status != "translated" {
@@ -853,6 +864,7 @@ fn repair_pdf_page_artifacts(
             page.status = "pending".to_string();
             page.translated_pdf_path = None;
             page.artifact_version = None;
+            page_state::clear_pdf_page_artifact_metadata(page);
             page.error = None;
             page.updated_at = path::timestamp_ms_string();
             repaired = true;
@@ -876,6 +888,12 @@ fn repair_pdf_page_artifacts(
             page.error = None;
             page.updated_at = path::timestamp_ms_string();
             repaired = true;
+        }
+        if let Ok(metadata) = fs::metadata(&canonical) {
+            if page.artifact_bytes != Some(metadata.len()) {
+                page.artifact_bytes = Some(metadata.len());
+                repaired = true;
+            }
         }
     }
 
@@ -975,6 +993,9 @@ fn effective_pdf_page_state(
                     },
                     translated_pdf_path: None,
                     artifact_version: None,
+                    artifact_compression: None,
+                    artifact_bytes: None,
+                    artifact_compression_error: None,
                     error: None,
                     updated_at: run.updated_at.clone(),
                     last_run_id: Some(run.run_id.clone()),
@@ -1245,6 +1266,13 @@ async fn translate_pdf_pages_inner(
                 })),
         );
         sync_pdf_page_translation_summary(app, job_id, target_lang, &state)?;
+        formats::pdf::page_artifact_compression::schedule_background_compression(
+            app,
+            job_id,
+            target_lang,
+            page_count,
+            None,
+        );
         return Ok(state);
     }
 
@@ -1430,6 +1458,13 @@ async fn translate_pdf_pages_inner(
                         None,
                         Some(&run_id_for_cb),
                     );
+                    page_state::set_pdf_page_artifact_metadata(
+                        state_for_cb,
+                        page_number,
+                        Some("fast".to_string()),
+                        output_bytes,
+                        None,
+                    );
                     let _ = page_state::write_pdf_page_translation_state(&dir_for_cb, state_for_cb);
                     let _ = app_for_cb.emit(
                         PDF_PAGE_PROGRESS_EVENT,
@@ -1527,6 +1562,7 @@ async fn translate_pdf_pages_inner(
             &invocation_output_dir,
             pdf2zh_invoke::Pdf2zhInvokeOptions {
                 job_id: job_id.to_string(),
+                run_id: Some(run_id.clone()),
                 provider: provider.clone(),
                 source_lang: source_lang.clone(),
                 target_lang: target_lang.to_string(),
@@ -1738,6 +1774,13 @@ async fn translate_pdf_pages_inner(
     run.current_chunk.clear();
     run_state::write_pdf_run_state(&dir, &run)?;
     finish_profile(&mut profile, "completed", &rwkv_aggregate);
+    formats::pdf::page_artifact_compression::schedule_background_compression(
+        app,
+        job_id,
+        target_lang,
+        page_count,
+        Some(&run_id),
+    );
     Ok(state)
 }
 
@@ -1828,6 +1871,23 @@ fn clear_pdf_page_artifacts(
     }
     for path in candidates {
         let _ = fs::remove_file(path);
+    }
+    let compression_prefix = format!(".{}.", page_state::pdf_page_filename(page_number));
+    let translated_dir = job_dir
+        .join("translated-pages")
+        .join(page_state::pdf_page_language_dir(target_lang));
+    if let Ok(entries) = fs::read_dir(translated_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if name.starts_with(&compression_prefix)
+                && (name.contains(".compressing.tmp.pdf") || name.contains(".precompress.bak"))
+            {
+                let _ = fs::remove_file(path);
+            }
+        }
     }
     page_state::upsert_pdf_page(state, page_number, "pending", None, None);
 }
@@ -2103,6 +2163,7 @@ pub async fn generate_rosetta_translated_pdf(
         &pdf2zh_output_dir,
         formats::pdf::pdf2zh_invoke::Pdf2zhInvokeOptions {
             job_id: job_id.clone(),
+            run_id: None,
             provider,
             source_lang,
             target_lang: target_lang.clone(),

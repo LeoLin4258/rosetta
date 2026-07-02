@@ -806,23 +806,46 @@ fn effective_urls(
         .collect())
 }
 
-fn effective_sha(profile: &Pdf2zhProfile, options: &Pdf2zhInstallOptions) -> Option<String> {
+fn has_custom_pack_url(options: &Pdf2zhInstallOptions) -> bool {
     options
+        .pack_url
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
+        || std::env::var("ROSETTA_PDF2ZH_PACK_URL")
+            .ok()
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
+}
+
+fn effective_sha(profile: &Pdf2zhProfile, options: &Pdf2zhInstallOptions) -> Option<String> {
+    let custom_sha = options
         .pack_sha256
         .clone()
-        .or_else(|| std::env::var("ROSETTA_PDF2ZH_PACK_SHA256").ok())
-        .or_else(|| profile.pack_sha256.map(str::to_string))
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            std::env::var("ROSETTA_PDF2ZH_PACK_SHA256")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+        });
+    if has_custom_pack_url(options) {
+        custom_sha
+    } else {
+        custom_sha.or_else(|| profile.pack_sha256.map(str::to_string))
+    }
 }
 
 fn effective_size(profile: &Pdf2zhProfile, options: &Pdf2zhInstallOptions) -> Option<u64> {
-    options
-        .pack_size_bytes
-        .or_else(|| {
-            std::env::var("ROSETTA_PDF2ZH_PACK_SIZE_BYTES")
-                .ok()
-                .and_then(|value| value.parse::<u64>().ok())
-        })
-        .or(profile.pack_size_bytes)
+    let custom_size = options.pack_size_bytes.or_else(|| {
+        std::env::var("ROSETTA_PDF2ZH_PACK_SIZE_BYTES")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+    });
+    if has_custom_pack_url(options) {
+        custom_size
+    } else {
+        custom_size.or(profile.pack_size_bytes)
+    }
 }
 
 async fn set_done(registry: &Pdf2zhInstallRegistry, message: String) {
@@ -880,4 +903,51 @@ fn timestamp_ms_string() -> String {
         .unwrap_or_default()
         .as_millis()
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{effective_sha, effective_size, Pdf2zhInstallOptions};
+    use crate::managed_pdf2zh::profile::WINDOWS_AMD64_PDF2ZH;
+
+    #[test]
+    fn custom_pack_url_does_not_reuse_profile_hash_or_size() {
+        let options = Pdf2zhInstallOptions {
+            pack_url: Some("file://C:\\tmp\\rosetta-pdf2zh-windows-amd64.zip".to_string()),
+            ..Default::default()
+        };
+
+        assert_eq!(effective_sha(&WINDOWS_AMD64_PDF2ZH, &options), None);
+        assert_eq!(effective_size(&WINDOWS_AMD64_PDF2ZH, &options), None);
+    }
+
+    #[test]
+    fn custom_pack_url_uses_explicit_hash_and_size_when_provided() {
+        let options = Pdf2zhInstallOptions {
+            pack_url: Some("file://C:\\tmp\\rosetta-pdf2zh-windows-amd64.zip".to_string()),
+            pack_sha256: Some("abc123".to_string()),
+            pack_size_bytes: Some(42),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            effective_sha(&WINDOWS_AMD64_PDF2ZH, &options).as_deref(),
+            Some("abc123")
+        );
+        assert_eq!(effective_size(&WINDOWS_AMD64_PDF2ZH, &options), Some(42));
+    }
+
+    #[test]
+    fn profile_pack_url_uses_profile_hash_and_size() {
+        let options = Pdf2zhInstallOptions::default();
+
+        assert_eq!(
+            effective_sha(&WINDOWS_AMD64_PDF2ZH, &options).as_deref(),
+            WINDOWS_AMD64_PDF2ZH.pack_sha256
+        );
+        assert_eq!(
+            effective_size(&WINDOWS_AMD64_PDF2ZH, &options),
+            WINDOWS_AMD64_PDF2ZH.pack_size_bytes
+        );
+    }
 }

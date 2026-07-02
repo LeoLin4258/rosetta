@@ -1,6 +1,6 @@
 # PDF Pipeline
 
-Last updated: 2026-06-26
+Last updated: 2026-07-02
 
 This document describes the current PDF translation implementation. Older PDF
 plans are historical background only when they conflict with this file and
@@ -11,7 +11,8 @@ Rosetta's PDF path is a local visual PDF translation pipeline:
 1. Import copies the user's PDF into a job-local `source.pdf`.
 2. The source PDF remains the authoritative source file.
 3. Translation uses the local `pdf2zh` component through Rosetta's local
-   OpenAI-compatible shim.
+   Rosetta batch endpoint. The legacy OpenAI-compatible shim remains an
+   engineering fallback.
 4. Translation commits one page-level PDF artifact at a time.
 5. Export assembles a full PDF from `source.pdf` plus completed page artifacts.
 
@@ -103,9 +104,11 @@ Diagnostics:
   inference, pdfminer page processing, patch application, single-page PDF save,
   and page event emission. `page.processPage` is further split into pdfminer
   `beginPage`, `renderStreams`, `endPage`, `receiveLayout`,
-  `translateRequest`, and `patchStreams` events so the first visible
-  page can be analyzed without treating pdfminer/TextConverter as one opaque
-  block.
+  `translateRequest`, `translateBatch`, and `patchStreams` events so the first
+  visible page can be analyzed without treating pdfminer/TextConverter as one
+  opaque block. The Rosetta native batch path also records
+  `crossPageBatch.collect` and `crossPageBatch.translate` events when the
+  worker uses cross-page batching.
 - `diagnostics/pdf-translation-profile-<runId>.json`: per-run aggregate profile
   for PDF translation. This remains the compact summary for one translation
   run; the timeline is the ordered event log used to reconstruct the chain.
@@ -205,20 +208,87 @@ ROSETTA_LLAMA_CPP_N_PREDICT=<positive integer>
 ```
 
 Timeline diagnostics record the effective thread count in the worker
-`job.started` stage and record every `page.processPage.translateRequest`,
-making it possible to see whether a page waited on one, two, or more
-TextConverter translation waves.
+`job.started` stage and record every `page.processPage.translateRequest` or
+`page.processPage.translateBatch`, making it possible to see whether a page
+waited on one, two, or more TextConverter translation waves. In the native
+Rosetta batch path, model time is expected to move from per-page
+`translateBatch` events into a chunk-level `crossPageBatch.translate` event.
+After cross-page collection, replay reuses the collect-pass layout masks and
+pdfminer layout tree where available; replay-only work is surfaced through
+`page.layoutMask.reuse` and `page.processPage.replayLayout`.
+`page.saveSinglePdf` is split into `insertPage` and `writeFile` child stages so
+page artifact serialization can be separated from page-object extraction.
+
+For the native Rosetta batch path, page layout inference uses a speed-first
+input size capped at `640` pixels by default instead of the page-height-derived
+native value. On the 10-page Windows NVIDIA Lightning benchmark, ONNX batch
+inference did not materially outperform serial inference, while reducing
+`imgsz` from `768` to `640` cut YOLO time with nearly unchanged detected-box
+counts. A more aggressive `576` input was faster but changed layout detections
+more visibly, so it is not the default. Local diagnosis can restore or sweep the
+layout inference size with:
+
+```txt
+ROSETTA_PDF_LAYOUT_IMGSZ=native
+ROSETTA_PDF_LAYOUT_IMGSZ=768
+ROSETTA_PDF_LAYOUT_IMGSZ=640
+```
+
+Single-page page artifacts are local cache files. The worker defaults to
+speed-first artifact saving (`deflate=0`) because compressed PyMuPDF writes can
+dominate warm-worker runtime after model batching has been fixed. Local
+diagnosis can restore compressed page artifacts with:
+
+```txt
+ROSETTA_PDF_SINGLE_PAGE_DEFLATE=1
+```
+
+This is a speed/disk-space tradeoff for intermediate page artifacts, not a
+change to source PDF state or translation correctness.
+
+Rosetta keeps the speed-first write on the translation hot path and then
+compresses committed page artifacts in a Rust-owned background maintenance
+task on Windows. The background task uses the installed pdf2zh sidecar's
+PyMuPDF runtime with `garbage=4`, stream/image/font deflate, and object
+streams; importing that lightweight PyMuPDF module does not touch the warm
+pdf2zh worker or PyTorch/ONNX layout prewarm. Compression is best-effort cache
+maintenance:
+
+- the page remains `translated` even if compression fails;
+- each candidate is guarded by `lastRunId`, `artifactVersion`, and
+  `translatedPdfPath`, so an old compression task cannot commit over a newer
+  force-retranslation result;
+- compressed output is written to a sibling `.compressing.tmp.pdf`, validated
+  as a one-page PDF, and only replaces the canonical page artifact when it is
+  meaningfully smaller;
+- replacement uses a temporary `.precompress.bak` backup and repair cleans or
+  restores stale temp/backup files left by app exit or process termination;
+- job deletion and force retranslation may race with compression; failures in
+  those races are treated as skipped maintenance, not translation failures.
+
+`pdf_pages.<targetLang>.json` records optional page artifact metadata:
+`artifactCompression` (`fast`, `compressed`, or `skipped`), `artifactBytes`,
+and `artifactCompressionError`. These fields are optional for backward
+compatibility and must not be required to preview, export, repair, or resume
+old jobs.
+
+Local diagnosis can disable background page artifact compression with:
+
+```txt
+ROSETTA_PDF_PAGE_ARTIFACT_COMPRESSION=off
+```
 
 ## Worker Prewarm
 
 App startup starts the persistent pdf2zh worker in the background after the
 main window is shown. The worker prewarm now includes:
 
-- importing PyTorch, DocLayout-YOLO, and pdf2zh;
-- checking the bundled DocLayout model path;
+- importing pdf2zh and the ONNX layout runtime used by the Rosetta PDF
+  component;
+- checking the bundled ONNX DocLayout model path;
 - optional MPS probing when explicitly enabled;
-- loading the cached YOLO model and running one synthetic blank-page
-  prediction at 596x842 px (`imgsz=832`).
+- loading the cached ONNX layout model and running one synthetic blank-page
+  prediction at `imgsz=832`.
 
 The synthetic prediction does not use document content. Its purpose is to move
 YOLO's first predict-time setup out of the first translated page. If that
@@ -310,17 +380,36 @@ Run states:
    - `retranslate-selected`
    - `retranslate-all`
 4. Backend creates `PdfTranslationRun` and writes `pdf_run.<targetLang>.json`.
-5. Pages are processed in chunks of 10.
-6. Each chunk writes pdf2zh output under `.tmp/pdf-runs/<runId>/...`.
-7. Each completed page is validated as a PDF, moved to
+5. Pages are processed in chunks of 10 unless a local benchmark override raises
+   the PDF chunk size.
+6. For `rosetta-batch`, the persistent worker uses a two-pass chunk-local
+   pipeline:
+   - collect pass: run pdfminer/pdf2zh layout for the requested pages with a
+     deferred translator and collect all translatable text units across the
+     chunk;
+   - translate pass: send the collected units through one ordered Rosetta batch
+     request whenever they fit the provider batch limit;
+   - replay pass: run pdfminer/pdf2zh again with a pretranslated replay
+     translator and write page artifacts.
+7. Non-Rosetta fallback providers keep the older page-local translation path.
+8. Each chunk writes pdf2zh output under `.tmp/pdf-runs/<runId>/...`.
+9. Each completed page is validated as a PDF, moved to
    `translated-pages/<targetLang>/page-XXXX.pdf`, then written to
    `pdf_pages.<targetLang>.json`.
-8. The run file is updated as pages complete, fail, pause, or finish.
-9. Job summary and translation-file summary are synced from reconciled page
+10. The run file is updated as pages complete, fail, pause, or finish.
+11. Job summary and translation-file summary are synced from reconciled page
    state.
 
 The default continue path never overwrites translated pages. Explicit
 retranslation clears the relevant page artifacts first.
+
+Cross-page batching is scoped to `service="rosetta-batch"`. It can be disabled
+for local diagnosis with either:
+
+```txt
+ROSETTA_PDF_CROSS_PAGE_BATCH=0
+ROSETTA_PDF_DISABLE_CROSS_PAGE_BATCH=1
+```
 
 ## Pause
 

@@ -190,8 +190,8 @@ export function WorkspacePage() {
         : "本地翻译模型正在启动，请稍候。";
 
   // Prewarm the persistent pdf2zh worker as soon as a PDF document is open,
-  // so its ~13 s Python import overlaps with the user picking pages instead
-  // of delaying the first translate click. The backend command checks pack
+  // so Python import and ONNX layout warmup overlap with the user picking pages
+  // instead of delaying the first translate click. The backend command checks pack
   // readiness itself (this hook's `status` is only populated lazily, so
   // gating on it here would never fire). Idempotent and fire-and-forget.
   useEffect(() => {

@@ -49,9 +49,9 @@ type WorkspaceTopbarProps = {
   runtimeUnavailableMessage?: string | null;
   isPdfEngineInstalling?: boolean;
   isPdfEngineUnavailable?: boolean;
-  /// True while the persistent pdf2zh worker is paying its ~13 s torch
-  /// import. Only meaningful for PDF jobs; disables the translate button so
-  /// the user can't click before the engine is warm. The granular warmup
+  /// True while the persistent pdf2zh worker is paying Python import and ONNX
+  /// layout warmup. Only meaningful for PDF jobs; disables the translate button
+  /// so the user can't click before the engine is warm. The granular warmup
   /// progress is shown by the header badge, not here, to avoid duplication.
   isPdfEngineWarming?: boolean;
   pdfEngineProgressMessage?: string | null;

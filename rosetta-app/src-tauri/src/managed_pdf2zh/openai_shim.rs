@@ -352,11 +352,40 @@ struct ShimState {
     debug: bool,
     target_lang: String,
     chunk_profile: PdfChunkProfile,
+    rosetta_batch_provider: Option<RosettaBatchProvider>,
+}
+
+struct RosettaBatchProvider {
+    lightning: LightningApiConfig,
+    source_lang: String,
+    target_lang: String,
+    max_batch_size: usize,
+    metrics: Arc<ShimRwkvMetrics>,
+    debug_context: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct ChatCompletionRequest {
     messages: Vec<ChatMessage>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BatchTranslationRequest {
+    #[allow(dead_code)]
+    source_lang: Option<String>,
+    #[allow(dead_code)]
+    target_lang: Option<String>,
+    texts: Vec<String>,
+    job_id: Option<String>,
+    #[allow(dead_code)]
+    timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BatchTranslationResponse {
+    translations: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -395,74 +424,85 @@ pub async fn spawn_shim(
     debug_context: Option<String>,
 ) -> Result<OpenAiShim, String> {
     let metrics = Arc::new(ShimRwkvMetrics::default());
-    let (max_batch_size, pdf2zh_thread_count, batch_handle, chunk_profile) = match provider {
-        ShimProviderConfig::MobileBatch(rwkv) => {
-            mobile_batch_chat::set_chat_roles_for_pair(&rwkv, &source_lang, &target_lang, None)
-                .await?;
-            let max_batch_size = mobile_batch_chat::query_supported_batch_sizes(&rwkv)
-                .await
-                .map(|sizes| mobile_batch_chat::pick_batch_size(&sizes, 0))
-                .unwrap_or(DEFAULT_MAX_BATCH_SIZE)
-                .max(1);
-            let (batch_tx, batch_rx) = mpsc::channel(max_batch_size * 4);
-            let handle = tokio::spawn(mobile_batch_processor(
-                batch_rx,
-                rwkv,
-                source_lang.clone(),
-                target_lang.clone(),
-                max_batch_size,
-                Arc::clone(&metrics),
-                debug_context.clone(),
-            ));
-            (
-                max_batch_size,
-                max_batch_size.min(PDF2ZH_THREAD_CEILING).max(1),
-                (batch_tx, handle),
-                standard_pdf_chunk_profile(),
-            )
-        }
-        ShimProviderConfig::Lightning(lightning) => {
-            let max_batch_size = lightning_pdf_max_batch_size();
-            let pdf2zh_thread_count = lightning_pdf_thread_count(max_batch_size);
-            let (batch_tx, batch_rx) = mpsc::channel(max_batch_size * 4);
-            let handle = tokio::spawn(lightning_batch_processor(
-                batch_rx,
-                lightning,
-                source_lang.clone(),
-                target_lang.clone(),
-                max_batch_size,
-                Arc::clone(&metrics),
-                debug_context.clone(),
-            ));
-            (
-                max_batch_size,
-                pdf2zh_thread_count,
-                (batch_tx, handle),
-                lightning_pdf_chunk_profile(),
-            )
-        }
-        ShimProviderConfig::LlamaCpp(llama) => {
-            let max_batch_size = llama_cpp_chat::managed_runtime_settings_from_env()
-                .parallel_requests
-                .max(1);
-            let (batch_tx, batch_rx) = mpsc::channel(max_batch_size * 4);
-            let handle = tokio::spawn(llama_cpp_batch_processor(
-                batch_rx,
-                llama,
-                source_lang.clone(),
-                target_lang.clone(),
-                max_batch_size,
-                Arc::clone(&metrics),
-                debug_context.clone(),
-            ));
-            (
-                max_batch_size,
-                max_batch_size.min(PDF2ZH_THREAD_CEILING).max(1),
-                (batch_tx, handle),
-                llama_cpp_pdf_chunk_profile(),
-            )
-        }
-    };
+    let (max_batch_size, pdf2zh_thread_count, batch_handle, chunk_profile, rosetta_batch_provider) =
+        match provider {
+            ShimProviderConfig::MobileBatch(rwkv) => {
+                mobile_batch_chat::set_chat_roles_for_pair(&rwkv, &source_lang, &target_lang, None)
+                    .await?;
+                let max_batch_size = mobile_batch_chat::query_supported_batch_sizes(&rwkv)
+                    .await
+                    .map(|sizes| mobile_batch_chat::pick_batch_size(&sizes, 0))
+                    .unwrap_or(DEFAULT_MAX_BATCH_SIZE)
+                    .max(1);
+                let (batch_tx, batch_rx) = mpsc::channel(max_batch_size * 4);
+                let handle = tokio::spawn(mobile_batch_processor(
+                    batch_rx,
+                    rwkv,
+                    source_lang.clone(),
+                    target_lang.clone(),
+                    max_batch_size,
+                    Arc::clone(&metrics),
+                    debug_context.clone(),
+                ));
+                (
+                    max_batch_size,
+                    max_batch_size.min(PDF2ZH_THREAD_CEILING).max(1),
+                    (batch_tx, handle),
+                    standard_pdf_chunk_profile(),
+                    None,
+                )
+            }
+            ShimProviderConfig::Lightning(lightning) => {
+                let max_batch_size = lightning_pdf_max_batch_size();
+                let pdf2zh_thread_count = lightning_pdf_thread_count(max_batch_size);
+                let (batch_tx, batch_rx) = mpsc::channel(max_batch_size * 4);
+                let handle = tokio::spawn(lightning_batch_processor(
+                    batch_rx,
+                    lightning.clone(),
+                    source_lang.clone(),
+                    target_lang.clone(),
+                    max_batch_size,
+                    Arc::clone(&metrics),
+                    debug_context.clone(),
+                ));
+                (
+                    max_batch_size,
+                    pdf2zh_thread_count,
+                    (batch_tx, handle),
+                    lightning_pdf_chunk_profile(),
+                    Some(RosettaBatchProvider {
+                        lightning,
+                        source_lang: source_lang.clone(),
+                        target_lang: target_lang.clone(),
+                        max_batch_size,
+                        metrics: Arc::clone(&metrics),
+                        debug_context: debug_context.clone(),
+                    }),
+                )
+            }
+            ShimProviderConfig::LlamaCpp(llama) => {
+                let max_batch_size = llama_cpp_chat::managed_runtime_settings_from_env()
+                    .parallel_requests
+                    .max(1);
+                let (batch_tx, batch_rx) = mpsc::channel(max_batch_size * 4);
+                let handle = tokio::spawn(llama_cpp_batch_processor(
+                    batch_rx,
+                    llama,
+                    source_lang.clone(),
+                    target_lang.clone(),
+                    max_batch_size,
+                    Arc::clone(&metrics),
+                    debug_context.clone(),
+                ));
+                (
+                    max_batch_size,
+                    max_batch_size.min(PDF2ZH_THREAD_CEILING).max(1),
+                    (batch_tx, handle),
+                    llama_cpp_pdf_chunk_profile(),
+                    None,
+                )
+            }
+        };
     let (batch_tx, batch_handle) = (batch_handle.0, batch_handle.1);
 
     let listener = TcpListener::bind("127.0.0.1:0")
@@ -494,9 +534,14 @@ pub async fn spawn_shim(
         debug,
         target_lang,
         chunk_profile,
+        rosetta_batch_provider,
     });
     let app = Router::new()
         .route("/v1/chat/completions", post(chat_completions))
+        .route(
+            "/v1/rosetta/batch-translations",
+            post(rosetta_batch_translations),
+        )
         .with_state(state);
     let server_handle = tokio::spawn(async move {
         if let Err(error) = axum::serve(listener, app).await {
@@ -1181,6 +1226,328 @@ async fn chat_completions(
         &format!("translation_preview={}", preview(&content)),
     );
     Ok(openai_response(content))
+}
+
+async fn rosetta_batch_translations(
+    State(state): State<Arc<ShimState>>,
+    Json(request): Json<BatchTranslationRequest>,
+) -> Result<Json<BatchTranslationResponse>, (StatusCode, String)> {
+    let incoming_chars = request
+        .texts
+        .iter()
+        .map(|text| text.chars().count())
+        .sum::<usize>();
+    append_log(
+        state.debug,
+        &state.log_file,
+        &format!(
+            "rosetta-batch request job_id={} texts={} chars={}",
+            request.job_id.as_deref().unwrap_or("-"),
+            request.texts.len(),
+            incoming_chars
+        ),
+    );
+    let translations = if let Some(provider) = &state.rosetta_batch_provider {
+        translate_pdf_texts_via_lightning_batch(&state, provider, &request.texts)
+            .await
+            .map_err(|error| {
+                (
+                    StatusCode::BAD_GATEWAY,
+                    format!("RWKV translation failed: {error}"),
+                )
+            })?
+    } else {
+        translate_pdf_texts(&state, &request.texts)
+            .await
+            .map_err(|error| {
+                (
+                    StatusCode::BAD_GATEWAY,
+                    format!("RWKV translation failed: {error}"),
+                )
+            })?
+    };
+    Ok(Json(BatchTranslationResponse { translations }))
+}
+
+struct PreparedPdfTextBatch {
+    outputs: Vec<Option<Vec<String>>>,
+    chunks: Vec<PreparedPdfTextChunk>,
+    passthrough_count: usize,
+    split_item_count: usize,
+    split_chunk_count: usize,
+}
+
+struct PreparedPdfTextChunk {
+    output_index: usize,
+    text: String,
+}
+
+fn prepare_pdf_text_batch(state: &ShimState, texts: &[String]) -> PreparedPdfTextBatch {
+    let mut outputs = vec![None; texts.len()];
+    let mut chunks = Vec::new();
+    let mut passthrough_count = 0usize;
+    let mut split_item_count = 0usize;
+    let mut split_chunk_count = 0usize;
+
+    for (text_index, text) in texts.iter().enumerate() {
+        if is_pdf2zh_placeholder_only(text)
+            || should_passthrough_pdf_reference_fragment(text)
+            || text.trim().is_empty()
+        {
+            passthrough_count += 1;
+            outputs[text_index] = Some(vec![if text.trim().is_empty() {
+                String::new()
+            } else {
+                text.clone()
+            }]);
+            continue;
+        }
+
+        let text_chunks = split_pdf_shim_text_for_profile(text, state.chunk_profile);
+        if text_chunks.len() > 1 {
+            split_item_count += 1;
+            split_chunk_count += text_chunks.len();
+            let chunk_tokens = text_chunks
+                .iter()
+                .map(|chunk| estimate_prompt_tokens(chunk))
+                .collect::<Vec<_>>();
+            let max_chunk_tokens = chunk_tokens.iter().copied().max().unwrap_or(0);
+            let avg_chunk_tokens = chunk_tokens.iter().sum::<usize>() / chunk_tokens.len().max(1);
+            append_log(
+                state.debug,
+                &state.log_file,
+                &format!(
+                    "rosetta-batch split item chunks={} estimated_tokens={} avg_chunk_tokens={} max_chunk_tokens={}",
+                    text_chunks.len(),
+                    estimate_prompt_tokens(text),
+                    avg_chunk_tokens,
+                    max_chunk_tokens
+                ),
+            );
+        }
+        outputs[text_index] = Some(Vec::with_capacity(text_chunks.len()));
+        for chunk in text_chunks {
+            chunks.push(PreparedPdfTextChunk {
+                output_index: text_index,
+                text: chunk,
+            });
+        }
+    }
+
+    PreparedPdfTextBatch {
+        outputs,
+        chunks,
+        passthrough_count,
+        split_item_count,
+        split_chunk_count,
+    }
+}
+
+async fn translate_pdf_texts_via_lightning_batch(
+    state: &Arc<ShimState>,
+    provider: &RosettaBatchProvider,
+    texts: &[String],
+) -> Result<Vec<String>, String> {
+    let mut prepared = prepare_pdf_text_batch(state, texts);
+    append_log(
+        state.debug,
+        &state.log_file,
+        &format!(
+            "rosetta-batch lightning fast-path incoming_texts={} passthrough={} split_items={} split_chunks={} provider_chunks={} max_batch_size={}",
+            texts.len(),
+            prepared.passthrough_count,
+            prepared.split_item_count,
+            prepared.split_chunk_count,
+            prepared.chunks.len(),
+            provider.max_batch_size
+        ),
+    );
+
+    for provider_batch in prepared.chunks.chunks(provider.max_batch_size.max(1)) {
+        let source_texts = provider_batch
+            .iter()
+            .map(|chunk| chunk.text.clone())
+            .collect::<Vec<_>>();
+        let request_started = Instant::now();
+        let result = crate::rwkv_api::translate_batch_via_lightning(
+            &provider.lightning.base_url,
+            &provider.lightning.endpoint,
+            &provider.lightning.internal_token,
+            &provider.lightning.body_password,
+            provider.lightning.timeout_ms,
+            &provider.source_lang,
+            &provider.target_lang,
+            &source_texts,
+            provider
+                .debug_context
+                .as_deref()
+                .or(Some("pdf2zh-rosetta-batch")),
+        )
+        .await;
+        let elapsed_ms = request_started.elapsed().as_millis() as u64;
+
+        match result {
+            Ok(translations) if translations.len() == provider_batch.len() => {
+                provider.metrics.record(
+                    elapsed_ms,
+                    true,
+                    source_texts.iter().map(|t| t.chars().count() as u64).sum(),
+                    translations.iter().map(|t| t.chars().count() as u64).sum(),
+                    source_texts.len() as u64,
+                    0,
+                );
+                append_log(
+                    state.debug,
+                    &state.log_file,
+                    &format!(
+                        "rosetta-batch lightning provider_batch={} request_ms={}",
+                        source_texts.len(),
+                        elapsed_ms
+                    ),
+                );
+                for (chunk, translation) in provider_batch.iter().zip(translations) {
+                    let Some(Some(output_chunks)) = prepared.outputs.get_mut(chunk.output_index)
+                    else {
+                        return Err(format!(
+                            "translation output {} was not prepared",
+                            chunk.output_index
+                        ));
+                    };
+                    output_chunks.push(translation);
+                }
+            }
+            Ok(translations) => {
+                provider.metrics.record(
+                    elapsed_ms,
+                    false,
+                    source_texts.iter().map(|t| t.chars().count() as u64).sum(),
+                    translations.iter().map(|t| t.chars().count() as u64).sum(),
+                    source_texts.len() as u64,
+                    0,
+                );
+                return Err(format!(
+                    "translation result count mismatch (expected {}, got {})",
+                    provider_batch.len(),
+                    translations.len()
+                ));
+            }
+            Err(error) => {
+                provider.metrics.record(
+                    elapsed_ms,
+                    false,
+                    source_texts.iter().map(|t| t.chars().count() as u64).sum(),
+                    0,
+                    source_texts.len() as u64,
+                    0,
+                );
+                return Err(error);
+            }
+        }
+    }
+
+    prepared
+        .outputs
+        .into_iter()
+        .enumerate()
+        .map(|(index, output)| {
+            let chunks =
+                output.ok_or_else(|| format!("translation output {index} was not produced"))?;
+            if chunks.len() == 1 {
+                Ok(chunks.into_iter().next().unwrap_or_default())
+            } else {
+                Ok(join_translated_chunks(chunks, &state.target_lang))
+            }
+        })
+        .collect()
+}
+
+async fn translate_pdf_texts(
+    state: &Arc<ShimState>,
+    texts: &[String],
+) -> Result<Vec<String>, String> {
+    let mut outputs: Vec<Option<String>> = vec![None; texts.len()];
+    let mut chunk_receivers = Vec::new();
+
+    for (text_index, text) in texts.iter().enumerate() {
+        if is_pdf2zh_placeholder_only(text) {
+            append_log(
+                state.debug,
+                &state.log_file,
+                &format!("placeholder passthrough={}", preview(text)),
+            );
+            outputs[text_index] = Some(text.clone());
+            continue;
+        }
+        if should_passthrough_pdf_reference_fragment(text) {
+            append_log(
+                state.debug,
+                &state.log_file,
+                &format!("reference fragment passthrough={}", preview(text)),
+            );
+            outputs[text_index] = Some(text.clone());
+            continue;
+        }
+        if text.trim().is_empty() {
+            append_log(state.debug, &state.log_file, "empty source passthrough");
+            outputs[text_index] = Some(String::new());
+            continue;
+        }
+
+        let chunks = split_pdf_shim_text_for_profile(text, state.chunk_profile);
+        if chunks.len() > 1 {
+            let chunk_tokens = chunks
+                .iter()
+                .map(|chunk| estimate_prompt_tokens(chunk))
+                .collect::<Vec<_>>();
+            let max_chunk_tokens = chunk_tokens.iter().copied().max().unwrap_or(0);
+            let avg_chunk_tokens = chunk_tokens.iter().sum::<usize>() / chunk_tokens.len().max(1);
+            append_log(
+                state.debug,
+                &state.log_file,
+                &format!(
+                    "split long request into {} chunk(s), estimated_tokens={}, avg_chunk_tokens={}, max_chunk_tokens={}",
+                    chunks.len(),
+                    estimate_prompt_tokens(text),
+                    avg_chunk_tokens,
+                    max_chunk_tokens
+                ),
+            );
+        }
+
+        let mut receivers = Vec::with_capacity(chunks.len());
+        for chunk in chunks {
+            let (result_tx, result_rx) = oneshot::channel();
+            state
+                .batch_tx
+                .send(PendingTranslation {
+                    text: chunk,
+                    result_tx,
+                })
+                .await
+                .map_err(|_| "translation batch queue is closed".to_string())?;
+            receivers.push(result_rx);
+        }
+        chunk_receivers.push((text_index, receivers));
+    }
+
+    for (text_index, receivers) in chunk_receivers {
+        let mut chunks = Vec::with_capacity(receivers.len());
+        for receiver in receivers {
+            let translation = receiver
+                .await
+                .map_err(|_| "failed to receive batch translation result".to_string())??;
+            chunks.push(translation);
+        }
+        outputs[text_index] = Some(join_translated_chunks(chunks, &state.target_lang));
+    }
+
+    outputs
+        .into_iter()
+        .enumerate()
+        .map(|(index, output)| {
+            output.ok_or_else(|| format!("translation output {index} was not produced"))
+        })
+        .collect()
 }
 
 async fn translate_chunks(state: &Arc<ShimState>, chunks: Vec<String>) -> Result<String, String> {

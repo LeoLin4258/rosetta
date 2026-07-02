@@ -28,6 +28,12 @@ pub(crate) struct PdfPageTranslation {
     pub translated_pdf_path: Option<String>,
     #[serde(default)]
     pub artifact_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_compression: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_compression_error: Option<String>,
     pub error: Option<String>,
     pub updated_at: String,
     #[serde(default)]
@@ -100,12 +106,14 @@ pub(crate) fn read_pdf_page_translation_state(
         if page.status == "translating" || page.status == "queued" {
             page.status = "pending".to_string();
             page.translated_pdf_path = None;
+            clear_pdf_page_artifact_metadata(page);
             page.error = None;
             page.updated_at = timestamp_ms_string();
         }
         if page.status != "pending" && page.status != "translated" && page.status != "failed" {
             page.status = "pending".to_string();
             page.translated_pdf_path = None;
+            clear_pdf_page_artifact_metadata(page);
             page.error = None;
             page.updated_at = timestamp_ms_string();
         }
@@ -114,6 +122,7 @@ pub(crate) fn read_pdf_page_translation_state(
         {
             page.status = "pending".to_string();
             page.translated_pdf_path = None;
+            clear_pdf_page_artifact_metadata(page);
             page.error = None;
             page.updated_at = timestamp_ms_string();
         }
@@ -130,6 +139,7 @@ pub(crate) fn write_pdf_page_translation_state(
         if page.status == "queued" || page.status == "translating" {
             page.status = "pending".to_string();
             page.translated_pdf_path = None;
+            clear_pdf_page_artifact_metadata(page);
             page.error = None;
             page.updated_at = timestamp_ms_string();
         }
@@ -171,22 +181,55 @@ pub(crate) fn upsert_pdf_page_with_run(
             .translated_pdf_path
             .as_ref()
             .map(|_| updated_at.clone());
+        if page.translated_pdf_path.is_some() {
+            page.artifact_compression = Some("fast".to_string());
+        } else {
+            clear_pdf_page_artifact_metadata(page);
+        }
         page.error = error;
         page.updated_at = updated_at;
         page.last_run_id = run_id.map(str::to_string);
         return;
     }
 
+    let has_artifact = translated_pdf_path.is_some();
     state.pages.push(PdfPageTranslation {
         page_number,
         status,
         artifact_version: translated_pdf_path.as_ref().map(|_| updated_at.clone()),
+        artifact_compression: has_artifact.then(|| "fast".to_string()),
+        artifact_bytes: None,
+        artifact_compression_error: None,
         translated_pdf_path,
         error,
         updated_at,
         last_run_id: run_id.map(str::to_string),
     });
     state.pages.sort_by_key(|page| page.page_number);
+}
+
+pub(crate) fn set_pdf_page_artifact_metadata(
+    state: &mut PdfPageTranslationState,
+    page_number: u32,
+    compression: Option<String>,
+    bytes: Option<u64>,
+    compression_error: Option<String>,
+) {
+    if let Some(page) = state
+        .pages
+        .iter_mut()
+        .find(|page| page.page_number == page_number)
+    {
+        page.artifact_compression = compression;
+        page.artifact_bytes = bytes;
+        page.artifact_compression_error = compression_error;
+    }
+}
+
+pub(crate) fn clear_pdf_page_artifact_metadata(page: &mut PdfPageTranslation) {
+    page.artifact_compression = None;
+    page.artifact_bytes = None;
+    page.artifact_compression_error = None;
 }
 
 pub(crate) fn pdf_page_filename(page_number: u32) -> String {

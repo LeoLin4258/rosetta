@@ -182,6 +182,81 @@ function loadProfile(profilePath) {
   };
 }
 
+function summarizeTimeline(profilePath, runId) {
+  if (!profilePath || !runId) return null;
+  const timelinePath = path.join(path.dirname(profilePath), "pdf-timeline.jsonl");
+  if (!fs.existsSync(timelinePath)) return null;
+  const events = readJsonl(timelinePath).filter((event) => event.runId === runId);
+  const workerStages = new Map();
+  const translationDurations = new Map();
+
+  for (const event of events) {
+    const durationMs = Number(event.durationMs);
+    if (!Number.isFinite(durationMs)) continue;
+
+    if (event.event === "worker.stage") {
+      const stage = String(event.details?.stage ?? "unknown");
+      const current = workerStages.get(stage) ?? {
+        stage,
+        count: 0,
+        totalMs: 0,
+        maxMs: 0,
+      };
+      current.count += 1;
+      current.totalMs += durationMs;
+      current.maxMs = Math.max(current.maxMs, durationMs);
+      workerStages.set(stage, current);
+      continue;
+    }
+
+    if (event.phase === "translation") {
+      const name = String(event.event ?? "unknown");
+      const current = translationDurations.get(name) ?? {
+        event: name,
+        count: 0,
+        totalMs: 0,
+        maxMs: 0,
+      };
+      current.count += 1;
+      current.totalMs += durationMs;
+      current.maxMs = Math.max(current.maxMs, durationMs);
+      translationDurations.set(name, current);
+    }
+  }
+
+  const finalizeDuration = (entry) => ({
+    ...entry,
+    totalMs: round(entry.totalMs, 2),
+    averageMs: entry.count > 0 ? round(entry.totalMs / entry.count, 2) : 0,
+    maxMs: round(entry.maxMs, 2),
+  });
+
+  const crossPageBatch = events
+    .filter(
+      (event) =>
+        event.event === "worker.stage" &&
+        String(event.details?.stage ?? "").startsWith("crossPageBatch.") &&
+        event.details?.status === "completed",
+    )
+    .map((event) => ({
+      stage: event.details?.stage,
+      durationMs: event.durationMs ?? null,
+      details: event.details?.stageDetails ?? null,
+    }));
+
+  return {
+    path: timelinePath,
+    eventCount: events.length,
+    workerStageDurations: [...workerStages.values()]
+      .map(finalizeDuration)
+      .sort((a, b) => b.totalMs - a.totalMs),
+    translationDurations: [...translationDurations.values()]
+      .map(finalizeDuration)
+      .sort((a, b) => b.totalMs - a.totalMs),
+    crossPageBatch,
+  };
+}
+
 function main() {
   const options = parseArgs(process.argv.slice(2));
   if (options.help) {
@@ -200,6 +275,7 @@ function main() {
     return true;
   });
   const profile = loadProfile(options.profile);
+  const timeline = summarizeTimeline(options.profile, profile?.runId);
   const summary = {
     generatedAt: new Date().toISOString(),
     perfLog: options.perfLog,
@@ -211,6 +287,7 @@ function main() {
     recordCountBeforeFilters: allRecords.length,
     performance: summarizeRecords(records),
     pdfProfile: profile,
+    pdfTimeline: timeline,
   };
 
   const output = `${JSON.stringify(summary, null, 2)}\n`;

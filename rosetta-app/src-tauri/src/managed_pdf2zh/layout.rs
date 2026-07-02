@@ -4,7 +4,7 @@ use tauri::{AppHandle, Manager};
 
 use super::profile::Pdf2zhProfile;
 
-pub const DOCLAYOUT_MODEL_FILENAME: &str = "doclayout_yolo_docstructbench_imgsz1024.pt";
+pub const DOCLAYOUT_MODEL_FILENAME: &str = "doclayout_yolo_docstructbench_imgsz1024.onnx";
 
 #[derive(Debug, Clone)]
 pub struct Pdf2zhLayout {

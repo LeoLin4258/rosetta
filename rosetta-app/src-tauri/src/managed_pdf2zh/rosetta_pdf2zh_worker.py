@@ -2,13 +2,11 @@
 #
 # Written to disk by the Rosetta app at spawn time (embedded via include_str!
 # in managed_pdf2zh/worker.rs) and executed with the pdf2zh pack's bundled
-# CPython. Do NOT edit the on-disk copy — it is overwritten on every spawn.
+# CPython. Do NOT edit the on-disk copy; it is overwritten on every spawn.
 #
-# Why this exists: importing doclayout_yolo (torch + torchvision + opencv)
-# costs ~13 s, while actually loading the YOLO layout model costs ~0.07 s.
-# The pdf2zh CLI pays that import on every invocation; this worker pays it
-# once per process and then serves translate jobs over a line-based JSON
-# protocol:
+# Why this exists: importing and preparing the PDF layout / conversion stack is
+# too expensive to pay for every PDF job. This worker pays that cost once per
+# process and then serves translate jobs over a line-based JSON protocol:
 #
 #   stdin  (Rosetta -> worker): {"id": "...", "cmd": "translate", ...}
 #   stdout (worker -> Rosetta): {"id": "...", "event": "ready|page|done|error", ...}
@@ -20,16 +18,18 @@
 #
 # Per-page streaming: instead of calling cli.extract_text() (which paints all
 # pages + does font/xref/dual-PDF preprocessing each invocation), we inline
-# the pymupdf preprocess + pdfminer/YOLO loop and:
-#   - cache the YOLO model across translate calls
+# the pymupdf preprocess + pdfminer/layout loop and:
+#   - cache the layout model across translate calls
 #   - apply patches incrementally per page so each finished page can be saved
 #     as a single-page PDF and announced via a "page" protocol event
 #   - skip the dual PDF (Rosetta never consumes it)
 #   - skip the final mono save (Rosetta consumes the per-page outputs)
 
 import json
+import logging
 import os
 from pathlib import Path
+import re
 import shutil
 import sys
 import tempfile
@@ -38,8 +38,9 @@ import time
 import traceback
 
 
-_yolo_model = None
-_yolo_model_path = None
+_layout_model = None
+_layout_model_path = None
+_layout_backend = None
 _emit_lock = threading.Lock()
 
 
@@ -152,8 +153,12 @@ def install_page_process_probe(device, proto, job_id, page_number):
     context = {
         "pageNumber": page_number,
         "translateRequestCount": 0,
+        "translateBatchCount": 0,
+        "translateBatchItems": 0,
         "translateFailedCount": 0,
+        "translateBatchFailedCount": 0,
         "translateRequestMs": 0,
+        "translateBatchMs": 0,
         "translateInputChars": 0,
         "translateOutputChars": 0,
         "lock": threading.Lock(),
@@ -224,6 +229,85 @@ def install_page_process_probe(device, proto, job_id, page_number):
 
         device.translator.translate = rosetta_translate_probe
 
+    if hasattr(device.translator, "translate_many") and not hasattr(
+        device, "_rosetta_original_translate_many"
+    ):
+        original_translate_many = device.translator.translate_many
+        device._rosetta_original_translate_many = original_translate_many
+
+        def rosetta_translate_many_probe(texts, *args, **kwargs):
+            probe = getattr(device, "_rosetta_probe_context", None)
+            if not probe:
+                return original_translate_many(texts, *args, **kwargs)
+            item_count = len(texts) if isinstance(texts, (list, tuple)) else 0
+            source_chars = (
+                sum(len(text) for text in texts if isinstance(text, str))
+                if isinstance(texts, (list, tuple))
+                else 0
+            )
+            with probe["lock"]:
+                probe["translateBatchCount"] += 1
+                batch_index = probe["translateBatchCount"]
+                probe["translateBatchItems"] += item_count
+                probe["translateInputChars"] += source_chars
+            started_at = stage_start(
+                proto,
+                job_id,
+                "page.processPage.translateBatch",
+                probe["pageNumber"],
+                details={
+                    "requestIndex": batch_index,
+                    "itemCount": item_count,
+                    "inputChars": source_chars,
+                },
+            )
+            try:
+                result = original_translate_many(texts, *args, **kwargs)
+            except BaseException as error:
+                duration_ms = int((time.time() - started_at) * 1000)
+                with probe["lock"]:
+                    probe["translateBatchFailedCount"] += 1
+                    probe["translateBatchMs"] += duration_ms
+                stage_failed(
+                    proto,
+                    job_id,
+                    "page.processPage.translateBatch",
+                    started_at,
+                    probe["pageNumber"],
+                    details={
+                        "requestIndex": batch_index,
+                        "itemCount": item_count,
+                        "inputChars": source_chars,
+                        "errorType": type(error).__name__,
+                    },
+                )
+                raise
+            duration_ms = int((time.time() - started_at) * 1000)
+            output_chars = (
+                sum(len(text) for text in result if isinstance(text, str))
+                if isinstance(result, (list, tuple))
+                else 0
+            )
+            with probe["lock"]:
+                probe["translateBatchMs"] += duration_ms
+                probe["translateOutputChars"] += output_chars
+            stage_done(
+                proto,
+                job_id,
+                "page.processPage.translateBatch",
+                started_at,
+                probe["pageNumber"],
+                details={
+                    "requestIndex": batch_index,
+                    "itemCount": item_count,
+                    "inputChars": source_chars,
+                    "outputChars": output_chars,
+                },
+            )
+            return result
+
+        device.translator.translate_many = rosetta_translate_many_probe
+
     if not hasattr(device, "_rosetta_original_receive_layout"):
         original_receive_layout = device.receive_layout
         device._rosetta_original_receive_layout = original_receive_layout
@@ -271,8 +355,12 @@ def translate_probe_summary(context):
     with context["lock"]:
         return {
             "translateRequestCount": context["translateRequestCount"],
+            "translateBatchCount": context["translateBatchCount"],
+            "translateBatchItems": context["translateBatchItems"],
             "translateFailedCount": context["translateFailedCount"],
+            "translateBatchFailedCount": context["translateBatchFailedCount"],
             "translateRequestMs": context["translateRequestMs"],
+            "translateBatchMs": context["translateBatchMs"],
             "translateInputChars": context["translateInputChars"],
             "translateOutputChars": context["translateOutputChars"],
         }
@@ -375,83 +463,38 @@ def process_page_with_stages(interpreter, device, page, proto, job_id, page_numb
         device._rosetta_probe_context = None
 
 
-def probe_and_enable_mps(torch, doclayout_yolo, model_path):
-    """Optionally upgrade pdf2zh's hardcoded device="cpu" predict calls to
-    MPS via a monkeypatch, gated on a successful page-sized probe inference.
+def get_layout_model(model_path):
+    """Re-use the layout model object across translate calls."""
+    global _layout_model, _layout_model_path, _layout_backend
+    if _layout_model is not None and _layout_model_path == model_path:
+        return _layout_model
 
-    OFF BY DEFAULT: measured on an M4 mini (2026-06-11, 18-page doc), MPS was
-    ~0.8 s/page SLOWER than CPU — the DocLayout YOLO model is small enough
-    that per-call transfer + graph dispatch + CPU-fallback op bouncing
-    (PYTORCH_ENABLE_MPS_FALLBACK) outweighs the compute win. Kept behind an
-    env switch for future experiments (bigger models, torch upgrades).
+    from pdf2zh.doclayout import OnnxModel
 
-    Returns (enabled, reason) so the ready event can explain the choice.
-    """
-    if os.environ.get("ROSETTA_PDF2ZH_ENABLE_MPS", "") not in ("1", "true", "yes"):
-        return False, "cpu default (MPS measured slower; opt in with ROSETTA_PDF2ZH_ENABLE_MPS=1)"
-    try:
-        if not torch.backends.mps.is_built():
-            return False, "torch built without MPS support"
-        if not torch.backends.mps.is_available():
-            return False, "torch.backends.mps.is_available() = False"
-        import numpy as np
-
-        model = doclayout_yolo.YOLOv10(model_path)
-        # Page-sized probe: YOLOv10's post-processing does top-k(300) over
-        # anchor candidates, and a tiny image has fewer than 300 anchors,
-        # which fails with "selected index k out of range". Real pages are
-        # ~1000 px so probe at the size pdf2zh actually uses.
-        dummy = np.zeros((1056, 816, 3), dtype=np.uint8)
-        model.predict(dummy, imgsz=1024, device="mps", verbose=False)
-    except Exception as error:
-        return False, f"probe failed: {type(error).__name__}: {str(error)[:300]}"
-
-    original_predict = doclayout_yolo.YOLOv10.predict
-
-    def rosetta_predict(self, *args, **kwargs):
-        if kwargs.get("device") == "cpu":
-            kwargs["device"] = "mps"
-        return original_predict(self, *args, **kwargs)
-
-    doclayout_yolo.YOLOv10.predict = rosetta_predict
-    return True, "enabled"
+    _layout_model = OnnxModel(model_path)
+    _layout_backend = "onnx"
+    _layout_model_path = model_path
+    return _layout_model
 
 
-def get_yolo_model(model_path):
-    """Re-use the YOLO model object across translate calls.
-
-    `pdf2zh.pdf2zh.extract_text` re-instantiates this on every invocation,
-    which adds avoidable Python-side construction time. The model itself is
-    small and stateless — caching it across calls is safe.
-    """
-    import doclayout_yolo
-
-    global _yolo_model, _yolo_model_path
-    if _yolo_model is None or _yolo_model_path != model_path:
-        _yolo_model = doclayout_yolo.YOLOv10(model_path)
-        _yolo_model_path = model_path
-    return _yolo_model
+def layout_device_name(model):
+    onnx_session = getattr(model, "model", None)
+    if onnx_session is not None and hasattr(onnx_session, "get_providers"):
+        return ",".join(onnx_session.get_providers())
+    return "cpu"
 
 
-def warm_yolo_predict(torch, model_path, mps_enabled=False):
-    """Move the first real YOLO inference cost into worker prewarm.
-
-    The image is synthetic and blank, so no document content leaves the
-    translation path. Its shape mirrors a common A4-ish page observed in
-    Rosetta logs (596x842 px, imgsz 832), which is enough to trigger the
-    model's first predict-time setup before the user translates page 1.
-    """
+def warm_layout_predict(model_path):
     started_at = time.time()
     width = 596
     height = 842
     imgsz = int(height / 32) * 32
-    device_name = (
-        "mps" if mps_enabled else "cuda:0" if torch.cuda.is_available() else "cpu"
-    )
+    device_name = "unknown"
     try:
         import numpy as np
 
-        model = get_yolo_model(model_path)
+        model = get_layout_model(model_path)
+        device_name = layout_device_name(model)
         dummy = np.zeros((height, width, 3), dtype=np.uint8)
         result = model.predict(
             dummy,
@@ -467,6 +510,7 @@ def warm_yolo_predict(torch, model_path, mps_enabled=False):
             "height": height,
             "imgsz": imgsz,
             "boxCount": len(result.boxes),
+            "backend": _layout_backend,
         }
     except Exception as error:
         return {
@@ -476,15 +520,100 @@ def warm_yolo_predict(torch, model_path, mps_enabled=False):
             "width": width,
             "height": height,
             "imgsz": imgsz,
+            "backend": _layout_backend,
             "reason": f"{type(error).__name__}: {str(error)[:300]}",
         }
+
+
+def truthy_env(name):
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def falsy_env(name):
+    return os.environ.get(name, "").strip().lower() in ("0", "false", "no", "off")
+
+
+def cross_page_batch_enabled(service):
+    if service != "rosetta-batch":
+        return False
+    if falsy_env("ROSETTA_PDF_CROSS_PAGE_BATCH"):
+        return False
+    if truthy_env("ROSETTA_PDF_DISABLE_CROSS_PAGE_BATCH"):
+        return False
+    return True
+
+
+def layout_imgsz_for_pix(pix, service):
+    native = max(32, int(pix.height / 32) * 32)
+    raw = os.environ.get("ROSETTA_PDF_LAYOUT_IMGSZ", "").strip().lower()
+    if raw in ("native", "auto", "original"):
+        return native, native, raw
+    if raw:
+        try:
+            requested = int(raw)
+            if requested > 0:
+                return max(32, int(requested / 32) * 32), native, "env"
+        except ValueError:
+            pass
+    if service == "rosetta-batch":
+        return min(native, 640), native, "rosetta-batch-default"
+    return native, native, "native"
+
+
+class DeferredTranslationCollector:
+    supports_batch = True
+
+    def __init__(self, delegate):
+        self.delegate = delegate
+        self.lang_out = getattr(delegate, "lang_out", "")
+        self.requests = []
+
+    def translate_many(self, texts, *args, **kwargs):
+        items = list(texts)
+        self.requests.append(items)
+        return items
+
+    def translate(self, text, *args, **kwargs):
+        self.requests.append([text])
+        return text
+
+    def flattened_texts(self):
+        return [text for request in self.requests for text in request]
+
+
+class PretranslatedTranslator:
+    supports_batch = True
+
+    def __init__(self, delegate, source_texts, translations):
+        if len(source_texts) != len(translations):
+            raise RuntimeError(
+                "pretranslated result count mismatch "
+                f"(expected {len(source_texts)}, got {len(translations)})"
+            )
+        self.delegate = delegate
+        self.lang_out = getattr(delegate, "lang_out", "")
+        self.translations_by_source = {}
+        for source, translation in zip(source_texts, translations):
+            self.translations_by_source.setdefault(source, translation)
+
+    def translate_many(self, texts, *args, **kwargs):
+        missing = [text for text in texts if text not in self.translations_by_source]
+        if missing:
+            raise RuntimeError(
+                "pretranslated PDF replay missed "
+                f"{len(missing)} translation item(s)"
+            )
+        return [self.translations_by_source[text] for text in texts]
+
+    def translate(self, text, *args, **kwargs):
+        return self.translate_many([text])[0]
 
 
 def translate_streaming(job, proto, model_path):
     """Custom replacement for pdf2zh.pdf2zh.extract_text().
 
     Differences vs upstream:
-      - YOLO model cached via get_yolo_model (no per-call construction)
+      - layout model cached via get_layout_model (no per-call construction)
       - obj_patch entries applied to doc_en incrementally as each page's
         process_page returns, so the freshly-translated page can be extracted
         into a single-page PDF and announced before the loop continues
@@ -492,17 +621,24 @@ def translate_streaming(job, proto, model_path):
         (per-page outputs are the cache contents)
       - emits timing data so we can see what still dominates the run
 
-    Layout / preprocessing semantics match upstream pdf2zh exactly — we still
+    Layout / preprocessing semantics match upstream pdf2zh exactly; we still
     open with pymupdf, inject the china-ss / tiro fonts on every page, scan
     every xref, save the -en.pdf scratch file, and feed that to pdfminer.
     """
     import numpy as np
     import pymupdf
-    import torch
     import tqdm
-    from pdf2zh.converter import TextConverter
-    from pdf2zh.pdfinterp import PDFPageInterpreter, PDFResourceManager
-    from pdf2zh.pdfpage import PDFPage
+    try:
+        from pdf2zh.converter import TextConverter
+        from pdf2zh.pdfinterp import PDFPageInterpreter, PDFResourceManager
+        from pdf2zh.pdfpage import PDFPage
+        using_new_pdf2zh_api = False
+    except ImportError:
+        from pdfminer.pdfinterp import PDFResourceManager
+        from pdfminer.pdfpage import PDFPage
+        from pdf2zh.converter import TranslateConverter as TextConverter
+        from pdf2zh.pdfinterp import PDFPageInterpreterEx as PDFPageInterpreter
+        using_new_pdf2zh_api = True
 
     job_id = str(job.get("id", ""))
     file_path = job["file"]
@@ -514,6 +650,12 @@ def translate_streaming(job, proto, model_path):
     lang_out = job.get("langOut", "auto")
     service = job.get("service", "google")
     ignore_cache = bool(job.get("ignoreCache"))
+    envs = job.get("env") or {}
+    from pdf2zh.high_level import NOTO_NAME, download_remote_fonts
+
+    font_path = download_remote_fonts(lang_out.lower())
+    noto_name = NOTO_NAME
+    noto = pymupdf.Font(noto_name, font_path)
 
     timings = {}
     emit_stage(
@@ -539,24 +681,29 @@ def translate_streaming(job, proto, model_path):
     )
     doc_en = pymupdf.open(file_path)
     page_count = doc_en.page_count
-    font_list = ["china-ss", "tiro"]
+    font_list = [("tiro", None), (noto_name, font_path)]
     font_id = {}
     for page in doc_en:
-        for font in font_list:
-            font_id[font] = page.insert_font(font)
+        for font_name, font_file in font_list:
+            font_id[font_name] = page.insert_font(font_name, font_file)
     xreflen = doc_en.xref_length()
     for xref in range(1, xreflen):
         for label in ["Resources/", ""]:
             try:
                 font_res = doc_en.xref_get_key(xref, f"{label}Font")
+                target_key_prefix = f"{label}Font/"
+                if font_res[0] == "xref":
+                    resource_xref_id = re.search(r"(\d+) 0 R", font_res[1]).group(1)
+                    xref = int(resource_xref_id)
+                    font_res = ("dict", doc_en.xref_object(xref))
+                    target_key_prefix = ""
                 if font_res[0] == "dict":
-                    for font in font_list:
-                        font_exist = doc_en.xref_get_key(
-                            xref, f"{label}Font/{font}"
-                        )
+                    for font_name, _font_file in font_list:
+                        target_key = f"{target_key_prefix}{font_name}"
+                        font_exist = doc_en.xref_get_key(xref, target_key)
                         if font_exist[0] == "null":
                             doc_en.xref_set_key(
-                                xref, f"{label}Font/{font}", f"{font_id[font]} 0 R"
+                                xref, target_key, f"{font_id[font_name]} 0 R"
                             )
             except Exception:
                 pass
@@ -577,47 +724,130 @@ def translate_streaming(job, proto, model_path):
         },
     )
 
-    t = stage_start(proto, job_id, "model.getYoloModel")
-    model = get_yolo_model(model_path)
+    t = stage_start(proto, job_id, "model.getLayoutModel")
+    model = get_layout_model(model_path)
     timings["modelReadyMs"] = int((time.time() - t) * 1000)
     stage_done(
         proto,
         job_id,
-        "model.getYoloModel",
+        "model.getLayoutModel",
         t,
-        details={"modelPathPresent": bool(model_path)},
+        details={"modelPathPresent": bool(model_path), "backend": _layout_backend},
     )
 
-    t = stage_start(
-        proto,
-        job_id,
-        "pdfminer.initializeInterpreter",
-        details={"thread": thread, "ignoreCache": ignore_cache},
-    )
-    obj_patch: dict = {}
     layout: dict = {}
-    rsrcmgr = PDFResourceManager(caching=not ignore_cache)
-    device = TextConverter(
-        rsrcmgr,
-        sys.stdout,
-        codec="utf-8",
-        laparams=None,
-        vfont="",
-        vchar="",
-        thread=thread,
-        layout=layout,
-        lang_in=lang_in,
-        lang_out=lang_out,
-        service=service,
+
+    def make_interpreter(stage_name, obj_patch):
+        t_init = stage_start(
+            proto,
+            job_id,
+            stage_name,
+            details={"thread": thread, "ignoreCache": ignore_cache},
+        )
+        rsrcmgr = PDFResourceManager(caching=not ignore_cache)
+        if using_new_pdf2zh_api:
+            device = TextConverter(
+                rsrcmgr,
+                vfont="",
+                vchar="",
+                thread=thread,
+                layout=layout,
+                lang_in=lang_in,
+                lang_out=lang_out,
+                service=service,
+                noto_name=noto_name,
+                noto=noto,
+                envs=envs,
+                prompt=None,
+                ignore_cache=ignore_cache,
+            )
+        else:
+            device = TextConverter(
+                rsrcmgr,
+                sys.stdout,
+                codec="utf-8",
+                laparams=None,
+                vfont="",
+                vchar="",
+                thread=thread,
+                layout=layout,
+                lang_in=lang_in,
+                lang_out=lang_out,
+                service=service,
+            )
+        interpreter = PDFPageInterpreter(rsrcmgr, device, obj_patch)
+        stage_done(proto, job_id, stage_name, t_init)
+        return rsrcmgr, device, interpreter
+
+    def collect_page_translation_units(interpreter, device, collector, page, page_number):
+        before_count = len(collector.flattened_texts())
+        t_collect = stage_start(
+            proto,
+            job_id,
+            "page.collectTranslationUnits",
+            page_number,
+            details={"requestCountBefore": len(collector.requests)},
+        )
+        try:
+            device.begin_page(page, page_ctm(page))
+            ops_base = interpreter.render_contents(
+                page.resources, page.contents, ctm=page_ctm(page)
+            )
+            ltpage = device.cur_item
+            device.fontid = interpreter.fontid
+            device.fontmap = interpreter.fontmap
+            device.end_page(page)
+        except BaseException as error:
+            stage_failed(
+                proto,
+                job_id,
+                "page.collectTranslationUnits",
+                t_collect,
+                page_number,
+                details={"errorType": type(error).__name__},
+            )
+            raise
+        after_texts = collector.flattened_texts()
+        new_texts = after_texts[before_count:]
+        stage_done(
+            proto,
+            job_id,
+            "page.collectTranslationUnits",
+            t_collect,
+            page_number,
+            details={
+                "itemCount": len(new_texts),
+                "inputChars": sum(len(text) for text in new_texts),
+                "requestCount": len(collector.requests),
+            },
+        )
+        return {
+            "ltpage": ltpage,
+            "opsBase": ops_base,
+            "fontid": dict(interpreter.fontid),
+            "fontmap": dict(interpreter.fontmap),
+            "contentObjIds": [
+                obj.objid for obj in page.contents if hasattr(obj, "objid")
+            ],
+            "cropbox": [float(value) for value in page.cropbox],
+        }
+
+    obj_patch: dict = {}
+    _rsrcmgr, device, interpreter = make_interpreter(
+        "pdfminer.initializeInterpreter",
+        obj_patch,
     )
-    interpreter = PDFPageInterpreter(rsrcmgr, device, obj_patch)
-    stage_done(proto, job_id, "pdfminer.initializeInterpreter", t)
 
     t_translate = time.time()
     yolo_total = 0.0
     process_total = 0.0
     save_total = 0.0
     pages_translated = 0
+    replay_page_cache = {}
+    single_page_save_deflate = 1 if truthy_env("ROSETTA_PDF_SINGLE_PAGE_DEFLATE") else 0
+    single_page_save_deflate_images = (
+        0 if falsy_env("ROSETTA_PDF_SINGLE_PAGE_DEFLATE_IMAGES") else 1
+    )
 
     t = stage_start(
         proto,
@@ -635,6 +865,14 @@ def translate_streaming(job, proto, model_path):
         )
         page_list = list(page_iter)
         total = len(page_list)
+        requested_indices = (
+            set(pages_zero_based) if pages_zero_based is not None else None
+        )
+        page_indices = [
+            index
+            for index in range(page_count)
+            if requested_indices is None or index in requested_indices
+        ][:total]
         stage_done(
             proto,
             job_id,
@@ -643,8 +881,201 @@ def translate_streaming(job, proto, model_path):
             details={"loadedPageCount": total},
         )
 
-        for page in tqdm.tqdm(page_list, total=total, position=0):
-            page_number = page.pageno + 1
+        use_cross_page_batch = (
+            using_new_pdf2zh_api
+            and cross_page_batch_enabled(service)
+            and hasattr(device.translator, "translate_many")
+        )
+        if use_cross_page_batch:
+            real_translator = device.translator
+            collector = DeferredTranslationCollector(real_translator)
+            device.translator = collector
+            t_collect_all = stage_start(
+                proto,
+                job_id,
+                "crossPageBatch.collect",
+                details={"pageCount": total},
+            )
+            for page, page_index in tqdm.tqdm(
+                zip(page_list, page_indices), total=total, position=0
+            ):
+                page.pageno = page_index
+                page_number = page_index + 1
+
+                t0 = stage_start(proto, job_id, "page.pixmapAndImage", page_number)
+                pix = doc_en[page_index].get_pixmap()
+                image = np.frombuffer(pix.samples, np.uint8).reshape(
+                    pix.height, pix.width, 3
+                )[:, :, ::-1]
+                stage_done(
+                    proto,
+                    job_id,
+                    "page.pixmapAndImage",
+                    t0,
+                    page_number,
+                    details={
+                        "width": pix.width,
+                        "height": pix.height,
+                        "sampleBytes": len(pix.samples),
+                        "pass": "collect",
+                    },
+                )
+                device_name = layout_device_name(model)
+                imgsz, native_imgsz, imgsz_source = layout_imgsz_for_pix(pix, service)
+                t0 = stage_start(
+                    proto,
+                    job_id,
+                    "page.yoloPredict",
+                    page_number,
+                    details={
+                        "device": device_name,
+                        "imgsz": imgsz,
+                        "nativeImgsz": native_imgsz,
+                        "imgszSource": imgsz_source,
+                        "pass": "collect",
+                    },
+                )
+                predict_started = t0
+                page_layout = model.predict(
+                    image,
+                    imgsz=imgsz,
+                    device=device_name,
+                    verbose=False,
+                )[0]
+                stage_done(
+                    proto,
+                    job_id,
+                    "page.yoloPredict",
+                    t0,
+                    page_number,
+                    details={
+                        "device": device_name,
+                        "imgsz": imgsz,
+                        "nativeImgsz": native_imgsz,
+                        "imgszSource": imgsz_source,
+                        "boxCount": len(page_layout.boxes),
+                        "pass": "collect",
+                    },
+                )
+                yolo_total += time.time() - predict_started
+
+                t0 = stage_start(
+                    proto,
+                    job_id,
+                    "page.layoutMask",
+                    page_number,
+                    details={"boxCount": len(page_layout.boxes), "pass": "collect"},
+                )
+                box = np.ones((pix.height, pix.width))
+                h, w = box.shape
+                vcls = ["abandon", "figure", "table", "isolate_formula", "formula_caption"]
+                for i, d in enumerate(page_layout.boxes):
+                    if page_layout.names[int(d.cls)] not in vcls:
+                        x0, y0, x1, y1 = d.xyxy.squeeze()
+                        x0, y0, x1, y1 = (
+                            np.clip(int(x0 - 1), 0, w - 1),
+                            np.clip(int(h - y1 - 1), 0, h - 1),
+                            np.clip(int(x1 + 1), 0, w - 1),
+                            np.clip(int(h - y0 + 1), 0, h - 1),
+                        )
+                        box[y0:y1, x0:x1] = i + 2
+                for i, d in enumerate(page_layout.boxes):
+                    if page_layout.names[int(d.cls)] in vcls:
+                        x0, y0, x1, y1 = d.xyxy.squeeze()
+                        x0, y0, x1, y1 = (
+                            np.clip(int(x0 - 1), 0, w - 1),
+                            np.clip(int(h - y1 - 1), 0, h - 1),
+                            np.clip(int(x1 + 1), 0, w - 1),
+                            np.clip(int(h - y0 + 1), 0, h - 1),
+                        )
+                        box[y0:y1, x0:x1] = 0
+                layout[page_index] = box
+                stage_done(
+                    proto,
+                    job_id,
+                    "page.layoutMask",
+                    t0,
+                    page_number,
+                    details={"layoutHeight": h, "layoutWidth": w, "pass": "collect"},
+                )
+
+                replay_page_cache[page_index] = collect_page_translation_units(
+                    interpreter,
+                    device,
+                    collector,
+                    page,
+                    page_number,
+                )
+
+            collected_texts = collector.flattened_texts()
+            stage_done(
+                proto,
+                job_id,
+                "crossPageBatch.collect",
+                t_collect_all,
+                details={
+                    "pageCount": total,
+                    "requestCount": len(collector.requests),
+                    "itemCount": len(collected_texts),
+                    "inputChars": sum(len(text) for text in collected_texts),
+                },
+            )
+
+            t_batch = stage_start(
+                proto,
+                job_id,
+                "crossPageBatch.translate",
+                details={
+                    "itemCount": len(collected_texts),
+                    "inputChars": sum(len(text) for text in collected_texts),
+                },
+            )
+            try:
+                collected_translations = real_translator.translate_many(collected_texts)
+            except BaseException as error:
+                stage_failed(
+                    proto,
+                    job_id,
+                    "crossPageBatch.translate",
+                    t_batch,
+                    details={
+                        "itemCount": len(collected_texts),
+                        "inputChars": sum(len(text) for text in collected_texts),
+                        "errorType": type(error).__name__,
+                    },
+                )
+                raise
+            stage_done(
+                proto,
+                job_id,
+                "crossPageBatch.translate",
+                t_batch,
+                details={
+                    "itemCount": len(collected_texts),
+                    "inputChars": sum(len(text) for text in collected_texts),
+                    "outputChars": sum(len(text) for text in collected_translations),
+                },
+            )
+
+            obj_patch = {}
+            _rsrcmgr, device, interpreter = make_interpreter(
+                "pdfminer.initializeReplayInterpreter",
+                obj_patch,
+            )
+            device.translator = PretranslatedTranslator(
+                real_translator,
+                collected_texts,
+                collected_translations,
+            )
+
+        for page, page_index in tqdm.tqdm(
+            zip(page_list, page_indices), total=total, position=0
+        ):
+            # Newer pdfminer.six PDFPage objects no longer expose pageno, but
+            # pdf2zh's converter still uses it to build LTPage.pageid and look
+            # up layout masks. Reattach the zero-based document page index here.
+            page.pageno = page_index
+            page_number = page_index + 1
             emit_stage(
                 proto,
                 job_id,
@@ -652,105 +1083,132 @@ def translate_streaming(job, proto, model_path):
                 "started",
                 page_number=page_number,
                 details={
-                    "pageIndex": page.pageno,
+                    "pageIndex": page_index,
                     "pageOrdinalInRun": pages_translated + 1,
                     "totalPagesInRun": total,
                 },
             )
 
             page_started = time.time()
-            t0 = stage_start(proto, job_id, "page.pixmapAndImage", page_number)
-            pix = doc_en[page.pageno].get_pixmap()
-            image = np.frombuffer(pix.samples, np.uint8).reshape(
-                pix.height, pix.width, 3
-            )[:, :, ::-1]
-            stage_done(
-                proto,
-                job_id,
-                "page.pixmapAndImage",
-                t0,
-                page_number,
-                details={
-                    "width": pix.width,
-                    "height": pix.height,
-                    "sampleBytes": len(pix.samples),
-                },
-            )
-            device_name = "cuda:0" if torch.cuda.is_available() else "cpu"
-            imgsz = int(pix.height / 32) * 32
-            t0 = stage_start(
-                proto,
-                job_id,
-                "page.yoloPredict",
-                page_number,
-                details={"device": device_name, "imgsz": imgsz},
-            )
-            page_layout = model.predict(
-                image,
-                imgsz=imgsz,
-                device=device_name,
-                verbose=False,
-            )[0]
-            stage_done(
-                proto,
-                job_id,
-                "page.yoloPredict",
-                t0,
-                page_number,
-                details={
-                    "device": device_name,
-                    "imgsz": imgsz,
-                    "boxCount": len(page_layout.boxes),
-                },
-            )
+            if use_cross_page_batch and page_index in layout:
+                t0 = stage_start(
+                    proto,
+                    job_id,
+                    "page.layoutMask.reuse",
+                    page_number,
+                    details={"sourcePass": "collect"},
+                )
+                reused_layout = layout[page_index]
+                h, w = reused_layout.shape
+                stage_done(
+                    proto,
+                    job_id,
+                    "page.layoutMask.reuse",
+                    t0,
+                    page_number,
+                    details={"layoutHeight": h, "layoutWidth": w},
+                )
+            else:
+                t0 = stage_start(proto, job_id, "page.pixmapAndImage", page_number)
+                pix = doc_en[page_index].get_pixmap()
+                image = np.frombuffer(pix.samples, np.uint8).reshape(
+                    pix.height, pix.width, 3
+                )[:, :, ::-1]
+                stage_done(
+                    proto,
+                    job_id,
+                    "page.pixmapAndImage",
+                    t0,
+                    page_number,
+                    details={
+                        "width": pix.width,
+                        "height": pix.height,
+                        "sampleBytes": len(pix.samples),
+                    },
+                )
+                device_name = layout_device_name(model)
+                imgsz, native_imgsz, imgsz_source = layout_imgsz_for_pix(pix, service)
+                t0 = stage_start(
+                    proto,
+                    job_id,
+                    "page.yoloPredict",
+                    page_number,
+                    details={
+                        "device": device_name,
+                        "imgsz": imgsz,
+                        "nativeImgsz": native_imgsz,
+                        "imgszSource": imgsz_source,
+                    },
+                )
+                predict_started = t0
+                page_layout = model.predict(
+                    image,
+                    imgsz=imgsz,
+                    device=device_name,
+                    verbose=False,
+                )[0]
+                stage_done(
+                    proto,
+                    job_id,
+                    "page.yoloPredict",
+                    t0,
+                    page_number,
+                    details={
+                        "device": device_name,
+                        "imgsz": imgsz,
+                        "nativeImgsz": native_imgsz,
+                        "imgszSource": imgsz_source,
+                        "boxCount": len(page_layout.boxes),
+                    },
+                )
+                yolo_total += time.time() - predict_started
 
-            t0 = stage_start(
-                proto,
-                job_id,
-                "page.layoutMask",
-                page_number,
-                details={"boxCount": len(page_layout.boxes)},
-            )
-            box = np.ones((pix.height, pix.width))
-            h, w = box.shape
-            vcls = ["abandon", "figure", "table", "isolate_formula", "formula_caption"]
-            for i, d in enumerate(page_layout.boxes):
-                if page_layout.names[int(d.cls)] not in vcls:
-                    x0, y0, x1, y1 = d.xyxy.squeeze()
-                    x0, y0, x1, y1 = (
-                        np.clip(int(x0 - 1), 0, w - 1),
-                        np.clip(int(h - y1 - 1), 0, h - 1),
-                        np.clip(int(x1 + 1), 0, w - 1),
-                        np.clip(int(h - y0 + 1), 0, h - 1),
-                    )
-                    box[y0:y1, x0:x1] = i + 2
-            for i, d in enumerate(page_layout.boxes):
-                if page_layout.names[int(d.cls)] in vcls:
-                    x0, y0, x1, y1 = d.xyxy.squeeze()
-                    x0, y0, x1, y1 = (
-                        np.clip(int(x0 - 1), 0, w - 1),
-                        np.clip(int(h - y1 - 1), 0, h - 1),
-                        np.clip(int(x1 + 1), 0, w - 1),
-                        np.clip(int(h - y0 + 1), 0, h - 1),
-                    )
-                    box[y0:y1, x0:x1] = 0
-            layout[page.pageno] = box
-            stage_done(
-                proto,
-                job_id,
-                "page.layoutMask",
-                t0,
-                page_number,
-                details={"layoutHeight": h, "layoutWidth": w},
-            )
-            yolo_total += time.time() - page_started
+                t0 = stage_start(
+                    proto,
+                    job_id,
+                    "page.layoutMask",
+                    page_number,
+                    details={"boxCount": len(page_layout.boxes)},
+                )
+                box = np.ones((pix.height, pix.width))
+                h, w = box.shape
+                vcls = ["abandon", "figure", "table", "isolate_formula", "formula_caption"]
+                for i, d in enumerate(page_layout.boxes):
+                    if page_layout.names[int(d.cls)] not in vcls:
+                        x0, y0, x1, y1 = d.xyxy.squeeze()
+                        x0, y0, x1, y1 = (
+                            np.clip(int(x0 - 1), 0, w - 1),
+                            np.clip(int(h - y1 - 1), 0, h - 1),
+                            np.clip(int(x1 + 1), 0, w - 1),
+                            np.clip(int(h - y0 + 1), 0, h - 1),
+                        )
+                        box[y0:y1, x0:x1] = i + 2
+                for i, d in enumerate(page_layout.boxes):
+                    if page_layout.names[int(d.cls)] in vcls:
+                        x0, y0, x1, y1 = d.xyxy.squeeze()
+                        x0, y0, x1, y1 = (
+                            np.clip(int(x0 - 1), 0, w - 1),
+                            np.clip(int(h - y1 - 1), 0, h - 1),
+                            np.clip(int(x1 + 1), 0, w - 1),
+                            np.clip(int(h - y0 + 1), 0, h - 1),
+                        )
+                        box[y0:y1, x0:x1] = 0
+                layout[page_index] = box
+                stage_done(
+                    proto,
+                    job_id,
+                    "page.layoutMask",
+                    t0,
+                    page_number,
+                    details={"layoutHeight": h, "layoutWidth": w},
+                )
 
             t0 = stage_start(proto, job_id, "page.prepareContentStream", page_number)
             page.rotate = page.rotate % 360
             page.page_xref = doc_en.get_new_xref()
             doc_en.update_object(page.page_xref, "<<>>")
             doc_en.update_stream(page.page_xref, b"")
-            doc_en[page.pageno].set_contents(page.page_xref)
+            doc_en[page_index].set_contents(page.page_xref)
             stage_done(
                 proto,
                 job_id,
@@ -768,14 +1226,79 @@ def translate_streaming(job, proto, model_path):
                 details={"existingPatchCount": len(obj_patch)},
             )
             before_keys = set(obj_patch.keys())
-            process_page_with_stages(
-                interpreter,
-                device,
-                page,
-                proto,
-                job_id,
-                page_number,
-            )
+            cached_replay = replay_page_cache.get(page_index) if use_cross_page_batch else None
+            if cached_replay:
+                x0, y0, _x1, _y1 = page.cropbox
+                probe = install_page_process_probe(device, proto, job_id, page_number)
+                try:
+                    t_replay = stage_start(
+                        proto,
+                        job_id,
+                        "page.processPage.replayLayout",
+                        page_number,
+                        details={
+                            "cachedContentObjectCount": len(
+                                cached_replay["contentObjIds"]
+                            ),
+                        },
+                    )
+                    device.fontid = cached_replay["fontid"]
+                    device.fontmap = cached_replay["fontmap"]
+                    ops_new = device.receive_layout(cached_replay["ltpage"])
+                    stage_done(
+                        proto,
+                        job_id,
+                        "page.processPage.replayLayout",
+                        t_replay,
+                        page_number,
+                        details={
+                            "translatedOpsChars": len(ops_new)
+                            if isinstance(ops_new, str)
+                            else None,
+                            **translate_probe_summary(probe),
+                        },
+                    )
+
+                    t_patch = stage_start(
+                        proto,
+                        job_id,
+                        "page.processPage.patchStreams",
+                        page_number,
+                        details={
+                            "streamObjectCount": len(cached_replay["contentObjIds"]),
+                            "source": "cachedReplay",
+                        },
+                    )
+                    interpreter.obj_patch[
+                        page.page_xref
+                    ] = f"q {cached_replay['opsBase']}Q 1 0 0 1 {x0} {y0} cm {ops_new}"
+                    for obj_id in cached_replay["contentObjIds"]:
+                        interpreter.obj_patch[obj_id] = ""
+                    stage_done(
+                        proto,
+                        job_id,
+                        "page.processPage.patchStreams",
+                        t_patch,
+                        page_number,
+                        details={
+                            "streamObjectCount": len(cached_replay["contentObjIds"]),
+                            "pagePatchChars": safe_len(
+                                interpreter.obj_patch.get(page.page_xref)
+                            ),
+                            "source": "cachedReplay",
+                        },
+                    )
+                finally:
+                    device._rosetta_probe_context = None
+            else:
+                process_page_with_stages(
+                    interpreter,
+                    device,
+                    page,
+                    proto,
+                    job_id,
+                    page_number,
+                )
             new_keys = list(set(obj_patch.keys()) - before_keys)
             process_total += time.time() - t0
             stage_done(
@@ -810,13 +1333,55 @@ def translate_streaming(job, proto, model_path):
 
             t0 = stage_start(proto, job_id, "page.saveSinglePdf", page_number)
             single = pymupdf.open()
-            single.insert_pdf(doc_en, from_page=page.pageno, to_page=page.pageno)
-            page_out_path = os.path.join(
-                output_dir, f"page-{page.pageno + 1:04}.pdf"
+            t_insert = stage_start(
+                proto,
+                job_id,
+                "page.saveSinglePdf.insertPage",
+                page_number,
             )
-            # deflate=1 matches upstream pdf2zh's mono save. Single-page docs
-            # serialize fast (a few ms), so this doesn't move the needle.
-            single.save(page_out_path, deflate=1)
+            single.insert_pdf(doc_en, from_page=page_index, to_page=page_index)
+            stage_done(
+                proto,
+                job_id,
+                "page.saveSinglePdf.insertPage",
+                t_insert,
+                page_number,
+            )
+            page_out_path = os.path.join(
+                output_dir, f"page-{page_number:04}.pdf"
+            )
+            # Page artifacts are local cache entries. Keep compression off by
+            # default because translated page streams already contain large
+            # rewritten objects and deflate can dominate warm-worker runtime.
+            t_write = stage_start(
+                proto,
+                job_id,
+                "page.saveSinglePdf.writeFile",
+                page_number,
+                details={
+                    "deflate": single_page_save_deflate,
+                    "deflateImages": single_page_save_deflate_images,
+                },
+            )
+            single.save(
+                page_out_path,
+                deflate=single_page_save_deflate,
+                deflate_images=single_page_save_deflate_images,
+            )
+            stage_done(
+                proto,
+                job_id,
+                "page.saveSinglePdf.writeFile",
+                t_write,
+                page_number,
+                details={
+                    "deflate": single_page_save_deflate,
+                    "deflateImages": single_page_save_deflate_images,
+                    "outputBytes": os.path.getsize(page_out_path)
+                    if os.path.exists(page_out_path)
+                    else None,
+                },
+            )
             single.close()
             save_total += time.time() - t0
             stage_done(
@@ -839,7 +1404,7 @@ def translate_streaming(job, proto, model_path):
                 {
                     "id": job_id,
                     "event": "page",
-                    "pageNumber": page.pageno + 1,
+                    "pageNumber": page_number,
                     "file": page_out_path,
                 },
             )
@@ -930,8 +1495,8 @@ def emit_warming(proto, step, total, label):
     """Announce the next phase of the warmup before paying its cost.
 
     The Rust side mirrors {step,totalSteps,label} into the worker status so
-    the header badge / topbar pill can show "[N/M label]" — without this, a
-    fresh reinstall sits on a single "PDF 引擎预热中" label for 30 s+ and
+    the header badge / topbar pill can show "[N/M label]"; without this, a
+    fresh reinstall sits on a single "PDF engine warming" label for 30 s+ and
     looks frozen.
     """
     emit(
@@ -945,31 +1510,42 @@ def emit_warming(proto, step, total, label):
     )
 
 
+def setup_pdf2zh_logging(cli):
+    """Set up pdf2zh logging across old and new PDFMathTranslate APIs."""
+    setup_log = getattr(cli, "setup_log", None)
+    if callable(setup_log):
+        setup_log()
+        return
+
+    try:
+        from rich.logging import RichHandler
+
+        handlers = [RichHandler(console=None, show_path=False)]
+    except Exception:
+        handlers = None
+
+    logging.basicConfig(level=logging.INFO, handlers=handlers)
+    for logger_name in ("httpx", "openai", "httpcore", "http11"):
+        logger = logging.getLogger(logger_name)
+        logger.setLevel(logging.CRITICAL)
+        logger.propagate = False
+
+
 def main():
     proto = make_protocol_channel()
 
     import_started = time.time()
     try:
-        # Phase split mirrors the import-time breakdown measured on M-series
-        # macs: torch dominates (~70%), the CV stack pulled in by
-        # doclayout_yolo (~20%), pdf2zh itself (~8%), then the model-path
-        # check. The labels are user-facing so keep them plain.
-        emit_warming(proto, 1, 5, "加载 PyTorch")
-        import torch
-
-        emit_warming(proto, 2, 5, "加载文档版面模型库")
-        import doclayout_yolo
-
-        emit_warming(proto, 3, 5, "加载 pdf2zh")
+        emit_warming(proto, 1, 3, "加载 pdf2zh")
         from pdf2zh import pdf2zh as cli
 
-        emit_warming(proto, 4, 5, "检查组件")
-        cli.setup_log()
+        emit_warming(proto, 2, 3, "检查 PDF 组件")
+        setup_pdf2zh_logging(cli)
         model_path = os.environ.get("ROSETTA_DOCLAYOUT_MODEL")
         if not model_path or not Path(model_path).is_file():
             raise RuntimeError(
                 "ROSETTA_DOCLAYOUT_MODEL is missing or does not point to a file; "
-                "update the Rosetta PDF component so the DocLayout-YOLO model is bundled."
+                "update the Rosetta PDF component so the ONNX layout model is bundled."
             )
     except Exception:
         emit(
@@ -981,24 +1557,25 @@ def main():
         )
         return 3
 
-    mps_enabled, mps_reason = probe_and_enable_mps(torch, doclayout_yolo, model_path)
-    emit_warming(proto, 5, 5, "预热版面推理")
-    yolo_warmup = warm_yolo_predict(torch, model_path, mps_enabled=mps_enabled)
-    if yolo_warmup["status"] == "completed":
+    mps_enabled = False
+    mps_reason = "not used by ONNX layout runtime"
+    emit_warming(proto, 3, 3, "预热版面模型")
+    layout_warmup = warm_layout_predict(model_path)
+    if layout_warmup["status"] == "completed":
         print(
-            "[pdf2zh-worker] yolo predict warmup completed "
-            f"({yolo_warmup['durationMs']} ms, "
-            f"device={yolo_warmup['device']}, imgsz={yolo_warmup['imgsz']})",
+            "[pdf2zh-worker] layout predict warmup completed "
+            f"({layout_warmup['durationMs']} ms, "
+            f"device={layout_warmup['device']}, imgsz={layout_warmup['imgsz']}, "
+            f"backend={layout_warmup.get('backend', '-')})",
             file=sys.stderr,
         )
     else:
         print(
-            "[pdf2zh-worker] yolo predict warmup failed "
-            f"({yolo_warmup['durationMs']} ms, "
-            f"device={yolo_warmup['device']}, reason={yolo_warmup.get('reason', '-')})",
+            "[pdf2zh-worker] layout predict warmup failed "
+            f"({layout_warmup['durationMs']} ms, "
+            f"device={layout_warmup['device']}, reason={layout_warmup.get('reason', '-')})",
             file=sys.stderr,
         )
-
     emit(
         proto,
         {
@@ -1006,10 +1583,10 @@ def main():
             "importMs": int((time.time() - import_started) * 1000),
             "mps": mps_enabled,
             "mpsReason": mps_reason,
-            "yoloWarmupMs": yolo_warmup["durationMs"],
-            "yoloWarmupStatus": yolo_warmup["status"],
-            "yoloWarmupDevice": yolo_warmup["device"],
-            "yoloWarmupReason": yolo_warmup.get("reason"),
+            "yoloWarmupMs": layout_warmup["durationMs"],
+            "yoloWarmupStatus": layout_warmup["status"],
+            "yoloWarmupDevice": layout_warmup["device"],
+            "yoloWarmupReason": layout_warmup.get("reason"),
         },
     )
 

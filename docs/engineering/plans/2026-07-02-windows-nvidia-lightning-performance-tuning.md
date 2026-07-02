@@ -2,9 +2,10 @@
 
 Date: 2026-07-02
 
-Status: in progress; Task 1 instrumentation and local summary method added.
-First Windows NVIDIA Lightning Markdown and PDF baselines recorded. First
-Lightning-only throughput tuning pass implemented.
+Status: performance tuning pass complete; follow-up work is visual QA,
+benchmark documentation, and release regression. Task 1 instrumentation and
+local summary method added. First Windows NVIDIA Lightning Markdown and PDF
+baselines recorded. Lightning-only PDF Phase 7 throughput tuning implemented.
 
 ## Summary
 
@@ -347,6 +348,243 @@ Output:
 - Confirmation that llama.cpp Vulkan and macOS MLX paths still compile and keep
   their existing behavior.
 - Change-log entry if the tuning result is accepted.
+
+## Phase 7 Closeout: 2026-07-02
+
+The Lightning-only PDF tuning pass is considered complete enough to stop active
+optimization and move to validation. The work shifted PDF performance from
+small page-local model requests to chunk-local cross-page batching, then removed
+new PDF-side bottlenecks exposed by that change.
+
+Implemented:
+
+- Cross-page collect / translate / replay for `service="rosetta-batch"`.
+- One ordered Lightning request per PDF chunk when all collected units fit the
+  provider batch limit.
+- Direct Lightning batch path in the Rosetta PDF shim, bypassing the older
+  pending-translation queue for Lightning.
+- Replay reuse of collect-pass layout masks and pdfminer layout trees.
+- Speed-first single-page artifact write on the translation hot path.
+- Windows background page-artifact compression using the installed pdf2zh
+  sidecar PyMuPDF runtime.
+- Safe artifact compression guards for app exit, job deletion, force
+  retranslation, and duplicate compression scheduling.
+- Rosetta batch layout inference default capped at `imgsz=640`, with
+  `ROSETTA_PDF_LAYOUT_IMGSZ` as a local diagnostic escape hatch.
+- Timeline and summary diagnostics for `crossPageBatch.collect`,
+  `crossPageBatch.translate`, worker sub-stages, and artifact compression.
+
+Latest 10-page forced PDF run on the Windows NVIDIA Lightning machine:
+
+```txt
+job: job-1782982447395-2604-17278v1
+run: run-pdf-1782983848843
+pages: 1-10
+status: completed
+wall: 9.513s
+RWKV requests: 1
+average batch: 125
+RWKV total: 3.691s
+failed pages: 0
+input chars: 36,385
+output chars: 13,595
+```
+
+Key PDF-side breakdown:
+
+```txt
+crossPageBatch.collect: 3.099s
+crossPageBatch.translate: 3.959s
+page.yoloPredict: 10 / 1.709s
+page.collectTranslationUnits: 10 / 1.260s
+page.processPage.replayLayout: 10 / 501ms
+page.saveSinglePdf: 10 / 60ms
+page.saveSinglePdf.writeFile: 10 / 37ms
+```
+
+Comparison against the previous `imgsz=768` run:
+
+```txt
+imgsz=768:
+  crossPageBatch.collect: 3.942s
+  page.yoloPredict: 2.477s
+  page.collectTranslationUnits: 1.340s
+  wall: 10.804s
+
+imgsz=640:
+  crossPageBatch.collect: 3.099s
+  page.yoloPredict: 1.709s
+  page.collectTranslationUnits: 1.260s
+  wall: 9.513s
+```
+
+The `imgsz=640` change reduced collect time by about `843ms` on the 10-page
+benchmark. Timeline events confirmed `imgszSource=rosetta-batch-default`,
+`imgsz=640`, and `nativeImgsz=768`.
+
+Artifact compression result on the same 10-page workload:
+
+```txt
+fast page artifacts before compression: about 144.5 MB total
+compressed page artifacts after background compression: about 89.6 MB total
+saved: about 48.2 MB
+temp / backup leftovers: 0
+artifactCompression: compressed for all 10 pages
+```
+
+Current bottleneck after Phase 7:
+
+- `crossPageBatch.translate` is now primarily Lightning runtime time.
+- `crossPageBatch.collect` is now mostly ONNX layout inference plus pdfminer
+  collection.
+- `page.saveSinglePdf` and artifact commit are no longer meaningful
+  bottlenecks.
+
+Explicitly not pursued further in this pass:
+
+- ONNX batch inference. A local micro-benchmark showed batch input works, but
+  it did not materially outperform serial inference on this workload.
+- pdfminer collect parallelization. The collect path shares
+  `PDFPageInterpreter`, `TextConverter`, font maps, layout state, and the
+  deferred collector. Parallelizing it now would add state-safety risk for
+  uncertain gain.
+- Defaulting `imgsz=576`. It was faster in local measurement, but changed
+  layout detections more visibly than `640`.
+
+## Remaining Work
+
+### 1. Visual QA for `imgsz=640`
+
+This is the highest-priority follow-up before treating the tuning result as
+release-ready.
+
+Check several representative PDFs:
+
+- academic two-column paper;
+- formula-heavy pages;
+- pages with figures and captions;
+- pages with tables;
+- dense references / bibliography pages.
+
+Look specifically for:
+
+- formula text being translated when it should be preserved;
+- table or figure regions being overwritten;
+- captions moving into the wrong region;
+- missing body paragraphs;
+- overlapping translated text.
+
+If a regression appears, rerun the same PDF with:
+
+```txt
+ROSETTA_PDF_LAYOUT_IMGSZ=native
+```
+
+If the native run fixes the issue, either revert the default to native or make
+`640` conditional on a more conservative document class.
+
+### 2. Final 18-page Benchmark
+
+Run one more forced 18-page PDF translation with the current defaults and save a
+summary. The earlier 18-page Phase 7 result was about `14.663s`; `imgsz=640`
+should reduce the PDF collect portion slightly, but this needs a recorded final
+number.
+
+Record:
+
+- wall time;
+- RWKV request count;
+- average batch size;
+- `crossPageBatch.collect`;
+- `crossPageBatch.translate`;
+- `page.yoloPredict`;
+- `page.collectTranslationUnits`;
+- artifact compression duration and final disk size.
+
+### 3. Benchmark Document
+
+Add a final benchmark note under `docs/engineering/benchmarks/` with:
+
+- baseline before cross-page batching;
+- Phase 7 cross-page batching;
+- replay reuse and fast page artifact write;
+- background artifact compression;
+- `imgsz=640` result.
+
+Include enough metadata to reproduce the run, but keep the privacy rule: no
+source text, translated text, prompts, or document content.
+
+### 4. Compression Edge-Case Smoke Tests
+
+The code now handles the main edge cases, but before release do quick manual
+smoke tests:
+
+- export immediately after translation completes;
+- delete the PDF job while compression may still be running;
+- force retranslate immediately after a completed run;
+- restart the app after translation and confirm repair does not leave stale
+  `.compressing.tmp.pdf` or `.precompress.bak` files.
+
+Expected behavior:
+
+- page state remains `translated`;
+- no user-visible translation failure is caused by compression;
+- stale compression work is skipped or cleaned;
+- final `translated-pages/<targetLang>/` contains only canonical
+  `page-XXXX.pdf` files.
+
+### 5. Decide Which Env Knobs Stay Public
+
+Current local diagnostic knobs:
+
+```txt
+ROSETTA_PDF_LAYOUT_IMGSZ
+ROSETTA_PDF_PAGE_ARTIFACT_COMPRESSION
+ROSETTA_PDF_SINGLE_PAGE_DEFLATE
+ROSETTA_PDF_CROSS_PAGE_BATCH
+ROSETTA_PDF_DISABLE_CROSS_PAGE_BATCH
+```
+
+Before release, decide which ones should remain documented troubleshooting
+knobs and which should be treated as internal benchmark switches only.
+
+### 6. PDFMathTranslate Fork Follow-Up
+
+Further large speedups likely require deeper fork-side work rather than more
+outer worker patching:
+
+- Rosetta-native collect/replay API;
+- cleaner translation-unit extraction without driving the full page conversion
+  machinery twice;
+- persistent or reusable layout mask cache;
+- optional fast layout mode for text-heavy PDFs;
+- stronger boundaries around PDFMathTranslate components Rosetta actually uses.
+
+This is future work. It should not block closing the current Lightning tuning
+pass.
+
+### 7. Release Regression
+
+Before merging/releasing this performance work, run:
+
+```powershell
+cd rosetta-app
+pnpm typecheck
+cd src-tauri
+cargo check
+cargo test managed_pdf2zh
+cargo test rosetta_jobs
+```
+
+Also manually verify:
+
+- Markdown translation still works through Lightning;
+- PDF translation still works through Lightning;
+- PDF export works after background compression;
+- switching Lightning -> llama.cpp -> Lightning still selects the expected
+  provider;
+- app restart can reopen the latest PDF job without repair warnings visible to
+  the user.
 
 ## Acceptance Criteria
 

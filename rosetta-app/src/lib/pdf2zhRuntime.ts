@@ -91,8 +91,8 @@ export function subscribePdf2zhInstallProgress(
   );
 }
 
-/// Start the persistent pdf2zh worker so its heavy Python import (~13 s) is
-/// already paid by the time the user clicks 翻译. Idempotent; resolves true
+/// Start the persistent pdf2zh worker so Python imports and ONNX layout warmup
+/// are already paid by the time the user clicks 翻译. Idempotent; resolves true
 /// when the worker is warm. Fire-and-forget — failure just means the next
 /// translate falls back to a cold start.
 export function prewarmPdf2zhWorker() {
@@ -102,7 +102,7 @@ export function prewarmPdf2zhWorker() {
 /// Lifecycle states the backend broadcasts for the header indicator.
 /// - `idle`: never started this session (transient)
 /// - `not-installed`: pdf2zh pack missing — indicator hides itself
-/// - `starting`: handshake in flight (~13 s torch import)
+/// - `starting`: handshake/import/layout warmup in flight
 /// - `ready`: warm worker, accepting jobs immediately
 /// - `translating`: a job is running; flips back to `ready` when it returns
 /// - `failed`: last spawn errored; `message` carries the user-facing reason

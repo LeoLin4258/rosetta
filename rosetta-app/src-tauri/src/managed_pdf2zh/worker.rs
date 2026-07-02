@@ -1,10 +1,9 @@
 //! Persistent pdf2zh worker process.
 //!
-//! Importing pdf2zh's layout stack (torch + torchvision + opencv via
-//! doclayout_yolo) costs ~13 s per process while the model load itself is
-//! ~0.07 s. The one-shot CLI invocation paid that import for every chunk of
-//! pages; this module keeps one warm Python worker per app session and feeds
-//! it translate jobs over a line-based JSON protocol.
+//! Importing and preparing pdf2zh's layout stack is too expensive to pay for
+//! every PDF job. The one-shot CLI invocation paid that startup for every
+//! chunk of pages; this module keeps one warm Python worker per app session
+//! and feeds it translate jobs over a line-based JSON protocol.
 //!
 //! The worker script is embedded in the app binary and written under the
 //! sidecar root at spawn time, so already-installed packs get the worker
@@ -15,7 +14,6 @@
 //! and any descendants); the next run pays one re-import. There is no idle
 //! reaper — the worker stays warm for the lifetime of the app process so the
 //! header indicator can stay "已就绪" and translate clicks are always cheap.
-//! At ~600 MB resident torch memory that's a deliberate trade.
 
 use std::{
     path::{Path, PathBuf},
@@ -40,8 +38,7 @@ use super::build_static_status;
 use crate::windows_process::HideConsole;
 
 const WORKER_SCRIPT: &str = include_str!("rosetta_pdf2zh_worker.py");
-/// First spawn includes the ~13 s torch import plus, on a fresh machine, the
-/// layout-model download — be generous.
+/// First spawn includes Python imports and ONNX layout warmup; be generous.
 const READY_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[cfg(test)]
@@ -81,6 +78,83 @@ mod tests {
         assert!(
             WORKER_SCRIPT.contains("shutil.rmtree(cache_root, ignore_errors=True)"),
             "forced PDF retranslation should remove cached paragraph translations"
+        );
+    }
+
+    #[test]
+    fn worker_uses_native_rosetta_batch_translator() {
+        assert!(
+            WORKER_SCRIPT.contains("service=service"),
+            "the warm worker should pass Rosetta's native service name to the PDF component"
+        );
+        assert!(
+            WORKER_SCRIPT.contains("envs=envs"),
+            "the warm worker should pass the Rosetta batch endpoint envs to the PDF component"
+        );
+    }
+
+    #[test]
+    fn worker_supports_cross_page_rosetta_batching() {
+        assert!(
+            WORKER_SCRIPT.contains("def cross_page_batch_enabled(service):"),
+            "the warm worker should expose the cross-page PDF batching gate"
+        );
+        assert!(
+            WORKER_SCRIPT.contains("service != \"rosetta-batch\""),
+            "cross-page PDF batching should stay scoped to Rosetta's native batch translator"
+        );
+        assert!(
+            WORKER_SCRIPT.contains("ROSETTA_PDF_CROSS_PAGE_BATCH"),
+            "local benchmark runs need an env switch to disable or force cross-page batching"
+        );
+        assert!(
+            WORKER_SCRIPT.contains("crossPageBatch.translate"),
+            "timeline diagnostics should expose the global cross-page model request"
+        );
+        assert!(
+            WORKER_SCRIPT.contains("PretranslatedTranslator"),
+            "the replay pass should use pretranslated text instead of calling the model per page"
+        );
+        assert!(
+            WORKER_SCRIPT.contains("\"page.layoutMask.reuse\""),
+            "the replay pass should reuse collect-pass layout masks instead of repeating ONNX layout inference"
+        );
+        assert!(
+            WORKER_SCRIPT.contains("\"page.processPage.replayLayout\""),
+            "the replay pass should reuse collect-pass pdfminer layout instead of rendering page streams twice"
+        );
+        assert!(
+            WORKER_SCRIPT.contains("ROSETTA_PDF_SINGLE_PAGE_DEFLATE"),
+            "single-page artifact compression should remain controllable while tuning PDF save cost"
+        );
+        assert!(
+            WORKER_SCRIPT.contains("ROSETTA_PDF_LAYOUT_IMGSZ")
+                && WORKER_SCRIPT.contains("\"rosetta-batch-default\""),
+            "Rosetta batch PDF layout inference should use the speed-first imgsz default with an env escape hatch"
+        );
+    }
+
+    #[test]
+    fn worker_does_not_require_removed_pdf2zh_setup_log_api() {
+        assert!(
+            WORKER_SCRIPT.contains("def setup_pdf2zh_logging(cli):"),
+            "the worker should tolerate PDFMathTranslate versions without pdf2zh.pdf2zh.setup_log"
+        );
+        assert!(
+            !WORKER_SCRIPT.contains("cli.setup_log()"),
+            "pdf2zh 1.9.x no longer exposes setup_log at module scope"
+        );
+    }
+
+    #[test]
+    fn worker_reattaches_page_numbers_for_newer_pdfminer_pages() {
+        assert!(
+            WORKER_SCRIPT.contains("page.pageno = page_index"),
+            "newer pdfminer.six PDFPage objects may not expose pageno, but pdf2zh still needs it"
+        );
+        assert!(
+            WORKER_SCRIPT.contains("layout[page_index] = box"),
+            "layout masks should use Rosetta's explicit zero-based page index"
         );
     }
 
@@ -129,7 +203,7 @@ mod tests {
 #[serde(rename_all = "camelCase")]
 pub struct Pdf2zhWorkerStatus {
     /// One of: "idle" (never started this session), "starting" (importing
-    /// torch + handshake in flight), "ready" (warm, idle, accepting jobs),
+    /// pdf2zh + layout warmup in flight), "ready" (warm, idle, accepting jobs),
     /// "translating" (a job is running), "failed" (last spawn errored),
     /// "not-installed" (pdf2zh pack missing — the indicator will hide
     /// itself in this state).
@@ -226,7 +300,7 @@ fn set_worker_status(
 }
 
 /// Push a "starting" status update carrying the current warmup phase so the
-/// header / topbar can render "[N/M label]" while torch is loading. State
+/// header / topbar can render "[N/M label]" while the PDF worker is warming. State
 /// stays "starting" until the worker emits its terminal `ready`/`fatal`.
 fn set_warmup_progress(app: &AppHandle, step: u32, total: u32, label: String) {
     let next = Pdf2zhWorkerStatus {
@@ -377,7 +451,7 @@ async fn spawn_worker(app: &AppHandle) -> Result<WorkerProcess, String> {
     let doclayout_model = status
         .doclayout_model_path
         .clone()
-        .ok_or_else(|| "pdf2zh pack 缺少内置 DocLayout-YOLO 模型，请更新 PDF 组件。".to_string())?;
+        .ok_or_else(|| "pdf2zh pack 缺少内置 ONNX 版面模型，请更新 PDF 组件。".to_string())?;
     let python = if cfg!(target_os = "windows") {
         status.layout.pack_dir.join("python").join("python.exe")
     } else {
@@ -413,11 +487,6 @@ async fn spawn_worker(app: &AppHandle) -> Result<WorkerProcess, String> {
         .env("PYTHONNOUSERSITE", "1")
         .env("PYTHONPATH", "")
         .env("ROSETTA_DOCLAYOUT_MODEL", &doclayout_model)
-        // Probe-gated MPS use in the worker; unsupported ops fall back to CPU
-        // instead of erroring. Must be set before torch is imported.
-        .env("PYTORCH_ENABLE_MPS_FALLBACK", "1")
-        // doclayout_yolo's ultralytics layer wants a writable config dir.
-        .env("YOLO_CONFIG_DIR", &worker_dir)
         // Same loopback-proxy scrubbing as the CLI invocation: the shim is on
         // 127.0.0.1 and user proxies (Clash/Surge) can't reach it.
         .env("NO_PROXY", "127.0.0.1,localhost,::1")
@@ -560,7 +629,7 @@ async fn spawn_worker(app: &AppHandle) -> Result<WorkerProcess, String> {
                                 .map(|value| value.to_string())
                                 .unwrap_or_else(|| "-".to_string());
                             eprintln!(
-                                "[pdf2zh-worker] ready (import {} ms, mps={}, reason={}, yoloWarmupStatus={}, yoloWarmupMs={}, yoloWarmupDevice={}, yoloWarmupReason={})",
+                                "[pdf2zh-worker] ready (import {} ms, mps={}, reason={}, layoutWarmupStatus={}, layoutWarmupMs={}, layoutWarmupDevice={}, layoutWarmupReason={})",
                                 import_ms,
                                 event.mps.unwrap_or(false),
                                 event.mps_reason.as_deref().unwrap_or("-"),

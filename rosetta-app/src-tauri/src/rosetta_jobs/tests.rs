@@ -6,6 +6,7 @@ use crate::rosetta_jobs::{
         sync_job_counts_from_source_files, sync_job_source_files,
     },
     export::*,
+    formats::pdf::page_artifact_compression,
     formats::pdf::page_assemble::{
         assemble_pdf_with_page_translations, count_pdf_pages_lopdf, extract_pages_pdf,
     },
@@ -506,6 +507,9 @@ fn pdf_page_status_restores_stale_translating_pages() {
             status: "translating".to_string(),
             translated_pdf_path: None,
             artifact_version: None,
+            artifact_compression: None,
+            artifact_bytes: None,
+            artifact_compression_error: None,
             error: None,
             updated_at: "1".to_string(),
             last_run_id: None,
@@ -532,6 +536,9 @@ fn pdf_page_state_writes_canonical_file_and_only_durable_statuses() {
             status: "queued".to_string(),
             translated_pdf_path: Some("translated-pages/zh-CN/page-0001.pdf".to_string()),
             artifact_version: Some("1".to_string()),
+            artifact_compression: Some("fast".to_string()),
+            artifact_bytes: Some(123),
+            artifact_compression_error: Some("runtime".to_string()),
             error: Some("runtime".to_string()),
             updated_at: "1".to_string(),
             last_run_id: Some("run-1".to_string()),
@@ -545,7 +552,48 @@ fn pdf_page_state_writes_canonical_file_and_only_durable_statuses() {
     let restored = read_pdf_page_translation_state(&dir, 2, "zh-CN").expect("read state");
     assert_eq!(restored.pages[0].status, "pending");
     assert_eq!(restored.pages[0].translated_pdf_path, None);
+    assert_eq!(restored.pages[0].artifact_compression, None);
+    assert_eq!(restored.pages[0].artifact_bytes, None);
+    assert_eq!(restored.pages[0].artifact_compression_error, None);
     assert_eq!(restored.pages[0].error, None);
+    fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn pdf_page_state_preserves_artifact_compression_metadata() {
+    let dir = unique_temp_dir("pdf-page-compression-metadata");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let mut state = PdfPageTranslationState {
+        schema_version: SCHEMA_VERSION,
+        source_page_count: 1,
+        target_lang: "zh-CN".to_string(),
+        pages: Vec::new(),
+    };
+    upsert_pdf_page_with_run(
+        &mut state,
+        1,
+        "translated",
+        Some("translated-pages/zh-CN/page-0001.pdf".to_string()),
+        None,
+        Some("run-1"),
+    );
+    set_pdf_page_artifact_metadata(
+        &mut state,
+        1,
+        Some("compressed".to_string()),
+        Some(2048),
+        None,
+    );
+    write_pdf_page_translation_state(&dir, &state).expect("write state");
+
+    let restored = read_pdf_page_translation_state(&dir, 1, "zh-CN").expect("read state");
+
+    assert_eq!(
+        restored.pages[0].artifact_compression.as_deref(),
+        Some("compressed")
+    );
+    assert_eq!(restored.pages[0].artifact_bytes, Some(2048));
+    assert_eq!(restored.pages[0].artifact_compression_error, None);
     fs::remove_dir_all(dir).ok();
 }
 
@@ -604,6 +652,9 @@ fn pdf_page_status_does_not_reuse_state_for_other_target_language() {
             status: "translated".to_string(),
             translated_pdf_path: Some(pdf_page_relative_path(1)),
             artifact_version: Some("1".to_string()),
+            artifact_compression: None,
+            artifact_bytes: None,
+            artifact_compression_error: None,
             error: None,
             updated_at: "1".to_string(),
             last_run_id: None,
@@ -631,6 +682,9 @@ fn pdf_page_status_does_not_trust_legacy_shared_page_path_for_english() {
             status: "translated".to_string(),
             translated_pdf_path: Some("pdf-pages/page-0001.pdf".to_string()),
             artifact_version: Some("1".to_string()),
+            artifact_compression: None,
+            artifact_bytes: None,
+            artifact_compression_error: None,
             error: None,
             updated_at: "1".to_string(),
             last_run_id: None,
@@ -705,6 +759,9 @@ fn pdf_page_status_summary_marks_all_pages_translated() {
                 status: "translated".to_string(),
                 translated_pdf_path: Some("translated-pages/zh-CN/page-0001.pdf".to_string()),
                 artifact_version: Some("1".to_string()),
+                artifact_compression: None,
+                artifact_bytes: None,
+                artifact_compression_error: None,
                 error: None,
                 updated_at: "1".to_string(),
                 last_run_id: None,
@@ -714,6 +771,9 @@ fn pdf_page_status_summary_marks_all_pages_translated() {
                 status: "translated".to_string(),
                 translated_pdf_path: Some("translated-pages/zh-CN/page-0002.pdf".to_string()),
                 artifact_version: Some("1".to_string()),
+                artifact_compression: None,
+                artifact_bytes: None,
+                artifact_compression_error: None,
                 error: None,
                 updated_at: "1".to_string(),
                 last_run_id: None,
@@ -746,6 +806,9 @@ fn pdf_force_retranslate_clears_existing_page_artifact() {
             status: "translated".to_string(),
             translated_pdf_path: Some("translated-pages/zh-CN/page-0002.pdf".to_string()),
             artifact_version: Some("1".to_string()),
+            artifact_compression: Some("compressed".to_string()),
+            artifact_bytes: Some(42),
+            artifact_compression_error: None,
             error: None,
             updated_at: "1".to_string(),
             last_run_id: None,
@@ -757,6 +820,37 @@ fn pdf_force_retranslate_clears_existing_page_artifact() {
     assert!(!page_path.exists());
     assert_eq!(state.pages[0].status, "pending");
     assert_eq!(state.pages[0].translated_pdf_path, None);
+    assert_eq!(state.pages[0].artifact_compression, None);
+    assert_eq!(state.pages[0].artifact_bytes, None);
+    fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn pdf_repair_cleans_stale_page_compression_temps() {
+    let dir = unique_temp_dir("pdf-compress-cleanup");
+    let page_dir = dir.join("translated-pages").join("zh-CN");
+    fs::create_dir_all(&page_dir).expect("create page cache");
+    fs::write(page_dir.join("page-0001.pdf"), b"current").expect("write current page");
+    fs::write(
+        page_dir.join(".page-0001.pdf.100.compressing.tmp.pdf"),
+        b"tmp",
+    )
+    .expect("write temp");
+    fs::write(
+        page_dir.join(".page-0001.pdf.100.precompress.bak"),
+        b"backup",
+    )
+    .expect("write backup");
+
+    let cleaned = page_artifact_compression::cleanup_stale_compression_files_in_dir(&page_dir)
+        .expect("cleanup compression temps");
+
+    assert!(cleaned);
+    assert!(page_dir.join("page-0001.pdf").is_file());
+    assert!(!page_dir
+        .join(".page-0001.pdf.100.compressing.tmp.pdf")
+        .exists());
+    assert!(!page_dir.join(".page-0001.pdf.100.precompress.bak").exists());
     fs::remove_dir_all(dir).ok();
 }
 
@@ -831,6 +925,9 @@ fn pdf_page_export_substitutes_translated_page_and_keeps_full_length() {
             status: "translated".to_string(),
             translated_pdf_path: Some("translated-pages/zh-CN/page-0001.pdf".to_string()),
             artifact_version: Some("1".to_string()),
+            artifact_compression: None,
+            artifact_bytes: None,
+            artifact_compression_error: None,
             error: None,
             updated_at: "1".to_string(),
             last_run_id: None,
