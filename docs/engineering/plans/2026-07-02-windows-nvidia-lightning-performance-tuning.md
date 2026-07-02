@@ -599,6 +599,24 @@ The Lightning performance tuning work is accepted when:
 - llama.cpp Vulkan and macOS MLX remain stable and are not dragged into
   speculative tuning.
 
+## Long PDF Stability Addendum
+
+The active optimization target shifted after the small-PDF Lightning path became
+fast enough. The important remaining risk is huge-PDF stability, not making
+400-page PDFs as fast as 10-page PDFs.
+
+See
+`docs/engineering/plans/2026-07-02-long-pdf-stability-ux-plan.md`
+for the implemented policy:
+
+- PDFs with more than 30 pages default to selecting the first 10 pages.
+- Requests with more than 50 selected pages require confirmation.
+- Active runs with more than 30 requested pages keep status updates live but
+  pause translated-page PNG rendering until the run stops or completes.
+- Lightning uses 100-page chunks only for runs of 30 requested pages or fewer;
+  larger Lightning runs use 10-page chunks unless explicitly overridden by
+  `ROSETTA_PDF_LIGHTNING_PAGE_CHUNK_SIZE`.
+
 ## Open Questions
 
 - Which NVIDIA Windows machine should be the primary performance baseline?

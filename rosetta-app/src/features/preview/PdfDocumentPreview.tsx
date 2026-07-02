@@ -11,6 +11,10 @@ import {
   type PdfPageTranslation,
   type PdfPageTranslationState,
 } from "@/lib/rosettaJobs";
+import {
+  defaultPdfSelectedPages,
+  PDF_AUTO_SELECT_ALL_PAGE_LIMIT,
+} from "@/lib/pdfPageSelectionPolicy";
 import { cn } from "@/lib/utils";
 import type {
   RosettaDocument,
@@ -133,6 +137,13 @@ export function PdfDocumentPreview({
     () => new Set(activePagesInRunOrder),
     [activePagesInRunOrder],
   );
+  const activeTranslationPageCount =
+    activePagesInRunOrder.length > 0
+      ? activePagesInRunOrder.length
+      : selectedPagesInRunOrder.length;
+  const stablePreviewMode =
+    isTranslating &&
+    activeTranslationPageCount > PDF_AUTO_SELECT_ALL_PAGE_LIMIT;
 
   const estimatedRowSize = useMemo(() => {
     const horizontalPadding = 32;
@@ -180,14 +191,14 @@ export function PdfDocumentPreview({
         setSourcePageCount(srcPages);
         setPdfPageState(snapshot.pages);
         onPageCountChange(srcPages);
-        onSelectedPagesChange(Array.from({ length: srcPages }, (_, index) => index + 1));
+        onSelectedPagesChange(defaultPdfSelectedPages(srcPages));
       } catch (error) {
         try {
           const srcPages = await countRosettaPdfPages(jobId, "source");
           if (cancelled) return;
           setSourcePageCount(srcPages);
           onPageCountChange(srcPages);
-          onSelectedPagesChange(Array.from({ length: srcPages }, (_, index) => index + 1));
+          onSelectedPagesChange(defaultPdfSelectedPages(srcPages));
           void refreshPageState();
           return;
         } catch {
@@ -380,7 +391,7 @@ export function PdfDocumentPreview({
                         pageIndex={pageIndex}
                         renderVersion={translatedPageRenderVersion(pageNumber, status)}
                         targetWidth={RASTER_WIDTH}
-                        canRender={status?.status === "translated"}
+                        canRender={status?.status === "translated" && !stablePreviewMode}
                         activity={activity}
                         backdropSrc={sourcePageImages[pageIndex] ?? null}
                         renderPage={(index, width) =>
@@ -391,7 +402,12 @@ export function PdfDocumentPreview({
                             targetLang,
                           )
                         }
-                        status={translatedPageLabel(pageNumber, status, activity)}
+                        status={translatedPageLabel(
+                          pageNumber,
+                          status,
+                          activity,
+                          stablePreviewMode,
+                        )}
                       />
                     </div>
                   </div>
@@ -492,11 +508,16 @@ function translatedPageLabel(
   pageNumber: number,
   page: { status: string; error?: string | null } | null,
   activity: ReturnType<typeof displayPageActivity>,
+  stablePreviewMode: boolean,
 ) {
   if (activity === "translating") return "RWKV 翻译中";
   if (activity === "queued") return `等待第 ${pageNumber} 页译文`;
   if (!page) return null;
-  if (page.status === "translated") return `加载第 ${pageNumber} 页译文...`;
+  if (page.status === "translated") {
+    return stablePreviewMode
+      ? `第 ${pageNumber} 页已完成，预览将在本次结束后加载`
+      : `加载第 ${pageNumber} 页译文...`;
+  }
   if (page.status === "failed") return `失败原因：${page.error ?? "可重试"}`;
   return null;
 }

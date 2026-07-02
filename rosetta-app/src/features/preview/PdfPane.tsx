@@ -233,13 +233,16 @@ function PdfPagePlaceholder({
   const failed = activity === "failed";
   const translating = activity === "translating";
   const queued = activity === "queued";
+  const translated = activity === "translated";
   const title = failed
     ? `第 ${pageNumber} 页翻译失败`
     : translating
       ? "翻译中"
       : queued
         ? "等待处理"
-        : "未翻译";
+        : translated
+          ? "已翻译"
+          : "未翻译";
 
   return (
     <div

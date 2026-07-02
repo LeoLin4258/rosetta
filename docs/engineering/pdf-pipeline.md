@@ -382,9 +382,9 @@ Run states:
    - `retranslate-all`
 4. Backend creates `PdfTranslationRun` and writes `pdf_run.<targetLang>.json`.
 5. Pages are processed in chunks. Non-Lightning providers use the durable
-   10-page default. Lightning uses a larger 100-page chunk for small and medium
-   PDFs, but large runs with more than 50 pages automatically fall back to
-   10-page chunks to avoid long time-to-first-page and large UI event bursts.
+   10-page default. Lightning uses a larger 100-page chunk only for runs of
+   30 pages or fewer. Larger Lightning runs automatically fall back to 10-page
+   chunks to avoid long time-to-first-page and large UI event bursts.
 6. For `rosetta-batch`, the persistent worker uses a two-pass chunk-local
    pipeline:
    - collect pass: run pdfminer/pdf2zh layout for the requested pages with a
@@ -405,6 +405,33 @@ Run states:
 
 The default continue path never overwrites translated pages. Explicit
 retranslation clears the relevant page artifacts first.
+
+## Long PDF Stability Policy
+
+The primary PDF product target is a fast, live 1-30 page workflow. Larger PDFs
+are supported, but stability and avoiding app stalls take priority over maximum
+throughput.
+
+Frontend behavior:
+
+- PDFs with 30 pages or fewer default to selecting all pages.
+- PDFs with more than 30 pages default to selecting the first 10 pages.
+- The topbar exposes a first-10-pages shortcut next to all/clear selection.
+- Translation requests with more than 50 selected pages require confirmation.
+  The confirmation gives the user a one-click path back to the first 10 pages.
+- During active PDF runs with more than 30 requested pages, the preview keeps
+  page status updates live but pauses translated-page PNG rendering until the
+  run stops or completes. Small runs keep live translated-page preview.
+
+Backend behavior:
+
+- Non-Lightning providers keep the page-local worker path and 10-page durable
+  chunk default.
+- Lightning keeps the 100-page chunk only for runs of 30 requested pages or
+  fewer.
+- Lightning runs above 30 requested pages use 10-page chunks. This sacrifices
+  some cross-page batching width on huge documents, but reduces first-visible
+  page latency, event bursts, and webview render pressure.
 
 Cross-page batching is scoped to Lightning's `service="rosetta-batch"` path.
 Non-Lightning providers intentionally stay on the page-local

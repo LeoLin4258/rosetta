@@ -2,6 +2,16 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   countRosettaPdfPages,
   createRosettaTranslationRevision,
   ensureRosettaTranslationFile,
@@ -38,11 +48,24 @@ import {
   prewarmPdf2zhWorker,
   type Pdf2zhInstallProgress,
 } from "@/lib/pdf2zhRuntime";
+import {
+  defaultPdfSelectedPages,
+  normalizePdfPageNumbers,
+  shouldConfirmLongPdfTranslation,
+} from "@/lib/pdfPageSelectionPolicy";
 
 import { WorkspaceEmpty } from "./WorkspaceEmpty";
 import { WorkspaceTopbar } from "./WorkspaceTopbar";
 
 const DEFAULT_SOURCE_LANG = "en";
+
+type PendingLongPdfTranslation = {
+  pages: number[];
+  pageCount: number;
+  force: boolean;
+  targetLang: string;
+  sourceLang: string;
+};
 
 function normalizeSourceLang(lang?: string | null) {
   return lang && lang !== "auto" ? lang : DEFAULT_SOURCE_LANG;
@@ -82,6 +105,8 @@ export function WorkspacePage() {
   const [pdfPageCount, setPdfPageCount] = useState(0);
   const [pdfSelectedPages, setPdfSelectedPages] = useState<number[]>([]);
   const [pdfForceRetranslate, setPdfForceRetranslate] = useState(false);
+  const [pendingLongPdfTranslation, setPendingLongPdfTranslation] =
+    useState<PendingLongPdfTranslation | null>(null);
   const [isPausingPdfRun, setIsPausingPdfRun] = useState(false);
   const [hoveredBlockId, setHoveredBlockId] = useState<string | null>(null);
   const [isEditingSource, setIsEditingSource] = useState(false);
@@ -136,6 +161,7 @@ export function WorkspacePage() {
     setPdfPageCount(0);
     setPdfSelectedPages([]);
     setPdfForceRetranslate(false);
+    setPendingLongPdfTranslation(null);
     setIsPausingPdfRun(false);
     setIsEditingSource(false);
     setSourceDraft("");
@@ -144,6 +170,7 @@ export function WorkspacePage() {
   useEffect(() => {
     setIsEditingSource(false);
     setSourceDraft("");
+    setPendingLongPdfTranslation(null);
   }, [activeSourceFileId]);
 
   const handlePdfPageCountChange = useCallback((count: number) => {
@@ -321,6 +348,67 @@ export function WorkspacePage() {
     );
   }
 
+  async function requestPdfPageTranslation(
+    pages: number[],
+    force: boolean,
+    targetLangOverride: string,
+    sourceLangOverride: string,
+    pageCountOverride = pdfPageCount,
+  ) {
+    const normalizedPages = normalizePdfPageNumbers(pages, pageCountOverride);
+    if (normalizedPages.length === 0) {
+      setPdfError("请选择要翻译的页面。");
+      return;
+    }
+
+    if (shouldConfirmLongPdfTranslation(normalizedPages.length)) {
+      setPendingLongPdfTranslation({
+        pages: normalizedPages,
+        pageCount:
+          pageCountOverride > 0
+            ? pageCountOverride
+            : Math.max(...normalizedPages),
+        force,
+        targetLang: targetLangOverride,
+        sourceLang: sourceLangOverride,
+      });
+      return;
+    }
+
+    await handleTranslatePdfPages(
+      formatPageSelection(normalizedPages),
+      force,
+      targetLangOverride,
+      sourceLangOverride,
+    );
+  }
+
+  function runPendingLongPdfTranslation(pages: number[]) {
+    const pending = pendingLongPdfTranslation;
+    if (!pending) return;
+    const normalizedPages = normalizePdfPageNumbers(pages, pending.pageCount);
+    if (normalizedPages.length === 0) {
+      setPendingLongPdfTranslation(null);
+      setPdfError("请选择要翻译的页面。");
+      return;
+    }
+    setPendingLongPdfTranslation(null);
+    void handleTranslatePdfPages(
+      formatPageSelection(normalizedPages),
+      pending.force,
+      pending.targetLang,
+      pending.sourceLang,
+    );
+  }
+
+  function runPendingLongPdfPreviewPages() {
+    const pending = pendingLongPdfTranslation;
+    if (!pending) return;
+    const previewPages = defaultPdfSelectedPages(pending.pageCount);
+    setPdfSelectedPages(previewPages);
+    runPendingLongPdfTranslation(previewPages);
+  }
+
   async function handleTranslate(targetLang: string, srcLang: string) {
     if (!activeJobId || !activeSourceFileId) return;
     setPageError(null);
@@ -342,9 +430,14 @@ export function WorkspacePage() {
           setPdfError("请选择要翻译的页面。");
           return;
         }
-        const pageSelection = formatPageSelection(selectedPages);
         const force = await shouldForcePdfPageTranslation(targetLang);
-        await handleTranslatePdfPages(pageSelection, force, targetLang, srcLang);
+        await requestPdfPageTranslation(
+          selectedPages,
+          force,
+          targetLang,
+          srcLang,
+          pdfPageCount,
+        );
         return;
       }
 
@@ -536,8 +629,13 @@ export function WorkspacePage() {
         setPdfError("请选择要重新翻译的页面。");
         return;
       }
-      const pageSelection = formatPageSelection(pdfSelectedPages);
-      await handleTranslatePdfPages(pageSelection, true, retranslateTargetLang, sourceLang);
+      await requestPdfPageTranslation(
+        pdfSelectedPages,
+        true,
+        retranslateTargetLang,
+        sourceLang,
+        pdfPageCount,
+      );
       return;
     }
 
@@ -657,8 +755,13 @@ export function WorkspacePage() {
           setPdfError("无法读取 PDF 页数，请重新导入后再试。");
           return;
         }
-        const pageSelection = `1-${pageCount}`;
-        await handleTranslatePdfPages(pageSelection, true, retranslateTargetLang, sourceLang);
+        await requestPdfPageTranslation(
+          Array.from({ length: pageCount }, (_, index) => index + 1),
+          true,
+          retranslateTargetLang,
+          sourceLang,
+          pageCount,
+        );
         return;
       }
 
@@ -855,6 +958,9 @@ export function WorkspacePage() {
     activeDocument?.files.length === 1 &&
     !isTranslating &&
     !isTranslationBusyElsewhere;
+  const pendingLongPdfPreviewPageCount = pendingLongPdfTranslation
+    ? defaultPdfSelectedPages(pendingLongPdfTranslation.pageCount).length
+    : 0;
 
   return (
     <div className="flex h-full flex-col">
@@ -897,6 +1003,9 @@ export function WorkspacePage() {
                 Array.from({ length: pdfPageCount }, (_, i) => i + 1),
               )
             }
+            onSelectPreviewPages={() =>
+              handlePdfSelectedPagesChange(defaultPdfSelectedPages(pdfPageCount))
+            }
             onDeselectAllPages={() => handlePdfSelectedPagesChange([])}
             onSourceLangChange={handleSourceLangChange}
             onTargetLangChange={handleTargetLangChange}
@@ -907,6 +1016,42 @@ export function WorkspacePage() {
             onClearSelection={() => setSelectedBlockIds([])}
             onRetranslateAll={() => void handleRetranslateAll()}
           />
+          <AlertDialog
+            open={pendingLongPdfTranslation != null}
+            onOpenChange={(open) => {
+              if (!open) setPendingLongPdfTranslation(null);
+            }}
+          >
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>
+                  翻译 {pendingLongPdfTranslation?.pages.length ?? 0} 页？
+                </AlertDialogTitle>
+                <AlertDialogDescription className="leading-6">
+                  这个 PDF 共 {pendingLongPdfTranslation?.pageCount ?? 0} 页。本次会占用较长时间和磁盘空间，
+                  运行时会降低译文实时预览。建议先翻译前 {pendingLongPdfPreviewPageCount} 页确认效果。
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>取消</AlertDialogCancel>
+                <AlertDialogAction
+                  variant="outline"
+                  onClick={runPendingLongPdfPreviewPages}
+                >
+                  先翻译前 {pendingLongPdfPreviewPageCount} 页
+                </AlertDialogAction>
+                <AlertDialogAction
+                  onClick={() =>
+                    runPendingLongPdfTranslation(
+                      pendingLongPdfTranslation?.pages ?? [],
+                    )
+                  }
+                >
+                  继续翻译 {pendingLongPdfTranslation?.pages.length ?? 0} 页
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
           {pageError && (
             <div className="border-b border-destructive/20 bg-destructive/5 px-6 py-2 text-xs text-destructive">
               {pageError}

@@ -20,6 +20,10 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
+  PDF_AUTO_SELECT_ALL_PAGE_LIMIT,
+  PDF_LONG_DOCUMENT_DEFAULT_SELECTION,
+} from "@/lib/pdfPageSelectionPolicy";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -77,6 +81,7 @@ type WorkspaceTopbarProps = {
   pdfForceRetranslate?: boolean;
   onPdfForceRetranslateChange?: (force: boolean) => void;
   onSelectAllPages?: () => void;
+  onSelectPreviewPages?: () => void;
   onDeselectAllPages?: () => void;
   onSourceLangChange: (lang: string) => void;
   onTargetLangChange: (lang: string) => void;
@@ -304,6 +309,7 @@ export function WorkspaceTopbar({
   pdfForceRetranslate = false,
   onPdfForceRetranslateChange,
   onSelectAllPages,
+  onSelectPreviewPages,
   onDeselectAllPages,
   onSourceLangChange,
   onTargetLangChange,
@@ -363,6 +369,16 @@ export function WorkspaceTopbar({
   const pdfSelectionReady = isPdf && pdfSelectedPageCount > 0;
   const pageSelectionLabel =
     pdfPageCount > 0 ? `${pdfSelectedPageCount} / ${pdfPageCount} 页` : "等待页数";
+  const longPdfPreviewPageCount = Math.min(
+    PDF_LONG_DOCUMENT_DEFAULT_SELECTION,
+    Math.max(pdfPageCount, 0),
+  );
+  const showLongPdfControls =
+    isPdf && pdfPageCount > PDF_AUTO_SELECT_ALL_PAGE_LIMIT;
+  const showLongPdfHint =
+    showLongPdfControls &&
+    !isTranslating &&
+    pdfSelectedPageCount <= longPdfPreviewPageCount;
   const runPhaseLabel = isPdf
     ? isPausingTranslation
       ? "正在停止"
@@ -412,6 +428,17 @@ export function WorkspaceTopbar({
                 >
                   清空
                 </Button>
+                {showLongPdfControls ? (
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    className="h-6 px-1.5 !text-xs font-normal leading-none"
+                    onClick={onSelectPreviewPages}
+                    disabled={isTranslating}
+                  >
+                    前 {longPdfPreviewPageCount} 页
+                  </Button>
+                ) : null}
               </div>
               <label className="ml-1 flex h-6 cursor-pointer items-center gap-1.5 rounded-md px-1.5 !text-xs leading-none !text-muted-foreground transition-colors hover:bg-background/80 hover:!text-foreground has-disabled:cursor-not-allowed has-disabled:opacity-50">
                 <input
@@ -423,6 +450,11 @@ export function WorkspaceTopbar({
                 />
                 强制重翻
               </label>
+              {showLongPdfHint ? (
+                <span className="max-w-[15rem] truncate !text-xs !text-muted-foreground">
+                  长 PDF，默认前 {longPdfPreviewPageCount} 页
+                </span>
+              ) : null}
             </div>
           ) : selectedBlockCount > 0 ? (
             <div className="flex h-9 items-center gap-2 rounded-lg border border-border/70 bg-muted/30 px-2.5">

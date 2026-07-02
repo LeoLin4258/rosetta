@@ -1,5 +1,9 @@
 use std::{collections::HashMap, fs, path::PathBuf};
 
+use crate::managed_pdf2zh::openai_shim::{
+    LightningApiConfig, LlamaCppApiConfig, ShimProviderConfig,
+};
+
 use crate::rosetta_jobs::{
     document::{
         sync_document_file_statuses, sync_document_file_translation_statuses,
@@ -492,6 +496,43 @@ fn pdf_page_selection_rejects_out_of_range_pages() {
     let error = parse_pdf_page_selection("2,6", 5).expect_err("page 6 is invalid");
 
     assert!(error.contains("第 6 页超出范围"));
+}
+
+#[test]
+fn lightning_pdf_chunk_policy_keeps_only_short_runs_wide() {
+    let original_override = std::env::var_os(super::LIGHTNING_PDF_RUN_CHUNK_SIZE_ENV);
+    std::env::remove_var(super::LIGHTNING_PDF_RUN_CHUNK_SIZE_ENV);
+
+    let lightning = ShimProviderConfig::Lightning(LightningApiConfig {
+        base_url: "http://127.0.0.1:8000".to_string(),
+        endpoint: "/v1/batch/completions".to_string(),
+        internal_token: String::new(),
+        body_password: String::new(),
+        timeout_ms: 120_000,
+    });
+    let llama = ShimProviderConfig::LlamaCpp(LlamaCppApiConfig {
+        base_url: "http://127.0.0.1:8080".to_string(),
+        timeout_ms: 120_000,
+    });
+
+    assert_eq!(
+        super::pdf_run_chunk_size_for_provider(&lightning, 30),
+        super::LIGHTNING_PDF_RUN_CHUNK_SIZE_DEFAULT,
+    );
+    assert_eq!(
+        super::pdf_run_chunk_size_for_provider(&lightning, 31),
+        super::LIGHTNING_PDF_LARGE_RUN_CHUNK_SIZE,
+    );
+    assert_eq!(
+        super::pdf_run_chunk_size_for_provider(&llama, 400),
+        PDF_RUN_CHUNK_SIZE,
+    );
+
+    if let Some(value) = original_override {
+        std::env::set_var(super::LIGHTNING_PDF_RUN_CHUNK_SIZE_ENV, value);
+    } else {
+        std::env::remove_var(super::LIGHTNING_PDF_RUN_CHUNK_SIZE_ENV);
+    }
 }
 
 #[test]
