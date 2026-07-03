@@ -162,8 +162,164 @@ repair_broken_bold_replacements = [
     ),
 ]
 
+paragraph_ops_replacements = [
+    (
+        """class Paragraph:
+    def __init__(self, y, x, x0, x1, y0, y1, size, brk):
+        self.y: float = y  # 初始纵坐标
+        self.x: float = x  # 初始横坐标
+        self.x0: float = x0  # 左边界
+        self.x1: float = x1  # 右边界
+        self.y0: float = y0  # 上边界
+        self.y1: float = y1  # 下边界
+        self.size: float = size  # 字体大小
+        self.brk: bool = brk  # 换行标记
+""",
+        """class Paragraph:
+    def __init__(self, y, x, x0, x1, y0, y1, size, brk, color=None, bold=False):
+        self.y: float = y  # 初始纵坐标
+        self.x: float = x  # 初始横坐标
+        self.x0: float = x0  # 左边界
+        self.x1: float = x1  # 右边界
+        self.y0: float = y0  # 上边界
+        self.y1: float = y1  # 下边界
+        self.size: float = size  # 字体大小
+        self.brk: bool = brk  # 换行标记
+        self.color = color
+        self.bold: bool = bold
+""",
+    ),
+    (
+        """        def vflag(font: str, char: str):    # 匹配公式（和角标）字体
+""",
+        """        def rosetta_pdf_color_operator(color, stroking=False):
+            if color is None:
+                return ""
+            suffix = "G" if stroking else "g"
+            if isinstance(color, (int, float)):
+                return f"{float(color):f} {suffix} "
+            if isinstance(color, (list, tuple)):
+                values = [float(value) for value in color]
+                if len(values) == 1:
+                    return f"{values[0]:f} {suffix} "
+                if len(values) == 3:
+                    operator = "RG" if stroking else "rg"
+                    return f"{values[0]:f} {values[1]:f} {values[2]:f} {operator} "
+                if len(values) == 4:
+                    operator = "K" if stroking else "k"
+                    return f"{values[0]:f} {values[1]:f} {values[2]:f} {values[3]:f} {operator} "
+            return ""
+
+        def rosetta_pdf_is_bold_font(font):
+            fontname = getattr(font, "fontname", "").split("+")[-1]
+            return re.match(r"(.*Bold|.*Medi|.*Demi|.*Black|.*Heavy|.*SemiBold|.*Semibold|.*Bd)", fontname, re.IGNORECASE) is not None
+
+        def rosetta_pdf_text_mode_operator(is_bold, color, size):
+            if not is_bold:
+                return "0 Tr "
+            stroke_width = max(0.12, min(0.45, size * 0.018))
+            return f"{rosetta_pdf_color_operator(color, True)}{stroke_width:f} w 2 Tr "
+
+        def vflag(font: str, char: str):    # 匹配公式（和角标）字体
+""",
+    ),
+    (
+        """                        pstk.append(Paragraph(child.y0, child.x0, child.x0, child.x0, child.y0, child.y1, child.size, False))
+""",
+        f"""                        pstk.append(Paragraph(child.y0, child.x0, child.x0, child.x0, child.y0, child.y1, child.size, False, child.graphicstate.ncolor, {bold_expr}))
+""",
+    ),
+    (
+        """                        pstk[-1].size = child.size
+""",
+        f"""                        pstk[-1].size = child.size
+                        pstk[-1].color = child.graphicstate.ncolor
+                        pstk[-1].bold = {bold_expr}
+""",
+    ),
+    (
+        """        def gen_op_txt(font, size, x, y, rtxt):
+            return f"/{font} {size:f} Tf 1 0 0 1 {x:f} {y:f} Tm [<{rtxt}>] TJ "
+""",
+        """        def gen_op_txt(font, size, x, y, rtxt, color=None, bold=False):
+            return f"{rosetta_pdf_text_mode_operator(bold, color, size)}{rosetta_pdf_color_operator(color)}/{font} {size:f} Tf 1 0 0 1 {x:f} {y:f} Tm [<{rtxt}>] TJ "
+""",
+    ),
+    (
+        """        def gen_op_line(x, y, xlen, ylen, linewidth):
+            return f"ET q 1 0 0 1 {x:f} {y:f} cm [] 0 d 0 J {linewidth:f} w 0 0 m {xlen:f} {ylen:f} l S Q BT "
+""",
+        """        def gen_op_line(x, y, xlen, ylen, linewidth, color=None):
+            return f"ET q {rosetta_pdf_color_operator(color, True)}1 0 0 1 {x:f} {y:f} cm [] 0 d 0 J {linewidth:f} w 0 0 m {xlen:f} {ylen:f} l S Q BT "
+""",
+    ),
+    (
+        """                            "rtxt": raw_string(fcur, cstk),
+                            "lidx": lidx
+""",
+        """                            "rtxt": raw_string(fcur, cstk),
+                            "lidx": lidx,
+                            "color": pstk[id].color,
+                            "bold": pstk[id].bold
+""",
+    ),
+    (
+        """                            "rtxt": raw_string(self.fontid[vch.font], vc),
+                            "lidx": lidx
+""",
+        """                            "rtxt": raw_string(self.fontid[vch.font], vc),
+                            "lidx": lidx,
+                            "color": vch.graphicstate.ncolor,
+                            "bold": False
+""",
+    ),
+    (
+        """                                "ylen": l.pts[1][1] - l.pts[0][1],
+                                "lidx": lidx
+""",
+        """                                "ylen": l.pts[1][1] - l.pts[0][1],
+                                "lidx": lidx,
+                                "color": l.stroking_color
+""",
+    ),
+    (
+        """                    "rtxt": raw_string(fcur, cstk),
+                    "lidx": lidx
+""",
+        """                    "rtxt": raw_string(fcur, cstk),
+                    "lidx": lidx,
+                    "color": pstk[id].color,
+                    "bold": pstk[id].bold
+""",
+    ),
+    (
+        """                    ops_list.append(gen_op_txt(vals["font"], vals["size"], vals["x"], vals["dy"] + y - vals["lidx"] * size * line_height, vals["rtxt"]))
+""",
+        """                    ops_list.append(gen_op_txt(vals["font"], vals["size"], vals["x"], vals["dy"] + y - vals["lidx"] * size * line_height, vals["rtxt"], vals.get("color"), vals.get("bold", False)))
+""",
+    ),
+    (
+        """                    ops_list.append(gen_op_line(vals["x"], vals["dy"] + y - vals["lidx"] * size * line_height, vals["xlen"], vals["ylen"], vals["linewidth"]))
+""",
+        """                    ops_list.append(gen_op_line(vals["x"], vals["dy"] + y - vals["lidx"] * size * line_height, vals["xlen"], vals["ylen"], vals["linewidth"], vals.get("color")))
+""",
+    ),
+    (
+        """                ops_list.append(gen_op_line(l.pts[0][0], l.pts[0][1], l.pts[1][0] - l.pts[0][0], l.pts[1][1] - l.pts[0][1], l.linewidth))
+""",
+        """                ops_list.append(gen_op_line(l.pts[0][0], l.pts[0][1], l.pts[1][0] - l.pts[0][0], l.pts[1][1] - l.pts[0][1], l.linewidth, l.stroking_color))
+""",
+    ),
+]
+
 if "def rosetta_pdf_is_bold_font(" in text and "rosetta_pdf_is_bold_font(child.font)" in text:
     replacements = repair_broken_bold_replacements
+elif (
+    "class Paragraph:" in text
+    and "ops_vals: list[dict] = []" in text
+    and "def rosetta_pdf_color_operator(" not in text
+):
+    replacements = paragraph_ops_replacements
 elif "def rosetta_pdf_color_operator(" in text:
     replacements = color_only_replacements
 else:
