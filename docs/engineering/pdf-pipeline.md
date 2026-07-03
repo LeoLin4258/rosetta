@@ -1,21 +1,27 @@
 # PDF Pipeline
 
-Last updated: 2026-07-02
+Last updated: 2026-07-03
 
 This document describes the current PDF translation implementation. Older PDF
 plans are historical background only when they conflict with this file and
-ADR 0008.
+ADR 0008 or ADR 0009.
 
 Rosetta's PDF path is a local visual PDF translation pipeline:
 
 1. Import copies the user's PDF into a job-local `source.pdf`.
 2. The source PDF remains the authoritative source file.
-3. Translation uses the local `pdf2zh` component. Windows NVIDIA Lightning uses
-   Rosetta's local batch endpoint for cross-page batching. llama.cpp, MLX, and
-   other non-Lightning providers use the page-local OpenAI-compatible shim so
-   translated page artifacts can be committed incrementally.
-4. Translation commits one page-level PDF artifact at a time.
-5. Export assembles a full PDF from `source.pdf` plus completed page artifacts.
+3. Translation enters the Rosetta-native PDF engine contract in the
+   PDFMathTranslate fork. The Python worker prepares a page window and returns
+   typed translation units; it does not call RWKV, OpenAI-compatible shims, or
+   Rosetta HTTP translation endpoints.
+4. Rust translates the returned units through the selected local provider.
+   Lightning keeps large unit batches inside the window. llama.cpp and other
+   non-Lightning providers use the same Rust `translate_pdf_units` contract
+   with strict chunking/retry and truncation rejection.
+5. The Python worker renders the prepared window from `unitId -> translation`
+   and emits formal `PageResult` records. Rust commits one page-level PDF
+   artifact at a time only from those `PageResult` records.
+6. Export assembles a full PDF from `source.pdf` plus completed page artifacts.
 
 PDF translation does not use the TXT/Markdown `Segment[]` scheduler. PDF jobs
 still have `document.json`, `segments.json`, and translation-file metadata so
@@ -54,16 +60,20 @@ AppData/Rosetta/jobs/
       <user-triggered exports>
 ```
 
-Legacy files are read for compatibility:
+PDF v1 beta files are detected only to reset derived state:
 
 ```txt
+pdf_pages.<targetLang>.json       # schemaVersion < 2
 pdf_page_translations.<targetLang>.json
 pdf_page_translations.json
 pdf-pages/<targetLang>/page-0001.pdf
 pdf-pages/page-0001.pdf
 ```
 
-New writes use `pdf_pages.<targetLang>.json` and `translated-pages/`.
+PDF v2 does not preserve beta page translation state or beta translated
+artifacts. When a v1 PDF page state is found, Rosetta removes derived
+translated artifacts and page-state files, preserves `source.pdf`, and rebuilds
+an empty v2 `pending` state so the document can be translated again.
 
 ## File Roles
 
@@ -100,31 +110,30 @@ Diagnostics:
   timestamps, run IDs, page numbers, counts, durations, file sizes, provider
   IDs, and aggregate RWKV timings. They must not contain source text,
   translated text, prompts, model responses, or document content.
-  Translation runs also include `worker.stage` events emitted by the persistent
-  pdf2zh worker for internal phases such as PDF preprocessing, YOLO layout
-  inference, pdfminer page processing, patch application, single-page PDF save,
-  and page event emission. `page.processPage` is further split into pdfminer
-  `beginPage`, `renderStreams`, `endPage`, `receiveLayout`,
-  `translateRequest`, `translateBatch`, and `patchStreams` events so the first
-  visible page can be analyzed without treating pdfminer/TextConverter as one
-  opaque block. The Rosetta native batch path also records
-  `crossPageBatch.collect` and `crossPageBatch.translate` events when the
-  worker uses cross-page batching.
+  Translation runs include prepare/translate/render chunk timing and formal
+  page commit outcomes. Diagnostics can explain performance and failures, but
+  they must not decide whether a page is committed; `PageResult` is the
+  business contract.
 - `diagnostics/pdf-translation-profile-<runId>.json`: per-run aggregate profile
   for PDF translation. This remains the compact summary for one translation
   run; the timeline is the ordered event log used to reconstruct the chain.
 
 The developer validation script `rosetta-app/scripts/check-pdf-translation-run.mjs`
-reads a profile, page state, timeline, and `rwkv-io-debug.jsonl` for one run.
-It exits non-zero when requested pages are not translated, any completion has
-empty output, any completion has `truncated=true`, any completion has
-`stop_type=limit`, or an optional total-duration threshold is exceeded.
+reads a profile, page state, timeline, and provider diagnostics for one run.
+It may fail local benchmark runs, but product commit logic must not depend on
+diagnostic inference.
 
 Diagnostic files are not job state. Repair, preview, export, and resume logic
 must continue to use `pdf_source.json`, `pdf_pages.<targetLang>.json`,
 `pdf_run.<targetLang>.json`, and page artifacts as the source of truth.
 
-## PDF Translation Concurrency
+## Historical V1 Shim Notes
+
+The notes below describe the v1 OpenAI-compatible shim/replay period and older
+benchmark decisions. They are historical background only. The PDF v2 product
+path does not spawn an OpenAI-compatible PDF shim, does not call
+`/v1/rosetta/batch-translations` as the PDF engine communication layer, and
+does not use a deferred/replay translator as Rosetta's architecture boundary.
 
 For local OpenAI-shim providers that do not report a supported batch size,
 Rosetta uses a default PDF paragraph batch width of 8. The Windows llama.cpp
@@ -250,10 +259,11 @@ change to source PDF state or translation correctness.
 Rosetta keeps the speed-first write on the translation hot path and then
 compresses committed page artifacts in a Rust-owned background maintenance
 task on Windows. The background task uses the installed pdf2zh sidecar's
-PyMuPDF runtime with `garbage=4`, stream/image/font deflate, and object
-streams; importing that lightweight PyMuPDF module does not touch the warm
-pdf2zh worker or PyTorch/ONNX layout prewarm. Compression is best-effort cache
-maintenance:
+PyMuPDF runtime with font subsetting, `garbage=4`, stream/image/font deflate,
+and object streams. Font subsetting is required because otherwise each
+single-page translated artifact can retain a full CJK font copy; importing that
+lightweight PyMuPDF module does not touch the warm pdf2zh worker or
+PyTorch/ONNX layout prewarm. Compression is best-effort cache maintenance:
 
 - the page remains `translated` even if compression fails;
 - each candidate is guarded by `lastRunId`, `artifactVersion`, and
@@ -297,19 +307,35 @@ prediction fails, the worker still becomes ready and translation falls back to
 the same behavior as before; the ready log records `yoloWarmupStatus`,
 `yoloWarmupMs`, `yoloWarmupDevice`, and `yoloWarmupReason`.
 
+In PDF v2 the ready event also reports the PDF engine `contractVersion`,
+engine version, capabilities, and prewarm timings. Rosetta rejects an old PDF
+component pack when the worker cannot report contract version `2`.
+
 ## Page State
 
 `pdf_pages.<targetLang>.json` stores only durable statuses:
 
 - `pending`: no committed translated page artifact.
-- `translated`: `translatedPdfPath` points to a valid page PDF.
+- `translated`: the page is completed. `resultKind="translated"` has a valid
+  `translatedPdfPath`; `resultKind="no_text"` intentionally has no translated
+  PDF artifact and export keeps the source page for that page.
 - `failed`: the last attempt for this page failed and can be retried.
 
-A page/run must not be finalized as successful when the PDF shim reports an
-unrecovered RWKV failure. If a pdf2zh invocation completes but its final shim
-metrics include `failedRequestCount > 0`, Rosetta clears any page artifacts
-from that invocation and marks the affected pages/run as failed instead of
-keeping a misleading translated status.
+Page commit is driven only by the formal `PageResult` returned by the PDF
+engine. Diagnostics and timeline entries are not business inputs.
+
+Commit rules:
+
+- `status="translated"` requires a readable one-page PDF artifact.
+- `sourceUnitCount > 0 && translatedChars == 0` fails the page.
+- `emptyTranslationCount > 0` fails the page. The engine should only count
+  required translation units in this field.
+- `placeholderMismatchCount > 0` fails the page.
+- `status="no_text"` completes the page with `resultKind="no_text"` and no
+  translated artifact.
+- `status="failed"`, provider failure, translation count mismatch,
+  truncation, worker crash, and render failure all fail explicitly. They must
+  never produce a successful blank artifact.
 
 The UI may receive effective statuses:
 
@@ -327,10 +353,18 @@ Page record:
 
 ```json
 {
+  "schemaVersion": 2,
   "pageNumber": 1,
   "status": "translated",
+  "resultKind": "translated",
   "translatedPdfPath": "translated-pages/zh-CN/page-0001.pdf",
+  "sourceUnitCount": 8,
+  "translatedUnitCount": 8,
+  "sourceChars": 1788,
+  "translatedChars": 551,
   "artifactVersion": "1782369534004",
+  "artifactCompression": "fast",
+  "artifactBytes": 123456,
   "error": null,
   "updatedAt": "1782369534004",
   "lastRunId": "pdf-run-1782369534004"
@@ -381,27 +415,28 @@ Run states:
    - `retranslate-selected`
    - `retranslate-all`
 4. Backend creates `PdfTranslationRun` and writes `pdf_run.<targetLang>.json`.
-5. Pages are processed in chunks. Non-Lightning providers use the durable
-   10-page default. Lightning uses a larger 100-page chunk only for runs of
-   30 pages or fewer. Larger Lightning runs automatically fall back to 10-page
-   chunks to avoid long time-to-first-page and large UI event bursts.
-6. For `rosetta-batch`, the persistent worker uses a two-pass chunk-local
-   pipeline:
-   - collect pass: run pdfminer/pdf2zh layout for the requested pages with a
-     deferred translator and collect all translatable text units across the
-     chunk;
-   - translate pass: send the collected units through one ordered Rosetta batch
-     request whenever they fit the provider batch limit;
-   - replay pass: run pdfminer/pdf2zh again with a pretranslated replay
-     translator and write page artifacts.
-7. Non-Rosetta fallback providers keep the older page-local translation path.
-8. Each chunk writes pdf2zh output under `.tmp/pdf-runs/<runId>/...`.
-9. Each completed page is validated as a PDF, moved to
-   `translated-pages/<targetLang>/page-XXXX.pdf`, then written to
-   `pdf_pages.<targetLang>.json`.
-10. The run file is updated as pages complete, fail, pause, or finish.
-11. Job summary and translation-file summary are synced from reconciled page
-   state.
+5. Pages are processed in windows. Small PDFs can use a wide window up to 30
+   pages. Runs above 30 pages use fixed 10-page windows.
+6. Rust sends `prepare_pdf_window` to the persistent worker. The worker calls
+   the fork-owned Rosetta engine `prepareRun` and `collectUnits`, then returns
+   a typed `PreparedRun` plus ordered `TranslationUnit[]`.
+7. Rust translates all required units in the window through
+   `translate_pdf_units`. Lightning uses large ordered unit batches to keep
+   RWKV fed. Non-Lightning providers use the same typed unit contract with
+   strict chunking, split retry, and truncation/empty-output rejection.
+8. Rust sends `render_pdf_window` with `unitId -> translation`. The worker
+   calls the engine `renderPages`, which emits one formal `PageResult` per
+   page in page order.
+9. Rust commits each `PageResult` immediately as it arrives. Translated pages
+   are validated as readable one-page PDFs, moved to
+   `translated-pages/<targetLang>/page-XXXX.pdf`, recorded with v2 metadata,
+   and emitted to the UI. `no_text` pages are completed without pretending to
+   have translated text or a translated artifact.
+10. Rust sends `dispose_pdf_window` after render or cancellation. If worker
+    state is not trustworthy, the worker is killed and the next run prewarms a
+    fresh worker.
+11. The run file is updated as pages complete, fail, pause, or finish. Job
+    summary and translation-file summary are synced from reconciled page state.
 
 The default continue path never overwrites translated pages. Explicit
 retranslation clears the relevant page artifacts first.
@@ -425,24 +460,14 @@ Frontend behavior:
 
 Backend behavior:
 
-- Non-Lightning providers keep the page-local worker path and 10-page durable
-  chunk default.
-- Lightning keeps the 100-page chunk only for runs of 30 requested pages or
-  fewer.
-- Lightning runs above 30 requested pages use 10-page chunks. This sacrifices
-  some cross-page batching width on huge documents, but reduces first-visible
-  page latency, event bursts, and webview render pressure.
-
-Cross-page batching is scoped to Lightning's `service="rosetta-batch"` path.
-Non-Lightning providers intentionally stay on the page-local
-`service="openai:rwkv"` path so slow llama.cpp / MLX devices can show each page
-as soon as that page's artifact is committed. Cross-page batching can be
-disabled for local Lightning diagnosis with either:
-
-```txt
-ROSETTA_PDF_CROSS_PAGE_BATCH=0
-ROSETTA_PDF_DISABLE_CROSS_PAGE_BATCH=1
-```
+- All providers use the typed prepare/translate/render window contract.
+- Lightning windows aggregate units across the window to keep RWKV batch size
+  high; they do not fall back to per-page or per-paragraph tiny requests.
+- Runs above 30 requested pages use 10-page windows. This sacrifices some
+  maximum batch width on huge documents, but reduces first-visible page
+  latency, event bursts, memory pressure, and webview render pressure.
+- The first visible page is not blocked on the full document. Once a window's
+  translations return, pages render and commit in order.
 
 ## Pause
 

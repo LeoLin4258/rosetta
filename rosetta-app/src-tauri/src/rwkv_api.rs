@@ -2385,7 +2385,7 @@ fn provider_result_into_translate(
 }
 
 /// Translate a batch of texts via the Lightning (rwkv-lightning-contents) API.
-/// Used by the PDF translation OpenAI shim when the remote API provider is active.
+/// Used by the PDF v2 unit translator to keep RWKV requests wide inside a page window.
 pub async fn translate_batch_via_lightning(
     base_url: &str,
     endpoint: &str,
@@ -2417,7 +2417,9 @@ pub async fn translate_batch_via_lightning(
 }
 
 /// Translate a batch of texts via the llama.cpp raw completion API.
-/// Used by the PDF translation OpenAI shim when the Windows Vulkan provider is active.
+/// Kept for legacy PDF shim tests; the PDF v2 product path uses
+/// `rwkv_providers::llama_cpp_chat` directly through the unit translator.
+#[cfg(test)]
 pub async fn translate_batch_via_llama_cpp(
     base_url: &str,
     timeout_ms: u64,

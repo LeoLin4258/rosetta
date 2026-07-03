@@ -122,14 +122,18 @@ import numpy
 import pymupdf
 import pdfminer
 import pdf2zh
+from pdf2zh import rosetta_engine
 from pdf2zh.converter import TranslateConverter
 from pdf2zh.doclayout import OnnxModel
 from pdf2zh.translator import RosettaBatchTranslator
 
+if rosetta_engine.ENGINE_CONTRACT_VERSION != 2:
+    raise SystemExit("pdf2zh.rosetta_engine contract version is not 2")
+
 model_path = os.environ["ROSETTA_DOCLAYOUT_MODEL"]
 model = OnnxModel(model_path)
 providers = ",".join(model.model.get_providers())
-print(f"pdf-pack-imports-ok pdf2zh={pdf2zh.__version__} providers={providers}")
+print(f"pdf-pack-imports-ok pdf2zh={pdf2zh.__version__} contract={rosetta_engine.ENGINE_CONTRACT_VERSION} providers={providers}")
 '@
     $env:ROSETTA_DOCLAYOUT_MODEL = $ModelPath
     $Smoke | & $PythonExe -

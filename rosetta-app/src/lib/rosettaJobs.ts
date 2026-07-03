@@ -15,8 +15,16 @@ import type {
 export type PdfPageTranslation = {
   pageNumber: number;
   status: "pending" | "queued" | "translating" | "translated" | "failed";
+  resultKind?: "translated" | "no_text" | "failed" | null;
   translatedPdfPath?: string | null;
+  sourceUnitCount?: number | null;
+  translatedUnitCount?: number | null;
+  sourceChars?: number | null;
+  translatedChars?: number | null;
   artifactVersion?: string | null;
+  artifactCompression?: string | null;
+  artifactBytes?: number | null;
+  artifactCompressionError?: string | null;
   error?: string | null;
   updatedAt: string;
   lastRunId?: string | null;

@@ -1,8 +1,6 @@
 use std::{collections::HashMap, fs, path::PathBuf};
 
-use crate::managed_pdf2zh::openai_shim::{
-    LightningApiConfig, LlamaCppApiConfig, ShimProviderConfig,
-};
+use crate::managed_pdf2zh::worker::PdfPageResult;
 
 use crate::rosetta_jobs::{
     document::{
@@ -17,6 +15,9 @@ use crate::rosetta_jobs::{
     formats::pdf::page_state::*,
     formats::pdf::run_state::*,
     formats::pdf::test_helpers::fixture_path,
+    formats::pdf::unit_translation::{
+        LightningPdfApiConfig, LlamaCppPdfApiConfig, PdfUnitProviderConfig,
+    },
     formats::{markdown::parse_markdown, txt::parse_txt},
     import::{build_blank_txt_bundle, rebuild_txt_source_file},
     model::*,
@@ -56,35 +57,102 @@ fn blank_txt_bundle_uses_txt_format_and_starts_empty() {
 }
 
 #[test]
-fn pdf_quality_gate_rejects_empty_translation_output_for_text_page() {
-    let quality = super::PdfPageTranslationQuality {
-        translate_input_chars: 2403,
-        translate_output_chars: 0,
-        translated_ops_chars: Some(6),
+fn pdf_page_result_commit_accepts_valid_translated_page() {
+    let dir = unique_temp_dir("pdf-page-result-commit");
+    let artifact = fixture_path("simple-one-page.pdf");
+    let mut state = empty_state(1, "zh-CN");
+    let result = PdfPageResult {
+        page_number: 1,
+        status: "translated".to_string(),
+        artifact_path: Some(artifact.to_string_lossy().to_string()),
+        source_unit_count: 1,
+        translated_unit_count: 1,
+        source_chars: 12,
+        translated_chars: 4,
+        empty_translation_count: 0,
+        placeholder_mismatch_count: 0,
+        artifact_bytes: None,
+        error: None,
     };
 
-    let message = super::pdf_page_translation_quality_rejection(4, Some(&quality))
-        .expect("text page with empty translated output should be rejected");
+    let committed = super::commit_pdf_page_result(&dir, &mut state, "zh-CN", "run-1", &result)
+        .expect("commit valid page result");
 
-    assert!(message.contains("PDF 第 4 页"));
-    assert!(message.contains("译文回填输出为空"));
+    assert_eq!(committed.result_kind, "translated");
+    assert_eq!(
+        committed.translated_pdf_path.as_deref(),
+        Some("translated-pages/zh-CN/page-0001.pdf")
+    );
+    assert!(committed.artifact_bytes.unwrap_or_default() > 0);
+    assert!(dir
+        .join("translated-pages")
+        .join("zh-CN")
+        .join("page-0001.pdf")
+        .is_file());
+    assert_eq!(state.pages[0].status, "translated");
+    assert_eq!(state.pages[0].result_kind.as_deref(), Some("translated"));
+    assert_eq!(state.pages[0].source_unit_count, Some(1));
+    assert_eq!(state.pages[0].translated_chars, Some(4));
+    assert_eq!(state.pages[0].artifact_compression.as_deref(), Some("fast"));
+    fs::remove_dir_all(dir).ok();
 }
 
 #[test]
-fn pdf_quality_gate_allows_image_only_or_nonempty_translation_output() {
-    let image_only = super::PdfPageTranslationQuality {
-        translate_input_chars: 0,
-        translate_output_chars: 0,
-        translated_ops_chars: Some(6),
+fn pdf_page_result_commit_rejects_empty_translation_for_text_page() {
+    let dir = unique_temp_dir("pdf-page-result-empty");
+    let artifact = fixture_path("simple-one-page.pdf");
+    let mut state = empty_state(1, "zh-CN");
+    let result = PdfPageResult {
+        page_number: 1,
+        status: "translated".to_string(),
+        artifact_path: Some(artifact.to_string_lossy().to_string()),
+        source_unit_count: 1,
+        translated_unit_count: 0,
+        source_chars: 12,
+        translated_chars: 0,
+        empty_translation_count: 1,
+        placeholder_mismatch_count: 0,
+        artifact_bytes: None,
+        error: None,
     };
-    assert!(super::pdf_page_translation_quality_rejection(1, Some(&image_only)).is_none());
 
-    let translated = super::PdfPageTranslationQuality {
-        translate_input_chars: 120,
-        translate_output_chars: 30,
-        translated_ops_chars: Some(900),
+    let message = super::commit_pdf_page_result(&dir, &mut state, "zh-CN", "run-1", &result)
+        .expect_err("empty translated output should be rejected");
+
+    assert!(message.contains("PDF 第 1 页"));
+    assert!(message.contains("译文字数为 0"));
+    assert!(state.pages.is_empty());
+    fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn pdf_page_result_commit_accepts_no_text_page_without_artifact() {
+    let dir = unique_temp_dir("pdf-page-result-no-text");
+    let mut state = empty_state(1, "zh-CN");
+    let result = PdfPageResult {
+        page_number: 1,
+        status: "no_text".to_string(),
+        artifact_path: None,
+        source_unit_count: 0,
+        translated_unit_count: 0,
+        source_chars: 0,
+        translated_chars: 0,
+        empty_translation_count: 0,
+        placeholder_mismatch_count: 0,
+        artifact_bytes: None,
+        error: None,
     };
-    assert!(super::pdf_page_translation_quality_rejection(1, Some(&translated)).is_none());
+
+    let committed = super::commit_pdf_page_result(&dir, &mut state, "zh-CN", "run-1", &result)
+        .expect("commit no-text page result");
+
+    assert_eq!(committed.result_kind, "no_text");
+    assert_eq!(committed.translated_pdf_path, None);
+    assert_eq!(committed.artifact_bytes, None);
+    assert_eq!(state.pages[0].status, "translated");
+    assert_eq!(state.pages[0].result_kind.as_deref(), Some("no_text"));
+    assert_eq!(state.pages[0].translated_pdf_path, None);
+    fs::remove_dir_all(dir).ok();
 }
 
 #[test]
@@ -535,14 +603,14 @@ fn lightning_pdf_chunk_policy_keeps_only_short_runs_wide() {
     let original_override = std::env::var_os(super::LIGHTNING_PDF_RUN_CHUNK_SIZE_ENV);
     std::env::remove_var(super::LIGHTNING_PDF_RUN_CHUNK_SIZE_ENV);
 
-    let lightning = ShimProviderConfig::Lightning(LightningApiConfig {
+    let lightning = PdfUnitProviderConfig::Lightning(LightningPdfApiConfig {
         base_url: "http://127.0.0.1:8000".to_string(),
         endpoint: "/v1/batch/completions".to_string(),
         internal_token: String::new(),
         body_password: String::new(),
         timeout_ms: 120_000,
     });
-    let llama = ShimProviderConfig::LlamaCpp(LlamaCppApiConfig {
+    let llama = PdfUnitProviderConfig::LlamaCpp(LlamaCppPdfApiConfig {
         base_url: "http://127.0.0.1:8080".to_string(),
         timeout_ms: 120_000,
     });
@@ -578,7 +646,12 @@ fn pdf_page_status_restores_stale_translating_pages() {
         pages: vec![PdfPageTranslation {
             page_number: 1,
             status: "translating".to_string(),
+            result_kind: None,
             translated_pdf_path: None,
+            source_unit_count: None,
+            translated_unit_count: None,
+            source_chars: None,
+            translated_chars: None,
             artifact_version: None,
             artifact_compression: None,
             artifact_bytes: None,
@@ -607,7 +680,12 @@ fn pdf_page_state_writes_canonical_file_and_only_durable_statuses() {
         pages: vec![PdfPageTranslation {
             page_number: 1,
             status: "queued".to_string(),
+            result_kind: None,
             translated_pdf_path: Some("translated-pages/zh-CN/page-0001.pdf".to_string()),
+            source_unit_count: None,
+            translated_unit_count: None,
+            source_chars: None,
+            translated_chars: None,
             artifact_version: Some("1".to_string()),
             artifact_compression: Some("fast".to_string()),
             artifact_bytes: Some(123),
@@ -629,6 +707,61 @@ fn pdf_page_state_writes_canonical_file_and_only_durable_statuses() {
     assert_eq!(restored.pages[0].artifact_bytes, None);
     assert_eq!(restored.pages[0].artifact_compression_error, None);
     assert_eq!(restored.pages[0].error, None);
+    fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn pdf_page_state_v1_resets_to_v2_pending_and_removes_derived_artifacts() {
+    let dir = unique_temp_dir("pdf-page-state-v1-reset");
+    fs::create_dir_all(dir.join("translated-pages").join("zh-CN")).expect("create translated dir");
+    fs::create_dir_all(dir.join("pdf-pages").join("zh-CN")).expect("create page dir");
+    fs::create_dir_all(dir.join("pdf2zh-output")).expect("create output dir");
+    fs::write(dir.join("source.pdf"), b"source").expect("write source");
+    fs::write(
+        dir.join("translated-pages")
+            .join("zh-CN")
+            .join("page-0001.pdf"),
+        b"old translated page",
+    )
+    .expect("write old translated artifact");
+    fs::write(
+        dir.join("pdf-pages").join("zh-CN").join("page-0001.pdf"),
+        b"old page artifact",
+    )
+    .expect("write old page artifact");
+    fs::write(
+        dir.join("pdf2zh-output").join("page-0001.pdf"),
+        b"old output",
+    )
+    .expect("write old output artifact");
+    fs::write(
+        dir.join("pdf_pages.zh-CN.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schemaVersion": 1,
+            "sourcePageCount": 1,
+            "targetLang": "zh-CN",
+            "pages": [{
+                "pageNumber": 1,
+                "status": "translated",
+                "translatedPdfPath": "translated-pages/zh-CN/page-0001.pdf",
+                "artifactVersion": "old",
+                "error": null,
+                "updatedAt": "1"
+            }]
+        }))
+        .expect("serialize v1 state"),
+    )
+    .expect("write v1 state");
+
+    let restored = read_pdf_page_translation_state(&dir, 1, "zh-CN").expect("read v1 state");
+
+    assert_eq!(restored.schema_version, PDF_PAGE_STATE_SCHEMA_VERSION);
+    assert!(restored.pages.is_empty());
+    assert!(dir.join("source.pdf").is_file());
+    assert!(!dir.join("translated-pages").join("zh-CN").exists());
+    assert!(!dir.join("pdf-pages").join("zh-CN").exists());
+    assert!(!dir.join("pdf2zh-output").exists());
+    assert!(!dir.join("pdf_pages.zh-CN.json").exists());
     fs::remove_dir_all(dir).ok();
 }
 
@@ -723,7 +856,12 @@ fn pdf_page_status_does_not_reuse_state_for_other_target_language() {
         pages: vec![PdfPageTranslation {
             page_number: 1,
             status: "translated".to_string(),
+            result_kind: Some("translated".to_string()),
             translated_pdf_path: Some(pdf_page_relative_path(1)),
+            source_unit_count: None,
+            translated_unit_count: None,
+            source_chars: None,
+            translated_chars: None,
             artifact_version: Some("1".to_string()),
             artifact_compression: None,
             artifact_bytes: None,
@@ -753,7 +891,12 @@ fn pdf_page_status_does_not_trust_legacy_shared_page_path_for_english() {
         pages: vec![PdfPageTranslation {
             page_number: 1,
             status: "translated".to_string(),
+            result_kind: Some("translated".to_string()),
             translated_pdf_path: Some("pdf-pages/page-0001.pdf".to_string()),
+            source_unit_count: None,
+            translated_unit_count: None,
+            source_chars: None,
+            translated_chars: None,
             artifact_version: Some("1".to_string()),
             artifact_compression: None,
             artifact_bytes: None,
@@ -789,6 +932,7 @@ fn pdf_import_cleanup_removes_derived_translation_artifacts() {
     .expect("write scoped state");
     fs::write(dir.join("pdf_page_translations.json"), b"{\"pages\":[]}")
         .expect("write legacy state");
+    fs::write(dir.join("pdf_pages.zh-CN.json"), b"{\"pages\":[]}").expect("write v2 state");
     fs::write(
         dir.join("pdf-pages").join("zh-CN").join("page-0001.pdf"),
         b"page",
@@ -815,6 +959,7 @@ fn pdf_import_cleanup_removes_derived_translation_artifacts() {
     assert!(!dir.join("pdf-pages").exists());
     assert!(!dir.join("translated-pages").exists());
     assert!(!dir.join("pdf2zh-output").exists());
+    assert!(!dir.join("pdf_pages.zh-CN.json").exists());
     assert!(!dir.join("pdf_page_translations.zh-CN.json").exists());
     assert!(!dir.join("pdf_page_translations.json").exists());
     fs::remove_dir_all(dir).ok();
@@ -830,7 +975,12 @@ fn pdf_page_status_summary_marks_all_pages_translated() {
             PdfPageTranslation {
                 page_number: 1,
                 status: "translated".to_string(),
+                result_kind: Some("translated".to_string()),
                 translated_pdf_path: Some("translated-pages/zh-CN/page-0001.pdf".to_string()),
+                source_unit_count: None,
+                translated_unit_count: None,
+                source_chars: None,
+                translated_chars: None,
                 artifact_version: Some("1".to_string()),
                 artifact_compression: None,
                 artifact_bytes: None,
@@ -842,7 +992,12 @@ fn pdf_page_status_summary_marks_all_pages_translated() {
             PdfPageTranslation {
                 page_number: 2,
                 status: "translated".to_string(),
+                result_kind: Some("translated".to_string()),
                 translated_pdf_path: Some("translated-pages/zh-CN/page-0002.pdf".to_string()),
+                source_unit_count: None,
+                translated_unit_count: None,
+                source_chars: None,
+                translated_chars: None,
                 artifact_version: Some("1".to_string()),
                 artifact_compression: None,
                 artifact_bytes: None,
@@ -877,7 +1032,12 @@ fn pdf_force_retranslate_clears_existing_page_artifact() {
         pages: vec![PdfPageTranslation {
             page_number: 2,
             status: "translated".to_string(),
+            result_kind: Some("translated".to_string()),
             translated_pdf_path: Some("translated-pages/zh-CN/page-0002.pdf".to_string()),
+            source_unit_count: None,
+            translated_unit_count: None,
+            source_chars: None,
+            translated_chars: None,
             artifact_version: Some("1".to_string()),
             artifact_compression: Some("compressed".to_string()),
             artifact_bytes: Some(42),
@@ -996,7 +1156,12 @@ fn pdf_page_export_substitutes_translated_page_and_keeps_full_length() {
         pages: vec![PdfPageTranslation {
             page_number: 1,
             status: "translated".to_string(),
+            result_kind: Some("translated".to_string()),
             translated_pdf_path: Some("translated-pages/zh-CN/page-0001.pdf".to_string()),
+            source_unit_count: None,
+            translated_unit_count: None,
+            source_chars: None,
+            translated_chars: None,
             artifact_version: Some("1".to_string()),
             artifact_compression: None,
             artifact_bytes: None,

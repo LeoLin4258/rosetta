@@ -1,15 +1,15 @@
-use std::{collections::BTreeSet, path::Path};
+use std::{collections::BTreeSet, fs, path::Path};
 
 use serde::{Deserialize, Serialize};
 
 use crate::rosetta_jobs::{
-    model::SCHEMA_VERSION,
     path::timestamp_ms_string,
     store::{read_json, write_json},
 };
 
 pub(crate) const PDF_PAGE_TRANSLATIONS_FILENAME: &str = "pdf_page_translations.json";
 pub(crate) const PDF_PAGES_FILENAME_PREFIX: &str = "pdf_pages";
+pub(crate) const PDF_PAGE_STATE_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -25,7 +25,17 @@ pub(crate) struct PdfPageTranslationState {
 pub(crate) struct PdfPageTranslation {
     pub page_number: u32,
     pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_kind: Option<String>,
     pub translated_pdf_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_unit_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub translated_unit_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_chars: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub translated_chars: Option<u64>,
     #[serde(default)]
     pub artifact_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -100,20 +110,29 @@ pub(crate) fn read_pdf_page_translation_state(
     if state.target_lang != target_lang {
         return Ok(empty_state(source_page_count, target_lang));
     }
+    if state.schema_version < PDF_PAGE_STATE_SCHEMA_VERSION {
+        reset_v1_pdf_derived_artifacts(job_dir, target_lang);
+        return Ok(empty_state(source_page_count, target_lang));
+    }
 
+    state.schema_version = PDF_PAGE_STATE_SCHEMA_VERSION;
     state.source_page_count = source_page_count;
     for page in &mut state.pages {
         if page.status == "translating" || page.status == "queued" {
             page.status = "pending".to_string();
+            page.result_kind = None;
             page.translated_pdf_path = None;
             clear_pdf_page_artifact_metadata(page);
+            clear_pdf_page_result_metadata(page);
             page.error = None;
             page.updated_at = timestamp_ms_string();
         }
         if page.status != "pending" && page.status != "translated" && page.status != "failed" {
             page.status = "pending".to_string();
+            page.result_kind = None;
             page.translated_pdf_path = None;
             clear_pdf_page_artifact_metadata(page);
+            clear_pdf_page_result_metadata(page);
             page.error = None;
             page.updated_at = timestamp_ms_string();
         }
@@ -121,8 +140,10 @@ pub(crate) fn read_pdf_page_translation_state(
             && !is_trusted_legacy_target_lang(target_lang)
         {
             page.status = "pending".to_string();
+            page.result_kind = None;
             page.translated_pdf_path = None;
             clear_pdf_page_artifact_metadata(page);
+            clear_pdf_page_result_metadata(page);
             page.error = None;
             page.updated_at = timestamp_ms_string();
         }
@@ -135,11 +156,14 @@ pub(crate) fn write_pdf_page_translation_state(
     state: &PdfPageTranslationState,
 ) -> Result<(), String> {
     let mut persisted = state.clone();
+    persisted.schema_version = PDF_PAGE_STATE_SCHEMA_VERSION;
     for page in &mut persisted.pages {
         if page.status == "queued" || page.status == "translating" {
             page.status = "pending".to_string();
+            page.result_kind = None;
             page.translated_pdf_path = None;
             clear_pdf_page_artifact_metadata(page);
+            clear_pdf_page_result_metadata(page);
             page.error = None;
             page.updated_at = timestamp_ms_string();
         }
@@ -176,6 +200,7 @@ pub(crate) fn upsert_pdf_page_with_run(
         .find(|page| page.page_number == page_number)
     {
         page.status = status;
+        page.result_kind = pdf_page_result_kind_for_status(&page.status);
         page.translated_pdf_path = translated_pdf_path;
         page.artifact_version = page
             .translated_pdf_path
@@ -186,6 +211,9 @@ pub(crate) fn upsert_pdf_page_with_run(
         } else {
             clear_pdf_page_artifact_metadata(page);
         }
+        if page.status != "translated" {
+            clear_pdf_page_result_metadata(page);
+        }
         page.error = error;
         page.updated_at = updated_at;
         page.last_run_id = run_id.map(str::to_string);
@@ -193,19 +221,48 @@ pub(crate) fn upsert_pdf_page_with_run(
     }
 
     let has_artifact = translated_pdf_path.is_some();
+    let result_kind = pdf_page_result_kind_for_status(&status);
     state.pages.push(PdfPageTranslation {
         page_number,
         status,
+        result_kind,
         artifact_version: translated_pdf_path.as_ref().map(|_| updated_at.clone()),
         artifact_compression: has_artifact.then(|| "fast".to_string()),
         artifact_bytes: None,
         artifact_compression_error: None,
+        source_unit_count: None,
+        translated_unit_count: None,
+        source_chars: None,
+        translated_chars: None,
         translated_pdf_path,
         error,
         updated_at,
         last_run_id: run_id.map(str::to_string),
     });
     state.pages.sort_by_key(|page| page.page_number);
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn set_pdf_page_result_metadata(
+    state: &mut PdfPageTranslationState,
+    page_number: u32,
+    result_kind: Option<String>,
+    source_unit_count: Option<u32>,
+    translated_unit_count: Option<u32>,
+    source_chars: Option<u64>,
+    translated_chars: Option<u64>,
+) {
+    if let Some(page) = state
+        .pages
+        .iter_mut()
+        .find(|page| page.page_number == page_number)
+    {
+        page.result_kind = result_kind;
+        page.source_unit_count = source_unit_count;
+        page.translated_unit_count = translated_unit_count;
+        page.source_chars = source_chars;
+        page.translated_chars = translated_chars;
+    }
 }
 
 pub(crate) fn set_pdf_page_artifact_metadata(
@@ -230,6 +287,13 @@ pub(crate) fn clear_pdf_page_artifact_metadata(page: &mut PdfPageTranslation) {
     page.artifact_compression = None;
     page.artifact_bytes = None;
     page.artifact_compression_error = None;
+}
+
+pub(crate) fn clear_pdf_page_result_metadata(page: &mut PdfPageTranslation) {
+    page.source_unit_count = None;
+    page.translated_unit_count = None;
+    page.source_chars = None;
+    page.translated_chars = None;
 }
 
 pub(crate) fn pdf_page_filename(page_number: u32) -> String {
@@ -327,7 +391,7 @@ pub(crate) fn pdf_page_status_summary(
 
 pub(crate) fn empty_state(source_page_count: u32, target_lang: &str) -> PdfPageTranslationState {
     PdfPageTranslationState {
-        schema_version: SCHEMA_VERSION,
+        schema_version: PDF_PAGE_STATE_SCHEMA_VERSION,
         source_page_count,
         target_lang: target_lang.to_string(),
         pages: Vec::new(),
@@ -367,4 +431,22 @@ fn persisted_pdf_page_status(status: &str) -> String {
         "failed" => "failed".to_string(),
         _ => "pending".to_string(),
     }
+}
+
+fn pdf_page_result_kind_for_status(status: &str) -> Option<String> {
+    match status {
+        "translated" => Some("translated".to_string()),
+        "failed" => Some("failed".to_string()),
+        _ => None,
+    }
+}
+
+fn reset_v1_pdf_derived_artifacts(job_dir: &Path, target_lang: &str) {
+    let lang_dir = pdf_page_language_dir(target_lang);
+    let _ = fs::remove_dir_all(job_dir.join("translated-pages").join(&lang_dir));
+    let _ = fs::remove_dir_all(job_dir.join("pdf-pages").join(&lang_dir));
+    let _ = fs::remove_dir_all(job_dir.join("pdf2zh-output"));
+    let _ = fs::remove_file(job_dir.join(pdf_page_translation_state_filename(target_lang)));
+    let _ = fs::remove_file(job_dir.join(legacy_pdf_page_translation_state_filename(target_lang)));
+    let _ = fs::remove_file(job_dir.join(PDF_PAGE_TRANSLATIONS_FILENAME));
 }

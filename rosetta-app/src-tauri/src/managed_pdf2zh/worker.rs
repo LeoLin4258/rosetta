@@ -1,22 +1,22 @@
 //! Persistent pdf2zh worker process.
 //!
 //! Importing and preparing pdf2zh's layout stack is too expensive to pay for
-//! every PDF job. The one-shot CLI invocation paid that startup for every
-//! chunk of pages; this module keeps one warm Python worker per app session
-//! and feeds it translate jobs over a line-based JSON protocol.
+//! every PDF job. This module keeps one warm Python worker per app session
+//! and feeds it typed prepare/render/dispose jobs over a line-based JSON
+//! protocol.
 //!
 //! The worker script is embedded in the app binary and written under the
 //! sidecar root at spawn time, so already-installed packs get the worker
-//! without re-downloading anything. Callers fall back to the one-shot CLI
-//! when the worker can't be started.
+//! without re-downloading anything. The v2 product path fails clearly when
+//! the worker or engine contract is unavailable.
 //!
-//! Cancellation kills the worker's whole process group (translation threads
-//! and any descendants); the next run pays one re-import. There is no idle
+//! Cancellation kills the worker's whole process group; the next run pays one
+//! re-import. There is no idle
 //! reaper — the worker stays warm for the lifetime of the app process so the
 //! header indicator can stay "已就绪" and translate clicks are always cheap.
 
 use std::{
-    path::{Path, PathBuf},
+    path::Path,
     process::Stdio,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -54,125 +54,32 @@ mod tests {
     }
 
     #[test]
-    fn persistent_worker_rebinds_pdf2zh_cache_per_job() {
+    fn worker_is_thin_rosetta_engine_protocol_host() {
         assert!(
-            WORKER_SCRIPT.contains("pdf2zh_cache.cache_dir = cache_root"),
-            "the warm worker must rebind pdf2zh.cache after per-job tmpDir is set"
+            WORKER_SCRIPT.contains("from pdf2zh import rosetta_engine as engine"),
+            "the warm worker must delegate PDF internals to the fork-owned Rosetta engine"
         );
         assert!(
-            WORKER_SCRIPT.contains("os.path.join(tempfile.gettempdir(), \"cache\")"),
-            "the cache root should follow tempfile.gettempdir() for each translate job"
-        );
-    }
-
-    #[test]
-    fn force_translate_worker_clears_pdf2zh_paragraph_cache() {
-        assert!(
-            WORKER_SCRIPT.contains("ignore_cache = bool(job.get(\"ignoreCache\"))"),
-            "the worker should read Rosetta's force-retranslate flag"
+            WORKER_SCRIPT.contains("prepare_pdf_window")
+                && WORKER_SCRIPT.contains("render_pdf_window")
+                && WORKER_SCRIPT.contains("dispose_pdf_window"),
+            "the worker protocol should expose v2 prepare/render/dispose commands"
         );
         assert!(
-            WORKER_SCRIPT.contains("if ignore_cache and os.path.isdir(cache_root):"),
-            "forced PDF retranslation must clear pdf2zh's paragraph cache"
-        );
-        assert!(
-            WORKER_SCRIPT.contains("shutil.rmtree(cache_root, ignore_errors=True)"),
-            "forced PDF retranslation should remove cached paragraph translations"
+            !WORKER_SCRIPT.contains("DeferredTranslationCollector")
+                && !WORKER_SCRIPT.contains("PretranslatedTranslator")
+                && !WORKER_SCRIPT.contains("OPENAI_BASE_URL")
+                && !WORKER_SCRIPT.contains("ROSETTA_BATCH_BASE_URL"),
+            "the v2 worker must not own replay translators or OpenAI/Rosetta shim wiring"
         );
     }
 
     #[test]
-    fn worker_uses_native_rosetta_batch_translator() {
+    fn worker_reports_engine_capabilities() {
         assert!(
-            WORKER_SCRIPT.contains("service=service"),
-            "the warm worker should pass Rosetta's native service name to the PDF component"
+            WORKER_SCRIPT.contains("\"capabilities\": capabilities"),
+            "startup must report the PDF engine contract version and prewarm timings"
         );
-        assert!(
-            WORKER_SCRIPT.contains("envs=envs"),
-            "the warm worker should pass the Rosetta batch endpoint envs to the PDF component"
-        );
-    }
-
-    #[test]
-    fn worker_supports_cross_page_rosetta_batching() {
-        assert!(
-            WORKER_SCRIPT.contains("def cross_page_batch_enabled(service):"),
-            "the warm worker should expose the cross-page PDF batching gate"
-        );
-        assert!(
-            WORKER_SCRIPT.contains("service != \"rosetta-batch\""),
-            "cross-page PDF batching should stay scoped to Rosetta's native batch translator"
-        );
-        assert!(
-            WORKER_SCRIPT.contains("ROSETTA_PDF_CROSS_PAGE_BATCH"),
-            "local benchmark runs need an env switch to disable or force cross-page batching"
-        );
-        assert!(
-            WORKER_SCRIPT.contains("crossPageBatch.translate"),
-            "timeline diagnostics should expose the global cross-page model request"
-        );
-        assert!(
-            WORKER_SCRIPT.contains("PretranslatedTranslator"),
-            "the replay pass should use pretranslated text instead of calling the model per page"
-        );
-        assert!(
-            WORKER_SCRIPT.contains("self.cursor = 0")
-                && WORKER_SCRIPT.contains("pretranslated PDF replay order mismatch")
-                && !WORKER_SCRIPT.contains("translations_by_source.setdefault"),
-            "pretranslated replay must preserve duplicate source occurrences by order"
-        );
-        assert!(
-            WORKER_SCRIPT.contains("\"page.layoutMask.reuse\""),
-            "the replay pass should reuse collect-pass layout masks instead of repeating ONNX layout inference"
-        );
-        assert!(
-            WORKER_SCRIPT.contains("\"page.processPage.replayLayout\""),
-            "the replay pass should reuse collect-pass pdfminer layout instead of rendering page streams twice"
-        );
-        assert!(
-            WORKER_SCRIPT.contains("ROSETTA_PDF_SINGLE_PAGE_DEFLATE"),
-            "single-page artifact compression should remain controllable while tuning PDF save cost"
-        );
-        assert!(
-            WORKER_SCRIPT.contains("ROSETTA_PDF_LAYOUT_IMGSZ")
-                && WORKER_SCRIPT.contains("\"rosetta-batch-default\""),
-            "Rosetta batch PDF layout inference should use the speed-first imgsz default with an env escape hatch"
-        );
-    }
-
-    #[test]
-    fn worker_does_not_require_removed_pdf2zh_setup_log_api() {
-        assert!(
-            WORKER_SCRIPT.contains("def setup_pdf2zh_logging(cli):"),
-            "the worker should tolerate PDFMathTranslate versions without pdf2zh.pdf2zh.setup_log"
-        );
-        assert!(
-            !WORKER_SCRIPT.contains("cli.setup_log()"),
-            "pdf2zh 1.9.x no longer exposes setup_log at module scope"
-        );
-    }
-
-    #[test]
-    fn worker_reattaches_page_numbers_for_newer_pdfminer_pages() {
-        assert!(
-            WORKER_SCRIPT.contains("page.pageno = page_index"),
-            "newer pdfminer.six PDFPage objects may not expose pageno, but pdf2zh still needs it"
-        );
-        assert!(
-            WORKER_SCRIPT.contains("layout[page_index] = box"),
-            "layout masks should use Rosetta's explicit zero-based page index"
-        );
-    }
-
-    #[test]
-    fn detects_repeated_rwkv_errors_from_pdf2zh() {
-        assert!(super::is_pdf2zh_rwkv_error(
-            "ERROR:pdf2zh.converter:RWKV 翻译失败: llama.cpp /completion 返回 HTTP 400"
-        ));
-        assert!(super::is_pdf2zh_rwkv_error(
-            "request (393 tokens) exceeds the available context size (256 tokens)"
-        ));
-        assert!(!super::is_pdf2zh_rwkv_error("100%|██████████| 4/4"));
     }
 
     #[cfg(target_os = "windows")]
@@ -245,6 +152,53 @@ impl Default for Pdf2zhWorkerStatus {
 }
 
 const WORKER_STATUS_EVENT: &str = "rosetta-pdf2zh-worker-status";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PdfTranslationUnit {
+    pub unit_id: String,
+    pub page_number: u32,
+    pub order_on_page: u32,
+    pub source_text: String,
+    pub source_chars: u64,
+    pub kind: String,
+    pub requires_translation: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PdfPageResult {
+    pub page_number: u32,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_path: Option<String>,
+    pub source_unit_count: u32,
+    pub translated_unit_count: u32,
+    pub source_chars: u64,
+    pub translated_chars: u64,
+    pub empty_translation_count: u32,
+    pub placeholder_mismatch_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PreparedPdfRun {
+    pub prepared_run_id: String,
+    pub source_page_count: u32,
+    pub pages: Vec<u32>,
+    pub unit_count: u32,
+    pub source_chars: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PreparedPdfWindow {
+    pub prepared_run: PreparedPdfRun,
+    pub units: Vec<PdfTranslationUnit>,
+}
 
 pub struct WorkerState {
     inner: Mutex<Option<WorkerProcess>>,
@@ -334,8 +288,8 @@ pub enum WorkerTranslateOutcome {
     JobFailed(String),
     /// The worker process died mid-job.
     WorkerLost(String),
-    /// No worker could be started (pack missing / old layout); caller should
-    /// fall back to the one-shot CLI.
+    /// No worker could be started (pack missing / old layout). The v2 product
+    /// path reports this clearly instead of falling back to a CLI path.
     Unavailable(String),
 }
 
@@ -360,13 +314,14 @@ struct WorkerEvent {
     yolo_warmup_device: Option<String>,
     #[serde(default, rename = "yoloWarmupReason")]
     yolo_warmup_reason: Option<String>,
-    /// 1-based absolute page number announced after a single page finishes
-    /// translating. Paired with `file` (the single-page translated PDF
-    /// written by the worker).
-    #[serde(default, rename = "pageNumber")]
-    page_number: Option<u32>,
     #[serde(default)]
-    file: Option<String>,
+    capabilities: Option<serde_json::Value>,
+    #[serde(default, rename = "preparedRun")]
+    prepared_run: Option<PreparedPdfRun>,
+    #[serde(default)]
+    units: Option<Vec<PdfTranslationUnit>>,
+    #[serde(default, rename = "pageResult")]
+    page_result: Option<PdfPageResult>,
     /// 1-based phase index on `warming` events emitted during the import
     /// handshake. Paired with `total_steps` and `label`.
     #[serde(default)]
@@ -375,28 +330,6 @@ struct WorkerEvent {
     total_steps: Option<u32>,
     #[serde(default)]
     label: Option<String>,
-    /// Per-stage timings attached to the final `done` event (preprocessMs,
-    /// translateMs, yoloMs, processPageMs, perPageSaveMs, …). Surfaced via
-    /// stderr for the diagnostics log; not parsed structurally.
-    #[serde(default)]
-    timings: Option<serde_json::Value>,
-    #[serde(default)]
-    stage: Option<String>,
-    #[serde(default)]
-    status: Option<String>,
-    #[serde(default, rename = "durationMs")]
-    duration_ms: Option<u64>,
-    #[serde(default)]
-    details: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct WorkerStageEvent {
-    pub page_number: Option<u32>,
-    pub stage: String,
-    pub status: String,
-    pub duration_ms: Option<u64>,
-    pub details: Option<serde_json::Value>,
 }
 
 pub struct WorkerProcess {
@@ -629,6 +562,18 @@ async fn spawn_worker(app: &AppHandle) -> Result<WorkerProcess, String> {
                             }
                         }
                         "ready" => {
+                            let contract_version = event
+                                .capabilities
+                                .as_ref()
+                                .and_then(|value| value.get("contractVersion"))
+                                .and_then(|value| value.as_u64())
+                                .unwrap_or(0);
+                            if contract_version != 2 {
+                                return Err(
+                                    "PDF 组件不支持 Rosetta PDF engine contract v2，请更新 PDF 组件。"
+                                        .to_string(),
+                                );
+                            }
                             let import_ms = event.import_ms.unwrap_or(0);
                             let yolo_warmup_ms = event
                                 .yolo_warmup_ms
@@ -720,18 +665,86 @@ fn format_stderr_tail(capture: &StdMutex<Vec<String>>) -> String {
 }
 
 impl WorkerProcess {
-    async fn run_translate(
+    async fn run_prepare_pdf_window(
         &mut self,
         mut payload: serde_json::Value,
         on_stderr: &mut (dyn FnMut(&str) + Send),
-        on_page: Option<&mut (dyn FnMut(u32, PathBuf) + Send)>,
-        on_stage: Option<&mut (dyn FnMut(WorkerStageEvent) + Send)>,
+        cancel_rx: &mut oneshot::Receiver<()>,
+    ) -> Result<PreparedPdfWindow, WorkerTranslateOutcome> {
+        self.next_job += 1;
+        let job_id = format!("wjob-{}", self.next_job);
+        payload["id"] = json!(job_id);
+        payload["cmd"] = json!("prepare_pdf_window");
+        let mut line = payload.to_string();
+        line.push('\n');
+
+        self.stdin
+            .write_all(line.as_bytes())
+            .await
+            .map_err(|error| {
+                WorkerTranslateOutcome::WorkerLost(format!("写入 worker 任务失败: {error}"))
+            })?;
+        self.stdin.flush().await.map_err(|error| {
+            WorkerTranslateOutcome::WorkerLost(format!("写入 worker 任务失败: {error}"))
+        })?;
+
+        loop {
+            tokio::select! {
+                event = self.events.recv() => {
+                    let Some(event) = event else {
+                        return Err(WorkerTranslateOutcome::WorkerLost(
+                            "worker 进程意外退出。".to_string(),
+                        ));
+                    };
+                    match event.event.as_str() {
+                        "prepared_pdf_window" if event.id.as_deref() == Some(job_id.as_str()) => {
+                            let prepared_run = event.prepared_run.ok_or_else(|| {
+                                WorkerTranslateOutcome::JobFailed(
+                                    "PDF worker prepared event missing preparedRun.".to_string(),
+                                )
+                            })?;
+                            let units = event.units.unwrap_or_default();
+                            return Ok(PreparedPdfWindow { prepared_run, units });
+                        }
+                        "stage" if event.id.as_deref() == Some(job_id.as_str()) => {}
+                        "error" if event.id.as_deref() == Some(job_id.as_str()) || event.id.is_none() => {
+                            return Err(WorkerTranslateOutcome::JobFailed(
+                                event.message.unwrap_or_else(|| "未知 worker 错误".to_string()),
+                            ));
+                        }
+                        "fatal" => {
+                            return Err(WorkerTranslateOutcome::WorkerLost(
+                                event.message.unwrap_or_else(|| "worker 致命错误".to_string()),
+                            ));
+                        }
+                        _ => {}
+                    }
+                }
+                stderr_line = self.stderr_lines.recv(), if self.stderr_open => {
+                    match stderr_line {
+                        Some(text) => on_stderr(&text),
+                        None => self.stderr_open = false,
+                    }
+                }
+                _ = &mut *cancel_rx => {
+                    kill_process_tree(&mut self.child).await;
+                    return Err(WorkerTranslateOutcome::Cancelled);
+                }
+            }
+        }
+    }
+
+    async fn run_render_pdf_window(
+        &mut self,
+        mut payload: serde_json::Value,
+        on_stderr: &mut (dyn FnMut(&str) + Send),
+        on_page_result: &mut (dyn FnMut(PdfPageResult) + Send),
         cancel_rx: &mut oneshot::Receiver<()>,
     ) -> WorkerTranslateOutcome {
         self.next_job += 1;
         let job_id = format!("wjob-{}", self.next_job);
         payload["id"] = json!(job_id);
-        payload["cmd"] = json!("translate");
+        payload["cmd"] = json!("render_pdf_window");
         let mut line = payload.to_string();
         line.push('\n');
 
@@ -742,10 +755,6 @@ impl WorkerProcess {
             return WorkerTranslateOutcome::WorkerLost(format!("写入 worker 任务失败: {error}"));
         }
 
-        let mut on_page = on_page;
-        let mut on_stage = on_stage;
-        let mut repeated_rwkv_error_count = 0usize;
-        let mut last_rwkv_error = String::new();
         loop {
             tokio::select! {
                 event = self.events.recv() => {
@@ -755,33 +764,15 @@ impl WorkerProcess {
                         );
                     };
                     match event.event.as_str() {
-                        "page" if event.id.as_deref() == Some(job_id.as_str()) => {
-                            if let (Some(cb), Some(page), Some(file)) =
-                                (on_page.as_deref_mut(), event.page_number, event.file)
-                            {
-                                cb(page, PathBuf::from(file));
-                            }
-                        }
-                        "stage" if event.id.as_deref() == Some(job_id.as_str()) => {
-                            if let (Some(cb), Some(stage)) =
-                                (on_stage.as_deref_mut(), event.stage)
-                            {
-                                cb(WorkerStageEvent {
-                                    page_number: event.page_number,
-                                    stage,
-                                    status: event.status.unwrap_or_else(|| "point".to_string()),
-                                    duration_ms: event.duration_ms,
-                                    details: event.details,
-                                });
+                        "page_result" if event.id.as_deref() == Some(job_id.as_str()) => {
+                            if let Some(page_result) = event.page_result {
+                                on_page_result(page_result);
                             }
                         }
                         "done" if event.id.as_deref() == Some(job_id.as_str()) => {
-                            if let Some(timings) = event.timings {
-                                on_stderr(&format!("[pdf2zh-worker] timings {timings}"));
-                            }
                             return WorkerTranslateOutcome::Completed;
                         }
-                        "error" => {
+                        "error" if event.id.as_deref() == Some(job_id.as_str()) || event.id.is_none() => {
                             return WorkerTranslateOutcome::JobFailed(
                                 event.message.unwrap_or_else(|| "未知 worker 错误".to_string()),
                             );
@@ -796,27 +787,7 @@ impl WorkerProcess {
                 }
                 stderr_line = self.stderr_lines.recv(), if self.stderr_open => {
                     match stderr_line {
-                        Some(text) => {
-                            on_stderr(&text);
-                            if is_pdf2zh_rwkv_error(&text) {
-                                let normalized = normalize_pdf2zh_error(&text);
-                                if normalized == last_rwkv_error {
-                                    repeated_rwkv_error_count += 1;
-                                } else {
-                                    last_rwkv_error = normalized;
-                                    repeated_rwkv_error_count = 1;
-                                }
-                                if repeated_rwkv_error_count >= 6 {
-                                    return WorkerTranslateOutcome::WorkerLost(format!(
-                                        "PDF 翻译连续失败，已停止当前 worker。最后错误：{}",
-                                        text.trim()
-                                    ));
-                                }
-                            } else if !text.trim().is_empty() {
-                                repeated_rwkv_error_count = 0;
-                                last_rwkv_error.clear();
-                            }
-                        }
+                        Some(text) => on_stderr(&text),
                         None => self.stderr_open = false,
                     }
                 }
@@ -827,38 +798,99 @@ impl WorkerProcess {
             }
         }
     }
+
+    async fn run_dispose_pdf_window(&mut self, prepared_run_id: &str) -> WorkerTranslateOutcome {
+        self.next_job += 1;
+        let job_id = format!("wjob-{}", self.next_job);
+        let mut line = json!({
+            "id": job_id,
+            "cmd": "dispose_pdf_window",
+            "preparedRunId": prepared_run_id,
+        })
+        .to_string();
+        line.push('\n');
+
+        if let Err(error) = self.stdin.write_all(line.as_bytes()).await {
+            return WorkerTranslateOutcome::WorkerLost(format!("写入 worker 任务失败: {error}"));
+        }
+        if let Err(error) = self.stdin.flush().await {
+            return WorkerTranslateOutcome::WorkerLost(format!("写入 worker 任务失败: {error}"));
+        }
+
+        loop {
+            match self.events.recv().await {
+                Some(event)
+                    if event.id.as_deref() == Some(job_id.as_str())
+                        && event.event == "disposed_pdf_window" =>
+                {
+                    return WorkerTranslateOutcome::Completed;
+                }
+                Some(event) if event.event == "fatal" => {
+                    return WorkerTranslateOutcome::WorkerLost(
+                        event
+                            .message
+                            .unwrap_or_else(|| "worker 致命错误".to_string()),
+                    );
+                }
+                Some(_) => {}
+                None => {
+                    return WorkerTranslateOutcome::WorkerLost("worker 进程意外退出。".to_string());
+                }
+            }
+        }
+    }
 }
 
-fn is_pdf2zh_rwkv_error(line: &str) -> bool {
-    let lower = line.to_ascii_lowercase();
-    lower.contains("rwkv 翻译失败")
-        || lower.contains("exceeds the available context size")
-        || lower.contains("exceed_context_size_error")
-}
-
-fn normalize_pdf2zh_error(line: &str) -> String {
-    line.trim()
-        .split("最后错误：")
-        .last()
-        .unwrap_or(line)
-        .trim()
-        .to_string()
-}
-
-/// Run one translate job on the shared worker, spawning it first if needed.
-/// Serializes jobs via the state mutex (one PDF run is active at a time
-/// anyway). Returns `Unavailable` when no worker can be started, so the
-/// caller can fall back to the one-shot CLI.
-pub(crate) async fn translate_via_worker(
+pub(crate) async fn prepare_pdf_window(
     app: &AppHandle,
     payload: serde_json::Value,
     on_stderr: &mut (dyn FnMut(&str) + Send),
-    on_page: Option<&mut (dyn FnMut(u32, PathBuf) + Send)>,
-    on_stage: Option<&mut (dyn FnMut(WorkerStageEvent) + Send)>,
+    cancel_rx: &mut oneshot::Receiver<()>,
+) -> Result<PreparedPdfWindow, WorkerTranslateOutcome> {
+    let state = app.state::<WorkerState>();
+    let mut guard = state.inner.lock().await;
+    if guard.is_none() {
+        match spawn_worker(app).await {
+            Ok(worker) => *guard = Some(worker),
+            Err(message) => return Err(WorkerTranslateOutcome::Unavailable(message)),
+        }
+    }
+    let worker = guard.as_mut().expect("worker present after ensure");
+    set_worker_status(app, "translating", None, None);
+    let outcome = worker
+        .run_prepare_pdf_window(payload, on_stderr, cancel_rx)
+        .await;
+    match &outcome {
+        Ok(_) | Err(WorkerTranslateOutcome::JobFailed(_)) => {
+            set_worker_status(app, "ready", None, None);
+        }
+        Err(WorkerTranslateOutcome::Cancelled) | Err(WorkerTranslateOutcome::WorkerLost(_)) => {
+            if let Some(mut dead) = guard.take() {
+                kill_process_tree(&mut dead.child).await;
+            }
+            drop(guard);
+            set_worker_status(app, "idle", None, None);
+            if !state.should_shutdown() {
+                let app_clone = app.clone();
+                tokio::spawn(async move {
+                    let _ = prewarm_worker(&app_clone).await;
+                });
+            }
+        }
+        Err(WorkerTranslateOutcome::Unavailable(_)) => {}
+        Err(WorkerTranslateOutcome::Completed) => {}
+    }
+    outcome
+}
+
+pub(crate) async fn render_pdf_window(
+    app: &AppHandle,
+    payload: serde_json::Value,
+    on_stderr: &mut (dyn FnMut(&str) + Send),
+    on_page_result: &mut (dyn FnMut(PdfPageResult) + Send),
     cancel_rx: &mut oneshot::Receiver<()>,
 ) -> WorkerTranslateOutcome {
     let state = app.state::<WorkerState>();
-
     let mut guard = state.inner.lock().await;
     if guard.is_none() {
         match spawn_worker(app).await {
@@ -869,7 +901,7 @@ pub(crate) async fn translate_via_worker(
     let worker = guard.as_mut().expect("worker present after ensure");
     set_worker_status(app, "translating", None, None);
     let outcome = worker
-        .run_translate(payload, on_stderr, on_page, on_stage, cancel_rx)
+        .run_render_pdf_window(payload, on_stderr, on_page_result, cancel_rx)
         .await;
 
     if matches!(
@@ -879,10 +911,6 @@ pub(crate) async fn translate_via_worker(
         if let Some(mut dead) = guard.take() {
             kill_process_tree(&mut dead.child).await;
         }
-        // Worker is gone — drop guard before respawning so the lock is
-        // available to the next caller, then trigger an async respawn so the
-        // header indicator bounces back to "已就绪" without waiting for the
-        // next translate click.
         drop(guard);
         set_worker_status(app, "idle", None, None);
         if !state.should_shutdown() {
@@ -892,10 +920,24 @@ pub(crate) async fn translate_via_worker(
             });
         }
     } else {
-        // Healthy worker stays warm.
         set_worker_status(app, "ready", None, None);
     }
     outcome
+}
+
+pub(crate) async fn dispose_pdf_window(app: &AppHandle, prepared_run_id: &str) {
+    let state = app.state::<WorkerState>();
+    let mut guard = state.inner.lock().await;
+    let Some(worker) = guard.as_mut() else {
+        return;
+    };
+    let outcome = worker.run_dispose_pdf_window(prepared_run_id).await;
+    if matches!(outcome, WorkerTranslateOutcome::WorkerLost(_)) {
+        if let Some(mut dead) = guard.take() {
+            kill_process_tree(&mut dead.child).await;
+        }
+        set_worker_status(app, "idle", None, None);
+    }
 }
 
 /// Start (or confirm) the warm worker without running a job. Called once at

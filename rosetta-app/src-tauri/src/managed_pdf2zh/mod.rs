@@ -1,5 +1,7 @@
 pub mod install;
 pub mod layout;
+#[allow(dead_code)]
+#[cfg(test)]
 pub mod openai_shim;
 pub mod profile;
 pub mod status;

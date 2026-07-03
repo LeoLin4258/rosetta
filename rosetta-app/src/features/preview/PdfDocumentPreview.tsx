@@ -225,6 +225,7 @@ export function PdfDocumentPreview({
       runId?: string | null;
       pageNumber: number;
       status: string;
+      resultKind?: PdfPageTranslation["resultKind"];
     }>(
       "rosetta-pdf-page-progress",
       (event) => {
@@ -235,6 +236,7 @@ export function PdfDocumentPreview({
             pageNumber: event.payload.pageNumber,
             sourcePageCount: sourcePageCountRef.current,
             status: event.payload.status,
+            resultKind: event.payload.resultKind ?? null,
             targetLang,
             runId: event.payload.runId ?? null,
           }),
@@ -391,7 +393,12 @@ export function PdfDocumentPreview({
                         pageIndex={pageIndex}
                         renderVersion={translatedPageRenderVersion(pageNumber, status)}
                         targetWidth={RASTER_WIDTH}
-                        canRender={status?.status === "translated" && !stablePreviewMode}
+                        canRender={
+                          status?.status === "translated" &&
+                          !!status.translatedPdfPath &&
+                          status.resultKind !== "no_text" &&
+                          !stablePreviewMode
+                        }
                         activity={activity}
                         backdropSrc={sourcePageImages[pageIndex] ?? null}
                         renderPage={(index, width) =>
@@ -427,6 +434,7 @@ function patchPdfPageState(
     pageNumber: number;
     sourcePageCount: number | null;
     status: string;
+    resultKind: PdfPageTranslation["resultKind"] | null;
     targetLang: string;
     runId: string | null;
   },
@@ -437,15 +445,30 @@ function patchPdfPageState(
   const index = pages.findIndex((page) => page.pageNumber === update.pageNumber);
   const existing = index >= 0 ? pages[index] : null;
   const status = normalizePdfPageStatus(update.status);
+  const resultKind =
+    update.resultKind ??
+    existing?.resultKind ??
+    (status === "translated" ? "translated" : status === "failed" ? "failed" : null);
+  const hasTranslatedArtifact = status === "translated" && resultKind !== "no_text";
   const nextPage: PdfPageTranslation = {
     pageNumber: update.pageNumber,
     status,
-    translatedPdfPath:
-      status === "translated"
-        ? existing?.translatedPdfPath ??
-          pdfPageRelativePath(update.targetLang, update.pageNumber)
+    resultKind,
+    translatedPdfPath: hasTranslatedArtifact
+      ? existing?.translatedPdfPath ?? pdfPageRelativePath(update.targetLang, update.pageNumber)
+      : status === "translated"
+        ? null
         : existing?.translatedPdfPath ?? null,
-    artifactVersion: status === "translated" ? existing?.artifactVersion ?? now : null,
+    sourceUnitCount: existing?.sourceUnitCount ?? null,
+    translatedUnitCount: existing?.translatedUnitCount ?? null,
+    sourceChars: existing?.sourceChars ?? null,
+    translatedChars: existing?.translatedChars ?? null,
+    artifactVersion: hasTranslatedArtifact ? existing?.artifactVersion ?? now : null,
+    artifactCompression: hasTranslatedArtifact ? existing?.artifactCompression ?? "fast" : null,
+    artifactBytes: hasTranslatedArtifact ? existing?.artifactBytes ?? null : null,
+    artifactCompressionError: hasTranslatedArtifact
+      ? existing?.artifactCompressionError ?? null
+      : null,
     error: status === "failed" ? existing?.error ?? "可重试" : null,
     updatedAt: now,
     lastRunId: update.runId,
@@ -459,7 +482,7 @@ function patchPdfPageState(
   pages.sort((left, right) => left.pageNumber - right.pageNumber);
 
   return {
-    schemaVersion: current?.schemaVersion ?? 1,
+    schemaVersion: current?.schemaVersion ?? 2,
     sourcePageCount:
       current?.sourcePageCount ?? update.sourcePageCount ?? Math.max(update.pageNumber, 1),
     targetLang: current?.targetLang ?? update.targetLang,
@@ -482,9 +505,15 @@ function normalizePdfPageStatus(status: string): PdfPageTranslation["status"] {
 
 function translatedPageRenderVersion(
   pageNumber: number,
-  page: { status: string; translatedPdfPath?: string | null; updatedAt?: string | null } | null,
+  page: {
+    status: string;
+    resultKind?: string | null;
+    translatedPdfPath?: string | null;
+    updatedAt?: string | null;
+  } | null,
 ) {
   if (page?.status !== "translated") return "pending";
+  if (page.resultKind === "no_text") return `${pageNumber}:no_text:${page.updatedAt ?? ""}`;
   return `${pageNumber}:${page.translatedPdfPath ?? ""}:${page.updatedAt ?? "translated"}`;
 }
 
@@ -506,7 +535,7 @@ function displayPageActivity(
 
 function translatedPageLabel(
   pageNumber: number,
-  page: { status: string; error?: string | null } | null,
+  page: { status: string; resultKind?: string | null; error?: string | null } | null,
   activity: ReturnType<typeof displayPageActivity>,
   stablePreviewMode: boolean,
 ) {
@@ -514,6 +543,7 @@ function translatedPageLabel(
   if (activity === "queued") return `等待第 ${pageNumber} 页译文`;
   if (!page) return null;
   if (page.status === "translated") {
+    if (page.resultKind === "no_text") return `第 ${pageNumber} 页无可提取文本`;
     return stablePreviewMode
       ? `第 ${pageNumber} 页已完成，预览将在本次结束后加载`
       : `加载第 ${pageNumber} 页译文...`;

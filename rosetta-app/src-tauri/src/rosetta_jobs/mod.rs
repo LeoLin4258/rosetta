@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     fs,
     path::{Component, Path},
     str::FromStr,
@@ -28,10 +27,10 @@ pub(crate) mod store;
 mod tests;
 pub(crate) mod translation_files;
 
-use crate::managed_pdf2zh::openai_shim::{
-    LightningApiConfig, LlamaCppApiConfig, ShimProviderConfig,
-};
 use crate::rwkv_providers::mobile_batch_chat::MobileBatchChatConfig;
+use formats::pdf::unit_translation::{
+    LightningPdfApiConfig, LlamaCppPdfApiConfig, PdfUnitProviderConfig,
+};
 use model::{
     RosettaExportKind, RosettaExportResult, RosettaJobBundle, RosettaJobDeleteResult,
     RosettaJobFileDeleteResult, RosettaJobSummary, RosettaTranslationFileBundle, Segment,
@@ -78,11 +77,6 @@ impl PdfTranslationCancelState {
 
     pub fn session_id(&self) -> &str {
         &self.session_id
-    }
-
-    /// Marks a run as started. Returns `false` if another run is active.
-    fn try_begin_run(&self) -> bool {
-        self.try_begin_pdf_run("legacy".to_string(), "legacy".to_string())
     }
 
     fn try_begin_pdf_run(&self, key: String, run_id: String) -> bool {
@@ -483,6 +477,8 @@ struct PdfPageProgressPayload {
     run_id: Option<String>,
     page_number: u32,
     status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result_kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -994,7 +990,12 @@ fn effective_pdf_page_state(
                     } else {
                         "queued".to_string()
                     },
+                    result_kind: None,
                     translated_pdf_path: None,
+                    source_unit_count: None,
+                    translated_unit_count: None,
+                    source_chars: None,
+                    translated_chars: None,
                     artifact_version: None,
                     artifact_compression: None,
                     artifact_bytes: None,
@@ -1104,34 +1105,40 @@ fn shim_provider_from_parts(
     provider_internal_token: Option<String>,
     provider_body_password: Option<String>,
     timeout_ms: u64,
-) -> ShimProviderConfig {
+) -> PdfUnitProviderConfig {
     match provider_id {
-        Some("llama-cpp-chat-completions") => ShimProviderConfig::LlamaCpp(LlamaCppApiConfig {
-            base_url: base_url.to_string(),
-            timeout_ms,
-        }),
-        Some("rwkv-mobile-batch-chat") => ShimProviderConfig::MobileBatch(MobileBatchChatConfig {
-            base_url: base_url.to_string(),
-            timeout_ms,
-        }),
-        Some("rwkv-lightning-contents") => ShimProviderConfig::Lightning(LightningApiConfig {
-            base_url: base_url.to_string(),
-            endpoint: if provider_endpoint.trim().is_empty() {
-                "/v1/batch/completions".to_string()
-            } else {
-                provider_endpoint.to_string()
-            },
-            internal_token: provider_internal_token.unwrap_or_default(),
-            body_password: provider_body_password.unwrap_or_default(),
-            timeout_ms,
-        }),
-        _ if provider_endpoint.trim().is_empty() => {
-            ShimProviderConfig::MobileBatch(MobileBatchChatConfig {
+        Some("llama-cpp-chat-completions") => {
+            PdfUnitProviderConfig::LlamaCpp(LlamaCppPdfApiConfig {
                 base_url: base_url.to_string(),
                 timeout_ms,
             })
         }
-        _ => ShimProviderConfig::Lightning(LightningApiConfig {
+        Some("rwkv-mobile-batch-chat") => {
+            PdfUnitProviderConfig::MobileBatch(MobileBatchChatConfig {
+                base_url: base_url.to_string(),
+                timeout_ms,
+            })
+        }
+        Some("rwkv-lightning-contents") => {
+            PdfUnitProviderConfig::Lightning(LightningPdfApiConfig {
+                base_url: base_url.to_string(),
+                endpoint: if provider_endpoint.trim().is_empty() {
+                    "/v1/batch/completions".to_string()
+                } else {
+                    provider_endpoint.to_string()
+                },
+                internal_token: provider_internal_token.unwrap_or_default(),
+                body_password: provider_body_password.unwrap_or_default(),
+                timeout_ms,
+            })
+        }
+        _ if provider_endpoint.trim().is_empty() => {
+            PdfUnitProviderConfig::MobileBatch(MobileBatchChatConfig {
+                base_url: base_url.to_string(),
+                timeout_ms,
+            })
+        }
+        _ => PdfUnitProviderConfig::Lightning(LightningPdfApiConfig {
             base_url: base_url.to_string(),
             endpoint: provider_endpoint.to_string(),
             internal_token: provider_internal_token.unwrap_or_default(),
@@ -1142,10 +1149,10 @@ fn shim_provider_from_parts(
 }
 
 fn pdf_run_chunk_size_for_provider(
-    provider: &ShimProviderConfig,
+    provider: &PdfUnitProviderConfig,
     pages_to_process: usize,
 ) -> usize {
-    if matches!(provider, ShimProviderConfig::Lightning(_)) {
+    if matches!(provider, PdfUnitProviderConfig::Lightning(_)) {
         if let Some(override_size) = std::env::var(LIGHTNING_PDF_RUN_CHUNK_SIZE_ENV)
             .ok()
             .and_then(|value| value.trim().parse::<usize>().ok())
@@ -1448,161 +1455,128 @@ async fn translate_pdf_pages_inner(
         let job_id_for_cb = job_id.to_string();
         let target_lang_for_cb = target_lang.to_string();
         let run_id_for_cb = run_id.clone();
-        let page_quality = Arc::new(Mutex::new(HashMap::<u32, PdfPageTranslationQuality>::new()));
-        let page_quality_for_cb = Arc::clone(&page_quality);
         let page_commit_rejection = Arc::new(Mutex::new(None::<String>));
         let page_commit_rejection_for_cb = Arc::clone(&page_commit_rejection);
         let completed_pages_for_cb = Arc::clone(&completed_pages_for_progress);
         let total_pages_for_cb = total_pages_to_process;
         let state_for_cb: &mut formats::pdf::page_state::PdfPageTranslationState = &mut state;
-        let mut on_page_done = move |page_number: u32, worker_file: std::path::PathBuf| {
-            let relative_path =
-                page_state::pdf_page_relative_path_for_lang(&target_lang_for_cb, page_number);
-            let target_path = dir_for_cb.join(&relative_path);
-            let quality_rejection = page_quality_for_cb.lock().ok().and_then(|qualities| {
-                pdf_page_translation_quality_rejection(page_number, qualities.get(&page_number))
-            });
-            let rejected_for_quality = quality_rejection.is_some();
-            let outcome = if let Some(error) = quality_rejection {
-                let _ = fs::remove_file(&worker_file);
-                Err(error)
-            } else {
-                if let Some(parent) = target_path.parent() {
-                    fs::create_dir_all(parent).ok();
-                }
-                commit_pdf_page_artifact(&worker_file, &target_path)
-            };
+        let mut on_page_result =
+            move |page_result: crate::managed_pdf2zh::worker::PdfPageResult| {
+                let page_number = page_result.page_number;
+                let outcome = commit_pdf_page_result(
+                    &dir_for_cb,
+                    state_for_cb,
+                    &target_lang_for_cb,
+                    &run_id_for_cb,
+                    &page_result,
+                );
 
-            match outcome {
-                Ok(_) => {
-                    let output_bytes = fs::metadata(&target_path)
-                        .map(|metadata| metadata.len())
-                        .ok();
-                    page_state::upsert_pdf_page_with_run(
-                        state_for_cb,
-                        page_number,
-                        "translated",
-                        Some(relative_path),
-                        None,
-                        Some(&run_id_for_cb),
-                    );
-                    page_state::set_pdf_page_artifact_metadata(
-                        state_for_cb,
-                        page_number,
-                        Some("fast".to_string()),
-                        output_bytes,
-                        None,
-                    );
-                    let _ = page_state::write_pdf_page_translation_state(&dir_for_cb, state_for_cb);
-                    let completed_pages =
-                        completed_pages_for_cb.fetch_add(1, Ordering::Relaxed) + 1;
-                    pdf2zh_invoke::emit_completed_page_progress(
-                        &app_for_cb,
-                        &job_id_for_cb,
-                        total_pages_for_cb,
-                        completed_pages,
-                        page_number,
-                    );
-                    let _ = app_for_cb.emit(
-                        PDF_PAGE_PROGRESS_EVENT,
-                        PdfPageProgressPayload {
-                            job_id: job_id_for_cb.clone(),
-                            target_lang: Some(target_lang_for_cb.clone()),
-                            run_id: Some(run_id_for_cb.clone()),
-                            page_number,
-                            status: "translated".to_string(),
-                        },
-                    );
-                    diagnostics::append_timeline_event(
-                        &dir_for_cb,
-                        diagnostics::PdfTimelineEvent::new(
+                match outcome {
+                    Ok(committed) => {
+                        let _ =
+                            page_state::write_pdf_page_translation_state(&dir_for_cb, state_for_cb);
+                        let completed_pages =
+                            completed_pages_for_cb.fetch_add(1, Ordering::Relaxed) + 1;
+                        pdf2zh_invoke::emit_completed_page_progress(
+                            &app_for_cb,
                             &job_id_for_cb,
-                            "translation",
-                            "page.committed",
-                        )
-                        .run_id(&run_id_for_cb)
-                        .target_lang(&target_lang_for_cb)
-                        .page_number(page_number)
-                        .details(json!({
-                            "translatedPdfPath": page_state::pdf_page_relative_path_for_lang(
-                                &target_lang_for_cb,
+                            total_pages_for_cb,
+                            completed_pages,
+                            page_number,
+                        );
+                        let _ = app_for_cb.emit(
+                            PDF_PAGE_PROGRESS_EVENT,
+                            PdfPageProgressPayload {
+                                job_id: job_id_for_cb.clone(),
+                                target_lang: Some(target_lang_for_cb.clone()),
+                                run_id: Some(run_id_for_cb.clone()),
                                 page_number,
-                            ),
-                            "outputBytes": output_bytes,
-                        })),
-                    );
-                }
-                Err(error) => {
-                    let error_for_timeline = error.clone();
-                    if let Ok(mut guard) = page_commit_rejection_for_cb.lock() {
-                        if guard.is_none() {
-                            *guard = Some(error.clone());
-                        }
-                    }
-                    page_state::upsert_pdf_page_with_run(
-                        state_for_cb,
-                        page_number,
-                        "failed",
-                        None,
-                        Some(error),
-                        Some(&run_id_for_cb),
-                    );
-                    let _ = page_state::write_pdf_page_translation_state(&dir_for_cb, state_for_cb);
-                    let _ = app_for_cb.emit(
-                        PDF_PAGE_PROGRESS_EVENT,
-                        PdfPageProgressPayload {
-                            job_id: job_id_for_cb.clone(),
-                            target_lang: Some(target_lang_for_cb.clone()),
-                            run_id: Some(run_id_for_cb.clone()),
-                            page_number,
-                            status: "failed".to_string(),
-                        },
-                    );
-                    diagnostics::append_timeline_event(
-                        &dir_for_cb,
-                        diagnostics::PdfTimelineEvent::new(
-                            &job_id_for_cb,
-                            "translation",
-                            if rejected_for_quality {
-                                "page.commitRejected"
-                            } else {
-                                "page.commitFailed"
+                                status: "translated".to_string(),
+                                result_kind: Some(committed.result_kind.clone()),
                             },
-                        )
-                        .run_id(&run_id_for_cb)
-                        .target_lang(&target_lang_for_cb)
-                        .page_number(page_number)
-                        .details(json!({
-                            "error": error_for_timeline,
-                        })),
-                    );
+                        );
+                        diagnostics::append_timeline_event(
+                            &dir_for_cb,
+                            diagnostics::PdfTimelineEvent::new(
+                                &job_id_for_cb,
+                                "translation",
+                                "page.committed",
+                            )
+                            .run_id(&run_id_for_cb)
+                            .target_lang(&target_lang_for_cb)
+                            .page_number(page_number)
+                            .details(json!({
+                                "resultKind": committed.result_kind,
+                                "translatedPdfPath": committed.translated_pdf_path,
+                                "outputBytes": committed.artifact_bytes,
+                                "sourceUnitCount": page_result.source_unit_count,
+                                "translatedUnitCount": page_result.translated_unit_count,
+                                "sourceChars": page_result.source_chars,
+                                "translatedChars": page_result.translated_chars,
+                            })),
+                        );
+                    }
+                    Err(error) => {
+                        let error_for_timeline = error.clone();
+                        if let Ok(mut guard) = page_commit_rejection_for_cb.lock() {
+                            if guard.is_none() {
+                                *guard = Some(error.clone());
+                            }
+                        }
+                        page_state::upsert_pdf_page_with_run(
+                            state_for_cb,
+                            page_number,
+                            "failed",
+                            None,
+                            Some(error),
+                            Some(&run_id_for_cb),
+                        );
+                        page_state::set_pdf_page_result_metadata(
+                            state_for_cb,
+                            page_number,
+                            Some("failed".to_string()),
+                            Some(page_result.source_unit_count),
+                            Some(page_result.translated_unit_count),
+                            Some(page_result.source_chars),
+                            Some(page_result.translated_chars),
+                        );
+                        let _ =
+                            page_state::write_pdf_page_translation_state(&dir_for_cb, state_for_cb);
+                        let _ = app_for_cb.emit(
+                            PDF_PAGE_PROGRESS_EVENT,
+                            PdfPageProgressPayload {
+                                job_id: job_id_for_cb.clone(),
+                                target_lang: Some(target_lang_for_cb.clone()),
+                                run_id: Some(run_id_for_cb.clone()),
+                                page_number,
+                                status: "failed".to_string(),
+                                result_kind: Some("failed".to_string()),
+                            },
+                        );
+                        diagnostics::append_timeline_event(
+                            &dir_for_cb,
+                            diagnostics::PdfTimelineEvent::new(
+                                &job_id_for_cb,
+                                "translation",
+                                "page.commitRejected",
+                            )
+                            .run_id(&run_id_for_cb)
+                            .target_lang(&target_lang_for_cb)
+                            .page_number(page_number)
+                            .details(json!({
+                                "error": error_for_timeline,
+                                "engineStatus": page_result.status,
+                                "sourceUnitCount": page_result.source_unit_count,
+                                "translatedUnitCount": page_result.translated_unit_count,
+                                "sourceChars": page_result.source_chars,
+                                "translatedChars": page_result.translated_chars,
+                                "emptyTranslationCount": page_result.empty_translation_count,
+                                "placeholderMismatchCount": page_result.placeholder_mismatch_count,
+                            })),
+                        );
+                    }
                 }
-            }
-        };
-
-        let dir_for_stage = dir.clone();
-        let job_id_for_stage = job_id.to_string();
-        let target_lang_for_stage = target_lang.to_string();
-        let run_id_for_stage = run_id.clone();
-        let page_quality_for_stage = Arc::clone(&page_quality);
-        let mut on_worker_stage = move |stage: crate::managed_pdf2zh::worker::WorkerStageEvent| {
-            record_pdf_page_translation_quality(&page_quality_for_stage, &stage);
-            let mut event =
-                diagnostics::PdfTimelineEvent::new(&job_id_for_stage, "worker", "worker.stage")
-                    .run_id(&run_id_for_stage)
-                    .target_lang(&target_lang_for_stage)
-                    .details(json!({
-                        "stage": stage.stage,
-                        "status": stage.status,
-                        "pageNumber": stage.page_number,
-                        "durationMs": stage.duration_ms,
-                        "stageDetails": stage.details,
-                    }));
-            if let Some(duration_ms) = stage.duration_ms {
-                event = event.duration_ms(duration_ms);
-            }
-            diagnostics::append_timeline_event(&dir_for_stage, event);
-        };
+            };
 
         let invoke_result = pdf2zh_invoke::invoke_pdf2zh(
             app,
@@ -1610,11 +1584,9 @@ async fn translate_pdf_pages_inner(
             &invocation_output_dir,
             pdf2zh_invoke::Pdf2zhInvokeOptions {
                 job_id: job_id.to_string(),
-                run_id: Some(run_id.clone()),
                 provider: provider.clone(),
                 source_lang: source_lang.clone(),
                 target_lang: target_lang.to_string(),
-                ignore_cache: force,
                 pages: Some(chunk_pages.clone()),
                 page_progress: Some(pdf2zh_invoke::PageProgressContext {
                     completed_before: processed_before,
@@ -1624,13 +1596,12 @@ async fn translate_pdf_pages_inner(
                 translated_chars_offset,
             },
             cancel_rx,
-            Some(&mut on_page_done),
-            Some(&mut on_worker_stage),
+            Some(&mut on_page_result),
         )
         .await;
 
         cancel_state.clear_sender();
-        drop(on_page_done);
+        drop(on_page_result);
         profile.invocation_count += 1;
 
         match invoke_result {
@@ -1659,27 +1630,6 @@ async fn translate_pdf_pages_inner(
                     .and_then(|guard| guard.clone());
                 if let Some(message) = commit_rejection_message {
                     failure_message = Some(message);
-                } else if let Some(message) = pdf_rwkv_failure_message(&output.rwkv_metrics) {
-                    diagnostics::append_timeline_event(
-                        &dir,
-                        diagnostics::PdfTimelineEvent::new(
-                            job_id,
-                            "translation",
-                            "chunk.rwkvFailed",
-                        )
-                        .run_id(&run_id)
-                        .target_lang(target_lang)
-                        .details(json!({
-                            "chunkIndex": chunk_index,
-                            "pages": chunk_pages.clone(),
-                            "error": message.clone(),
-                            "rwkv": diagnostics::rwkv_snapshot_details(&output.rwkv_metrics),
-                        })),
-                    );
-                    failure_message = Some(message);
-                    for page_number in &chunk_pages {
-                        clear_pdf_page_artifacts(&dir, &mut state, target_lang, *page_number);
-                    }
                 } else if force && output.rwkv_metrics.request_count == 0 {
                     failure_message = Some(
                         "PDF 重翻没有向翻译模型发送任何文本，已拒绝复用旧译文。请确认该页包含可提取文本后再试。"
@@ -1730,7 +1680,8 @@ async fn translate_pdf_pages_inner(
             let translated = state.pages.iter().any(|page| {
                 page.page_number == *page_number
                     && page.status == "translated"
-                    && page.translated_pdf_path.is_some()
+                    && (page.translated_pdf_path.is_some()
+                        || page.result_kind.as_deref() == Some("no_text"))
             });
             if translated {
                 run_state::append_unique_page(&mut run.completed_pages, *page_number);
@@ -1838,90 +1789,137 @@ async fn translate_pdf_pages_inner(
     Ok(state)
 }
 
-fn pdf_rwkv_failure_message(
-    snapshot: &crate::managed_pdf2zh::openai_shim::ShimRwkvMetricsSnapshot,
-) -> Option<String> {
-    (snapshot.failed_request_count > 0).then(|| {
-        format!(
-            "PDF 翻译检测到底层模型请求失败（failedRequestCount={}），已拒绝提交本批次页面，避免截断或空译文被标记为成功。",
-            snapshot.failed_request_count
-        )
-    })
-}
-
 #[derive(Clone, Debug, Default)]
-struct PdfPageTranslationQuality {
-    translate_input_chars: u64,
-    translate_output_chars: u64,
-    translated_ops_chars: Option<u64>,
+struct PdfCommittedPage {
+    result_kind: String,
+    translated_pdf_path: Option<String>,
+    artifact_bytes: Option<u64>,
 }
 
-fn record_pdf_page_translation_quality(
-    qualities: &Arc<Mutex<HashMap<u32, PdfPageTranslationQuality>>>,
-    stage: &crate::managed_pdf2zh::worker::WorkerStageEvent,
-) {
-    if stage.status != "completed" {
-        return;
-    }
-    let Some(page_number) = stage.page_number else {
-        return;
-    };
-    let Some(details) = stage.details.as_ref() else {
-        return;
-    };
+fn commit_pdf_page_result(
+    job_dir: &Path,
+    state: &mut formats::pdf::page_state::PdfPageTranslationState,
+    target_lang: &str,
+    run_id: &str,
+    page_result: &crate::managed_pdf2zh::worker::PdfPageResult,
+) -> Result<PdfCommittedPage, String> {
+    use formats::pdf::page_state;
 
-    let input_chars = json_u64(details, "translateInputChars")
-        .or_else(|| json_u64(details, "inputChars"))
-        .or_else(|| json_u64(details, "sourceChars"));
-    let output_chars =
-        json_u64(details, "translateOutputChars").or_else(|| json_u64(details, "outputChars"));
-    let translated_ops_chars = json_u64(details, "translatedOpsChars");
+    let page_number = page_result.page_number;
+    match page_result.status.as_str() {
+        "translated" => {
+            if page_result.source_unit_count > 0 && page_result.translated_chars == 0 {
+                return Err(format!(
+                    "PDF 第 {page_number} 页检测到可翻译文本，但译文字数为 0，已拒绝提交空白译文。"
+                ));
+            }
+            if page_result.empty_translation_count > 0 {
+                return Err(format!(
+                    "PDF 第 {page_number} 页存在 {} 个空译文单元，已拒绝提交。",
+                    page_result.empty_translation_count
+                ));
+            }
+            if page_result.placeholder_mismatch_count > 0 {
+                return Err(format!(
+                    "PDF 第 {page_number} 页存在 {} 个公式/占位符不匹配，已拒绝提交。",
+                    page_result.placeholder_mismatch_count
+                ));
+            }
+            if page_result.source_unit_count > 0
+                && page_result.translated_unit_count < page_result.source_unit_count
+            {
+                return Err(format!(
+                    "PDF 第 {page_number} 页译文单元数量不足：期望 {}，实际 {}。",
+                    page_result.source_unit_count, page_result.translated_unit_count
+                ));
+            }
+            let artifact_path = page_result
+                .artifact_path
+                .as_deref()
+                .filter(|path| !path.trim().is_empty())
+                .ok_or_else(|| {
+                    format!("PDF 第 {page_number} 页已标记 translated，但缺少单页 artifact。")
+                })?;
+            let artifact_path = Path::new(artifact_path);
+            if !artifact_path.is_file() {
+                return Err(format!(
+                    "PDF 第 {page_number} 页 artifact 不存在或不可读: {}",
+                    artifact_path.display()
+                ));
+            }
+            let relative_path =
+                page_state::pdf_page_relative_path_for_lang(target_lang, page_number);
+            let target_path = job_dir.join(&relative_path);
+            commit_pdf_page_artifact(artifact_path, &target_path)?;
+            let artifact_bytes = match target_path.metadata() {
+                Ok(metadata) => metadata.len(),
+                Err(_) => page_result.artifact_bytes.ok_or_else(|| {
+                    format!("PDF 第 {page_number} 页 artifact 已提交但无法读取文件大小。")
+                })?,
+            };
 
-    if input_chars.is_none() && output_chars.is_none() && translated_ops_chars.is_none() {
-        return;
+            page_state::upsert_pdf_page_with_run(
+                state,
+                page_number,
+                "translated",
+                Some(relative_path.clone()),
+                None,
+                Some(run_id),
+            );
+            page_state::set_pdf_page_result_metadata(
+                state,
+                page_number,
+                Some("translated".to_string()),
+                Some(page_result.source_unit_count),
+                Some(page_result.translated_unit_count),
+                Some(page_result.source_chars),
+                Some(page_result.translated_chars),
+            );
+            page_state::set_pdf_page_artifact_metadata(
+                state,
+                page_number,
+                Some("fast".to_string()),
+                Some(artifact_bytes),
+                None,
+            );
+            Ok(PdfCommittedPage {
+                result_kind: "translated".to_string(),
+                translated_pdf_path: Some(relative_path),
+                artifact_bytes: Some(artifact_bytes),
+            })
+        }
+        "no_text" => {
+            page_state::upsert_pdf_page_with_run(
+                state,
+                page_number,
+                "translated",
+                None,
+                None,
+                Some(run_id),
+            );
+            page_state::set_pdf_page_result_metadata(
+                state,
+                page_number,
+                Some("no_text".to_string()),
+                Some(page_result.source_unit_count),
+                Some(page_result.translated_unit_count),
+                Some(page_result.source_chars),
+                Some(page_result.translated_chars),
+            );
+            Ok(PdfCommittedPage {
+                result_kind: "no_text".to_string(),
+                translated_pdf_path: None,
+                artifact_bytes: None,
+            })
+        }
+        "failed" => Err(page_result
+            .error
+            .clone()
+            .unwrap_or_else(|| format!("PDF 第 {page_number} 页 engine render failed。"))),
+        other => Err(format!(
+            "PDF 第 {page_number} 页返回未知 PageResult 状态 `{other}`。"
+        )),
     }
-
-    let Ok(mut guard) = qualities.lock() else {
-        return;
-    };
-    let quality = guard.entry(page_number).or_default();
-    if let Some(input_chars) = input_chars {
-        quality.translate_input_chars = quality.translate_input_chars.max(input_chars);
-    }
-    if let Some(output_chars) = output_chars {
-        quality.translate_output_chars = quality.translate_output_chars.max(output_chars);
-    }
-    if let Some(translated_ops_chars) = translated_ops_chars {
-        quality.translated_ops_chars = Some(
-            quality
-                .translated_ops_chars
-                .unwrap_or_default()
-                .max(translated_ops_chars),
-        );
-    }
-}
-
-fn pdf_page_translation_quality_rejection(
-    page_number: u32,
-    quality: Option<&PdfPageTranslationQuality>,
-) -> Option<String> {
-    let quality = quality?;
-    (quality.translate_input_chars > 0 && quality.translate_output_chars == 0).then(|| {
-        format!(
-            "PDF 第 {page_number} 页检测到可翻译文本（{} 字符），但译文回填输出为空，已拒绝提交该页以避免空白译文。",
-            quality.translate_input_chars
-        )
-    })
-}
-
-fn json_u64(value: &serde_json::Value, key: &str) -> Option<u64> {
-    value.get(key).and_then(|number| {
-        number.as_u64().or_else(|| {
-            number
-                .as_i64()
-                .and_then(|signed| (signed >= 0).then_some(signed as u64))
-        })
-    })
 }
 
 fn commit_pdf_page_artifact(worker_file: &Path, target_path: &Path) -> Result<(), String> {
@@ -2127,6 +2125,7 @@ fn emit_pdf_page_progress_for_run(
             run_id: Some(run_id.to_string()),
             page_number,
             status: status.to_string(),
+            result_kind: None,
         },
     );
 }
@@ -2217,6 +2216,18 @@ pub async fn generate_rosetta_translated_pdf(
     timeout_ms: Option<u64>,
     ignore_cache: Option<bool>,
 ) -> Result<String, String> {
+    let _ = (
+        cancel_state,
+        rwkv_base_url,
+        provider_id,
+        provider_endpoint,
+        provider_internal_token,
+        provider_body_password,
+        source_lang,
+        target_lang,
+        timeout_ms,
+        ignore_cache,
+    );
     let bundle = store::load_job_bundle(&app, &job_id)?;
     if bundle.document.format != "pdf" {
         return Err("当前文档不是 PDF，无法生成翻译后 PDF。".to_string());
@@ -2225,147 +2236,7 @@ pub async fn generate_rosetta_translated_pdf(
     if !source_path.is_file() {
         return Err("项目缓存里找不到源 PDF，请重新导入。".to_string());
     }
-
-    let root = path::jobs_root(&app)?;
-    let dir = path::checked_job_dir(&root, &job_id)?;
-    let output_path = store::translated_pdf_output_path(&app, &job_id)?;
-    if let Some(parent) = output_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| format!("无法创建导出目录: {error}"))?;
-    }
-    let pdf2zh_output_dir = dir.join("pdf2zh-output");
-    if pdf2zh_output_dir.exists() {
-        std::fs::remove_dir_all(&pdf2zh_output_dir)
-            .map_err(|error| format!("无法清理旧 PDF 译文生成输出: {error}"))?;
-    }
-    std::fs::create_dir_all(&pdf2zh_output_dir)
-        .map_err(|error| format!("无法创建 PDF 译文生成输出目录: {error}"))?;
-
-    let target_lang = target_lang
-        .or_else(|| {
-            bundle
-                .document
-                .files
-                .first()
-                .and_then(|file| file.target_lang.clone())
-        })
-        .unwrap_or_else(|| bundle.document.target_lang.clone());
-    let source_lang = source_lang
-        .filter(|lang| lang != "auto")
-        .or_else(|| {
-            bundle
-                .document
-                .files
-                .first()
-                .and_then(|file| file.source_lang.clone())
-        })
-        .unwrap_or_else(|| "en".to_string());
-    let base_url = rwkv_base_url
-        .map(|u| u.trim().to_string())
-        .filter(|u| !u.is_empty())
-        .ok_or_else(|| {
-            "PDF 翻译需要配置 API 地址。请先启动本地运行时或配置远程 API。".to_string()
-        })?;
-    let timeout = timeout_ms.unwrap_or(120_000);
-    let ep = provider_endpoint
-        .as_deref()
-        .map(str::trim)
-        .unwrap_or("")
-        .to_string();
-    let provider = shim_provider_from_parts(
-        &base_url,
-        provider_id.as_deref(),
-        &ep,
-        provider_internal_token,
-        provider_body_password,
-        timeout,
-    );
-
-    if !cancel_state.try_begin_run() {
-        return Err("已有 PDF 翻译正在进行，请先停止当前翻译。".to_string());
-    }
-    let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
-    cancel_state.register_sender(cancel_tx);
-
-    let invoke_result = formats::pdf::pdf2zh_invoke::invoke_pdf2zh(
-        &app,
-        &source_path,
-        &pdf2zh_output_dir,
-        formats::pdf::pdf2zh_invoke::Pdf2zhInvokeOptions {
-            job_id: job_id.clone(),
-            run_id: None,
-            provider,
-            source_lang,
-            target_lang: target_lang.clone(),
-            ignore_cache: ignore_cache.unwrap_or(false),
-            pages: None,
-            // Whole-document fallback: no per-page progress to report.
-            page_progress: None,
-            translated_chars_offset: 0,
-        },
-        cancel_rx,
-        None,
-        None, // no streaming callback — this path is whole-doc only
-    )
-    .await;
-
-    cancel_state.end_run();
-
-    let output = invoke_result.map_err(|error| error.user_message())?;
-    if let Some(message) = pdf_rwkv_failure_message(&output.rwkv_metrics) {
-        return Err(message);
-    }
-    let mono_pdf = output
-        .mono_pdf
-        .ok_or_else(|| "翻译完成但未生成完整 PDF。".to_string())?;
-    std::fs::copy(&mono_pdf, &output_path)
-        .map_err(|error| format!("无法缓存 pdf2zh 译文 PDF: {error}"))?;
-    mark_pdf_translation_ready(&app, &job_id, &target_lang)?;
-    Ok(output_path.to_string_lossy().to_string())
-}
-
-fn mark_pdf_translation_ready(
-    app: &AppHandle,
-    job_id: &str,
-    target_lang: &str,
-) -> Result<(), String> {
-    let root = path::jobs_root(app)?;
-    let dir = path::checked_job_dir(&root, job_id)?;
-    let mut translation_files = store::read_translation_files(&dir)?;
-    let source_file_id = "file-1";
-    let id = path::translation_file_id(source_file_id, target_lang);
-    if let Some(file) = translation_files.iter_mut().find(|file| file.id == id) {
-        file.status = "translated".to_string();
-        file.segment_count = 1;
-        file.completed_segments = 1;
-        file.failed_segments = 0;
-        file.updated_at = path::timestamp_ms_string();
-    } else {
-        translation_files.push(model::RosettaTranslationFile {
-            id,
-            source_file_id: source_file_id.to_string(),
-            target_lang: target_lang.to_string(),
-            status: "translated".to_string(),
-            segment_count: 1,
-            completed_segments: 1,
-            failed_segments: 0,
-            updated_at: path::timestamp_ms_string(),
-            exported_at: None,
-        });
-    }
-    store::write_translation_files(&dir, &translation_files)?;
-
-    let mut index = store::read_index(&root)?;
-    if let Some(job) = index.jobs.iter_mut().find(|job| job.id == job_id) {
-        job.status = "completed".to_string();
-        job.segment_count = 1;
-        job.completed_segments = 1;
-        job.failed_segments = 0;
-        job.target_lang = target_lang.to_string();
-        job.last_error = None;
-        job.updated_at = path::timestamp_ms_string();
-    }
-    store::write_index(&root, &index)?;
-    Ok(())
+    Err("PDF v2 已移除整本 pdf2zh/shim 生成路径；请使用按页 PDF 翻译完成后导出。".to_string())
 }
 
 fn sync_pdf_page_translation_summary(

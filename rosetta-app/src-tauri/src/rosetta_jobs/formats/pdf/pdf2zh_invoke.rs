@@ -1,23 +1,28 @@
 use std::{
-    ffi::OsStr,
-    path::{Path, PathBuf},
-    process::Stdio,
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
     sync::{
-        atomic::{AtomicU32, Ordering},
-        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU32, Ordering},
+        Arc,
     },
 };
 
-use tokio::sync::oneshot;
-
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::sync::{mpsc, oneshot};
 
 use crate::{
-    managed_pdf2zh::{self, openai_shim::ShimProviderConfig, openai_shim::ShimRwkvMetrics},
-    rosetta_jobs::formats::pdf::errors::PdfError,
-    windows_process::HideConsole,
+    managed_pdf2zh::{
+        self,
+        worker::{PdfPageResult, PdfTranslationUnit},
+    },
+    rosetta_jobs::formats::pdf::{
+        errors::PdfError,
+        unit_translation::{
+            translate_pdf_units_with_events, PdfUnitProviderConfig, PdfUnitTranslation,
+            PdfUnitTranslationBatchResult, PdfUnitTranslationMetrics,
+        },
+    },
 };
 
 const PDF2ZH_PROGRESS_EVENT: &str = "rosetta-pdf2zh-progress";
@@ -26,80 +31,42 @@ const PDF2ZH_PROGRESS_EVENT: &str = "rosetta-pdf2zh-progress";
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Pdf2zhProgressPayload {
     pub job_id: String,
-    /// One of: `warmup` (sidecar/shim being prepared), `parse` (PDF layout
-    /// extraction), `translate` (pdf2zh has reached translation), `render`
-    /// (translated PDF being assembled). Frontend maps to UI labels.
     pub phase: String,
     pub percent: Option<u8>,
     pub message: String,
-    /// 1-based index of the page currently being processed, within the
-    /// filtered "pages to translate" list of this run. Derived live from
-    /// pdf2zh's tqdm output. `None` when the caller didn't supply page
-    /// context (whole-document fallback path).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current_page: Option<u32>,
-    /// Total pages in the filtered list. Paired with `current_page` so the
-    /// UI can render "第 X/Y 页".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total_pages: Option<u32>,
-    /// Pages whose translated page artifact has actually been committed.
-    /// This is distinct from `current_page`: pdf2zh may report that it has
-    /// processed every page before Rosetta has durable translated page PDFs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub completed_pages: Option<u32>,
-    /// Cumulative translated characters returned by RWKV during this
-    /// invocation. Keeps the status bar visibly moving even while pdf2zh's
-    /// own output is quiet.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub translated_chars: Option<u64>,
 }
 
-/// Page-progress context for one pdf2zh invocation. The caller filters out
-/// already-translated pages before chunking, so these reflect user-visible
-/// progress ("3rd of 5 pages I asked to translate"), not absolute numbers.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PageProgressContext {
-    /// Pages already completed in earlier chunks of this run.
     pub completed_before: u32,
-    /// Pages handed to this invocation (== the tqdm denominator).
     pub chunk_len: u32,
-    /// Total pages the whole run will translate.
     pub total: u32,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct Pdf2zhInvokeOptions {
     pub job_id: String,
-    pub run_id: Option<String>,
-    pub provider: ShimProviderConfig,
+    pub provider: PdfUnitProviderConfig,
     pub source_lang: String,
     pub target_lang: String,
-    pub ignore_cache: bool,
     pub pages: Option<Vec<u32>>,
-    /// `None` for callers that translate the whole document in a single
-    /// invocation (no page numbering to report).
     pub page_progress: Option<PageProgressContext>,
-    /// Characters already translated by earlier chunks of this run. Added to
-    /// this invocation's shim counter so the UI's 已翻译 counter is monotonic
-    /// across chunks instead of resetting per invocation.
     pub translated_chars_offset: u64,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct Pdf2zhOutput {
-    /// Final mono PDF on disk. `None` when the worker streamed per-page
-    /// outputs directly (the caller already consumed them via the page
-    /// callback and there's no single combined PDF to point at).
-    pub mono_pdf: Option<PathBuf>,
-    #[allow(dead_code)]
-    pub dual_pdf: Option<PathBuf>,
-    /// Time from invocation start to pdf2zh process spawn (status resolution,
-    /// shim startup, RWKV role setup).
     pub warmup_ms: u64,
-    /// Wall time of the pdf2zh process itself (parse + translate + render).
     pub process_ms: u64,
-    /// RWKV request stats collected by the shim during this invocation.
-    pub rwkv_metrics: crate::managed_pdf2zh::openai_shim::ShimRwkvMetricsSnapshot,
+    pub rwkv_metrics: PdfUnitTranslationMetrics,
 }
 
 pub(crate) async fn invoke_pdf2zh(
@@ -107,626 +74,397 @@ pub(crate) async fn invoke_pdf2zh(
     source_path: &Path,
     output_dir: &Path,
     options: Pdf2zhInvokeOptions,
-    cancel_rx: oneshot::Receiver<()>,
-    on_page_done: Option<&mut (dyn FnMut(u32, PathBuf) + Send)>,
-    on_worker_stage: Option<
-        &mut (dyn FnMut(crate::managed_pdf2zh::worker::WorkerStageEvent) + Send),
-    >,
+    mut cancel_rx: oneshot::Receiver<()>,
+    mut on_page_result: Option<&mut (dyn FnMut(PdfPageResult) + Send)>,
 ) -> Result<Pdf2zhOutput, PdfError> {
-    let page_progress = options.page_progress;
-    let pages_done = Arc::new(AtomicU32::new(0));
-    let last_percent = Arc::new(AtomicU32::new(0));
-    let emit = |phase: &str, percent: Option<u8>, message: &str| {
-        emit_progress(
-            app,
-            &options.job_id,
-            phase,
-            percent,
-            message,
-            page_progress,
-            pages_done.load(Ordering::Relaxed),
-            None,
-        );
-    };
     let invoke_started = std::time::Instant::now();
-
     std::fs::create_dir_all(output_dir)
-        .map_err(|error| PdfError::Read(format!("无法创建 pdf2zh 输出目录: {error}")))?;
+        .map_err(|error| PdfError::Read(format!("无法创建 PDF engine 输出目录: {error}")))?;
     let temp_dir = output_dir.join("tmp");
     std::fs::create_dir_all(&temp_dir)
-        .map_err(|error| PdfError::Read(format!("无法创建 pdf2zh 临时目录: {error}")))?;
+        .map_err(|error| PdfError::Read(format!("无法创建 PDF engine 临时目录: {error}")))?;
 
-    emit("warmup", Some(0), "正在准备 PDF 翻译引擎…");
+    emit_progress(
+        app,
+        &options.job_id,
+        "warmup",
+        Some(0),
+        "正在准备 PDF engine…",
+        options.page_progress,
+        0,
+        None,
+    );
+
     let status = managed_pdf2zh::build_static_status(app).map_err(PdfError::RuntimeMissing)?;
     if !status.install_plan.ready {
         return Err(PdfError::RuntimeMissing(status.install_plan.message));
     }
-    let bin = status
-        .bin_path
-        .ok_or_else(|| PdfError::RuntimeMissing("找不到 PDF 版面处理组件。".to_string()))?;
-    let doclayout_model = status.doclayout_model_path.clone().ok_or_else(|| {
-        PdfError::RuntimeMissing(
+    if status.doclayout_model_path.is_none() {
+        return Err(PdfError::RuntimeMissing(
             "PDF 版面处理组件缺少内置 ONNX 版面模型，请更新 PDF 组件。".to_string(),
-        )
-    })?;
-    status
-        .layout
-        .ensure_dirs()
-        .map_err(PdfError::RuntimeMissing)?;
-    let debug = pdf2zh_debug_enabled();
-    emit("warmup", Some(20), "正在启动本地翻译 shim…");
-    let shim_log_file = output_dir.join("rosetta-pdf2zh-shim.log");
-    let debug_context = match options.run_id.as_deref() {
-        Some(run_id) => format!("pdf-job:{};run:{}", options.job_id, run_id),
-        None => format!("pdf-job:{}", options.job_id),
+        ));
+    }
+
+    let pages_done = Arc::new(AtomicU32::new(0));
+    let mut stderr_lines = Vec::<String>::new();
+    let mut on_stderr = |line: &str| {
+        if stderr_lines.len() >= 30 {
+            stderr_lines.remove(0);
+        }
+        stderr_lines.push(line.trim().to_string());
     };
-    let shim = managed_pdf2zh::openai_shim::spawn_shim(
-        options.provider.clone(),
-        options.source_lang.clone(),
-        options.target_lang.clone(),
-        shim_log_file,
-        debug,
-        Some(debug_context),
+
+    let warmup_started = std::time::Instant::now();
+    let prepared = crate::managed_pdf2zh::worker::prepare_pdf_window(
+        app,
+        serde_json::json!({
+            "file": source_path.to_string_lossy(),
+            "outputDir": output_dir.to_string_lossy(),
+            "tmpDir": temp_dir.to_string_lossy(),
+            "pages": options.pages.clone(),
+            "langIn": pdf2zh_lang(&options.source_lang),
+            "langOut": pdf2zh_lang(&options.target_lang),
+            "thread": 1,
+            "options": {
+                "cleanupScratchDir": false,
+            },
+        }),
+        &mut on_stderr,
+        &mut cancel_rx,
     )
     .await
-    .map_err(PdfError::Pdf2zhFailed)?;
-    emit("warmup", Some(60), "翻译 shim 已就绪，启动 PDF 解析进程…");
-    let shim_ref = &shim;
+    .map_err(worker_outcome_to_pdf_error)?;
+    let warmup_ms = warmup_started.elapsed().as_millis() as u64;
 
-    let openai_base_url = shim_ref.base_url();
-    let worker_service = pdf2zh_worker_service(&options.provider);
-    let thread_count = shim_ref.pdf2zh_thread_count;
-    std::fs::write(
-        output_dir.join("rosetta-pdf2zh-command.log"),
-        format!(
-            "bin={}\nsource={}\noutput_dir={}\ntemp_dir={}\nopenai_base_url={}\nrosetta_batch_base_url={}\nservice={}\njob_id={}\nrun_id={}\nsource_lang={}\ntarget_lang={}\nthreads={}\ndebug={}\nignore_cache={}\n",
-            bin.display(),
-            source_path.display(),
-            output_dir.display(),
-            temp_dir.display(),
-            openai_base_url,
-            openai_base_url,
-            worker_service,
-            options.job_id,
-            options.run_id.as_deref().unwrap_or(""),
-            options.source_lang,
-            options.target_lang,
-            thread_count,
-            debug,
-            options.ignore_cache,
-        ),
-    )
-    .ok();
+    emit_progress(
+        app,
+        &options.job_id,
+        "translate",
+        Some(20),
+        "正在翻译 PDF 文本单元…",
+        options.page_progress,
+        0,
+        None,
+    );
 
-    emit("translate", Some(0), "正在翻译 PDF…");
-    let warmup_ms = invoke_started.elapsed().as_millis() as u64;
-    let process_started = std::time::Instant::now();
-    let mut cancel_rx = cancel_rx;
-
-    // Heartbeat: push the cumulative translated-character count to the UI
-    // every 500 ms while RWKV batches return, so the status bar visibly moves
-    // even when pdf2zh's own output is between updates. Aborted on drop, so
-    // every exit path (success, failure, cancel) stops it.
-    let metrics = Arc::clone(&shim_ref.metrics);
-    let chars_offset = options.translated_chars_offset;
-    let _chars_ticker = AbortOnDrop(tokio::spawn({
-        let app = app.clone();
-        let job_id = options.job_id.clone();
-        let metrics = Arc::clone(&metrics);
-        let pages_done = Arc::clone(&pages_done);
-        let last_percent = Arc::clone(&last_percent);
-        async move {
-            let mut last_chars = 0u64;
-            loop {
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                let chars = chars_offset + metrics.snapshot().total_output_chars;
-                if chars == last_chars {
-                    continue;
-                }
-                last_chars = chars;
-                let percent = match last_percent.load(Ordering::Relaxed) {
-                    0 => None,
-                    stored => Some((stored - 1).min(100) as u8),
-                };
-                emit_progress(
-                    &app,
-                    &job_id,
-                    "translate",
-                    percent,
-                    "正在翻译…",
-                    page_progress,
-                    pages_done.load(Ordering::Relaxed),
-                    Some(chars),
-                );
-            }
-        }
-    }));
-
-    let output_lines = Arc::new(Mutex::new(Vec::<String>::new()));
-    // Live tee of pdf2zh's output to disk so we can see what it's doing even
-    // when it hangs (in which case the failure-only `rosetta-pdf2zh-output.log`
-    // never gets written). Opened best-effort; logging failures are swallowed.
-    let live_log_path = output_dir.join("rosetta-pdf2zh-live.log");
-    let live_log: Arc<Mutex<Option<std::fs::File>>> = Arc::new(Mutex::new(
-        std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&live_log_path)
-            .ok(),
-    ));
-
-    // Preferred path: the persistent worker, which keeps the Python import and
-    // ONNX layout warmup cost paid once per app session. Falls back to the
-    // one-shot CLI below when the worker can't be started (broken pack, no
-    // bundled python, …).
-    let worker_payload = serde_json::json!({
-        "file": source_path.to_string_lossy(),
-        "outputDir": output_dir.to_string_lossy(),
-        "tmpDir": temp_dir.to_string_lossy(),
-        "pages": options.pages.clone(),
-        "langIn": pdf2zh_lang(&options.source_lang),
-        "langOut": pdf2zh_lang(&options.target_lang),
-        "service": worker_service,
-        "thread": thread_count,
-        "ignoreCache": options.ignore_cache,
-        "env": {
-            "OPENAI_BASE_URL": openai_base_url.clone(),
-            "OPENAI_API_KEY": "rosetta-local",
-            "OPENAI_MODEL": "rwkv",
-            "OPENAI_STREAM": "false",
-            "ROSETTA_BATCH_BASE_URL": openai_base_url.clone(),
-            "ROSETTA_BATCH_JOB_ID": options.job_id.clone(),
-            "ROSETTA_BATCH_RUN_ID": options.run_id.clone().unwrap_or_default(),
-            "ROSETTA_PDF2ZH_IGNORE_CACHE": if options.ignore_cache { "1" } else { "0" },
-        },
-    });
-    let streaming_used = on_page_done.is_some();
-    let worker_outcome = {
-        let mut on_stderr = |line: &str| {
-            remember_line(&output_lines, line);
-            append_live_log(&live_log, "worker", line);
-            handle_pdf2zh_line(
-                app,
-                &options.job_id,
-                line,
-                page_progress,
-                &pages_done,
-                &last_percent,
-                Some((&metrics, chars_offset)),
-            );
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    let translate_started = std::time::Instant::now();
+    let ordered_pages = prepared.prepared_run.pages.clone();
+    let unit_ids_by_page = unit_ids_by_page(&ordered_pages, &prepared.units);
+    let mut translations_by_unit_id = BTreeMap::<String, String>::new();
+    let mut rendered_pages = BTreeSet::<u32>::new();
+    let (unit_tx, mut unit_rx) = mpsc::unbounded_channel::<PdfUnitTranslation>();
+    let provider_for_task = options.provider.clone();
+    let source_lang_for_task = options.source_lang.clone();
+    let target_lang_for_task = options.target_lang.clone();
+    let units_for_task = prepared.units.clone();
+    let cancel_for_task = Arc::clone(&cancel_flag);
+    let mut translate_task = tokio::spawn(async move {
+        let mut on_unit_translation = move |translation: PdfUnitTranslation| {
+            let _ = unit_tx.send(translation);
         };
-        crate::managed_pdf2zh::worker::translate_via_worker(
-            app,
-            worker_payload,
-            &mut on_stderr,
-            on_page_done,
-            on_worker_stage,
-            &mut cancel_rx,
+        translate_pdf_units_with_events(
+            &provider_for_task,
+            &source_lang_for_task,
+            &target_lang_for_task,
+            &units_for_task,
+            Some(cancel_for_task),
+            &mut on_unit_translation,
         )
         .await
+    });
+
+    let mut local_on_page = |page_result: PdfPageResult| {
+        pages_done.fetch_add(1, Ordering::Relaxed);
+        if let Some(callback) = on_page_result.as_deref_mut() {
+            callback(page_result);
+        }
     };
 
-    use crate::managed_pdf2zh::worker::WorkerTranslateOutcome;
-    let mut worker_completed = false;
-    match worker_outcome {
-        WorkerTranslateOutcome::Completed => {
-            worker_completed = true;
-        }
-        WorkerTranslateOutcome::Cancelled => {
-            return Err(PdfError::Cancelled);
-        }
-        WorkerTranslateOutcome::JobFailed(message)
-        | WorkerTranslateOutcome::WorkerLost(message) => {
-            let tail = output_lines
-                .lock()
-                .ok()
-                .map(|lines| lines.join("\n"))
-                .unwrap_or_default();
-            let output_log = output_dir.join("rosetta-pdf2zh-output.log");
-            let _ = std::fs::write(
-                &output_log,
-                format!("{tail}\n--- worker error ---\n{message}"),
-            );
-            return Err(PdfError::Pdf2zhFailed(format!(
-                "PDF 版面处理没有完成：{}。日志：{}",
-                concise_pdf2zh_error(&message),
-                output_log.display()
-            )));
-        }
-        WorkerTranslateOutcome::Unavailable(reason) => {
-            append_live_log(
-                &live_log,
-                "worker",
-                &format!("worker unavailable, falling back to CLI: {reason}"),
-            );
+    match render_ready_pages(
+        app,
+        &prepared.prepared_run.prepared_run_id,
+        output_dir,
+        &ordered_pages,
+        &unit_ids_by_page,
+        &translations_by_unit_id,
+        &mut rendered_pages,
+        &mut on_stderr,
+        &mut local_on_page,
+        &mut cancel_rx,
+    )
+    .await
+    {
+        Ok(()) => {}
+        Err(error) => {
+            cancel_flag.store(true, Ordering::SeqCst);
+            translate_task.abort();
+            crate::managed_pdf2zh::worker::dispose_pdf_window(
+                app,
+                &prepared.prepared_run.prepared_run_id,
+            )
+            .await;
+            return Err(error);
         }
     }
 
-    if !worker_completed {
-        // Fallback: one-shot CLI invocation (pays the full import per call).
-        let mut command = tokio::process::Command::new(&bin);
-        if cfg!(target_os = "windows") {
-            command.arg("-m").arg("pdf2zh.pdf2zh");
-        }
-        command
-            .arg(source_path)
-            .arg("-li")
-            .arg(pdf2zh_lang(&options.source_lang))
-            .arg("-lo")
-            .arg(pdf2zh_lang(&options.target_lang))
-            .arg("-s")
-            .arg(worker_service)
-            .arg("-t")
-            .arg(thread_count.to_string())
-            .current_dir(output_dir)
-            .env("OPENAI_BASE_URL", &openai_base_url)
-            .env("OPENAI_API_KEY", "rosetta-local")
-            .env("OPENAI_MODEL", "rwkv")
-            .env("OPENAI_STREAM", "false")
-            .env("ROSETTA_BATCH_BASE_URL", &openai_base_url)
-            .env("ROSETTA_BATCH_JOB_ID", &options.job_id)
-            .env(
-                "ROSETTA_BATCH_RUN_ID",
-                options.run_id.as_deref().unwrap_or(""),
-            )
-            .env(
-                "ROSETTA_PDF2ZH_IGNORE_CACHE",
-                if options.ignore_cache { "1" } else { "0" },
-            )
-            .env("TMPDIR", &temp_dir)
-            .env("TEMP", &temp_dir)
-            .env("TMP", &temp_dir)
-            .env("ROSETTA_DOCLAYOUT_MODEL", &doclayout_model)
-            // Tell pdf2zh (and the OpenAI Python SDK underneath) to bypass any
-            // system / shell proxy for the loopback shim. Without this, users
-            // running Clash/Surge or with HTTP_PROXY set get every shim request
-            // routed through their proxy, which returns 502 Bad Gateway because
-            // it can't reach 127.0.0.1 from its egress. Set both NO_PROXY and the
-            // lowercase no_proxy (Python's urllib reads the lowercase form). Also
-            // explicitly clear HTTP_PROXY / HTTPS_PROXY / ALL_PROXY so the OpenAI
-            // SDK's httpx client doesn't pick them up via httpx.Client defaults
-            // (httpx ignores NO_PROXY for loopback only on some versions).
-            .env("NO_PROXY", "127.0.0.1,localhost,::1")
-            .env("no_proxy", "127.0.0.1,localhost,::1")
-            .env("HTTP_PROXY", "")
-            .env("HTTPS_PROXY", "")
-            .env("ALL_PROXY", "")
-            .env("http_proxy", "")
-            .env("https_proxy", "")
-            .env("all_proxy", "")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        // Start pdf2zh in its own process group so cancellation can kill the
-        // whole tree. pdf2zh is a Python launcher that spawns multiprocessing
-        // workers; killing only the immediate child leaves those workers (and
-        // their in-flight RWKV requests) running, which is why "stop" used to
-        // appear to do nothing on large PDFs.
-        #[cfg(unix)]
-        command.process_group(0);
-        command.hide_console_on_windows();
-        if let Some(pages) = &options.pages {
-            let pages_arg = pages
-                .iter()
-                .map(u32::to_string)
-                .collect::<Vec<_>>()
-                .join(",");
-            command.arg("--pages").arg(pages_arg);
+    let mut translation_result: Option<Result<PdfUnitTranslationBatchResult, String>> = None;
+    let mut translate_task_done = false;
+    loop {
+        if translate_task_done {
+            match unit_rx.recv().await {
+                Some(translation) => {
+                    translations_by_unit_id.insert(translation.unit_id, translation.text);
+                    match render_ready_pages(
+                        app,
+                        &prepared.prepared_run.prepared_run_id,
+                        output_dir,
+                        &ordered_pages,
+                        &unit_ids_by_page,
+                        &translations_by_unit_id,
+                        &mut rendered_pages,
+                        &mut on_stderr,
+                        &mut local_on_page,
+                        &mut cancel_rx,
+                    )
+                    .await
+                    {
+                        Ok(()) => {}
+                        Err(error) => {
+                            cancel_flag.store(true, Ordering::SeqCst);
+                            crate::managed_pdf2zh::worker::dispose_pdf_window(
+                                app,
+                                &prepared.prepared_run.prepared_run_id,
+                            )
+                            .await;
+                            return Err(error);
+                        }
+                    }
+                }
+                None => break,
+            }
+            continue;
         }
 
-        let mut child = command.spawn().map_err(|error| {
-            PdfError::Pdf2zhFailed(format!("启动 {} 失败: {error}", bin.display()))
-        })?;
-
-        let stderr = child.stderr.take();
-        let stdout = child.stdout.take();
-        let stderr_task = stderr.map(|stream| {
-            let app = app.clone();
-            let job_id = options.job_id.clone();
-            let output_lines = Arc::clone(&output_lines);
-            let live_log = Arc::clone(&live_log);
-            let pages_done = Arc::clone(&pages_done);
-            let last_percent = Arc::clone(&last_percent);
-            let metrics = Arc::clone(&metrics);
-            tokio::spawn(async move {
-                let mut lines = BufReader::new(stream).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    remember_line(&output_lines, &line);
-                    append_live_log(&live_log, "stderr", &line);
-                    handle_pdf2zh_line(
-                        &app,
-                        &job_id,
-                        &line,
-                        page_progress,
-                        &pages_done,
-                        &last_percent,
-                        Some((&metrics, chars_offset)),
-                    );
+        tokio::select! {
+            maybe_translation = unit_rx.recv() => {
+                if let Some(translation) = maybe_translation {
+                    translations_by_unit_id.insert(translation.unit_id, translation.text);
+                    match render_ready_pages(
+                        app,
+                        &prepared.prepared_run.prepared_run_id,
+                        output_dir,
+                        &ordered_pages,
+                        &unit_ids_by_page,
+                        &translations_by_unit_id,
+                        &mut rendered_pages,
+                        &mut on_stderr,
+                        &mut local_on_page,
+                        &mut cancel_rx,
+                    )
+                    .await
+                    {
+                        Ok(()) => {}
+                        Err(error) => {
+                            cancel_flag.store(true, Ordering::SeqCst);
+                            translate_task.abort();
+                            crate::managed_pdf2zh::worker::dispose_pdf_window(
+                                app,
+                                &prepared.prepared_run.prepared_run_id,
+                            )
+                            .await;
+                            return Err(error);
+                        }
+                    }
                 }
-            })
-        });
-        let stdout_task = stdout.map(|stream| {
-            let app = app.clone();
-            let job_id = options.job_id.clone();
-            let output_lines = Arc::clone(&output_lines);
-            let live_log = Arc::clone(&live_log);
-            let pages_done = Arc::clone(&pages_done);
-            let last_percent = Arc::clone(&last_percent);
-            let metrics = Arc::clone(&metrics);
-            tokio::spawn(async move {
-                let mut lines = BufReader::new(stream).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    remember_line(&output_lines, &line);
-                    append_live_log(&live_log, "stdout", &line);
-                    handle_pdf2zh_line(
-                        &app,
-                        &job_id,
-                        &line,
-                        page_progress,
-                        &pages_done,
-                        &last_percent,
-                        Some((&metrics, chars_offset)),
-                    );
-                }
-            })
-        });
-
-        let exit_status = tokio::select! {
-            result = child.wait() => {
-                result.map_err(|error| PdfError::Pdf2zhFailed(format!("等待 pdf2zh 结束失败: {error}")))?
+            }
+            joined = &mut translate_task => {
+                translate_task_done = true;
+                translation_result = Some(match joined {
+                    Ok(result) => result,
+                    Err(error) => Err(format!("PDF unit translation task failed: {error}")),
+                });
             }
             _ = &mut cancel_rx => {
-                crate::managed_pdf2zh::worker::kill_process_tree(&mut child).await;
-                if let Some(task) = stderr_task { task.abort(); }
-                if let Some(task) = stdout_task { task.abort(); }
+                cancel_flag.store(true, Ordering::SeqCst);
+                translate_task.abort();
+                crate::managed_pdf2zh::worker::dispose_pdf_window(
+                    app,
+                    &prepared.prepared_run.prepared_run_id,
+                ).await;
                 return Err(PdfError::Cancelled);
             }
-        };
-        if let Some(task) = stderr_task {
-            let _ = task.await;
-        }
-        if let Some(task) = stdout_task {
-            let _ = task.await;
-        }
-
-        if !exit_status.success() {
-            let tail = output_lines
-                .lock()
-                .ok()
-                .map(|lines| lines.join("\n"))
-                .filter(|text| !text.trim().is_empty())
-                .unwrap_or_else(|| "无 stderr/stdout 输出。".to_string());
-            let output_log = output_dir.join("rosetta-pdf2zh-output.log");
-            let _ = std::fs::write(&output_log, &tail);
-            return Err(PdfError::Pdf2zhFailed(format!(
-                "PDF 版面处理没有完成（退出码：{}）。请重试；若持续失败，可查看日志：{}",
-                exit_status
-                    .code()
-                    .map_or_else(|| "signal".to_string(), |code| code.to_string()),
-                output_log.display()
-            )));
         }
     }
 
-    let process_ms = process_started.elapsed().as_millis() as u64;
-    let rwkv_metrics = shim_ref.metrics.snapshot();
-
-    emit("render", Some(95), "正在整理译文 PDF…");
-    // Streaming worker path emits per-page outputs through the callback and
-    // intentionally skips writing the combined mono/dual PDFs. CLI fallback
-    // and whole-doc workers still produce them, so look both ways.
-    let mono_pdf = if streaming_used && worker_completed {
-        None
-    } else {
-        let resolved = find_pdf2zh_output(output_dir, source_path, "zh")
-            .or_else(|| find_pdf2zh_output(output_dir, source_path, "mono"))
-            .ok_or_else(|| PdfError::Pdf2zhFailed("未生成译文 PDF。".to_string()))?;
-        Some(resolved)
+    let translation_result = match translation_result
+        .unwrap_or_else(|| Err("PDF unit translation task ended without a result.".to_string()))
+    {
+        Ok(result) => result,
+        Err(error) => {
+            crate::managed_pdf2zh::worker::dispose_pdf_window(
+                app,
+                &prepared.prepared_run.prepared_run_id,
+            )
+            .await;
+            return Err(PdfError::Pdf2zhFailed(error));
+        }
     };
-    let dual_pdf = find_pdf2zh_output(output_dir, source_path, "dual");
-    emit("render", Some(100), "译文 PDF 已生成。");
+    let translated_chars =
+        options.translated_chars_offset + translation_result.metrics.total_output_chars;
+    match render_ready_pages(
+        app,
+        &prepared.prepared_run.prepared_run_id,
+        output_dir,
+        &ordered_pages,
+        &unit_ids_by_page,
+        &translations_by_unit_id,
+        &mut rendered_pages,
+        &mut on_stderr,
+        &mut local_on_page,
+        &mut cancel_rx,
+    )
+    .await
+    {
+        Ok(()) => {}
+        Err(error) => {
+            crate::managed_pdf2zh::worker::dispose_pdf_window(
+                app,
+                &prepared.prepared_run.prepared_run_id,
+            )
+            .await;
+            return Err(error);
+        }
+    }
+
+    let missing_pages = ordered_pages
+        .iter()
+        .copied()
+        .filter(|page| !rendered_pages.contains(page))
+        .collect::<Vec<_>>();
+    if !missing_pages.is_empty() {
+        cancel_flag.store(true, Ordering::SeqCst);
+        crate::managed_pdf2zh::worker::dispose_pdf_window(
+            app,
+            &prepared.prepared_run.prepared_run_id,
+        )
+        .await;
+        return Err(PdfError::Pdf2zhFailed(format!(
+            "PDF unit translation finished but {} page(s) were not ready to render: {:?}",
+            missing_pages.len(),
+            missing_pages
+        )));
+    }
+
+    crate::managed_pdf2zh::worker::dispose_pdf_window(app, &prepared.prepared_run.prepared_run_id)
+        .await;
+
+    emit_progress(
+        app,
+        &options.job_id,
+        "render",
+        Some(100),
+        "译文 PDF 页面已生成。",
+        options.page_progress,
+        pages_done.load(Ordering::Relaxed),
+        Some(translated_chars),
+    );
+
+    let process_ms = translate_started.elapsed().as_millis() as u64;
     Ok(Pdf2zhOutput {
-        mono_pdf,
-        dual_pdf,
         warmup_ms,
-        process_ms,
-        rwkv_metrics,
+        process_ms: process_ms.max(invoke_started.elapsed().as_millis() as u64),
+        rwkv_metrics: translation_result.metrics,
     })
 }
 
-fn append_live_log(file: &Arc<Mutex<Option<std::fs::File>>>, stream: &str, line: &str) {
-    use std::io::Write;
-    let Ok(mut guard) = file.lock() else {
-        return;
-    };
-    let Some(handle) = guard.as_mut() else {
-        return;
-    };
-    let _ = writeln!(handle, "[{stream}] {line}");
-    let _ = handle.flush();
-}
-
-fn concise_pdf2zh_error(message: &str) -> String {
-    let trimmed = message.trim();
-    if trimmed.is_empty() {
-        return "未知错误".to_string();
+fn unit_ids_by_page(pages: &[u32], units: &[PdfTranslationUnit]) -> BTreeMap<u32, Vec<String>> {
+    let mut by_page = pages
+        .iter()
+        .copied()
+        .map(|page| (page, Vec::<String>::new()))
+        .collect::<BTreeMap<_, _>>();
+    for unit in units {
+        by_page
+            .entry(unit.page_number)
+            .or_default()
+            .push(unit.unit_id.clone());
     }
-    trimmed
-        .lines()
-        .last()
-        .unwrap_or(trimmed)
-        .chars()
-        .take(240)
-        .collect()
+    by_page
 }
 
-fn remember_line(lines: &Arc<Mutex<Vec<String>>>, line: &str) {
-    let Ok(mut lines) = lines.lock() else {
-        return;
-    };
-    lines.push(line.trim().to_string());
-    if lines.len() > 30 {
-        lines.remove(0);
-    }
-}
-
-/// Aborts a background task when dropped, so progress tickers can't outlive
-/// the invocation on any exit path.
-struct AbortOnDrop(tokio::task::JoinHandle<()>);
-
-impl Drop for AbortOnDrop {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
-
-fn handle_pdf2zh_line(
+async fn render_ready_pages(
     app: &AppHandle,
-    job_id: &str,
-    line: &str,
-    ctx: Option<PageProgressContext>,
-    pages_done: &AtomicU32,
-    last_percent: &AtomicU32,
-    metrics: Option<(&ShimRwkvMetrics, u64)>,
-) {
-    // pdf2zh's tqdm bar iterates over the pages of this invocation; its
-    // "done/total" fraction is the authoritative per-page progress. Only
-    // trust fractions whose denominator matches the chunk size to avoid
-    // picking up unrelated "a/b" tokens from log lines.
-    if let (Some(ctx), Some((done, denominator))) = (ctx, parse_tqdm_fraction(line)) {
-        if denominator == ctx.chunk_len {
-            pages_done.store(done.min(ctx.chunk_len), Ordering::Relaxed);
-        }
-    }
-    let percent = parse_percent(line);
-    if let Some(percent) = percent {
-        last_percent.store(u32::from(percent) + 1, Ordering::Relaxed);
-    }
-
-    let lower = line.to_ascii_lowercase();
-    let phase = if lower.contains("parse") || lower.contains("layout") {
-        "parse"
-    } else if lower.contains("save") || lower.contains("render") {
-        "render"
-    } else {
-        "translate"
-    };
-    let translated_chars = metrics
-        .map(|(metrics, offset)| offset + metrics.snapshot().total_output_chars)
-        .filter(|chars| *chars > 0);
-    emit_progress(
-        app,
-        job_id,
-        phase,
-        percent,
-        line.trim(),
-        ctx,
-        pages_done.load(Ordering::Relaxed),
-        translated_chars,
-    );
-}
-
-/// Extract tqdm's "done/total" fraction from a progress line like
-/// ` 33%|███▎      | 6/18 [00:25<00:46,  3.9s/it]`. Requires the trailing
-/// `[` so arbitrary "a/b" tokens (dates, paths, rates like `3.9s/it`) don't
-/// match.
-fn parse_tqdm_fraction(line: &str) -> Option<(u32, u32)> {
-    let bytes = line.as_bytes();
-    for (index, &byte) in bytes.iter().enumerate() {
-        if byte != b'/' {
+    prepared_run_id: &str,
+    output_dir: &Path,
+    ordered_pages: &[u32],
+    unit_ids_by_page: &BTreeMap<u32, Vec<String>>,
+    translations_by_unit_id: &BTreeMap<String, String>,
+    rendered_pages: &mut BTreeSet<u32>,
+    on_stderr: &mut (dyn FnMut(&str) + Send),
+    on_page_result: &mut (dyn FnMut(PdfPageResult) + Send),
+    cancel_rx: &mut oneshot::Receiver<()>,
+) -> Result<(), PdfError> {
+    for page_number in ordered_pages {
+        if rendered_pages.contains(page_number) {
             continue;
         }
-        let mut start = index;
-        while start > 0 && bytes[start - 1].is_ascii_digit() {
-            start -= 1;
-        }
-        let mut end = index + 1;
-        while end < bytes.len() && bytes[end].is_ascii_digit() {
-            end += 1;
-        }
-        if start == index || end == index + 1 {
+        let unit_ids = unit_ids_by_page
+            .get(page_number)
+            .cloned()
+            .unwrap_or_default();
+        if !unit_ids
+            .iter()
+            .all(|unit_id| translations_by_unit_id.contains_key(unit_id))
+        {
             continue;
         }
-        if !line[end..].trim_start().starts_with('[') {
-            continue;
-        }
-        if let (Ok(done), Ok(total)) = (
-            line[start..index].parse::<u32>(),
-            line[index + 1..end].parse::<u32>(),
-        ) {
-            if total > 0 && done <= total {
-                return Some((done, total));
+        let page_translations = unit_ids
+            .iter()
+            .filter_map(|unit_id| {
+                translations_by_unit_id
+                    .get(unit_id)
+                    .map(|text| (unit_id.clone(), text.clone()))
+            })
+            .collect::<BTreeMap<_, _>>();
+        let render_payload = serde_json::json!({
+            "preparedRunId": prepared_run_id,
+            "outputDir": output_dir.to_string_lossy(),
+            "translationsByUnitId": page_translations,
+            "pages": [page_number],
+        });
+        match crate::managed_pdf2zh::worker::render_pdf_window(
+            app,
+            render_payload,
+            on_stderr,
+            on_page_result,
+            cancel_rx,
+        )
+        .await
+        {
+            crate::managed_pdf2zh::worker::WorkerTranslateOutcome::Completed => {
+                rendered_pages.insert(*page_number);
             }
+            other => return Err(worker_outcome_to_pdf_error(other)),
         }
     }
-    None
+    Ok(())
 }
 
-fn parse_percent(line: &str) -> Option<u8> {
-    let percent_pos = line.find('%')?;
-    let digits = line[..percent_pos]
-        .chars()
-        .rev()
-        .take_while(|ch| ch.is_ascii_digit())
-        .collect::<String>();
-    if digits.is_empty() {
-        return None;
-    }
-    let normalized = digits.chars().rev().collect::<String>();
-    normalized.parse::<u8>().ok().map(|value| value.min(100))
-}
-
-#[allow(clippy::too_many_arguments)]
-fn emit_progress(
-    app: &AppHandle,
-    job_id: &str,
-    phase: &str,
-    percent: Option<u8>,
-    message: &str,
-    ctx: Option<PageProgressContext>,
-    pages_done_in_chunk: u32,
-    translated_chars: Option<u64>,
-) {
-    let (current_page, total_pages) = match ctx {
-        Some(ctx) => {
-            let current_in_chunk = (pages_done_in_chunk + 1).min(ctx.chunk_len.max(1));
-            (
-                Some(ctx.completed_before + current_in_chunk),
-                Some(ctx.total),
-            )
+fn worker_outcome_to_pdf_error(
+    outcome: crate::managed_pdf2zh::worker::WorkerTranslateOutcome,
+) -> PdfError {
+    match outcome {
+        crate::managed_pdf2zh::worker::WorkerTranslateOutcome::Cancelled => PdfError::Cancelled,
+        crate::managed_pdf2zh::worker::WorkerTranslateOutcome::JobFailed(message)
+        | crate::managed_pdf2zh::worker::WorkerTranslateOutcome::WorkerLost(message)
+        | crate::managed_pdf2zh::worker::WorkerTranslateOutcome::Unavailable(message) => {
+            PdfError::Pdf2zhFailed(message)
         }
-        None => (None, None),
-    };
-    let _ = app.emit(
-        PDF2ZH_PROGRESS_EVENT,
-        Pdf2zhProgressPayload {
-            job_id: job_id.to_string(),
-            phase: phase.to_string(),
-            percent,
-            message: message.to_string(),
-            current_page,
-            total_pages,
-            completed_pages: None,
-            translated_chars,
-        },
-    );
-}
-
-fn find_pdf2zh_output(output_dir: &Path, source_path: &Path, kind: &str) -> Option<PathBuf> {
-    let stem = source_path.file_stem().and_then(OsStr::to_str)?;
-    let expected = output_dir.join(format!("{stem}-{kind}.pdf"));
-    if expected.is_file() {
-        return Some(expected);
+        crate::managed_pdf2zh::worker::WorkerTranslateOutcome::Completed => PdfError::Pdf2zhFailed(
+            "PDF worker returned an unexpected completed outcome.".to_string(),
+        ),
     }
-    std::fs::read_dir(output_dir)
-        .ok()?
-        .flatten()
-        .map(|entry| entry.path())
-        .find(|path| {
-            path.file_name()
-                .and_then(OsStr::to_str)
-                .is_some_and(|name| name.ends_with(&format!("-{kind}.pdf")))
-        })
 }
 
 fn pdf2zh_lang(lang: &str) -> &str {
@@ -737,8 +475,6 @@ fn pdf2zh_lang(lang: &str) -> &str {
     }
 }
 
-/// Emit a phase-only progress event from the run loop (outside of an
-/// invocation). Used for the "split" and initial "warmup" phases.
 pub(crate) fn emit_progress_phase(
     app: &AppHandle,
     job_id: &str,
@@ -792,120 +528,37 @@ pub(crate) fn emit_completed_page_progress(
     );
 }
 
-fn pdf2zh_debug_enabled() -> bool {
-    std::env::var("ROSETTA_PDF2ZH_DEBUG")
-        .ok()
-        .is_some_and(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on" | "debug"
+fn emit_progress(
+    app: &AppHandle,
+    job_id: &str,
+    phase: &str,
+    percent: Option<u8>,
+    message: &str,
+    ctx: Option<PageProgressContext>,
+    pages_done_in_chunk: u32,
+    translated_chars: Option<u64>,
+) {
+    let (current_page, total_pages) = match ctx {
+        Some(ctx) => {
+            let current_in_chunk = (pages_done_in_chunk + 1).min(ctx.chunk_len.max(1));
+            (
+                Some(ctx.completed_before + current_in_chunk),
+                Some(ctx.total),
             )
-        })
-}
-
-fn pdf2zh_worker_service(provider: &ShimProviderConfig) -> &'static str {
-    if env_flag("ROSETTA_PDF_FORCE_OPENAI_SHIM") {
-        return "openai:rwkv";
-    }
-    if matches!(provider, ShimProviderConfig::Lightning(_)) {
-        "rosetta-batch"
-    } else {
-        "openai:rwkv"
-    }
-}
-
-fn env_flag(name: &str) -> bool {
-    std::env::var(name).ok().is_some_and(|value| {
-        matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        )
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{env_flag, parse_tqdm_fraction, pdf2zh_worker_service};
-    use crate::{
-        managed_pdf2zh::openai_shim::{LlamaCppApiConfig, ShimProviderConfig},
-        rwkv_providers::mobile_batch_chat::MobileBatchChatConfig,
+        }
+        None => (None, None),
     };
-
-    #[test]
-    fn parses_tqdm_progress_fraction() {
-        assert_eq!(
-            parse_tqdm_fraction(" 33%|███▎      | 6/18 [00:25<00:46,  3.9s/it]"),
-            Some((6, 18))
-        );
-        assert_eq!(
-            parse_tqdm_fraction("100%|██████████| 10/10 [00:52<00:00,  5.24s/it]"),
-            Some((10, 10))
-        );
-        assert_eq!(
-            parse_tqdm_fraction("  0%|          | 0/10 [00:00<?, ?it/s]"),
-            Some((0, 10))
-        );
-    }
-
-    #[test]
-    fn ignores_non_tqdm_slashes() {
-        assert_eq!(parse_tqdm_fraction("saved to /tmp/out/file.pdf"), None);
-        assert_eq!(parse_tqdm_fraction("date 2026/06/11 done"), None);
-        assert_eq!(parse_tqdm_fraction("rate 3.9s/it without bracket"), None);
-        assert_eq!(parse_tqdm_fraction(""), None);
-    }
-
-    #[test]
-    fn env_flag_accepts_only_explicit_truthy_values() {
-        std::env::set_var("ROSETTA_TEST_FLAG", "true");
-        assert!(env_flag("ROSETTA_TEST_FLAG"));
-        std::env::set_var("ROSETTA_TEST_FLAG", "0");
-        assert!(!env_flag("ROSETTA_TEST_FLAG"));
-        std::env::remove_var("ROSETTA_TEST_FLAG");
-        assert!(!env_flag("ROSETTA_TEST_FLAG"));
-    }
-
-    #[test]
-    fn lightning_uses_rosetta_batch_pdf_worker_service_unless_openai_shim_is_forced() {
-        std::env::remove_var("ROSETTA_PDF_FORCE_OPENAI_SHIM");
-        assert_eq!(
-            pdf2zh_worker_service(&lightning_provider()),
-            "rosetta-batch"
-        );
-
-        std::env::set_var("ROSETTA_PDF_FORCE_OPENAI_SHIM", "1");
-        assert_eq!(pdf2zh_worker_service(&lightning_provider()), "openai:rwkv");
-        std::env::remove_var("ROSETTA_PDF_FORCE_OPENAI_SHIM");
-    }
-
-    #[test]
-    fn non_lightning_pdf_worker_service_stays_page_local_for_incremental_pages() {
-        std::env::remove_var("ROSETTA_PDF_FORCE_OPENAI_SHIM");
-        assert_eq!(pdf2zh_worker_service(&llama_provider()), "openai:rwkv");
-        assert_eq!(pdf2zh_worker_service(&mobile_provider()), "openai:rwkv");
-    }
-
-    fn lightning_provider() -> ShimProviderConfig {
-        ShimProviderConfig::Lightning(crate::managed_pdf2zh::openai_shim::LightningApiConfig {
-            base_url: "http://127.0.0.1:1".to_string(),
-            endpoint: "/v1/batch/completions".to_string(),
-            internal_token: "token".to_string(),
-            body_password: "password".to_string(),
-            timeout_ms: 1,
-        })
-    }
-
-    fn llama_provider() -> ShimProviderConfig {
-        ShimProviderConfig::LlamaCpp(LlamaCppApiConfig {
-            base_url: "http://127.0.0.1:1".to_string(),
-            timeout_ms: 1,
-        })
-    }
-
-    fn mobile_provider() -> ShimProviderConfig {
-        ShimProviderConfig::MobileBatch(MobileBatchChatConfig {
-            base_url: "http://127.0.0.1:1".to_string(),
-            timeout_ms: 1,
-        })
-    }
+    let _ = app.emit(
+        PDF2ZH_PROGRESS_EVENT,
+        Pdf2zhProgressPayload {
+            job_id: job_id.to_string(),
+            phase: phase.to_string(),
+            percent,
+            message: message.to_string(),
+            current_page,
+            total_pages,
+            completed_pages: None,
+            translated_chars,
+        },
+    );
 }

@@ -26,18 +26,25 @@
 #
 # Override knobs:
 #
-#   PDF2ZH_VERSION=1.7.9   pdf2zh package version to install
-#   PBS_RELEASE=20260510   python-build-standalone release tag
-#   PBS_PYTHON_VERSION=3.13.13   CPython version inside that PBS release
+#   PDF2ZH_SOURCE_PATH=... local PDFMathTranslate fork checkout to install
+#   PDF2ZH_VERSION=1.9.11  version label for the manifest
+#   PBS_RELEASE=20260602   python-build-standalone release tag
+#   PBS_PYTHON_VERSION=3.12.13   CPython version inside that PBS release
 #   PBS_TARBALL_URL=...    full override of the PBS download URL
+#   DOCLAYOUT_MODEL_URL=...  DocLayout ONNX model download URL
+#   DOCLAYOUT_MODEL_FILE=... copy an already-downloaded DocLayout ONNX model
 
 set -euo pipefail
 
-PDF2ZH_VERSION="${PDF2ZH_VERSION:-1.7.9}"
-PBS_RELEASE="${PBS_RELEASE:-20260510}"
-PBS_PYTHON_VERSION="${PBS_PYTHON_VERSION:-3.13.13}"
+PDF2ZH_VERSION="${PDF2ZH_VERSION:-1.9.11}"
+PDF2ZH_SOURCE_PATH="${PDF2ZH_SOURCE_PATH:-}"
+PBS_RELEASE="${PBS_RELEASE:-20260602}"
+PBS_PYTHON_VERSION="${PBS_PYTHON_VERSION:-3.12.13}"
 PBS_DEFAULT_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_RELEASE}/cpython-${PBS_PYTHON_VERSION}+${PBS_RELEASE}-aarch64-apple-darwin-install_only.tar.gz"
 PBS_TARBALL_URL="${PBS_TARBALL_URL:-$PBS_DEFAULT_URL}"
+DOCLAYOUT_MODEL_FILENAME="doclayout_yolo_docstructbench_imgsz1024.onnx"
+DOCLAYOUT_MODEL_URL="${DOCLAYOUT_MODEL_URL:-https://huggingface.co/wybxc/DocLayout-YOLO-DocStructBench-onnx/resolve/main/$DOCLAYOUT_MODEL_FILENAME?download=true}"
+DOCLAYOUT_MODEL_FILE="${DOCLAYOUT_MODEL_FILE:-}"
 
 if [[ "$(uname -s)-$(uname -m)" != "Darwin-arm64" ]]; then
   echo "::error::pdf2zh release pack build requires macOS arm64" >&2
@@ -50,19 +57,30 @@ DIST_DIR="$REPO_ROOT/dist/pdf-layout"
 ARCHIVE_NAME="rosetta-pdf2zh-macos-arm64.tar.gz"
 ARCHIVE_PATH="$DIST_DIR/$ARCHIVE_NAME"
 
+if [[ -z "$PDF2ZH_SOURCE_PATH" ]]; then
+  PDF2ZH_SOURCE_PATH="$(cd "$REPO_ROOT/../.." && pwd)/PDFMathTranslate"
+fi
+if [[ ! -f "$PDF2ZH_SOURCE_PATH/pyproject.toml" ]]; then
+  echo "::error::PDFMathTranslate source checkout not found: $PDF2ZH_SOURCE_PATH" >&2
+  echo "Set PDF2ZH_SOURCE_PATH to the fork checkout that contains pdf2zh/rosetta_engine.py." >&2
+  exit 1
+fi
+
 BUILD_ROOT="$(mktemp -d)"
 trap 'rm -rf "$BUILD_ROOT"' EXIT
 
 PACK_DIR="$BUILD_ROOT/macos-arm64"
 PYTHON_DIR="$PACK_DIR/python"
 BIN_DIR="$PACK_DIR/bin"
+MODELS_DIR="$PACK_DIR/models"
 PBS_TARBALL="$BUILD_ROOT/pbs.tar.gz"
 
-echo "[pdf2zh-release] building pdf2zh==$PDF2ZH_VERSION" >&2
+echo "[pdf2zh-release] building PDFMathTranslate fork: $PDF2ZH_SOURCE_PATH" >&2
+echo "[pdf2zh-release] pdf2zh version label: $PDF2ZH_VERSION" >&2
 echo "[pdf2zh-release] PBS python:  $PBS_PYTHON_VERSION (release $PBS_RELEASE)" >&2
 echo "[pdf2zh-release] build root:  $BUILD_ROOT" >&2
 
-mkdir -p "$PACK_DIR" "$BIN_DIR"
+mkdir -p "$PACK_DIR" "$BIN_DIR" "$MODELS_DIR"
 
 echo "[pdf2zh-release] downloading python-build-standalone" >&2
 echo "  $PBS_TARBALL_URL" >&2
@@ -79,9 +97,9 @@ fi
 PBS_REPORTED_VERSION="$("$PYTHON_DIR/bin/python" -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')"
 echo "[pdf2zh-release] PBS python ready: $PBS_REPORTED_VERSION" >&2
 
-echo "[pdf2zh-release] installing pdf2zh==$PDF2ZH_VERSION into pack python" >&2
+echo "[pdf2zh-release] installing PDFMathTranslate fork into pack python" >&2
 "$PYTHON_DIR/bin/python" -m pip install --upgrade pip --quiet
-"$PYTHON_DIR/bin/python" -m pip install "pdf2zh==$PDF2ZH_VERSION" --quiet
+"$PYTHON_DIR/bin/python" -m pip install "$PDF2ZH_SOURCE_PATH" --quiet
 
 echo "[pdf2zh-release] applying NumPy 2 compatibility patch" >&2
 "$PYTHON_DIR/bin/python" - <<'PY'
@@ -105,8 +123,40 @@ PY
 echo "[pdf2zh-release] applying PDF color preservation patch" >&2
 "$PYTHON_DIR/bin/python" "$SCRIPT_DIR/patch-pdf2zh-color-preservation.py"
 
+DOCLAYOUT_MODEL_PATH="$MODELS_DIR/$DOCLAYOUT_MODEL_FILENAME"
+if [[ -n "$DOCLAYOUT_MODEL_FILE" ]]; then
+  echo "[pdf2zh-release] copying ONNX layout model:" >&2
+  echo "  $DOCLAYOUT_MODEL_FILE" >&2
+  cp "$DOCLAYOUT_MODEL_FILE" "$DOCLAYOUT_MODEL_PATH"
+else
+  echo "[pdf2zh-release] downloading ONNX layout model:" >&2
+  echo "  $DOCLAYOUT_MODEL_URL" >&2
+  curl -fL --retry 3 -o "$DOCLAYOUT_MODEL_PATH" "$DOCLAYOUT_MODEL_URL"
+fi
+if [[ ! -s "$DOCLAYOUT_MODEL_PATH" ]]; then
+  echo "::error::ONNX layout model was not staged at $DOCLAYOUT_MODEL_PATH" >&2
+  exit 1
+fi
+
+echo "[pdf2zh-release] Rosetta engine smoke test:" >&2
+ROSETTA_DOCLAYOUT_MODEL="$DOCLAYOUT_MODEL_PATH" "$PYTHON_DIR/bin/python" - <<'PY'
+import os
+
+import pdf2zh
+from pdf2zh import rosetta_engine
+from pdf2zh.doclayout import OnnxModel
+
+if rosetta_engine.ENGINE_CONTRACT_VERSION != 2:
+    raise SystemExit("::error::pdf2zh.rosetta_engine contract version is not 2")
+
+model = OnnxModel(os.environ["ROSETTA_DOCLAYOUT_MODEL"])
+providers = ",".join(model.model.get_providers())
+print(f"pdf-pack-imports-ok pdf2zh={pdf2zh.__version__} contract={rosetta_engine.ENGINE_CONTRACT_VERSION} providers={providers}")
+PY
+
 echo "[pdf2zh-release] removing Python bytecode caches" >&2
 find "$PACK_DIR" \( -name '__pycache__' -type d -prune -exec rm -rf {} + \) -o \( -name '*.pyc' -type f -delete \)
+rm -f "$DOCLAYOUT_MODEL_PATH.optimized"
 
 cat > "$BIN_DIR/pdf2zh" <<'SH'
 #!/usr/bin/env bash
@@ -114,6 +164,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PACK_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 export PYTHONDONTWRITEBYTECODE=1
+export ROSETTA_DOCLAYOUT_MODEL="${ROSETTA_DOCLAYOUT_MODEL:-$PACK_ROOT/models/doclayout_yolo_docstructbench_imgsz1024.onnx}"
 exec "$PACK_ROOT/python/bin/python" -m pdf2zh.pdf2zh "$@"
 SH
 chmod 0755 "$BIN_DIR/pdf2zh"
@@ -159,7 +210,9 @@ cat > "$DIST_DIR/manifest.json" <<EOF
   "profile_id": "macos-arm64-pdf2zh",
   "pack_filename": "$ARCHIVE_NAME",
   "pdf2zh_version": "$PDF2ZH_VERSION",
+  "pdf2zh_source_path": "$PDF2ZH_SOURCE_PATH",
   "python_runtime": "python-build-standalone $PBS_PYTHON_VERSION (release $PBS_RELEASE)",
+  "layout_model": "$DOCLAYOUT_MODEL_FILENAME",
   "sha256": "$SHA256",
   "size_bytes": $SIZE_BYTES,
   "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"

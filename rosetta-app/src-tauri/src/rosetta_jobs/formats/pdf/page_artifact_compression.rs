@@ -34,6 +34,7 @@ doc = pymupdf.open(src)
 try:
     if doc.page_count != 1:
         raise RuntimeError(f"expected one page, got {doc.page_count}")
+    doc.subset_fonts(fallback=True)
     doc.save(
         dst,
         garbage=4,
@@ -822,7 +823,12 @@ mod tests {
             pages: vec![PdfPageTranslation {
                 page_number: 1,
                 status: "translated".to_string(),
+                result_kind: Some("translated".to_string()),
                 translated_pdf_path: Some("translated-pages/zh-CN/page-0001.pdf".to_string()),
+                source_unit_count: None,
+                translated_unit_count: None,
+                source_chars: None,
+                translated_chars: None,
                 artifact_version: Some("v1".to_string()),
                 artifact_compression: Some("fast".to_string()),
                 artifact_bytes: Some(100),
@@ -859,6 +865,14 @@ mod tests {
         assert_ne!(
             super::compression_key("job-1", "zh-CN", Some("run-new")),
             super::compression_key("job-1", "ja", Some("run-new"))
+        );
+    }
+
+    #[test]
+    fn pymupdf_compression_script_subsets_fonts() {
+        assert!(
+            super::PYMUPDF_COMPRESS_SCRIPT.contains("doc.subset_fonts(fallback=True)"),
+            "page artifact compression must subset embedded fonts; otherwise every translated page can keep a full CJK font copy"
         );
     }
 

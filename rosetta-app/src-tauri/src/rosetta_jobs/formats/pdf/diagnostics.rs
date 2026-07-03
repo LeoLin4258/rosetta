@@ -11,8 +11,9 @@ use std::{fs::OpenOptions, io::Write, path::Path};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::managed_pdf2zh::openai_shim::{ShimBatchSizeBucket, ShimRwkvMetricsSnapshot};
 use crate::rosetta_jobs::model::SCHEMA_VERSION;
+
+use super::unit_translation::{PdfBatchSizeBucket, PdfUnitTranslationMetrics};
 
 pub(crate) const PDF_TIMELINE_FILENAME: &str = "pdf-timeline.jsonl";
 
@@ -67,7 +68,7 @@ pub(crate) struct RwkvAggregate {
     pub p95_request_ms: u64,
     pub total_batch_items: u64,
     pub average_batch_size: f64,
-    pub batch_size_distribution: Vec<ShimBatchSizeBucket>,
+    pub batch_size_distribution: Vec<PdfBatchSizeBucket>,
     pub total_assembly_wait_ms: u64,
     pub average_assembly_wait_ms: u64,
     pub max_assembly_wait_ms: u64,
@@ -76,19 +77,21 @@ pub(crate) struct RwkvAggregate {
 }
 
 impl RwkvAggregate {
-    pub(crate) fn add(&mut self, snapshot: &ShimRwkvMetricsSnapshot) {
+    pub(crate) fn add(&mut self, snapshot: &PdfUnitTranslationMetrics) {
         self.request_count += snapshot.request_count;
         self.failed_request_count += snapshot.failed_request_count;
         self.total_request_ms += snapshot.total_request_ms;
         self.max_request_ms = self.max_request_ms.max(snapshot.max_request_ms);
-        self.p95_request_ms = self.p95_request_ms.max(snapshot.p95_request_ms);
-        self.total_batch_items += snapshot.total_batch_items;
+        self.p95_request_ms = self.p95_request_ms.max(snapshot.max_request_ms);
+        self.total_batch_items += snapshot
+            .batch_size_distribution
+            .iter()
+            .map(|bucket| bucket.batch_size * bucket.request_count)
+            .sum::<u64>();
         merge_batch_size_distribution(
             &mut self.batch_size_distribution,
             &snapshot.batch_size_distribution,
         );
-        self.total_assembly_wait_ms += snapshot.total_assembly_wait_ms;
-        self.max_assembly_wait_ms = self.max_assembly_wait_ms.max(snapshot.max_assembly_wait_ms);
         self.total_input_chars += snapshot.total_input_chars;
         self.total_output_chars += snapshot.total_output_chars;
         self.average_request_ms = if self.request_count > 0 {
@@ -110,8 +113,8 @@ impl RwkvAggregate {
 }
 
 fn merge_batch_size_distribution(
-    aggregate: &mut Vec<ShimBatchSizeBucket>,
-    snapshot: &[ShimBatchSizeBucket],
+    aggregate: &mut Vec<PdfBatchSizeBucket>,
+    snapshot: &[PdfBatchSizeBucket],
 ) {
     for bucket in snapshot {
         if let Some(existing) = aggregate
@@ -249,22 +252,32 @@ impl PdfTimelineEvent {
     }
 }
 
-pub(crate) fn rwkv_snapshot_details(snapshot: &ShimRwkvMetricsSnapshot) -> Value {
+pub(crate) fn rwkv_snapshot_details(snapshot: &PdfUnitTranslationMetrics) -> Value {
     json!({
         "requestCount": snapshot.request_count,
         "failedRequestCount": snapshot.failed_request_count,
         "totalRequestMs": snapshot.total_request_ms,
-        "averageRequestMs": snapshot.average_request_ms,
+        "averageRequestMs": if snapshot.request_count > 0 {
+            snapshot.total_request_ms / snapshot.request_count
+        } else {
+            0
+        },
         "maxRequestMs": snapshot.max_request_ms,
-        "p95RequestMs": snapshot.p95_request_ms,
-        "totalBatchItems": snapshot.total_batch_items,
-        "averageBatchSize": snapshot.average_batch_size,
+        "p95RequestMs": snapshot.max_request_ms,
+        "totalBatchItems": snapshot.batch_size_distribution.iter().map(|bucket| bucket.batch_size * bucket.request_count).sum::<u64>(),
+        "averageBatchSize": if snapshot.request_count > 0 {
+            snapshot.batch_size_distribution.iter().map(|bucket| bucket.batch_size * bucket.request_count).sum::<u64>() as f64 / snapshot.request_count as f64
+        } else {
+            0.0
+        },
         "batchSizeDistribution": snapshot.batch_size_distribution,
-        "totalAssemblyWaitMs": snapshot.total_assembly_wait_ms,
-        "averageAssemblyWaitMs": snapshot.average_assembly_wait_ms,
-        "maxAssemblyWaitMs": snapshot.max_assembly_wait_ms,
+        "totalAssemblyWaitMs": 0,
+        "averageAssemblyWaitMs": 0,
+        "maxAssemblyWaitMs": 0,
         "totalInputChars": snapshot.total_input_chars,
         "totalOutputChars": snapshot.total_output_chars,
+        "truncatedCount": snapshot.truncated_count,
+        "emptyOutputCount": snapshot.empty_output_count,
     })
 }
 
@@ -294,58 +307,46 @@ mod tests {
     #[test]
     fn rwkv_aggregate_sums_and_averages() {
         let mut agg = RwkvAggregate::default();
-        agg.add(&ShimRwkvMetricsSnapshot {
+        agg.add(&PdfUnitTranslationMetrics {
             request_count: 4,
             failed_request_count: 1,
             total_request_ms: 4000,
-            average_request_ms: 1000,
             max_request_ms: 2100,
-            p95_request_ms: 2000,
-            total_batch_items: 16,
-            average_batch_size: 4.0,
-            batch_size_distribution: vec![ShimBatchSizeBucket {
+            batch_size_distribution: vec![PdfBatchSizeBucket {
                 batch_size: 4,
                 request_count: 4,
             }],
-            total_assembly_wait_ms: 320,
-            average_assembly_wait_ms: 80,
-            max_assembly_wait_ms: 82,
             total_input_chars: 800,
             total_output_chars: 700,
+            ..PdfUnitTranslationMetrics::default()
         });
-        agg.add(&ShimRwkvMetricsSnapshot {
+        agg.add(&PdfUnitTranslationMetrics {
             request_count: 6,
             failed_request_count: 0,
             total_request_ms: 3000,
-            average_request_ms: 500,
             max_request_ms: 900,
-            p95_request_ms: 800,
-            total_batch_items: 36,
-            average_batch_size: 6.0,
             batch_size_distribution: vec![
-                ShimBatchSizeBucket {
+                PdfBatchSizeBucket {
                     batch_size: 4,
                     request_count: 2,
                 },
-                ShimBatchSizeBucket {
+                PdfBatchSizeBucket {
                     batch_size: 8,
                     request_count: 4,
                 },
             ],
-            total_assembly_wait_ms: 480,
-            average_assembly_wait_ms: 80,
-            max_assembly_wait_ms: 85,
             total_input_chars: 1200,
             total_output_chars: 1100,
+            ..PdfUnitTranslationMetrics::default()
         });
         assert_eq!(agg.request_count, 10);
         assert_eq!(agg.failed_request_count, 1);
         assert_eq!(agg.total_request_ms, 7000);
         assert_eq!(agg.average_request_ms, 700);
         assert_eq!(agg.max_request_ms, 2100);
-        assert_eq!(agg.p95_request_ms, 2000);
-        assert_eq!(agg.total_batch_items, 52);
-        assert_eq!(agg.average_batch_size, 5.2);
+        assert_eq!(agg.p95_request_ms, 2100);
+        assert_eq!(agg.total_batch_items, 56);
+        assert_eq!(agg.average_batch_size, 5.6);
         assert_eq!(
             agg.batch_size_distribution
                 .iter()
@@ -353,9 +354,9 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![(4, 6), (8, 4)]
         );
-        assert_eq!(agg.total_assembly_wait_ms, 800);
-        assert_eq!(agg.average_assembly_wait_ms, 80);
-        assert_eq!(agg.max_assembly_wait_ms, 85);
+        assert_eq!(agg.total_assembly_wait_ms, 0);
+        assert_eq!(agg.average_assembly_wait_ms, 0);
+        assert_eq!(agg.max_assembly_wait_ms, 0);
         assert_eq!(agg.total_input_chars, 2000);
         assert_eq!(agg.total_output_chars, 1800);
     }
@@ -390,7 +391,7 @@ mod tests {
                     p95_request_ms: 500,
                     total_batch_items: 8,
                     average_batch_size: 4.0,
-                    batch_size_distribution: vec![ShimBatchSizeBucket {
+                    batch_size_distribution: vec![PdfBatchSizeBucket {
                         batch_size: 4,
                         request_count: 2,
                     }],
