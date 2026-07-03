@@ -56,6 +56,38 @@ fn blank_txt_bundle_uses_txt_format_and_starts_empty() {
 }
 
 #[test]
+fn pdf_quality_gate_rejects_empty_translation_output_for_text_page() {
+    let quality = super::PdfPageTranslationQuality {
+        translate_input_chars: 2403,
+        translate_output_chars: 0,
+        translated_ops_chars: Some(6),
+    };
+
+    let message = super::pdf_page_translation_quality_rejection(4, Some(&quality))
+        .expect("text page with empty translated output should be rejected");
+
+    assert!(message.contains("PDF 第 4 页"));
+    assert!(message.contains("译文回填输出为空"));
+}
+
+#[test]
+fn pdf_quality_gate_allows_image_only_or_nonempty_translation_output() {
+    let image_only = super::PdfPageTranslationQuality {
+        translate_input_chars: 0,
+        translate_output_chars: 0,
+        translated_ops_chars: Some(6),
+    };
+    assert!(super::pdf_page_translation_quality_rejection(1, Some(&image_only)).is_none());
+
+    let translated = super::PdfPageTranslationQuality {
+        translate_input_chars: 120,
+        translate_output_chars: 30,
+        translated_ops_chars: Some(900),
+    };
+    assert!(super::pdf_page_translation_quality_rejection(1, Some(&translated)).is_none());
+}
+
+#[test]
 fn txt_source_edit_rebuilds_blocks_and_segments() {
     let mut bundle = build_blank_txt_bundle("job-txt-1", "1700000000000", "临时文本")
         .expect("build blank txt bundle");

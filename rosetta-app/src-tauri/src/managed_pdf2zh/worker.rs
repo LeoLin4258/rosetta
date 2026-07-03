@@ -116,6 +116,12 @@ mod tests {
             "the replay pass should use pretranslated text instead of calling the model per page"
         );
         assert!(
+            WORKER_SCRIPT.contains("self.cursor = 0")
+                && WORKER_SCRIPT.contains("pretranslated PDF replay order mismatch")
+                && !WORKER_SCRIPT.contains("translations_by_source.setdefault"),
+            "pretranslated replay must preserve duplicate source occurrences by order"
+        );
+        assert!(
             WORKER_SCRIPT.contains("\"page.layoutMask.reuse\""),
             "the replay pass should reuse collect-pass layout masks instead of repeating ONNX layout inference"
         );

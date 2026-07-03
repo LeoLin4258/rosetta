@@ -590,20 +590,51 @@ class PretranslatedTranslator:
                 "pretranslated result count mismatch "
                 f"(expected {len(source_texts)}, got {len(translations)})"
             )
+        empty_indexes = [
+            index
+            for index, (source, translation) in enumerate(
+                zip(source_texts, translations), start=1
+            )
+            if isinstance(source, str)
+            and source.strip()
+            and (not isinstance(translation, str) or not translation.strip())
+        ]
+        if empty_indexes:
+            preview_indexes = ", ".join(str(index) for index in empty_indexes[:5])
+            raise RuntimeError(
+                "pretranslated PDF replay received empty translation(s) "
+                f"for non-empty source item(s): {preview_indexes}"
+            )
         self.delegate = delegate
         self.lang_out = getattr(delegate, "lang_out", "")
-        self.translations_by_source = {}
-        for source, translation in zip(source_texts, translations):
-            self.translations_by_source.setdefault(source, translation)
+        self.source_texts = list(source_texts)
+        self.translations = list(translations)
+        self.cursor = 0
 
     def translate_many(self, texts, *args, **kwargs):
-        missing = [text for text in texts if text not in self.translations_by_source]
-        if missing:
+        items = list(texts)
+        start = self.cursor
+        end = start + len(items)
+        expected = self.source_texts[start:end]
+        if len(expected) != len(items):
             raise RuntimeError(
-                "pretranslated PDF replay missed "
-                f"{len(missing)} translation item(s)"
+                "pretranslated PDF replay requested more translation item(s) "
+                f"than were collected (cursor={start}, requested={len(items)}, "
+                f"available={len(self.source_texts)})"
             )
-        return [self.translations_by_source[text] for text in texts]
+        mismatches = [
+            index
+            for index, (actual, expected_text) in enumerate(zip(items, expected))
+            if actual != expected_text
+        ]
+        if mismatches:
+            first = mismatches[0]
+            raise RuntimeError(
+                "pretranslated PDF replay order mismatch "
+                f"at item {start + first + 1}"
+            )
+        self.cursor = end
+        return self.translations[start:end]
 
     def translate(self, text, *args, **kwargs):
         return self.translate_many([text])[0]

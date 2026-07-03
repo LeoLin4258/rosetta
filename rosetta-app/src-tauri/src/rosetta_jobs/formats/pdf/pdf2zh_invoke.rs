@@ -274,6 +274,7 @@ pub(crate) async fn invoke_pdf2zh(
             "OPENAI_BASE_URL": openai_base_url.clone(),
             "OPENAI_API_KEY": "rosetta-local",
             "OPENAI_MODEL": "rwkv",
+            "OPENAI_STREAM": "false",
             "ROSETTA_BATCH_BASE_URL": openai_base_url.clone(),
             "ROSETTA_BATCH_JOB_ID": options.job_id.clone(),
             "ROSETTA_BATCH_RUN_ID": options.run_id.clone().unwrap_or_default(),
@@ -362,6 +363,7 @@ pub(crate) async fn invoke_pdf2zh(
             .env("OPENAI_BASE_URL", &openai_base_url)
             .env("OPENAI_API_KEY", "rosetta-local")
             .env("OPENAI_MODEL", "rwkv")
+            .env("OPENAI_STREAM", "false")
             .env("ROSETTA_BATCH_BASE_URL", &openai_base_url)
             .env("ROSETTA_BATCH_JOB_ID", &options.job_id)
             .env(

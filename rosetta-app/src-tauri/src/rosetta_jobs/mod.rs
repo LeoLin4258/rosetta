@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fs,
     path::{Component, Path},
     str::FromStr,
@@ -1447,6 +1448,10 @@ async fn translate_pdf_pages_inner(
         let job_id_for_cb = job_id.to_string();
         let target_lang_for_cb = target_lang.to_string();
         let run_id_for_cb = run_id.clone();
+        let page_quality = Arc::new(Mutex::new(HashMap::<u32, PdfPageTranslationQuality>::new()));
+        let page_quality_for_cb = Arc::clone(&page_quality);
+        let page_commit_rejection = Arc::new(Mutex::new(None::<String>));
+        let page_commit_rejection_for_cb = Arc::clone(&page_commit_rejection);
         let completed_pages_for_cb = Arc::clone(&completed_pages_for_progress);
         let total_pages_for_cb = total_pages_to_process;
         let state_for_cb: &mut formats::pdf::page_state::PdfPageTranslationState = &mut state;
@@ -1454,10 +1459,19 @@ async fn translate_pdf_pages_inner(
             let relative_path =
                 page_state::pdf_page_relative_path_for_lang(&target_lang_for_cb, page_number);
             let target_path = dir_for_cb.join(&relative_path);
-            if let Some(parent) = target_path.parent() {
-                fs::create_dir_all(parent).ok();
-            }
-            let outcome = commit_pdf_page_artifact(&worker_file, &target_path);
+            let quality_rejection = page_quality_for_cb.lock().ok().and_then(|qualities| {
+                pdf_page_translation_quality_rejection(page_number, qualities.get(&page_number))
+            });
+            let rejected_for_quality = quality_rejection.is_some();
+            let outcome = if let Some(error) = quality_rejection {
+                let _ = fs::remove_file(&worker_file);
+                Err(error)
+            } else {
+                if let Some(parent) = target_path.parent() {
+                    fs::create_dir_all(parent).ok();
+                }
+                commit_pdf_page_artifact(&worker_file, &target_path)
+            };
 
             match outcome {
                 Ok(_) => {
@@ -1520,6 +1534,11 @@ async fn translate_pdf_pages_inner(
                 }
                 Err(error) => {
                     let error_for_timeline = error.clone();
+                    if let Ok(mut guard) = page_commit_rejection_for_cb.lock() {
+                        if guard.is_none() {
+                            *guard = Some(error.clone());
+                        }
+                    }
                     page_state::upsert_pdf_page_with_run(
                         state_for_cb,
                         page_number,
@@ -1544,7 +1563,11 @@ async fn translate_pdf_pages_inner(
                         diagnostics::PdfTimelineEvent::new(
                             &job_id_for_cb,
                             "translation",
-                            "page.commitFailed",
+                            if rejected_for_quality {
+                                "page.commitRejected"
+                            } else {
+                                "page.commitFailed"
+                            },
                         )
                         .run_id(&run_id_for_cb)
                         .target_lang(&target_lang_for_cb)
@@ -1561,7 +1584,9 @@ async fn translate_pdf_pages_inner(
         let job_id_for_stage = job_id.to_string();
         let target_lang_for_stage = target_lang.to_string();
         let run_id_for_stage = run_id.clone();
+        let page_quality_for_stage = Arc::clone(&page_quality);
         let mut on_worker_stage = move |stage: crate::managed_pdf2zh::worker::WorkerStageEvent| {
+            record_pdf_page_translation_quality(&page_quality_for_stage, &stage);
             let mut event =
                 diagnostics::PdfTimelineEvent::new(&job_id_for_stage, "worker", "worker.stage")
                     .run_id(&run_id_for_stage)
@@ -1628,7 +1653,13 @@ async fn translate_pdf_pages_inner(
                         })),
                 );
                 rwkv_aggregate.add(&output.rwkv_metrics);
-                if let Some(message) = pdf_rwkv_failure_message(&output.rwkv_metrics) {
+                let commit_rejection_message = page_commit_rejection
+                    .lock()
+                    .ok()
+                    .and_then(|guard| guard.clone());
+                if let Some(message) = commit_rejection_message {
+                    failure_message = Some(message);
+                } else if let Some(message) = pdf_rwkv_failure_message(&output.rwkv_metrics) {
                     diagnostics::append_timeline_event(
                         &dir,
                         diagnostics::PdfTimelineEvent::new(
@@ -1815,6 +1846,81 @@ fn pdf_rwkv_failure_message(
             "PDF 翻译检测到底层模型请求失败（failedRequestCount={}），已拒绝提交本批次页面，避免截断或空译文被标记为成功。",
             snapshot.failed_request_count
         )
+    })
+}
+
+#[derive(Clone, Debug, Default)]
+struct PdfPageTranslationQuality {
+    translate_input_chars: u64,
+    translate_output_chars: u64,
+    translated_ops_chars: Option<u64>,
+}
+
+fn record_pdf_page_translation_quality(
+    qualities: &Arc<Mutex<HashMap<u32, PdfPageTranslationQuality>>>,
+    stage: &crate::managed_pdf2zh::worker::WorkerStageEvent,
+) {
+    if stage.status != "completed" {
+        return;
+    }
+    let Some(page_number) = stage.page_number else {
+        return;
+    };
+    let Some(details) = stage.details.as_ref() else {
+        return;
+    };
+
+    let input_chars = json_u64(details, "translateInputChars")
+        .or_else(|| json_u64(details, "inputChars"))
+        .or_else(|| json_u64(details, "sourceChars"));
+    let output_chars =
+        json_u64(details, "translateOutputChars").or_else(|| json_u64(details, "outputChars"));
+    let translated_ops_chars = json_u64(details, "translatedOpsChars");
+
+    if input_chars.is_none() && output_chars.is_none() && translated_ops_chars.is_none() {
+        return;
+    }
+
+    let Ok(mut guard) = qualities.lock() else {
+        return;
+    };
+    let quality = guard.entry(page_number).or_default();
+    if let Some(input_chars) = input_chars {
+        quality.translate_input_chars = quality.translate_input_chars.max(input_chars);
+    }
+    if let Some(output_chars) = output_chars {
+        quality.translate_output_chars = quality.translate_output_chars.max(output_chars);
+    }
+    if let Some(translated_ops_chars) = translated_ops_chars {
+        quality.translated_ops_chars = Some(
+            quality
+                .translated_ops_chars
+                .unwrap_or_default()
+                .max(translated_ops_chars),
+        );
+    }
+}
+
+fn pdf_page_translation_quality_rejection(
+    page_number: u32,
+    quality: Option<&PdfPageTranslationQuality>,
+) -> Option<String> {
+    let quality = quality?;
+    (quality.translate_input_chars > 0 && quality.translate_output_chars == 0).then(|| {
+        format!(
+            "PDF 第 {page_number} 页检测到可翻译文本（{} 字符），但译文回填输出为空，已拒绝提交该页以避免空白译文。",
+            quality.translate_input_chars
+        )
+    })
+}
+
+fn json_u64(value: &serde_json::Value, key: &str) -> Option<u64> {
+    value.get(key).and_then(|number| {
+        number.as_u64().or_else(|| {
+            number
+                .as_i64()
+                .and_then(|signed| (signed >= 0).then_some(signed as u64))
+        })
     })
 }
 
