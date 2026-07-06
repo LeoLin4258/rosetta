@@ -23,7 +23,11 @@ import {
 } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { selectManagedRuntimeProfileStatus } from "@/lib/managedRuntimeSelection";
+import {
+  selectManagedRuntimeProfileStatus,
+  WINDOWS_LIGHTNING_PROFILE_ID,
+  WINDOWS_LLAMACPP_PROFILE_ID,
+} from "@/lib/managedRuntimeSelection";
 import { cn } from "@/lib/utils";
 import { useManagedRwkvRuntime } from "@/lib/useManagedRwkvRuntime";
 import { useRosettaStore } from "@/store/useRosettaStore";
@@ -179,29 +183,29 @@ export function LocalRwkvPanel({
   return (
     <section
       className={cn(
-        "flex flex-col gap-5 rounded-xl border border-black/8 bg-muted/28 p-5 dark:border-white/8 dark:bg-muted/12",
+        "flex flex-col gap-4 rounded-lg border border-black/8 bg-muted/20 p-4 dark:border-white/8 dark:bg-muted/10",
         className
       )}
       id="local-rwkv"
     >
       <div className="flex items-start justify-between gap-4">
         <div className="flex min-w-0 gap-3">
-          <div className="flex size-9 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+          <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-background text-muted-foreground ring-1 ring-black/8 dark:ring-white/8">
             <Cpu className="size-4" />
           </div>
           <div className="min-w-0">
             <h3 className="text-sm font-semibold tracking-normal">
-              管理本地翻译运行时
+              本地运行时
             </h3>
-            <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-              安装、切换并检查 Rosetta 管理的本机翻译后端。翻译请求只发送到本机服务。
+            <p className="mt-1 max-w-2xl text-xs leading-5 text-muted-foreground">
+              选择、启动或修复本机翻译后端。
             </p>
           </div>
         </div>
         <RuntimeBadge status={selectedStatus} isInstallActive={isInstallActive} />
       </div>
 
-      <div className="flex flex-col gap-4 border-t pt-4">
+      <div className="flex flex-col gap-3 border-t border-black/8 pt-3 dark:border-white/8">
         {isTranslationRunning && (
           <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-300">
             <AlertTriangle className="mt-0.5 size-4 shrink-0" />
@@ -228,7 +232,7 @@ export function LocalRwkvPanel({
         )}
 
         {profileStatuses.length > 0 ? (
-          <div className="grid gap-3">
+          <div className="grid gap-2.5">
             {profileStatuses.map((profileStatus) => (
               <RuntimeProfileCard
                 key={profileStatus.profile.id}
@@ -245,6 +249,10 @@ export function LocalRwkvPanel({
                   logsLoadingProfileId === profileStatus.profile.id &&
                   logsByProfileId[profileStatus.profile.id] === undefined
                 }
+                isRecommended={isRecommendedRuntimeProfile(
+                  profileStatus,
+                  profileStatuses
+                )}
                 onActivate={() => void activateProfile(profileStatus.profile.id)}
                 onInstall={() => void installProfile(profileStatus.profile.id, false)}
                 onRepair={() => void installProfile(profileStatus.profile.id, true)}
@@ -280,6 +288,7 @@ function RuntimeProfileCard({
   detailsOpen,
   logs,
   logsLoading,
+  isRecommended,
   onActivate,
   onInstall,
   onRepair,
@@ -295,6 +304,7 @@ function RuntimeProfileCard({
   detailsOpen: boolean;
   logs: ManagedRuntimeLogsSummary | null;
   logsLoading: boolean;
+  isRecommended: boolean;
   onActivate: () => void;
   onInstall: () => void;
   onRepair: () => void;
@@ -305,51 +315,60 @@ function RuntimeProfileCard({
   const isUnsupported = status.state === "unsupported";
   const isBusy = isActionTarget && actionsDisabled;
   const summary = resolveStatus(status.state, status);
+  const specs = runtimeSpecItems(status);
 
   return (
     <article
       className={cn(
-        "rounded-lg border bg-card/70 p-4 transition-colors",
+        "rounded-lg border bg-card/62 p-4 transition-colors dark:bg-card/45",
         isSelected
-          ? "border-foreground/20 ring-1 ring-foreground/10"
+          ? status.state === "ready"
+            ? "border-emerald-500/35 bg-emerald-500/5 ring-1 ring-emerald-500/15 dark:border-emerald-400/35 dark:bg-emerald-400/8"
+            : "border-foreground/20 ring-1 ring-foreground/10"
           : "border-border"
       )}
     >
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div className="min-w-0 space-y-2">
           <div className="flex flex-wrap items-center gap-2">
             <h4 className="text-sm font-semibold tracking-normal">
               {status.profile.runtimeLabel}
             </h4>
-            {status.profile.recommended && (
-              <Badge variant="secondary" className="h-5 px-1.5 text-[11px]">
+            {isRecommended && (
+              <Badge
+                variant="outline"
+                className="h-5 border-transparent bg-emerald-500/12 px-1.5 text-[11px] text-emerald-700 ring-1 ring-inset ring-emerald-500/15 dark:text-emerald-300"
+              >
                 推荐
               </Badge>
             )}
             {isSelected && (
-              <Badge variant="outline" className="h-5 px-1.5 text-[11px]">
+              <Badge
+                variant="outline"
+                className="h-5 border-transparent bg-foreground/8 px-1.5 text-[11px] text-foreground ring-1 ring-inset ring-black/6 dark:bg-white/10 dark:ring-white/8"
+              >
                 当前
               </Badge>
             )}
             <StateBadge state={status.state} />
           </div>
-          <p className="max-w-2xl text-xs leading-5 text-muted-foreground">
-            {runtimeDescription(status)}
-          </p>
+          {specs.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {specs.map((item) => (
+                <span
+                  key={item}
+                  className="rounded-md bg-muted/55 px-2 py-1 text-[11px] leading-none text-muted-foreground"
+                >
+                  {item}
+                </span>
+              ))}
+            </div>
+          )}
           {status.profile.runtimeWarning && (
             <p className="max-w-2xl text-xs leading-5 text-amber-700 dark:text-amber-300">
               {status.profile.runtimeWarning}
             </p>
           )}
-          <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
-            <span>{status.profile.backend}</span>
-            <span>{status.profile.providerId}</span>
-            <span>{formatBytes(status.profile.modelSizeBytes)}</span>
-            {status.hardware.gpuName && <span>{status.hardware.gpuName}</span>}
-            {status.hardware.computeCapability && (
-              <span>SM {status.hardware.computeCapability}</span>
-            )}
-          </div>
         </div>
 
         <div className="flex shrink-0 flex-wrap gap-2 lg:justify-end">
@@ -374,8 +393,8 @@ function RuntimeProfileCard({
         </div>
       </div>
 
-      <div className="mt-4 flex flex-col gap-2 border-t pt-3">
-        <div className="flex items-start gap-2">
+      <div className="mt-3 flex flex-col gap-2">
+        <div className="flex items-start gap-2 rounded-md bg-muted/25 px-3 py-2 dark:bg-muted/15">
           {summary.spinning ? (
             <LoaderCircle className="mt-0.5 size-3.5 shrink-0 animate-spin text-muted-foreground" />
           ) : (
@@ -396,7 +415,7 @@ function RuntimeProfileCard({
             <CollapsibleTrigger asChild>
               <button
                 type="button"
-                className="flex h-8 w-fit items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="flex h-7 w-fit items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <ChevronDown
                   className={cn(
@@ -404,7 +423,7 @@ function RuntimeProfileCard({
                     detailsOpen && "rotate-180"
                   )}
                 />
-                技术信息
+                技术信息与日志
               </button>
             </CollapsibleTrigger>
             <CollapsibleContent>
@@ -524,6 +543,27 @@ function RuntimeActionButtons({
   return null;
 }
 
+function isRecommendedRuntimeProfile(
+  status: ManagedRuntimeProfileStatus,
+  profileStatuses: ManagedRuntimeProfileStatus[]
+): boolean {
+  const lightningAvailable = profileStatuses.some(
+    (entry) =>
+      entry.profile.id === WINDOWS_LIGHTNING_PROFILE_ID &&
+      entry.hardware.supported
+  );
+
+  if (status.profile.id === WINDOWS_LIGHTNING_PROFILE_ID) {
+    return status.hardware.supported;
+  }
+
+  if (status.profile.id === WINDOWS_LLAMACPP_PROFILE_ID && lightningAvailable) {
+    return false;
+  }
+
+  return status.profile.recommended;
+}
+
 function RuntimeBadge({
   status,
   isInstallActive,
@@ -633,14 +673,27 @@ function resolveStatus(
   }
 }
 
-function runtimeDescription(status: ManagedRuntimeProfileStatus): string {
+function runtimeSpecItems(status: ManagedRuntimeProfileStatus): string[] {
+  const items: string[] = [];
+
   if (!status.hardware.supported) {
-    return status.hardware.message;
+    return [status.hardware.message];
   }
+
   if (status.profile.hardwareRequirement) {
-    return status.profile.hardwareRequirement;
+    items.push(status.profile.hardwareRequirement);
   }
-  return "本机运行的 Rosetta 托管翻译后端。";
+
+  items.push(formatBytes(status.profile.modelSizeBytes));
+
+  if (status.hardware.gpuName) {
+    items.push(status.hardware.gpuName);
+  }
+  if (status.hardware.computeCapability) {
+    items.push(`SM ${status.hardware.computeCapability}`);
+  }
+
+  return items;
 }
 
 function showProxyInput(

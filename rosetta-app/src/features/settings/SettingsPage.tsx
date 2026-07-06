@@ -281,6 +281,11 @@ export function SettingsPage() {
         </header>
 
         <main className="flex w-full flex-col gap-10">
+          <AppearanceSettingsSection
+            setThemeMode={setThemeMode}
+            themeMode={themeMode}
+          />
+
           <TranslationAiSection
             apiStatus={apiStatus}
             canProbeApi={canProbeApi}
@@ -301,11 +306,6 @@ export function SettingsPage() {
             setTranslationMode={setTranslationMode}
             updateTextField={updateTextField}
             updateTimeout={updateTimeout}
-          />
-
-          <AppearanceSettingsSection
-            setThemeMode={setThemeMode}
-            themeMode={themeMode}
           />
 
           <DocumentHandlingSection />
@@ -415,7 +415,7 @@ function TranslationAiSection({
           <SettingsRowHeader
             description={
               <>
-                选择 Rosetta 翻译文档时使用的服务。当前使用：
+                文档翻译使用的后端。
                 <SemanticBadge tone={currentEngineTone}>
                   {currentEngineLabel}
                   <span
@@ -431,7 +431,7 @@ function TranslationAiSection({
             title="翻译引擎"
           />
 
-          <div className="grid gap-4 md:grid-cols-2">
+          <div className="grid gap-3 md:grid-cols-2">
             <BackendChoiceCard
               description={localServiceDescription(state, selectedRuntimeStatus)}
               icon={<Cpu className="size-4" />}
@@ -456,7 +456,7 @@ function TranslationAiSection({
               description={
                 remoteApiConfigured
                   ? displayRemoteApiUrl(rwkv)
-                  : "填写服务地址、接口路径和口令后才能使用。"
+                  : "配置地址和口令后可用。"
               }
               icon={<Cloud className="size-4" />}
               label="远程服务"
@@ -504,7 +504,7 @@ function TranslationAiSection({
               variant="outline"
             >
               <Cpu data-icon="inline-start" />
-              管理本地模型
+              本地运行时
               <ChevronDown
                 className={cn(
                   "ml-1 size-3.5 transition-transform",
@@ -514,7 +514,7 @@ function TranslationAiSection({
             </Button>
             <CollapsibleTriggerButton
               icon={<Cloud data-icon="inline-start" />}
-              label="配置远程服务"
+              label="远程服务"
               open={externalApiOpen}
               onOpenChange={onExternalApiOpenChange}
             />
@@ -775,10 +775,10 @@ function BackendChoiceCard({
     <button
       aria-pressed={selected}
       className={cn(
-        "group flex min-h-28 w-full items-start gap-3.5 rounded-xl border border-black/8 bg-background/72 p-4 text-left transition-colors dark:border-white/8 dark:bg-background/30",
-        "hover:border-black/14 hover:bg-muted/22 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:hover:border-white/16 dark:hover:bg-muted/12",
+        "group flex min-h-24 w-full items-start gap-3 rounded-lg border border-black/8 bg-background/66 p-3.5 text-left transition-colors dark:border-white/8 dark:bg-background/28",
+        "hover:border-black/14 hover:bg-muted/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:hover:border-white/16 dark:hover:bg-muted/12",
         selected &&
-          "border-black/14 bg-background shadow-[inset_0_0_0_1px_rgba(17,24,39,0.04)] dark:border-white/16 dark:bg-background/55 dark:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.04)]",
+          "border-emerald-500/35 bg-emerald-500/5 ring-1 ring-emerald-500/15 dark:border-emerald-400/35 dark:bg-emerald-400/8",
         status === "blocked" && selected && "border-amber-500/25 bg-amber-500/8",
         switchDisabled && !selected && "cursor-not-allowed opacity-60"
       )}
@@ -788,7 +788,7 @@ function BackendChoiceCard({
     >
       <div
         className={cn(
-          "mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg ring-1 ring-black/8 dark:ring-white/8",
+          "flex size-8 shrink-0 items-center justify-center rounded-md ring-1 ring-black/8 dark:ring-white/8",
           status === "active" &&
             "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
           status === "blocked" &&
@@ -799,18 +799,18 @@ function BackendChoiceCard({
         {icon}
       </div>
       <div className="min-w-0 flex-1">
-        <div className="flex items-start justify-between gap-3">
+        <div className="flex items-center justify-between gap-3">
           <p className="text-sm font-medium">{label}</p>
           <div className="flex shrink-0 items-center gap-2">
             <SemanticBadge tone={selected ? "selected" : badgeTone}>
-              {selected ? "当前使用" : statusLabel}
+              {statusLabel}
             </SemanticBadge>
             {selected ? (
-              <CheckCircle2 className="size-5 text-emerald-700 dark:text-emerald-300" />
+              <CheckCircle2 className="size-4 text-emerald-700 dark:text-emerald-300" />
             ) : null}
           </div>
         </div>
-        <p className="mt-1 break-words text-xs leading-5 text-muted-foreground">
+        <p className="mt-1.5 break-words text-xs leading-5 text-muted-foreground">
           {description}
         </p>
         {meta ? <p className="mt-2 text-xs text-muted-foreground">{meta}</p> : null}
@@ -844,9 +844,7 @@ function localServiceDescription(
   status: ManagedRuntimeProfileStatus | null
 ) {
   if (isManagedRuntimeProfileReady(status)) {
-    return status?.process.baseUrl
-      ? `正在本机运行：${status.process.baseUrl}`
-      : "本地模型正在运行。";
+    return "本机运行中。";
   }
   if (state === "installed" || state === "stopped") {
     return "模型已安装但未启动。";
@@ -890,13 +888,14 @@ function AppearanceSettingsSection({
 }) {
   return (
     <Card className={SETTINGS_CARD_CLASS} id="appearance">
-      <CardContent className="grid gap-6 py-6 md:grid-cols-[minmax(16rem,0.42fr)_minmax(0,1fr)] md:items-center">
+      <CardContent className="flex flex-col gap-6 py-6">
         <SettingsRowHeader
           description="选择窗口主题。"
           icon={<Palette />}
           title="外观"
         />
-        <div className="grid gap-3 md:grid-cols-[8rem_minmax(18rem,1fr)] md:items-center">
+
+        <div className="grid gap-3 border-t border-black/8 pt-6 dark:border-white/8 md:grid-cols-[8rem_minmax(18rem,1fr)] md:items-center">
           <Label>主题</Label>
           <ToggleGroup
             className="grid grid-cols-3"
@@ -926,20 +925,11 @@ function DocumentHandlingSection() {
     <section className="flex flex-col gap-3" id="document-handling">
       <Card className={SETTINGS_CARD_CLASS}>
         <CardContent className="flex flex-col gap-6 py-6">
-          <div className="grid gap-6 md:grid-cols-[minmax(16rem,0.42fr)_minmax(0,1fr)] md:items-center">
-            <SettingsRowHeader
-              description="安装本地 PDF 组件。"
-              icon={<FileText />}
-              title="PDF 组件"
-            />
-
-            <div className="min-w-0">
-              <p className="text-sm font-medium">翻译 PDF 前需要先安装组件</p>
-              <p className="mt-1 text-sm text-muted-foreground">
-                组件只在本机运行，用于读取 PDF 版面并生成译文 PDF。
-              </p>
-            </div>
-          </div>
+          <SettingsRowHeader
+            description="安装本地 PDF 组件。"
+            icon={<FileText />}
+            title="PDF 组件"
+          />
 
           <div className="border-t border-black/8 pt-6 dark:border-white/8">
             <Pdf2zhPanel />
@@ -972,68 +962,70 @@ function AboutSettingsSection({
   return (
     <section className="flex flex-col gap-3" id="about-settings">
       <Card className={SETTINGS_CARD_CLASS}>
-        <CardContent className="grid gap-6 py-6 md:grid-cols-[minmax(16rem,0.42fr)_minmax(0,1fr)_auto] md:items-start">
+        <CardContent className="flex flex-col gap-6 py-6">
           <SettingsRowHeader
             description="查看当前版本并检查更新。"
             icon={<Info />}
             title="关于"
           />
 
-          <div className="flex min-w-0 flex-col gap-3">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className="flex items-center gap-2">
-                  <Label>Rosetta {appVersion}</Label>
-                  <UpdateStatusBadge status={updateStatus} />
+          <div className="grid gap-4 border-t border-black/8 pt-6 dark:border-white/8 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
+            <div className="flex min-w-0 flex-col gap-3">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <Label>Rosetta {appVersion}</Label>
+                    <UpdateStatusBadge status={updateStatus} />
+                  </div>
                 </div>
               </div>
+
+              <CurrentVersionHighlights
+                note={getReleaseNote(appVersion)}
+              />
+
+              <UpdateStatusMessage
+                error={updateError}
+                progress={downloadProgress}
+                status={updateStatus}
+                update={availableUpdate}
+              />
             </div>
 
-            <CurrentVersionHighlights
-              note={getReleaseNote(appVersion)}
-            />
-
-            <UpdateStatusMessage
-              error={updateError}
-              progress={downloadProgress}
-              status={updateStatus}
-              update={availableUpdate}
-            />
-          </div>
-
-          <div className="flex flex-wrap gap-2 md:justify-end">
-            <Button
-              disabled={
-                updateStatus === "checking" ||
-                updateStatus === "downloading" ||
-                updateStatus === "installing"
-              }
-              onClick={onCheckForUpdate}
-              type="button"
-              variant="outline"
-            >
-              <RefreshCw
-                className={
-                  updateStatus === "checking" ? "animate-spin" : undefined
+            <div className="flex flex-wrap gap-2 md:justify-end">
+              <Button
+                disabled={
+                  updateStatus === "checking" ||
+                  updateStatus === "downloading" ||
+                  updateStatus === "installing"
                 }
-                data-icon="inline-start"
-              />
-              检查应用更新
-            </Button>
-
-            {updateStatus === "available" && availableUpdate ? (
-              <Button onClick={onInstallUpdate} type="button">
-                <Download data-icon="inline-start" />
-                下载并安装更新
+                onClick={onCheckForUpdate}
+                type="button"
+                variant="outline"
+              >
+                <RefreshCw
+                  className={
+                    updateStatus === "checking" ? "animate-spin" : undefined
+                  }
+                  data-icon="inline-start"
+                />
+                检查应用更新
               </Button>
-            ) : null}
 
-            {updateStatus === "ready-to-restart" ? (
-              <Button onClick={onRestart} type="button">
-                <RefreshCw data-icon="inline-start" />
-                重启完成更新
-              </Button>
-            ) : null}
+              {updateStatus === "available" && availableUpdate ? (
+                <Button onClick={onInstallUpdate} type="button">
+                  <Download data-icon="inline-start" />
+                  下载并安装更新
+                </Button>
+              ) : null}
+
+              {updateStatus === "ready-to-restart" ? (
+                <Button onClick={onRestart} type="button">
+                  <RefreshCw data-icon="inline-start" />
+                  重启完成更新
+                </Button>
+              ) : null}
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -1079,83 +1071,51 @@ function DangerSettingsSection({
   return (
     <section className="flex flex-col gap-3" id="danger-settings">
       <Card className="border-destructive/18 bg-destructive/[0.035] ring-1 ring-destructive/10 dark:bg-destructive/3">
-        <CardContent className="grid gap-6 py-6 md:grid-cols-[minmax(16rem,0.42fr)_minmax(0,1fr)_auto] md:items-start">
+        <CardContent className="flex flex-col gap-6 py-6">
           <SettingsRowHeader
             description="清除这台电脑上的 Rosetta 数据。"
             icon={<Trash2 />}
             title="危险操作"
           />
 
-          <div className="flex min-w-0 flex-col gap-3">
-            <div>
-              <p className="text-sm font-medium">清除本机数据</p>
-              <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                删除任务历史、本地模型、PDF 组件和本机设置。不会删除原始文件、手动导出的文件或 Rosetta 应用本身。
-              </p>
+          <div className="grid gap-4 border-t border-black/8 pt-6 dark:border-white/8 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
+            <div className="flex min-w-0 flex-col gap-3">
+              <div>
+                <p className="text-sm font-medium">清除本机数据</p>
+                <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                  删除任务历史、本地模型、PDF 组件和本机设置。不会删除原始文件、手动导出的文件或 Rosetta 应用本身。
+                </p>
+              </div>
+
+              {resetResult ? (
+                <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-800 dark:text-emerald-200">
+                  <p className="font-medium">
+                    已清除 Rosetta 本机数据。请重启应用以恢复初始设置。
+                  </p>
+                  <p className="mt-1 text-xs text-emerald-800/80 dark:text-emerald-200/80">
+                    {deletedItems.length > 0
+                      ? `已删除：${deletedItems.join("、")}。`
+                      : "未找到需要删除的本机数据目录。"}
+                  </p>
+                  {resetResult.runtimeStopError ? (
+                    <p className="mt-1 text-xs">
+                      本地模型停止时返回：{resetResult.runtimeStopError}
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {resetError ? (
+                <p className="text-sm text-destructive">{resetError}</p>
+              ) : null}
             </div>
 
-            {resetResult ? (
-              <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-800 dark:text-emerald-200">
-                <p className="font-medium">
-                  已清除 Rosetta 本机数据。请重启应用以恢复初始设置。
-                </p>
-                <p className="mt-1 text-xs text-emerald-800/80 dark:text-emerald-200/80">
-                  {deletedItems.length > 0
-                    ? `已删除：${deletedItems.join("、")}。`
-                    : "未找到需要删除的本机数据目录。"}
-                </p>
-                {resetResult.runtimeStopError ? (
-                  <p className="mt-1 text-xs">
-                    本地模型停止时返回：{resetResult.runtimeStopError}
-                  </p>
-                ) : null}
-              </div>
-            ) : null}
-
-            {resetError ? (
-              <p className="text-sm text-destructive">{resetError}</p>
-            ) : null}
-          </div>
-
-          <AlertDialog open={dialogOpen} onOpenChange={setDialogOpen}>
-            <AlertDialogTrigger asChild>
-              <Button
-                className="justify-self-start md:justify-self-end"
-                disabled={isClearing}
-                type="button"
-                variant="destructive"
-              >
-                {isClearing ? (
-                  <LoaderCircle
-                    className="animate-spin"
-                    data-icon="inline-start"
-                  />
-                ) : (
-                  <Trash2 data-icon="inline-start" />
-                )}
-                清除 Rosetta 数据
-              </Button>
-            </AlertDialogTrigger>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>清除 Rosetta 本机数据？</AlertDialogTitle>
-                <AlertDialogDescription className="text-left leading-6">
-                  这会停止正在运行的本地模型，并删除任务历史、本地模型文件、PDF 组件和本机设置。原始文件、手动导出的文件和 Rosetta 应用不会被删除。
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <div className="rounded-lg bg-muted/50 p-3 text-xs leading-6 text-muted-foreground">
-                删除后，Rosetta 下次启动会回到初始状态；本地模型和 PDF 组件需要重新安装。
-              </div>
-              <AlertDialogFooter>
-                <AlertDialogCancel disabled={isClearing}>
-                  取消
-                </AlertDialogCancel>
-                <AlertDialogAction
+            <AlertDialog open={dialogOpen} onOpenChange={setDialogOpen}>
+              <AlertDialogTrigger asChild>
+                <Button
+                  className="justify-self-start md:justify-self-end"
                   disabled={isClearing}
-                  onClick={(event) => {
-                    event.preventDefault();
-                    void clearLocalData();
-                  }}
+                  type="button"
                   variant="destructive"
                 >
                   {isClearing ? (
@@ -1166,11 +1126,45 @@ function DangerSettingsSection({
                   ) : (
                     <Trash2 data-icon="inline-start" />
                   )}
-                  清除本机数据
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
+                  清除 Rosetta 数据
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>清除 Rosetta 本机数据？</AlertDialogTitle>
+                  <AlertDialogDescription className="text-left leading-6">
+                    这会停止正在运行的本地模型，并删除任务历史、本地模型文件、PDF 组件和本机设置。原始文件、手动导出的文件和 Rosetta 应用不会被删除。
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <div className="rounded-lg bg-muted/50 p-3 text-xs leading-6 text-muted-foreground">
+                  删除后，Rosetta 下次启动会回到初始状态；本地模型和 PDF 组件需要重新安装。
+                </div>
+                <AlertDialogFooter>
+                  <AlertDialogCancel disabled={isClearing}>
+                    取消
+                  </AlertDialogCancel>
+                  <AlertDialogAction
+                    disabled={isClearing}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      void clearLocalData();
+                    }}
+                    variant="destructive"
+                  >
+                    {isClearing ? (
+                      <LoaderCircle
+                        className="animate-spin"
+                        data-icon="inline-start"
+                      />
+                    ) : (
+                      <Trash2 data-icon="inline-start" />
+                    )}
+                    清除本机数据
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          </div>
         </CardContent>
       </Card>
     </section>

@@ -328,7 +328,7 @@ export const useRosettaStore = create<RosettaState>()(
     (set, get) => ({
       themeMode: "system",
       rwkv: {
-        baseUrl: "https://rwkvconcszserver3.rwkvos.com",
+        baseUrl: "https://example.com",
         endpoint: "/v1/batch/completions",
         internalToken: "",
         bodyPassword: "",

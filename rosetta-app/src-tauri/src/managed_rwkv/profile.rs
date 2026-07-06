@@ -238,8 +238,8 @@ pub const WINDOWS_AMD64_CUDA: RuntimeProfile = RuntimeProfile {
     platform_arch: "x86_64",
     runtime_label: "RWKV Lightning NVIDIA CUDA",
     hardware_requirement: "NVIDIA GPU, SM75 or newer",
-    recommended: false,
-    runtime_warning: Some("RWKV Lightning 仍在开发修复中，可能存在翻译或稳定性问题。"),
+    recommended: true,
+    runtime_warning: None,
     enabled: true,
     backend: "cuda-openai",
     launch_kind: RuntimeLaunchKind::LightningCuda,
@@ -403,9 +403,10 @@ mod tests {
     }
 
     #[test]
-    fn windows_cuda_profile_is_secondary_sm75() {
+    fn windows_cuda_profile_is_recommended_sm75() {
         assert!(WINDOWS_AMD64_CUDA.enabled);
-        assert!(!WINDOWS_AMD64_CUDA.recommended);
+        assert!(WINDOWS_AMD64_CUDA.recommended);
+        assert_eq!(WINDOWS_AMD64_CUDA.runtime_warning, None);
         assert_eq!(
             WINDOWS_AMD64_CUDA.launch_kind,
             RuntimeLaunchKind::LightningCuda

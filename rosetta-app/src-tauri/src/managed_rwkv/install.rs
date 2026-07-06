@@ -961,7 +961,7 @@ fn validate_runtime_hardware_after_install(
         eprintln!("[rwkv-install] llama.cpp Vulkan devices:\n{combined}");
         return Ok(());
     }
-    Err("未检测到 llama.cpp Vulkan 设备。请更新显卡驱动，或改用外部 API；NVIDIA 用户也可以尝试 RWKV Lightning 次选。".to_string())
+    Err("未检测到 llama.cpp Vulkan 设备。请更新显卡驱动，或改用外部 API；NVIDIA 用户建议使用 RWKV Lightning。".to_string())
 }
 
 #[derive(Debug)]
