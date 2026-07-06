@@ -293,3 +293,85 @@ The macOS PDF component can proceed to release artifact preparation only if:
 - No new placeholder mismatch failures are observed.
 - Failures, if any, enter explicit failed states instead of producing
   successful-looking blank artifacts.
+
+## Final Validation Result
+
+Status: ready for release artifact preparation.
+
+The macOS agent reran validation after Rosetta was updated to include the
+current PDFMathTranslate converter patch support and the corrected pnpm
+workspace configuration. Command validation, pack build, pack content checks,
+and manual UI dogfood all passed.
+
+Environment:
+
+- macOS version: macOS 26.6, build 25G5028f.
+- CPU/arch: Apple M4, arm64.
+- Rosetta repo commit/branch: `b84ad46` / `main`.
+- PDFMathTranslate repo commit/branch: `990bed0` / `main`.
+
+Pack:
+
+- Archive: `rosetta-pdf2zh-macos-arm64.tar.gz`.
+- Size: `384360401` bytes / `367M`.
+- SHA256:
+  `60dff51fc3b3d336e9f068b747b3b7b5de86caca3adb44dd80068ef13c553e41`.
+- Manifest `profile_id`: `macos-arm64-pdf2zh`.
+- Manifest `pdf2zh_version`: `1.9.11`.
+- Manifest `python_runtime`:
+  `python-build-standalone 3.12.13 (release 20260602)`.
+- Manifest `layout_model`: `doclayout_yolo_docstructbench_imgsz1024.onnx`.
+- Manifest `built_at`: `2026-07-03T09:56:55Z`.
+
+Pack content checks:
+
+- `renderPages(..., pages=...)`: pass.
+- `normalize_render_pages(pages, state.pages)`: pass.
+- Archive includes:
+  `macos-arm64/python/lib/python3.12/site-packages/pdf2zh/rosetta_engine.py`.
+- Color/bold preservation patch applied successfully to
+  `pdf2zh/converter.py`.
+
+Command validation:
+
+- `pnpm typecheck`: pass.
+- `cargo fmt -- --check`: pass.
+- `cargo check`: pass.
+- `cargo test unit_translation`: pass, 8 passed.
+- `cargo test pdf`: pass, 72 passed.
+- `cargo test rosetta_jobs`: pass, 61 passed.
+- `cargo test managed_pdf2zh`: pass, 31 passed.
+- `cargo test managed_rwkv`: pass, 47 passed.
+- PDFMathTranslate `pytest test/test_rosetta_engine.py -q`: pass,
+  `1 passed, 5 skipped`.
+- PDFMathTranslate `py_compile pdf2zh/rosetta_engine.py`: pass.
+
+The skipped PDFMathTranslate tests are expected on macOS because those test
+fixtures require `C:/Windows/Fonts/arial.ttf`.
+
+UI dogfood:
+
+- The user imported the macOS PDF pack into the Rosetta app on macOS.
+- The PDF component showed ready.
+- Manual PDF translation testing completed with no reported problems.
+
+Windows-side artifact receipt check:
+
+- Copied artifact folder: `C:\Users\Leo\Downloads\macosbuild`.
+- Received files:
+  - `manifest.json`.
+  - `rosetta-pdf2zh-macos-arm64.tar.gz`.
+  - `rosetta-pdf2zh-macos-arm64.tar.gz.sha256`.
+- Windows `Get-FileHash` for the received archive matches the manifest and
+  `.sha256` file:
+  `60dff51fc3b3d336e9f068b747b3b7b5de86caca3adb44dd80068ef13c553e41`.
+- Windows tar inspection confirmed the archive contains the Rosetta engine v2
+  partial page render API.
+- Windows tar inspection confirmed the archived `pdf2zh/converter.py` contains
+  the color/bold preservation functions and call sites.
+
+Notes:
+
+- The macOS archive contains AppleDouble `._*` files from the macOS build
+  environment. This is not a functional blocker, but future pack scripts may
+  clean those entries to reduce archive noise.
