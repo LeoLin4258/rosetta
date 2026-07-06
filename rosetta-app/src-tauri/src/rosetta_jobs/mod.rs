@@ -3,7 +3,7 @@ use std::{
     path::{Component, Path},
     str::FromStr,
     sync::{
-        atomic::{AtomicBool, AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         Arc, Mutex,
     },
 };
@@ -1400,10 +1400,10 @@ async fn translate_pdf_pages_inner(
         .map_err(|error| format!("无法创建 PDF run 临时目录: {error}"))?;
 
     let mut processed_before = 0u32;
-    let mut translated_chars_offset = 0u64;
     let mut failure_message: Option<String> = None;
     let mut cancelled = false;
     let completed_pages_for_progress = Arc::new(AtomicU32::new(0));
+    let committed_translated_chars_for_progress = Arc::new(AtomicU64::new(0));
 
     for (chunk_index, chunk) in pages_to_process.chunks(pdf_run_chunk_size).enumerate() {
         if cancel_state.is_pdf_run_cancelled(&run_key, &run_id) {
@@ -1458,6 +1458,8 @@ async fn translate_pdf_pages_inner(
         let page_commit_rejection = Arc::new(Mutex::new(None::<String>));
         let page_commit_rejection_for_cb = Arc::clone(&page_commit_rejection);
         let completed_pages_for_cb = Arc::clone(&completed_pages_for_progress);
+        let committed_translated_chars_for_cb =
+            Arc::clone(&committed_translated_chars_for_progress);
         let total_pages_for_cb = total_pages_to_process;
         let state_for_cb: &mut formats::pdf::page_state::PdfPageTranslationState = &mut state;
         let mut on_page_result =
@@ -1477,12 +1479,16 @@ async fn translate_pdf_pages_inner(
                             page_state::write_pdf_page_translation_state(&dir_for_cb, state_for_cb);
                         let completed_pages =
                             completed_pages_for_cb.fetch_add(1, Ordering::Relaxed) + 1;
+                        let translated_chars = committed_translated_chars_for_cb
+                            .fetch_add(page_result.translated_chars, Ordering::Relaxed)
+                            + page_result.translated_chars;
                         pdf2zh_invoke::emit_completed_page_progress(
                             &app_for_cb,
                             &job_id_for_cb,
                             total_pages_for_cb,
                             completed_pages,
                             page_number,
+                            Some(translated_chars),
                         );
                         let _ = app_for_cb.emit(
                             PDF_PAGE_PROGRESS_EVENT,
@@ -1593,7 +1599,6 @@ async fn translate_pdf_pages_inner(
                     chunk_len: chunk_pages.len() as u32,
                     total: total_pages_to_process,
                 }),
-                translated_chars_offset,
             },
             cancel_rx,
             Some(&mut on_page_result),
@@ -1608,7 +1613,6 @@ async fn translate_pdf_pages_inner(
             Ok(output) => {
                 profile.durations_ms.pdf2zh_warmup += output.warmup_ms;
                 profile.durations_ms.pdf2zh_process += output.process_ms;
-                translated_chars_offset += output.rwkv_metrics.total_output_chars;
                 diagnostics::append_timeline_event(
                     &dir,
                     diagnostics::PdfTimelineEvent::new(job_id, "translation", "chunk.completed")

@@ -59,7 +59,6 @@ pub(crate) struct Pdf2zhInvokeOptions {
     pub target_lang: String,
     pub pages: Option<Vec<u32>>,
     pub page_progress: Option<PageProgressContext>,
-    pub translated_chars_offset: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -310,8 +309,6 @@ pub(crate) async fn invoke_pdf2zh(
             return Err(PdfError::Pdf2zhFailed(error));
         }
     };
-    let translated_chars =
-        options.translated_chars_offset + translation_result.metrics.total_output_chars;
     match render_ready_pages(
         app,
         &prepared.prepared_run.prepared_run_id,
@@ -367,7 +364,7 @@ pub(crate) async fn invoke_pdf2zh(
         "译文 PDF 页面已生成。",
         options.page_progress,
         pages_done.load(Ordering::Relaxed),
-        Some(translated_chars),
+        None,
     );
 
     let process_ms = translate_started.elapsed().as_millis() as u64;
@@ -497,7 +494,7 @@ pub(crate) fn emit_progress_phase(
                 None
             },
             completed_pages: if total_pages > 0 { Some(0) } else { None },
-            translated_chars: None,
+            translated_chars: if total_pages > 0 { Some(0) } else { None },
         },
     );
 }
@@ -508,24 +505,41 @@ pub(crate) fn emit_completed_page_progress(
     total_pages: u32,
     completed_pages: u32,
     page_number: u32,
+    translated_chars: Option<u64>,
 ) {
     let _ = app.emit(
         PDF2ZH_PROGRESS_EVENT,
-        Pdf2zhProgressPayload {
-            job_id: job_id.to_string(),
-            phase: "translate".to_string(),
-            percent: None,
-            message: format!("page {page_number} committed"),
-            current_page: None,
-            total_pages: if total_pages > 0 {
-                Some(total_pages)
-            } else {
-                None
-            },
-            completed_pages: Some(completed_pages.min(total_pages)),
-            translated_chars: None,
-        },
+        completed_page_progress_payload(
+            job_id,
+            total_pages,
+            completed_pages,
+            page_number,
+            translated_chars,
+        ),
     );
+}
+
+fn completed_page_progress_payload(
+    job_id: &str,
+    total_pages: u32,
+    completed_pages: u32,
+    page_number: u32,
+    translated_chars: Option<u64>,
+) -> Pdf2zhProgressPayload {
+    Pdf2zhProgressPayload {
+        job_id: job_id.to_string(),
+        phase: "translate".to_string(),
+        percent: None,
+        message: format!("page {page_number} committed"),
+        current_page: None,
+        total_pages: if total_pages > 0 {
+            Some(total_pages)
+        } else {
+            None
+        },
+        completed_pages: Some(completed_pages.min(total_pages)),
+        translated_chars,
+    }
 }
 
 fn emit_progress(
@@ -561,4 +575,29 @@ fn emit_progress(
             translated_chars,
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::completed_page_progress_payload;
+
+    #[test]
+    fn completed_page_progress_carries_translated_chars() {
+        let payload = completed_page_progress_payload("job-1", 7, 2, 3, Some(1_234));
+
+        assert_eq!(payload.job_id, "job-1");
+        assert_eq!(payload.phase, "translate");
+        assert_eq!(payload.total_pages, Some(7));
+        assert_eq!(payload.completed_pages, Some(2));
+        assert_eq!(payload.translated_chars, Some(1_234));
+    }
+
+    #[test]
+    fn completed_page_progress_clamps_completed_pages() {
+        let payload = completed_page_progress_payload("job-1", 7, 9, 9, Some(0));
+
+        assert_eq!(payload.total_pages, Some(7));
+        assert_eq!(payload.completed_pages, Some(7));
+        assert_eq!(payload.translated_chars, Some(0));
+    }
 }
