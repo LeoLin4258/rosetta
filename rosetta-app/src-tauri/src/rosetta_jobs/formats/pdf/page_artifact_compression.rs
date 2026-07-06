@@ -13,6 +13,7 @@ use tauri::AppHandle;
 use crate::{
     managed_pdf2zh::{layout::Pdf2zhLayout, profile},
     rosetta_jobs::path,
+    windows_process::HideConsole,
 };
 
 use super::{
@@ -319,6 +320,7 @@ fn compress_one_page_artifact(
         .arg(PYMUPDF_COMPRESS_SCRIPT)
         .arg(&paths.source)
         .arg(&paths.temp)
+        .hide_console_on_windows()
         .output();
     match output {
         Ok(output) if output.status.success() => {}
