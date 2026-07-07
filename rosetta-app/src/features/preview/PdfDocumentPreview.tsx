@@ -21,10 +21,11 @@ import type {
   RosettaTranslationFile,
 } from "../../types/rosetta";
 
+import { pdfPreviewPaneWidth, pdfRasterTargetWidth } from "./pdfRasterSizing";
 import { PdfPageImage } from "./PdfPane";
 
-const RASTER_WIDTH = 1800;
 const PAGE_ASPECT_RATIO = 1.4142;
+const PDF_PREVIEW_OVERSCAN_ROWS = 1;
 
 type PdfProgress = {
   phase: string;
@@ -146,21 +147,27 @@ export function PdfDocumentPreview({
     activeTranslationPageCount > PDF_AUTO_SELECT_ALL_PAGE_LIMIT;
 
   const estimatedRowSize = useMemo(() => {
-    const horizontalPadding = 32;
-    const checkboxColumn = 32;
-    const gaps = 32;
-    const pageWidth = Math.max(
-      (viewportWidth - horizontalPadding - checkboxColumn - gaps) / 2,
-      240,
-    );
+    const pageWidth = pdfPreviewPaneWidth(viewportWidth) || 240;
     return Math.ceil(pageWidth * PAGE_ASPECT_RATIO + 24);
   }, [viewportWidth]);
+
+  const rasterTargetWidth = useMemo(() => {
+    const devicePixelRatio =
+      typeof window === "undefined" ? 1 : window.devicePixelRatio || 1;
+    return pdfRasterTargetWidth(viewportWidth, devicePixelRatio);
+  }, [viewportWidth]);
+
+  const renderTranslatedPdfPage = useCallback(
+    (index: number, width: number) =>
+      renderRosettaPdfTranslatedPageAsPng(jobId, index + 1, width, targetLang),
+    [jobId, targetLang],
+  );
 
   const virtualizer = useVirtualizer({
     count: pages.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => estimatedRowSize,
-    overscan: 3,
+    overscan: PDF_PREVIEW_OVERSCAN_ROWS,
   });
 
   const refreshPageState = useCallback(async () => {
@@ -375,7 +382,7 @@ export function PdfDocumentPreview({
                         kind="source"
                         pageIndex={pageIndex}
                         renderVersion={0}
-                        targetWidth={RASTER_WIDTH}
+                        targetWidth={rasterTargetWidth}
                         canRender
                         activity={
                           currentTranslatingPageNumber === pageNumber
@@ -392,7 +399,7 @@ export function PdfDocumentPreview({
                         kind="translated"
                         pageIndex={pageIndex}
                         renderVersion={translatedPageRenderVersion(pageNumber, status)}
-                        targetWidth={RASTER_WIDTH}
+                        targetWidth={rasterTargetWidth}
                         canRender={
                           status?.status === "translated" &&
                           !!status.translatedPdfPath &&
@@ -401,14 +408,7 @@ export function PdfDocumentPreview({
                         }
                         activity={activity}
                         backdropSrc={sourcePageImages[pageIndex] ?? null}
-                        renderPage={(index, width) =>
-                          renderRosettaPdfTranslatedPageAsPng(
-                            jobId,
-                            index + 1,
-                            width,
-                            targetLang,
-                          )
-                        }
+                        renderPage={renderTranslatedPdfPage}
                         status={translatedPageLabel(
                           pageNumber,
                           status,
