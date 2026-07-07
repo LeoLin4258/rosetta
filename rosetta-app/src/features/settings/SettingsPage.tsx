@@ -1,4 +1,5 @@
 import { useEffect, useState, type ChangeEvent } from "react";
+import { useSearchParams } from "react-router-dom";
 import { getVersion } from "@tauri-apps/api/app";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check } from "@tauri-apps/plugin-updater";
@@ -370,6 +371,7 @@ function TranslationAiSection({
   ) => (event: ChangeEvent<HTMLInputElement>) => void;
   updateTimeout: (event: ChangeEvent<HTMLInputElement>) => void;
 }) {
+  const [searchParams] = useSearchParams();
   const [localSettingsOpen, setLocalSettingsOpen] = useState(false);
   const [switchingTo, setSwitchingTo] =
     useState<RwkvProviderPreference | null>(null);
@@ -385,6 +387,19 @@ function TranslationAiSection({
   const switchDisabled = isSwitchingProvider || isTranslationRunning;
   const currentEngineLabel = selectedLocal ? "本地模型" : "远程服务";
   const currentEngineTone = selectedProviderReady ? "selected" : "warning";
+
+  useEffect(() => {
+    if (searchParams.get("panel") !== "local-runtime") {
+      return;
+    }
+    setLocalSettingsOpen(true);
+    window.setTimeout(() => {
+      document.getElementById("local-rwkv")?.scrollIntoView({
+        block: "start",
+        behavior: "smooth",
+      });
+    }, 0);
+  }, [searchParams]);
 
   useEffect(() => {
     if (!switchingTo) return undefined;

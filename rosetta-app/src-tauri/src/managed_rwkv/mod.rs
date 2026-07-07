@@ -13,6 +13,7 @@
 //! flow; the command exists now so the frontend can land the install button
 //! UI in Phase 5 against a stable contract.
 
+pub mod diagnostics;
 pub mod hardware;
 pub mod install;
 pub mod layout;
@@ -24,6 +25,7 @@ pub mod status;
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 
+use diagnostics::{ManagedRuntimeConnectivityDiagnostics, ManagedRuntimeConnectivityRepairResult};
 use install::{install_model, InstallOptions, InstallProgress, InstallResult};
 use layout::RuntimeLayout;
 use lifecycle::{
@@ -348,6 +350,22 @@ pub async fn probe_managed_rwkv_runtime(
         return Err("当前平台不支持本地 RWKV 运行时。".to_string());
     }
     Ok(probe_sidecar(&registry, static_status.profile).await)
+}
+
+#[tauri::command]
+pub async fn diagnose_managed_rwkv_connectivity(
+    profile_id: Option<String>,
+) -> Result<ManagedRuntimeConnectivityDiagnostics, String> {
+    let profile = resolve_command_profile(profile_id.as_deref())?;
+    Ok(diagnostics::collect_connectivity_diagnostics(profile).await)
+}
+
+#[tauri::command]
+pub async fn repair_managed_rwkv_connectivity(
+    profile_id: Option<String>,
+) -> Result<ManagedRuntimeConnectivityRepairResult, String> {
+    let profile = resolve_command_profile(profile_id.as_deref())?;
+    Ok(diagnostics::repair_connectivity(profile).await)
 }
 
 #[tauri::command]

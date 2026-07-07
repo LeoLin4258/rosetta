@@ -320,6 +320,7 @@ pub struct RuntimeProfileSummary {
     pub model_size_bytes: u64,
     pub model_sha256: &'static str,
     pub supported_directions: &'static [&'static str],
+    pub health_path: &'static str,
     pub batch_chat_path: &'static str,
     pub bind_host: &'static str,
 }
@@ -340,6 +341,7 @@ impl RuntimeProfileSummary {
             model_size_bytes: profile.model_size_bytes,
             model_sha256: profile.model_sha256,
             supported_directions: profile.supported_directions,
+            health_path: profile.health_path,
             batch_chat_path: profile.batch_chat_path,
             bind_host: profile.bind_host,
         }

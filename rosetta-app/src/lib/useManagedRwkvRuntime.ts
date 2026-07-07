@@ -3,10 +3,12 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 
 import {
   cancelManagedRwkvInstall,
+  diagnoseManagedRwkvConnectivity,
   getManagedRwkvRuntimeLogsSummary,
   getManagedRwkvRuntimeStatus,
   installManagedRwkvRuntime,
   probeManagedRwkvRuntime,
+  repairManagedRwkvConnectivity,
   startManagedRwkvRuntime,
   stopManagedRwkvRuntime,
   subscribeManagedRwkvInstallProgress,
@@ -14,6 +16,8 @@ import {
 import { selectManagedRuntimeProfileStatus } from "@/lib/managedRuntimeSelection";
 import { useRosettaStore } from "@/store/useRosettaStore";
 import type {
+  ManagedRuntimeConnectivityDiagnostics,
+  ManagedRuntimeConnectivityRepairResult,
   ManagedRuntimeInstallOptions,
   ManagedRuntimeInstallResult,
   ManagedRuntimeLogsSummary,
@@ -48,6 +52,8 @@ export function useManagedRwkvRuntime() {
   const [isStarting, setIsStarting] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
   const [isProbing, setIsProbing] = useState(false);
+  const [isDiagnosingConnectivity, setIsDiagnosingConnectivity] = useState(false);
+  const [isRepairingConnectivity, setIsRepairingConnectivity] = useState(false);
   const activeProfileId =
     selectManagedRuntimeProfileStatus(status, selectedProfileId)?.profile.id ??
     selectedProfileId ??
@@ -202,6 +208,36 @@ export function useManagedRwkvRuntime() {
     }
   }, [activeProfileId, setError]);
 
+  const diagnoseConnectivity = useCallback(async (
+    profileId?: string | null
+  ): Promise<ManagedRuntimeConnectivityDiagnostics | null> => {
+    const targetProfileId = profileId ?? activeProfileId;
+    setIsDiagnosingConnectivity(true);
+    try {
+      return await diagnoseManagedRwkvConnectivity(targetProfileId);
+    } catch (error) {
+      setError(toMessage(error));
+      return null;
+    } finally {
+      setIsDiagnosingConnectivity(false);
+    }
+  }, [activeProfileId, setError]);
+
+  const repairConnectivity = useCallback(async (
+    profileId?: string | null
+  ): Promise<ManagedRuntimeConnectivityRepairResult | null> => {
+    const targetProfileId = profileId ?? activeProfileId;
+    setIsRepairingConnectivity(true);
+    try {
+      return await repairManagedRwkvConnectivity(targetProfileId);
+    } catch (error) {
+      setError(toMessage(error));
+      return null;
+    } finally {
+      setIsRepairingConnectivity(false);
+    }
+  }, [activeProfileId, setError]);
+
   return {
     status,
     progress,
@@ -211,6 +247,8 @@ export function useManagedRwkvRuntime() {
     isStarting,
     isStopping,
     isProbing,
+    isDiagnosingConnectivity,
+    isRepairingConnectivity,
     refreshStatus,
     install,
     cancelInstall,
@@ -218,6 +256,8 @@ export function useManagedRwkvRuntime() {
     stop,
     probe,
     readLogs,
+    diagnoseConnectivity,
+    repairConnectivity,
   } as const;
 }
 

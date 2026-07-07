@@ -2,7 +2,9 @@ import { useMemo, useState } from "react";
 import { AlertCircle, Check, Copy, Download, LoaderCircle, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { ManagedRuntimeConnectivityPanel } from "@/features/runtime/ManagedRuntimeConnectivityPanel";
 import type {
+  ManagedRuntimeConnectivityDiagnostics,
   ManagedRuntimeInstallProgress,
   ManagedRuntimeLogsSummary,
 } from "@/types/rosetta";
@@ -23,6 +25,12 @@ type InstallStepProps = {
   progress: InstallProgressLike | null;
   errorMessage: string | null;
   diagnostics?: Record<string, string | number | boolean | null | undefined>;
+  connectivityDiagnostics?: ManagedRuntimeConnectivityDiagnostics | null;
+  isDiagnosingConnectivity?: boolean;
+  isRepairingConnectivity?: boolean;
+  connectivityRepairMessage?: string | null;
+  onDiagnoseConnectivity?: () => void;
+  onRepairConnectivity?: () => void;
   logs?: ManagedRuntimeLogsSummary | null;
   onCancel: () => void;
   onRetry: () => void;
@@ -53,6 +61,12 @@ export function InstallStep({
   progress,
   errorMessage,
   diagnostics,
+  connectivityDiagnostics,
+  isDiagnosingConnectivity = false,
+  isRepairingConnectivity = false,
+  connectivityRepairMessage,
+  onDiagnoseConnectivity,
+  onRepairConnectivity,
   logs,
   onCancel,
   onRetry,
@@ -113,34 +127,48 @@ export function InstallStep({
       >
         <div className="flex items-center gap-2 text-destructive">
           <AlertCircle className="size-4" strokeWidth={1.75} />
-          <span className="text-xs font-medium">需要重试或复制错误信息</span>
+          <span className="text-xs font-medium">需要处理后重试</span>
         </div>
-        <div className="w-full space-y-3 rounded-lg border border-border bg-card p-3">
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-xs font-medium text-foreground">错误信息</p>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={handleCopyDiagnostics}
-              className="gap-1.5"
-            >
-              {copyState === "copied" ? (
-                <Check className="size-3.5" />
-              ) : (
-                <Copy className="size-3.5" />
-              )}
-              {copyState === "copied"
-                ? "已复制"
-                : copyState === "failed"
-                  ? "复制失败"
-                  : "复制错误信息"}
-            </Button>
+        {onDiagnoseConnectivity ? (
+          <ManagedRuntimeConnectivityPanel
+            diagnostics={connectivityDiagnostics ?? null}
+            isLoading={isDiagnosingConnectivity}
+            isRepairing={isRepairingConnectivity}
+            repairMessage={connectivityRepairMessage}
+            onDiagnose={onDiagnoseConnectivity}
+            onRepair={onRepairConnectivity}
+          />
+        ) : null}
+        <details className="w-full rounded-lg border border-border bg-card p-3">
+          <summary className="cursor-pointer text-xs font-medium text-foreground">
+            技术错误信息
+          </summary>
+          <div className="mt-3 space-y-3">
+            <div className="flex justify-end">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleCopyDiagnostics}
+                className="gap-1.5"
+              >
+                {copyState === "copied" ? (
+                  <Check className="size-3.5" />
+                ) : (
+                  <Copy className="size-3.5" />
+                )}
+                {copyState === "copied"
+                  ? "已复制"
+                  : copyState === "failed"
+                    ? "复制失败"
+                    : "复制"}
+              </Button>
+            </div>
+            <pre className="max-h-28 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-2 font-mono text-[11px] leading-5 text-muted-foreground">
+              {errorMessage}
+            </pre>
           </div>
-          <pre className="max-h-28 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-2 font-mono text-[11px] leading-5 text-muted-foreground">
-            {errorMessage}
-          </pre>
-        </div>
+        </details>
         <Button size="lg" onClick={onRetry} className="h-11 w-full gap-2">
           <Download className="size-4" /> {retryLabel}
         </Button>

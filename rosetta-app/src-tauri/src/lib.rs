@@ -205,6 +205,8 @@ pub fn run() {
             managed_rwkv::get_managed_rwkv_runtime_logs_summary,
             managed_rwkv::get_managed_rwkv_runtime_status,
             managed_rwkv::install_managed_rwkv_runtime,
+            managed_rwkv::diagnose_managed_rwkv_connectivity,
+            managed_rwkv::repair_managed_rwkv_connectivity,
             managed_rwkv::probe_managed_rwkv_runtime,
             managed_rwkv::start_managed_rwkv_runtime,
             managed_rwkv::stop_managed_rwkv_runtime,

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { useNavigate } from "react-router-dom";
 
 import {
   AlertDialog,
@@ -87,6 +88,7 @@ export function WorkspacePage() {
   const defaultTargetLang = useRosettaStore((s) => s.defaultTargetLang);
   const langByJobId = useRosettaStore((s) => s.langByJobId);
   const setJobLangs = useRosettaStore((s) => s.setJobLangs);
+  const navigate = useNavigate();
 
   const setActiveBundle = useRosettaStore((s) => s.setActiveBundle);
   const refreshJobBundle = useRosettaStore((s) => s.refreshJobBundle);
@@ -211,7 +213,9 @@ export function WorkspacePage() {
     selectedRuntimeStatus?.state !== "unsupported";
   const localRuntimeUnavailableMessage =
     selectedRuntimeStatus?.state === "failed"
-      ? selectedRuntimeStatus.message
+      ? summarizeRuntimeUnavailableMessage(
+          selectedRuntimeStatus.process.lastError ?? selectedRuntimeStatus.message
+        )
       : selectedRuntimeStatus?.state === "unsupported"
         ? selectedRuntimeStatus.message
         : "本地翻译模型正在启动，请稍候。";
@@ -1015,6 +1019,7 @@ export function WorkspacePage() {
             onRetranslateSelected={() => void handleRetranslateSelected()}
             onClearSelection={() => setSelectedBlockIds([])}
             onRetranslateAll={() => void handleRetranslateAll()}
+            onOpenRuntimeSettings={() => navigate("/settings?panel=local-runtime")}
           />
           <AlertDialog
             open={pendingLongPdfTranslation != null}
@@ -1143,6 +1148,23 @@ function errorMessage(error: unknown, fallback: string) {
   if (error instanceof Error) return error.message;
   if (typeof error === "string" && error.trim()) return error;
   return fallback;
+}
+
+function summarizeRuntimeUnavailableMessage(message: string | null | undefined) {
+  if (!message) {
+    return "本地模型启动失败，请到设置页修复本地运行时。";
+  }
+  if (
+    message.includes("Windows 无法连接") ||
+    message.includes("loopback") ||
+    message.includes("127.0.0.1")
+  ) {
+    return "Windows 拦住了本机连接，请到设置页点击“修复连接并重试”。";
+  }
+  if (message.includes("在 45 秒内未就绪") || message.includes("timed out")) {
+    return "本地模型启动后没有响应，请到设置页检查本地运行时。";
+  }
+  return "本地模型启动失败，请到设置页检查本地运行时。";
 }
 
 function formatPageSelection(pages: number[]) {

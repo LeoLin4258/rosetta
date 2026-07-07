@@ -21,7 +21,11 @@ import {
 import { useManagedRwkvRuntime } from "@/lib/useManagedRwkvRuntime";
 import { useRosettaStore } from "@/store/useRosettaStore";
 import { cn } from "@/lib/utils";
-import type { ManagedRuntimeLogsSummary, ManagedRuntimeProfileStatus } from "@/types/rosetta";
+import type {
+  ManagedRuntimeConnectivityDiagnostics,
+  ManagedRuntimeLogsSummary,
+  ManagedRuntimeProfileStatus,
+} from "@/types/rosetta";
 
 import { DoneStep } from "./DoneStep";
 import { InstallStep } from "./InstallStep";
@@ -97,6 +101,10 @@ export function OnboardingApp() {
   const [rwkvLogs, setRwkvLogs] = useState<ManagedRuntimeLogsSummary | null>(
     null
   );
+  const [rwkvConnectivityDiagnostics, setRwkvConnectivityDiagnostics] =
+    useState<ManagedRuntimeConnectivityDiagnostics | null>(null);
+  const [rwkvConnectivityRepairMessage, setRwkvConnectivityRepairMessage] =
+    useState<string | null>(null);
   const [debugState, setDebugState] = useState<OnboardingDebugState>({
     flow: null,
     lastAction: null,
@@ -277,6 +285,8 @@ export function OnboardingApp() {
     rwkvInstallFlowActiveRef.current = true;
     setErrorMessage(null);
     setRwkvLogs(null);
+    setRwkvConnectivityDiagnostics(null);
+    setRwkvConnectivityRepairMessage(null);
     setDebugState({
       flow: "rwkv-install",
       lastAction: "installLocalRuntime.begin",
@@ -313,7 +323,9 @@ export function OnboardingApp() {
       }));
       if (!started) {
         const logs = await runtime.readLogs(targetProfileId);
+        const connectivity = await runtime.diagnoseConnectivity(targetProfileId);
         setRwkvLogs(logs);
+        setRwkvConnectivityDiagnostics(connectivity);
         setErrorMessage(null);
         return;
       }
@@ -327,7 +339,9 @@ export function OnboardingApp() {
       }));
       if (!probe?.ok) {
         const logs = await runtime.readLogs(targetProfileId);
+        const connectivity = await runtime.diagnoseConnectivity(targetProfileId);
         setRwkvLogs(logs);
+        setRwkvConnectivityDiagnostics(connectivity);
         const message = probe?.message ?? "本地翻译引擎探活没有完成。";
         setDebugState((prev) => ({
           ...prev,
@@ -344,7 +358,9 @@ export function OnboardingApp() {
     } catch (error) {
       const message = toMessage(error);
       const logs = await runtime.readLogs(targetProfileId);
+      const connectivity = await runtime.diagnoseConnectivity(targetProfileId);
       setRwkvLogs(logs);
+      setRwkvConnectivityDiagnostics(connectivity);
       setDebugState((prev) => ({
         ...prev,
         lastAction: "installLocalRuntime.catch",
@@ -386,6 +402,16 @@ export function OnboardingApp() {
 
     void installLocalRuntime(selectedRuntimeProfileId);
   }, [beginPdfSetup, installLocalRuntime, selectedRuntimeProfileId, step]);
+
+  const handleRepairRwkvConnectivity = useCallback(async () => {
+    const result = await runtime.repairConnectivity(selectedRuntimeProfileId);
+    if (!result) return;
+    setRwkvConnectivityRepairMessage(result.message);
+    setRwkvConnectivityDiagnostics(result.diagnostics);
+    if (result.ok) {
+      void installLocalRuntime(selectedRuntimeProfileId);
+    }
+  }, [installLocalRuntime, runtime, selectedRuntimeProfileId]);
 
   const handleCancel = useCallback(() => {
     if (step === "installing-pdf") {
@@ -545,7 +571,8 @@ export function OnboardingApp() {
               runtimeProfile: selectedRuntimeStatus?.profile.id,
               provider: selectedRuntimeStatus?.profile.providerId,
               backend: selectedRuntimeStatus?.profile.backend,
-              healthPath: selectedRuntimeStatus?.profile.batchChatPath,
+              healthPath: selectedRuntimeStatus?.profile.healthPath,
+              batchChatPath: selectedRuntimeStatus?.profile.batchChatPath,
               bindHost: selectedRuntimeStatus?.profile.bindHost,
               processPid: selectedRuntimeStatus?.process.pid,
               processBaseUrl: selectedRuntimeStatus?.process.baseUrl,
@@ -558,6 +585,16 @@ export function OnboardingApp() {
               runtimeDir: selectedRuntimeStatus?.paths.runtimeDir,
               logsDir: selectedRuntimeStatus?.paths.logsDir,
             }}
+            connectivityDiagnostics={rwkvConnectivityDiagnostics}
+            isDiagnosingConnectivity={runtime.isDiagnosingConnectivity}
+            isRepairingConnectivity={runtime.isRepairingConnectivity}
+            connectivityRepairMessage={rwkvConnectivityRepairMessage}
+            onDiagnoseConnectivity={() => {
+              void runtime
+                .diagnoseConnectivity(selectedRuntimeProfileId)
+                .then(setRwkvConnectivityDiagnostics);
+            }}
+            onRepairConnectivity={() => void handleRepairRwkvConnectivity()}
             onCancel={handleCancel}
             onRetry={handleRetry}
             onFallback={

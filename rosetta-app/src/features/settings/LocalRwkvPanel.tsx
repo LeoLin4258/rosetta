@@ -1,6 +1,5 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import {
-  AlertCircle,
   AlertTriangle,
   CheckCircle2,
   ChevronDown,
@@ -28,10 +27,12 @@ import {
   WINDOWS_LIGHTNING_PROFILE_ID,
   WINDOWS_LLAMACPP_PROFILE_ID,
 } from "@/lib/managedRuntimeSelection";
+import { ManagedRuntimeConnectivityPanel } from "@/features/runtime/ManagedRuntimeConnectivityPanel";
 import { cn } from "@/lib/utils";
 import { useManagedRwkvRuntime } from "@/lib/useManagedRwkvRuntime";
 import { useRosettaStore } from "@/store/useRosettaStore";
 import type {
+  ManagedRuntimeConnectivityDiagnostics,
   ManagedRuntimeInstallPhase,
   ManagedRuntimeLogsSummary,
   ManagedRuntimeProfileStatus,
@@ -71,6 +72,10 @@ export function LocalRwkvPanel({
     null
   );
   const [actionProfileId, setActionProfileId] = useState<string | null>(null);
+  const [connectivityDiagnostics, setConnectivityDiagnostics] =
+    useState<ManagedRuntimeConnectivityDiagnostics | null>(null);
+  const [connectivityRepairMessage, setConnectivityRepairMessage] =
+    useState<string | null>(null);
 
   const profileStatuses = status?.profileStatuses ?? [];
   const selectedStatus = selectManagedRuntimeProfileStatus(
@@ -158,6 +163,21 @@ export function LocalRwkvPanel({
     await rt.cancelInstall();
   }
 
+  async function diagnoseConnectivity() {
+    const diagnostics = await rt.diagnoseConnectivity(activeProfileId);
+    setConnectivityDiagnostics(diagnostics);
+  }
+
+  async function repairConnectivity() {
+    const result = await rt.repairConnectivity(activeProfileId);
+    if (!result) return;
+    setConnectivityRepairMessage(result.message);
+    setConnectivityDiagnostics(result.diagnostics);
+    if (result.ok && activeProfileId && selectedStatus?.state === "failed") {
+      await rt.start(activeProfileId);
+    }
+  }
+
   async function setProfileDetailsOpen(profileId: string, nextOpen: boolean) {
     setDetailsOpenByProfileId((current) => ({
       ...current,
@@ -215,13 +235,6 @@ export function LocalRwkvPanel({
           </div>
         )}
 
-        {rt.lastError && (
-          <div className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
-            <AlertCircle className="mt-0.5 size-4 shrink-0" />
-            <span className="break-all">{rt.lastError}</span>
-          </div>
-        )}
-
         {isInstallActive && (
           <InstallProgressRow
             percent={installPercent(rt.progress)}
@@ -261,6 +274,21 @@ export function LocalRwkvPanel({
                 onDetailsOpenChange={(open) =>
                   void setProfileDetailsOpen(profileStatus.profile.id, open)
                 }
+                connectivityPanel={
+                  profileStatus.profile.id === activeProfileId &&
+                  (rt.lastError ||
+                    profileStatus.state === "failed" ||
+                    connectivityDiagnostics) ? (
+                    <ManagedRuntimeConnectivityPanel
+                      diagnostics={connectivityDiagnostics}
+                      isLoading={rt.isDiagnosingConnectivity}
+                      isRepairing={rt.isRepairingConnectivity}
+                      repairMessage={connectivityRepairMessage}
+                      onDiagnose={() => void diagnoseConnectivity()}
+                      onRepair={() => void repairConnectivity()}
+                    />
+                  ) : null
+                }
               />
             ))}
           </div>
@@ -295,6 +323,7 @@ function RuntimeProfileCard({
   onStart,
   onStop,
   onDetailsOpenChange,
+  connectivityPanel,
 }: {
   status: ManagedRuntimeProfileStatus;
   isSelected: boolean;
@@ -311,6 +340,7 @@ function RuntimeProfileCard({
   onStart: () => void;
   onStop: () => void;
   onDetailsOpenChange: (open: boolean) => void;
+  connectivityPanel?: ReactNode;
 }) {
   const isUnsupported = status.state === "unsupported";
   const isBusy = isActionTarget && actionsDisabled;
@@ -409,6 +439,8 @@ function RuntimeProfileCard({
             )}
           </div>
         </div>
+
+        {connectivityPanel}
 
         {!isUnsupported && (
           <Collapsible open={detailsOpen} onOpenChange={onDetailsOpenChange}>
@@ -650,7 +682,7 @@ function resolveStatus(
       return {
         dot: "bg-destructive",
         label: "启动失败",
-        sub: status.process.lastError ?? status.message,
+        sub: summarizeRuntimeError(status.process.lastError ?? status.message),
       };
     case "unsupported":
       return {
@@ -671,6 +703,31 @@ function resolveStatus(
         spinning: true,
       };
   }
+}
+
+function summarizeRuntimeError(message: string | null | undefined): string {
+  if (!message) {
+    return "本地运行时启动失败。";
+  }
+  if (
+    message.includes("Windows 无法连接") ||
+    message.includes("loopback") ||
+    message.includes("127.0.0.1")
+  ) {
+    return "Windows 拦住了本机连接，Rosetta 无法连接本地翻译服务。";
+  }
+  if (message.includes("在 45 秒内未就绪") || message.includes("timed out")) {
+    return "本地翻译服务启动后没有及时响应。";
+  }
+  if (message.includes("Vulkan") || message.includes("vk::")) {
+    return "显卡 Vulkan 初始化失败，可尝试更新显卡驱动或改用 CPU 回退。";
+  }
+  const firstLine =
+    message
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find((line) => line && !line.startsWith("---")) ?? message;
+  return firstLine.length > 120 ? `${firstLine.slice(0, 120).trimEnd()}...` : firstLine;
 }
 
 function runtimeSpecItems(status: ManagedRuntimeProfileStatus): string[] {
@@ -757,7 +814,11 @@ function ModelInfoRows({ status }: { status: ManagedRuntimeProfileStatus }) {
       value: `SHA-256 ${status.profile.modelSha256.slice(0, 16)}...`,
     },
     {
-      label: "接口",
+      label: "健康检查",
+      value: status.profile.healthPath,
+    },
+    {
+      label: "翻译接口",
       value: status.profile.batchChatPath,
     },
     {

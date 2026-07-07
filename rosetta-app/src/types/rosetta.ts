@@ -628,6 +628,7 @@ export type ManagedRuntimeProfileSummary = {
   modelSizeBytes: number;
   modelSha256: string;
   supportedDirections: string[];
+  healthPath: string;
   batchChatPath: string;
   bindHost: string;
 };
@@ -694,6 +695,56 @@ export type ManagedRuntimeProbeResult = {
   latencyMs: number;
   baseUrl: string | null;
   message: string;
+};
+
+export type ManagedRuntimeLoopbackProbe = {
+  host: string;
+  bindOk: boolean;
+  connectOk: boolean;
+  accepted: boolean;
+  latencyMs: number | null;
+  error: string | null;
+};
+
+export type ManagedRuntimeWindowsNetworkProfile = {
+  name: string | null;
+  interfaceAlias: string | null;
+  networkCategory: string | null;
+  ipv4Connectivity: string | null;
+  ipv6Connectivity: string | null;
+};
+
+export type ManagedRuntimeWindowsFirewallProfile = {
+  name: string | null;
+  enabled: boolean | null;
+  defaultInboundAction: string | null;
+  defaultOutboundAction: string | null;
+};
+
+export type ManagedRuntimeConnectivityDiagnostics = {
+  platform: string;
+  checkedAt: string;
+  targetProfileId: string;
+  targetRuntimeLabel: string;
+  targetBindHost: string;
+  targetLoopbackOk: boolean;
+  loopbackIpv4Ok: boolean;
+  loopbackIpv6Ok: boolean | null;
+  probes: ManagedRuntimeLoopbackProbe[];
+  networkProfiles: ManagedRuntimeWindowsNetworkProfile[];
+  firewallProfiles: ManagedRuntimeWindowsFirewallProfile[];
+  suspectedIssue: string | null;
+  message: string;
+  recommendedActions: string[];
+  powershellHint: string | null;
+};
+
+export type ManagedRuntimeConnectivityRepairResult = {
+  ok: boolean;
+  changed: boolean;
+  elevated: boolean;
+  message: string;
+  diagnostics: ManagedRuntimeConnectivityDiagnostics;
 };
 
 export type ManagedRuntimeLogsSummary = {

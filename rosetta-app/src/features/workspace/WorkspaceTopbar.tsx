@@ -7,6 +7,7 @@ import {
 } from "react";
 import {
   ArrowRight,
+  AlertTriangle,
   Download,
   FileText,
   Loader2,
@@ -91,6 +92,7 @@ type WorkspaceTopbarProps = {
   onRetranslateSelected: () => void;
   onClearSelection: () => void;
   onRetranslateAll: () => void;
+  onOpenRuntimeSettings?: () => void;
 };
 
 /// Map the backend's `phase` enum to a user-facing label. `warmup` is the
@@ -319,6 +321,7 @@ export function WorkspaceTopbar({
   onRetranslateSelected,
   onClearSelection,
   onRetranslateAll,
+  onOpenRuntimeSettings,
 }: WorkspaceTopbarProps) {
   const [confirmingCancel, setConfirmingCancel] = useState(false);
   const [confirmingRetranslateAll, setConfirmingRetranslateAll] = useState(false);
@@ -669,6 +672,31 @@ export function WorkspaceTopbar({
           )}
         </div>
       </div>
+      {isRuntimeUnavailable && !isRuntimeStarting ? (
+        <div className="mt-3 flex flex-col gap-2 rounded-lg border border-amber-500/35 bg-amber-500/8 px-3 py-2 text-sm sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex min-w-0 items-start gap-2">
+            <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-700 dark:text-amber-300" />
+            <div className="min-w-0">
+              <p className="font-medium text-foreground">本地模型需要处理后才能翻译</p>
+              <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
+                {runtimeUnavailableMessage ??
+                  "Rosetta 无法连接本地翻译服务，请到设置页修复本地运行时。"}
+              </p>
+            </div>
+          </div>
+          {onOpenRuntimeSettings ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={onOpenRuntimeSettings}
+              className="shrink-0"
+            >
+              打开设置修复
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }

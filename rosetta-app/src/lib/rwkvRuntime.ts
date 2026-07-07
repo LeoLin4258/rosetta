@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   ManagedRuntimeCancelInstallResult,
+  ManagedRuntimeConnectivityDiagnostics,
+  ManagedRuntimeConnectivityRepairResult,
   ManagedRuntimeInstallOptions,
   ManagedRuntimeInstallPlan,
   ManagedRuntimeInstallProgress,
@@ -100,6 +102,20 @@ export function probeManagedRwkvRuntime(profileId?: string | null) {
   return invoke<ManagedRuntimeProbeResult>("probe_managed_rwkv_runtime", {
     profileId,
   });
+}
+
+export function diagnoseManagedRwkvConnectivity(profileId?: string | null) {
+  return invoke<ManagedRuntimeConnectivityDiagnostics>(
+    "diagnose_managed_rwkv_connectivity",
+    { profileId }
+  );
+}
+
+export function repairManagedRwkvConnectivity(profileId?: string | null) {
+  return invoke<ManagedRuntimeConnectivityRepairResult>(
+    "repair_managed_rwkv_connectivity",
+    { profileId }
+  );
 }
 
 export function getManagedRwkvRuntimeLogsSummary(profileId?: string | null) {

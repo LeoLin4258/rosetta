@@ -372,6 +372,11 @@ pub async fn start_sidecar(
                         log_tail.join("\n")
                     )
                 };
+                if let Some(loopback_hint) =
+                    super::diagnostics::runtime_loopback_failure_hint(profile)
+                {
+                    last_detail.push_str(&loopback_hint);
+                }
 
                 if has_vulkan_error && attempt + 1 < gpu_layers_attempts.len() {
                     eprintln!(
@@ -489,9 +494,9 @@ pub async fn probe_sidecar(
             let status_code = response.status().as_u16();
             let ok = (200..300).contains(&status_code);
             let message = if ok {
-                "/health 探测成功。".to_string()
+                format!("{} 探测成功。", profile.health_path)
             } else {
-                format!("/health 返回 HTTP {status_code}。")
+                format!("{} 返回 HTTP {status_code}。", profile.health_path)
             };
             ManagedRuntimeProbeResult {
                 ok,
@@ -501,13 +506,20 @@ pub async fn probe_sidecar(
                 message,
             }
         }
-        Err(error) => ManagedRuntimeProbeResult {
-            ok: false,
-            status_code: None,
-            latency_ms,
-            base_url: Some(base),
-            message: format!("/health 请求失败: {error}"),
-        },
+        Err(error) => {
+            let mut message = format!("{} 请求失败: {error}", profile.health_path);
+            if let Some(loopback_hint) = super::diagnostics::runtime_loopback_failure_hint(profile)
+            {
+                message.push_str(&loopback_hint);
+            }
+            ManagedRuntimeProbeResult {
+                ok: false,
+                status_code: None,
+                latency_ms,
+                base_url: Some(base),
+                message,
+            }
+        }
     }
 }
 
@@ -674,7 +686,7 @@ async fn wait_for_health_with_process_check(
     loop {
         if Instant::now() >= deadline {
             return Err(format!(
-                "/health 在 {} 秒内未就绪。",
+                "{health_path} 在 {} 秒内未就绪。",
                 STARTUP_TIMEOUT.as_secs()
             ));
         }
@@ -701,12 +713,12 @@ async fn wait_for_health_with_process_check(
 
         match client.get(&url).send().await {
             Ok(resp) if (200..300).contains(&resp.status().as_u16()) => {
-                eprintln!("[rwkv-lifecycle] /health OK");
+                eprintln!("[rwkv-lifecycle] {health_path} OK");
                 return Ok(());
             }
             Ok(resp) => {
                 eprintln!(
-                    "[rwkv-lifecycle] /health poll: HTTP {}",
+                    "[rwkv-lifecycle] {health_path} poll: HTTP {}",
                     resp.status().as_u16()
                 );
                 tokio::time::sleep(HEALTH_POLL_INTERVAL).await;
@@ -986,6 +998,10 @@ fn list_sidecar_processes_windows() -> Result<Vec<SidecarProcess>, String> {
             })
         })
         .collect())
+}
+
+pub(crate) fn iso_now_for_diagnostics() -> String {
+    iso_now()
 }
 
 fn iso_now() -> String {
