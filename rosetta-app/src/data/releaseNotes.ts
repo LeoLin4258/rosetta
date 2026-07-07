@@ -34,6 +34,17 @@ export type ReleaseNote = {
  * appearing in `package.json` (e.g. `"0.1.0-beta.8"`), not semver tuples.
  */
 export const RELEASE_NOTES: Record<string, ReleaseNote> = {
+  "0.1.0-beta.19": {
+    version: "0.1.0-beta.19",
+    highlights: [
+      "PDF 翻译切换到新的 v2 引擎契约，页面准备、翻译和提交由 Rosetta 更严格地管理",
+      "长 PDF 使用跨页批量翻译和版面复用，Windows 本地 Lightning 路径吞吐更高、等待更短",
+      "PDF 页面产物先快速写入、再后台压缩，翻译热路径更快且任务缓存会自动收敛",
+      "PDF 预览缩放更稳定，页面栅格尺寸按文档比例计算，减少左右预览尺寸不一致",
+      "Windows 本地运行时启动失败时会检测回环连接，并可在常见网络配置问题下引导一键修复",
+      "PDF 状态栏重新显示已提交译文字符数，进度反馈更贴近实际完成页面",
+    ],
+  },
   "0.1.0-beta.18": {
     version: "0.1.0-beta.18",
     highlights: [
