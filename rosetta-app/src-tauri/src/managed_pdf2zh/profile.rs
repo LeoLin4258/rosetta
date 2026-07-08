@@ -15,9 +15,9 @@ pub struct Pdf2zhProfile {
 }
 
 // pack_size_bytes, pack_sha256, and pack_download_urls are filled in after
-// running build-pdf2zh-pack-macos-arm64.sh and uploading the artifact to a
-// GitHub Release under LeoLin4258/rosetta-assets with tag
-// pdf-layout-pack-macos-arm64-vYYYY.MM.DD.N.
+// running the matching build-pdf2zh-pack-* script and uploading the artifact
+// to a GitHub Release under LeoLin4258/rosetta-assets with a platform-specific
+// pdf-layout-pack-* tag.
 //
 // pack_download_urls may list a primary URL followed by mirror URLs; the
 // installer tries them in order and falls back automatically.

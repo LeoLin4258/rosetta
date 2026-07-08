@@ -258,12 +258,13 @@ change to source PDF state or translation correctness.
 
 Rosetta keeps the speed-first write on the translation hot path and then
 compresses committed page artifacts in a Rust-owned background maintenance
-task on Windows. The background task uses the installed pdf2zh sidecar's
-PyMuPDF runtime with font subsetting, `garbage=4`, stream/image/font deflate,
-and object streams. Font subsetting is required because otherwise each
-single-page translated artifact can retain a full CJK font copy; importing that
-lightweight PyMuPDF module does not touch the warm pdf2zh worker or
-PyTorch/ONNX layout prewarm. Compression is best-effort cache maintenance:
+task on every supported platform with an installed pdf2zh component pack. The
+background task uses the pack's PyMuPDF runtime with font subsetting,
+`garbage=4`, stream/image/font deflate, and object streams. Font subsetting is
+required because otherwise each single-page translated artifact can retain a
+full CJK font copy; importing that lightweight PyMuPDF module does not touch
+the warm pdf2zh worker or PyTorch/ONNX layout prewarm. Compression is
+best-effort cache maintenance:
 
 - the page remains `translated` even if compression fails;
 - each candidate is guarded by `lastRunId`, `artifactVersion`, and
@@ -288,6 +289,16 @@ Local diagnosis can disable background page artifact compression with:
 ```txt
 ROSETTA_PDF_PAGE_ARTIFACT_COMPRESSION=off
 ```
+
+The managed pdf2zh pack is patched during staging/release builds so translated
+text preserves source text color without using PDF faux-bold text stroke. For
+simplified Chinese targets (`zh`, `zh-CN`, `zh-Hans`), normal translated text
+uses BabelDOC's `SourceHanSansCN-Regular.ttf` instead of pdf2zh's upstream
+`SourceHanSerifCN-Regular.ttf`. Paragraphs whose source text contains a
+bold/medium font run use BabelDOC's `SourceHanSansCN-Bold.ttf` through a
+separate PDF font resource named `notobold`. This keeps body text lighter,
+restores source-like emphasis without text-rendering stroke, and uses the same
+BabelDOC font assets on macOS and Windows.
 
 ## Worker Prewarm
 

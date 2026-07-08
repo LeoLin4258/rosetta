@@ -80,13 +80,10 @@ pub(crate) fn schedule_background_compression(
     let Some(profile) = profile::current_profile() else {
         return;
     };
-    if profile.platform_os != "windows" {
-        return;
-    }
     let Ok(layout) = Pdf2zhLayout::from_app(app, profile) else {
         return;
     };
-    let python = layout.bin_path(profile);
+    let python = layout.python_path(profile);
     if !python.is_file() {
         return;
     }

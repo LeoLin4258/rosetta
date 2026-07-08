@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from pathlib import Path
+import re
 import sys
 
 import pdf2zh
@@ -9,9 +10,286 @@ root = Path(pdf2zh.__file__).resolve().parent
 target = root / "converter.py"
 text = target.read_text(encoding="utf-8")
 bold_expr = 're.match(r"(.*Bold|.*Medi|.*Demi|.*Black|.*Heavy|.*SemiBold|.*Semibold|.*Bd)", getattr(child.font, "fontname", "").split("+")[-1], re.IGNORECASE) is not None'
+bold_list_accumulate_expr = f"pstk[-1][8] or {bold_expr}"
+bold_attr_accumulate_expr = f"pstk[-1].bold or {bold_expr}"
+rosetta_bold_font_resource_name = "notobold"
+rosetta_bold_font_name = "SourceHanSansCN-Bold.ttf"
+
+
+def normalize_text_mode_operator(text: str) -> tuple[str, bool]:
+    pattern = re.compile(
+        r'(?m)^(?P<indent>[ \t]*)def rosetta_pdf_text_mode_operator\(is_bold, color, size\):\n'
+        r'(?P<body_indent>[ \t]+)if not is_bold:\n'
+        r'[ \t]+return "0 Tr "\n'
+        r'[ \t]+stroke_width = (?:'
+        r'max\(0\.12, min\(0\.45, size \* 0\.018\)\)|'
+        r'max\(0\.04, min\(0\.16, size \* 0\.006\)\)|'
+        r'min\(0\.03, max\(0\.0, size \* 0\.0015\)\)'
+        r')\n'
+        r'[ \t]+return f"[^\n]*w 2 Tr "\n'
+    )
+
+    def replacement(match: re.Match[str]) -> str:
+        indent = match.group("indent")
+        body_indent = match.group("body_indent")
+        return (
+            f"{indent}def rosetta_pdf_text_mode_operator(is_bold, color, size):\n"
+            f'{body_indent}return "0 Tr "\n'
+        )
+
+    return pattern.subn(replacement, text)
+
+
+def patch_converter_bold_font_support(text: str) -> tuple[str, bool]:
+    if "class TranslateConverter" not in text or "self.noto_name = noto_name" not in text:
+        return text, False
+
+    changed = False
+
+    old_init = """        self.noto_name = noto_name
+        self.noto = noto
+"""
+    new_init = f"""        self.noto_name = noto_name
+        self.noto = noto
+        self.rosetta_noto_bold_name = ""
+        self.rosetta_noto_bold = None
+        if (lang_out or "").lower() in {{"zh", "zh-cn", "zh-hans"}}:
+            try:
+                from babeldoc.assets.assets import get_font_and_metadata
+                rosetta_bold_path, _ = get_font_and_metadata("{rosetta_bold_font_name}")
+                self.rosetta_noto_bold_name = "{rosetta_bold_font_resource_name}"
+                self.rosetta_noto_bold = Font(self.rosetta_noto_bold_name, rosetta_bold_path.as_posix())
+            except Exception:
+                self.rosetta_noto_bold_name = ""
+                self.rosetta_noto_bold = None
+"""
+    if "self.rosetta_noto_bold_name" not in text:
+        if old_init not in text:
+            raise SystemExit(f"::error::could not find expected pdf2zh converter init fragment in {target}")
+        text = text.replace(old_init, new_init, 1)
+        changed = True
+
+    old_raw_string = """            if fcur == self.noto_name:
+                return "".join(["%04x" % self.noto.has_glyph(ord(c)) for c in cstk])
+            elif isinstance(self.fontmap[fcur], PDFCIDFont):  # 判断编码长度
+"""
+    new_raw_string = """            if fcur == self.noto_name:
+                return "".join(["%04x" % self.noto.has_glyph(ord(c)) for c in cstk])
+            if fcur == self.rosetta_noto_bold_name and self.rosetta_noto_bold is not None:
+                return "".join(["%04x" % self.rosetta_noto_bold.has_glyph(ord(c)) for c in cstk])
+            elif isinstance(self.fontmap[fcur], PDFCIDFont):  # 判断编码长度
+"""
+    if "self.rosetta_noto_bold.has_glyph" not in text:
+        if old_raw_string not in text:
+            raise SystemExit(f"::error::could not find expected pdf2zh raw_string font fragment in {target}")
+        text = text.replace(old_raw_string, new_raw_string, 1)
+        changed = True
+
+    if "pstk[id].bold and self.rosetta_noto_bold is not None" not in text:
+        pattern = re.compile(
+            r"(?m)^(?P<indent>[ \t]*)if fcur_ is None:\n"
+            r"(?P=indent)[ \t]+fcur_ = self\.noto_name  # 默认非拉丁字体\n"
+            r"(?P=indent)if fcur_ == self\.noto_name: # FIXME: change to CONST\n"
+            r"(?P=indent)[ \t]+adv = self\.noto\.char_lengths\(ch, size\)\[0\]\n"
+            r"(?P=indent)else:\n"
+            r"(?P=indent)[ \t]+adv = self\.fontmap\[fcur_\]\.char_width\(ord\(ch\)\) \* size\n"
+        )
+
+        def replacement(match: re.Match[str]) -> str:
+            indent = match.group("indent")
+            inner = indent + "    "
+            return (
+                f"{indent}if fcur_ is None:\n"
+                f"{inner}if pstk[id].bold and self.rosetta_noto_bold is not None:\n"
+                f"{inner}    fcur_ = self.rosetta_noto_bold_name\n"
+                f"{inner}else:\n"
+                f"{inner}    fcur_ = self.noto_name  # 默认非拉丁字体\n"
+                f"{indent}if fcur_ == self.noto_name: # FIXME: change to CONST\n"
+                f"{inner}adv = self.noto.char_lengths(ch, size)[0]\n"
+                f"{indent}elif fcur_ == self.rosetta_noto_bold_name and self.rosetta_noto_bold is not None:\n"
+                f"{inner}adv = self.rosetta_noto_bold.char_lengths(ch, size)[0]\n"
+                f"{indent}else:\n"
+                f"{inner}adv = self.fontmap[fcur_].char_width(ord(ch)) * size\n"
+            )
+
+        text, count = pattern.subn(replacement, text, count=1)
+        if count == 0:
+            raise SystemExit(f"::error::could not find expected pdf2zh font choice fragment in {target}")
+        changed = True
+
+    return text, changed
+
+
+def patch_cumulative_bold_marking(text: str) -> tuple[str, bool]:
+    replacements = [
+        (f"pstk[-1][8]={bold_expr}", f"pstk[-1][8]={bold_list_accumulate_expr}"),
+        (f"pstk[-1].bold = {bold_expr}", f"pstk[-1].bold = {bold_attr_accumulate_expr}"),
+    ]
+    changed = False
+    for old, new in replacements:
+        if old in text:
+            text = text.replace(old, new)
+            changed = True
+    return text, changed
+
+
+def patch_high_level_bold_font_registration(root: Path) -> bool:
+    target = root / "high_level.py"
+    if not target.is_file():
+        return False
+
+    text = target.read_text(encoding="utf-8")
+    marker = "Rosetta: register Source Han Sans Bold for simplified Chinese PDF output."
+    if marker in text:
+        return False
+
+    if "font_list.append((noto_name, font_path))" not in text:
+        return False
+
+    old = """    font_path = download_remote_fonts(lang_out.lower())
+    noto_name = NOTO_NAME
+    noto = Font(noto_name, font_path)
+    font_list.append((noto_name, font_path))
+"""
+    new = f"""    font_path = download_remote_fonts(lang_out.lower())
+    noto_name = NOTO_NAME
+    noto = Font(noto_name, font_path)
+    font_list.append((noto_name, font_path))
+    # {marker}
+    if lang_out.lower() in {{"zh", "zh-cn", "zh-hans"}}:
+        rosetta_bold_path, _ = get_font_and_metadata("{rosetta_bold_font_name}")
+        font_list.append(("{rosetta_bold_font_resource_name}", rosetta_bold_path.as_posix()))
+"""
+    if old not in text:
+        raise SystemExit(f"::error::could not find expected high_level font_list fragment in {target}")
+
+    target.write_text(text.replace(old, new), encoding="utf-8")
+    print(f"[pdf2zh-pack] registered simplified Chinese bold font in {target}")
+    return True
+
+
+def patch_rosetta_engine_bold_font_registration(root: Path) -> bool:
+    target = root / "rosetta_engine.py"
+    if not target.is_file():
+        return False
+
+    text = target.read_text(encoding="utf-8")
+    changed = False
+    if "from babeldoc.assets.assets import get_font_and_metadata" not in text:
+        old = "from pdf2zh.converter import TranslateConverter\n"
+        new = "from babeldoc.assets.assets import get_font_and_metadata\nfrom pdf2zh.converter import TranslateConverter\n"
+        if old not in text:
+            raise SystemExit(f"::error::could not find expected rosetta_engine import fragment in {target}")
+        text = text.replace(old, new, 1)
+        changed = True
+
+    old_prepare = """    font_path = download_remote_fonts(langOut.lower())
+    noto_name = NOTO_NAME
+    noto = pymupdf.Font(noto_name, font_path)
+    doc = prepare_pdf_document(input_path, font_path, noto_name)
+"""
+    new_prepare = f"""    font_path = download_remote_fonts(langOut.lower())
+    noto_name = NOTO_NAME
+    noto = pymupdf.Font(noto_name, font_path)
+    rosetta_bold_font_path = None
+    if langOut.lower() in {{"zh", "zh-cn", "zh-hans"}}:
+        rosetta_bold_path, _ = get_font_and_metadata("{rosetta_bold_font_name}")
+        rosetta_bold_font_path = rosetta_bold_path.as_posix()
+    doc = prepare_pdf_document(input_path, font_path, noto_name, rosetta_bold_font_path)
+"""
+    if "rosetta_bold_font_path = None" not in text:
+        if old_prepare not in text:
+            raise SystemExit(f"::error::could not find expected rosetta_engine prepareRun font fragment in {target}")
+        text = text.replace(old_prepare, new_prepare, 1)
+        changed = True
+
+    old_signature = "def prepare_pdf_document(input_path: Path, font_path: str, noto_name: str):\n"
+    new_signature = "def prepare_pdf_document(input_path: Path, font_path: str, noto_name: str, bold_font_path: str | None = None):\n"
+    if old_signature in text:
+        text = text.replace(old_signature, new_signature, 1)
+        changed = True
+
+    old_font_list = """    font_list = [("tiro", None), (noto_name, font_path)]
+    font_id = {}
+"""
+    new_font_list = f"""    font_list = [("tiro", None), (noto_name, font_path)]
+    if bold_font_path:
+        font_list.append(("{rosetta_bold_font_resource_name}", bold_font_path))
+    font_id = {{}}
+"""
+    if f'font_list.append(("{rosetta_bold_font_resource_name}", bold_font_path))' not in text:
+        if old_font_list not in text:
+            raise SystemExit(f"::error::could not find expected rosetta_engine font_list fragment in {target}")
+        text = text.replace(old_font_list, new_font_list, 1)
+        changed = True
+
+    if changed:
+        target.write_text(text, encoding="utf-8")
+        print(f"[pdf2zh-pack] registered Rosetta engine bold font in {target}")
+    return changed
+
+
+def patch_simplified_chinese_font(root: Path) -> bool:
+    target = root / "high_level.py"
+    if not target.is_file():
+        raise SystemExit(f"::error::could not find expected pdf2zh high_level.py in {root}")
+
+    text = target.read_text(encoding="utf-8")
+    marker = "Rosetta: prefer Source Han Sans for simplified Chinese PDF output."
+    if marker in text:
+        return False
+
+    old = '    font_name = LANG_NAME_MAP.get(lang, "GoNotoKurrent-Regular.ttf")\n'
+    new = f'''    # {marker}
+    LANG_NAME_MAP.update({{
+        "zh": "SourceHanSansCN-Regular.ttf",
+        "zh-cn": "SourceHanSansCN-Regular.ttf",
+        "zh-hans": "SourceHanSansCN-Regular.ttf",
+    }})
+    font_name = LANG_NAME_MAP.get(lang, "GoNotoKurrent-Regular.ttf")
+'''
+    if old not in text:
+        raise SystemExit(f"::error::could not find expected font map fragment in {target}")
+
+    target.write_text(text.replace(old, new), encoding="utf-8")
+    print(f"[pdf2zh-pack] patched simplified Chinese PDF font mapping in {target}")
+    return True
+
+
+def clear_pycache(root: Path) -> None:
+    for cache_dir in root.rglob("__pycache__"):
+        for child in cache_dir.iterdir():
+            child.unlink()
+        cache_dir.rmdir()
+
 
 if "def rosetta_pdf_is_bold_font(" in text and "rosetta_pdf_is_bold_font(child.font)" not in text:
-    print(f"[pdf2zh-pack] color and bold preservation patch already present in {target}")
+    text, changed = normalize_text_mode_operator(text)
+    text, bold_font_changed = patch_converter_bold_font_support(text)
+    text, cumulative_bold_changed = patch_cumulative_bold_marking(text)
+    if changed or bold_font_changed or cumulative_bold_changed:
+        target.write_text(text, encoding="utf-8")
+        if changed:
+            print(f"[pdf2zh-pack] normalized PDF faux-bold text mode in {target}")
+        if bold_font_changed:
+            print(f"[pdf2zh-pack] enabled simplified Chinese bold font switching in {target}")
+        if cumulative_bold_changed:
+            print(f"[pdf2zh-pack] made PDF paragraph bold marking cumulative in {target}")
+    font_changed = patch_simplified_chinese_font(root)
+    high_level_bold_changed = patch_high_level_bold_font_registration(root)
+    engine_bold_changed = patch_rosetta_engine_bold_font_registration(root)
+    any_changed = (
+        changed
+        or bold_font_changed
+        or cumulative_bold_changed
+        or font_changed
+        or high_level_bold_changed
+        or engine_bold_changed
+    )
+    if any_changed:
+        clear_pycache(root)
+    else:
+        print(f"[pdf2zh-pack] color, bold, and font mapping patch already present in {target}")
     raise SystemExit(0)
 
 old_raw_string = """            def raw_string(fcur,cstk): # 编码字符串
@@ -47,10 +325,7 @@ new_raw_string = """            def raw_string(fcur,cstk): # 编码字符串
                 fontname = getattr(font, "fontname", "").split("+")[-1]
                 return re.match(r"(.*Bold|.*Medi|.*Demi|.*Black|.*Heavy|.*SemiBold|.*Semibold|.*Bd)", fontname, re.IGNORECASE) is not None
             def rosetta_pdf_text_mode_operator(is_bold, color, size):
-                if not is_bold:
-                    return "0 Tr "
-                stroke_width = max(0.12, min(0.45, size * 0.018))
-                return f"{rosetta_pdf_color_operator(color, True)}{stroke_width:f} w 2 Tr "
+                return "0 Tr "
             _x,_y=0,0
 """
 
@@ -70,7 +345,7 @@ old_replacements = [
 """,
         f"""                            pstk[-1][5]=child.font
                             pstk[-1][7]=child.graphicstate.ncolor
-                            pstk[-1][8]={bold_expr}
+                            pstk[-1][8]={bold_list_accumulate_expr}
 """,
     ),
     (
@@ -115,10 +390,7 @@ color_only_replacements = [
                 fontname = getattr(font, "fontname", "").split("+")[-1]
                 return re.match(r"(.*Bold|.*Medi|.*Demi|.*Black|.*Heavy|.*SemiBold|.*Semibold|.*Bd)", fontname, re.IGNORECASE) is not None
             def rosetta_pdf_text_mode_operator(is_bold, color, size):
-                if not is_bold:
-                    return "0 Tr "
-                stroke_width = max(0.12, min(0.45, size * 0.018))
-                return f"{rosetta_pdf_color_operator(color, True)}{stroke_width:f} w 2 Tr "
+                return "0 Tr "
             _x,_y=0,0
 """,
     ),
@@ -132,7 +404,7 @@ color_only_replacements = [
         """                            pstk[-1][7]=child.graphicstate.ncolor
 """,
         f"""                            pstk[-1][7]=child.graphicstate.ncolor
-                            pstk[-1][8]={bold_expr}
+                            pstk[-1][8]={bold_list_accumulate_expr}
 """,
     ),
     (
@@ -215,10 +487,7 @@ paragraph_ops_replacements = [
             return re.match(r"(.*Bold|.*Medi|.*Demi|.*Black|.*Heavy|.*SemiBold|.*Semibold|.*Bd)", fontname, re.IGNORECASE) is not None
 
         def rosetta_pdf_text_mode_operator(is_bold, color, size):
-            if not is_bold:
-                return "0 Tr "
-            stroke_width = max(0.12, min(0.45, size * 0.018))
-            return f"{rosetta_pdf_color_operator(color, True)}{stroke_width:f} w 2 Tr "
+            return "0 Tr "
 
         def vflag(font: str, char: str):    # 匹配公式（和角标）字体
 """,
@@ -234,7 +503,7 @@ paragraph_ops_replacements = [
 """,
         f"""                        pstk[-1].size = child.size
                         pstk[-1].color = child.graphicstate.ncolor
-                        pstk[-1].bold = {bold_expr}
+                        pstk[-1].bold = {bold_attr_accumulate_expr}
 """,
     ),
     (
@@ -330,10 +599,13 @@ for old, new in replacements:
         raise SystemExit(f"::error::could not find expected pdf2zh converter fragment in {target}")
     text = text.replace(old, new)
 
+text, _ = normalize_text_mode_operator(text)
+text, _ = patch_converter_bold_font_support(text)
+text, _ = patch_cumulative_bold_marking(text)
+
 target.write_text(text, encoding="utf-8")
 print(f"[pdf2zh-pack] patched PDF text color and bold preservation in {target}")
-
-for cache_dir in root.rglob("__pycache__"):
-    for child in cache_dir.iterdir():
-        child.unlink()
-    cache_dir.rmdir()
+patch_simplified_chinese_font(root)
+patch_high_level_bold_font_registration(root)
+patch_rosetta_engine_bold_font_registration(root)
+clear_pycache(root)

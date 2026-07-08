@@ -92,6 +92,32 @@ try {
     Invoke-NativeChecked $PythonExe -m pip install --requirement $Requirements --index-url $PipIndexUrl
     Invoke-NativeChecked $PythonExe -m pip install $Pdf2zhSourcePath --no-deps --index-url $PipIndexUrl
 
+    Write-Host "[pdf2zh-pack] applying NumPy 2 compatibility patch"
+    $NumpyPatch = @'
+from pathlib import Path
+import pdf2zh
+
+root = Path(pdf2zh.__file__).resolve().parent
+target = root / "high_level.py"
+text = target.read_text()
+old = "np.fromstring(pix.samples, np.uint8)"
+new = "np.frombuffer(pix.samples, np.uint8)"
+if old in text:
+    target.write_text(text.replace(old, new))
+    print(f"[pdf2zh-pack] patched {target}")
+elif new in text:
+    print(f"[pdf2zh-pack] patch already present in {target}")
+else:
+    raise SystemExit(f"::error::could not find expected NumPy call in {target}")
+'@
+    $NumpyPatch | & $PythonExe -
+    if ($LASTEXITCODE -ne 0) {
+        throw "NumPy compatibility patch failed"
+    }
+
+    Write-Host "[pdf2zh-pack] applying PDF color and bold preservation patch"
+    Invoke-NativeChecked $PythonExe (Join-Path $ScriptDir "patch-pdf2zh-color-preservation.py")
+
     $ModelsDir = Join-Path $PackDir "models"
     New-Item -ItemType Directory -Path $ModelsDir -Force | Out-Null
     $ModelPath = Join-Path $ModelsDir $ModelName
