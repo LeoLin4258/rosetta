@@ -132,6 +132,15 @@ pub(crate) async fn translate_pdf_units_with_events(
         .filter(|unit| unit.requires_translation && !unit.source_text.trim().is_empty())
         .cloned()
         .collect::<Vec<_>>();
+    let passthrough = units
+        .iter()
+        .filter(|unit| !unit.requires_translation)
+        .map(|unit| PdfUnitTranslation {
+            unit_id: unit.unit_id.clone(),
+            text: String::new(),
+            output_chars: 0,
+        })
+        .collect::<Vec<_>>();
 
     let mut metrics = PdfUnitTranslationMetrics {
         total_input_chars: translatable
@@ -142,13 +151,20 @@ pub(crate) async fn translate_pdf_units_with_events(
     };
 
     if translatable.is_empty() {
+        for translation in passthrough.iter().cloned() {
+            on_unit_translation(translation);
+        }
         return Ok(PdfUnitTranslationBatchResult {
-            translations: Vec::new(),
+            translations: passthrough,
             metrics,
         });
     }
 
-    let translations = match provider {
+    for translation in passthrough.iter().cloned() {
+        on_unit_translation(translation);
+    }
+
+    let mut translations = match provider {
         PdfUnitProviderConfig::Lightning(config) => {
             translate_units_lightning(
                 config,
@@ -203,10 +219,16 @@ pub(crate) async fn translate_pdf_units_with_events(
             .await?
         }
     };
+    translations.extend(passthrough);
 
     metrics.empty_output_count = translations
         .iter()
-        .filter(|translation| translation.text.trim().is_empty())
+        .filter(|translation| {
+            translatable
+                .iter()
+                .any(|unit| unit.unit_id == translation.unit_id)
+                && translation.text.trim().is_empty()
+        })
         .count() as u64;
     if metrics.empty_output_count > 0 {
         return Err(format!(
@@ -1064,6 +1086,13 @@ mod tests {
         }
     }
 
+    fn non_translation_unit(unit_id: &str, text: &str) -> PdfTranslationUnit {
+        PdfTranslationUnit {
+            requires_translation: false,
+            ..unit(unit_id, text)
+        }
+    }
+
     #[test]
     fn split_pdf_text_breaks_oversized_text_for_non_lightning() {
         let text = "This is a sentence about PDF translation stability. ".repeat(30);
@@ -1131,6 +1160,34 @@ mod tests {
         assert_eq!(metrics.request_count, 2);
         assert_eq!(metrics.failed_request_count, 1);
         assert_eq!(metrics.truncated_count, 1);
+    }
+
+    #[tokio::test]
+    async fn non_required_pdf_units_emit_empty_passthrough_translations() {
+        let provider = PdfUnitProviderConfig::LlamaCpp(LlamaCppPdfApiConfig {
+            base_url: "http://127.0.0.1:1".to_string(),
+            timeout_ms: 1,
+        });
+        let mut emitted = Vec::new();
+
+        let result = translate_pdf_units_with_events(
+            &provider,
+            "en",
+            "zh-CN",
+            &[non_translation_unit("dup", "Duplicate text layer")],
+            None,
+            &mut |translation| emitted.push(translation),
+        )
+        .await
+        .expect("non-required unit should not call provider");
+
+        assert_eq!(result.translations.len(), 1);
+        assert_eq!(result.translations[0].unit_id, "dup");
+        assert_eq!(result.translations[0].text, "");
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].unit_id, "dup");
+        assert_eq!(emitted[0].text, "");
+        assert_eq!(result.metrics.request_count, 0);
     }
 
     #[test]

@@ -438,6 +438,18 @@ Run states:
 6. Rust sends `prepare_pdf_window` to the persistent worker. The worker calls
    the fork-owned Rosetta engine `prepareRun` and `collectUnits`, then returns
    a typed `PreparedRun` plus ordered `TranslationUnit[]`.
+   Large source PDFs are prepared as selected-page windows: `sourcePageCount`
+   still reports the full original page count, but the prepared PDF document
+   contains only the requested pages for the current chunk/window.
+   PDFs that contain broad duplicate text layers keep those duplicate units in
+   order for render alignment, but mark the repeated layer as
+   `requiresTranslation=false` so Rosetta does not draw two translated layers
+   on top of each other.
+   The patched renderer also draws paragraph-level white masks before
+   translated text and keeps CJK line spacing above a legible floor; this
+   avoids common overlap failures when a source PDF classifies ordinary prose
+   as table/formula-like visual content or when translated CJK text needs more
+   vertical leading than the original Latin text.
 7. Rust translates all required units in the window through
    `translate_pdf_units`. Lightning uses large ordered unit batches to keep
    RWKV fed. Non-Lightning providers use the same typed unit contract with

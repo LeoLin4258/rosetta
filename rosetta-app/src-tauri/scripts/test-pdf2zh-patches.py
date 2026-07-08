@@ -288,9 +288,56 @@ class Paragraph:
         self.assertIn('"color": l.stroking_color', patched)
         self.assertIn('vals.get("color"), vals.get("bold", False)', patched)
         self.assertIn("l.linewidth, l.stroking_color", patched)
+        self.assertIn("rosetta_pdf_fill_rect", patched)
         self.assertIn('return "0 Tr "', patched)
         self.assertNotIn("stroke_width =", patched)
         self.assertNotIn("w 2 Tr", patched)
+
+    def test_patch_hardens_current_converter_text_masking_and_cjk_line_spacing(self) -> None:
+        patched = self.run_patch(
+            self.converter_with_bold_helpers()
+            + '''        def gen_op_line(x, y, xlen, ylen, linewidth, color=None):
+            return f"ET q {rosetta_pdf_color_operator(color, True)}1 0 0 1 {x:f} {y:f} cm [] 0 d 0 J {linewidth:f} w 0 0 m {xlen:f} {ylen:f} l S Q BT "
+
+            ops_vals: list[dict] = []
+            line_height = default_line_height
+
+            while (lidx + 1) * size * line_height > height and line_height >= 1:
+                line_height -= 0.05
+
+            for vals in ops_vals:
+                if vals["type"] == OpType.TEXT:
+                    ops_list.append(gen_op_txt(vals["font"], vals["size"], vals["x"], vals["dy"] + y - vals["lidx"] * size * line_height, vals["rtxt"], vals.get("color"), vals.get("bold", False)))
+                elif vals["type"] == OpType.LINE:
+                    ops_list.append(gen_op_line(vals["x"], vals["dy"] + y - vals["lidx"] * size * line_height, vals["xlen"], vals["ylen"], vals["linewidth"], vals.get("color")))
+'''
+        )
+
+        self.assertIn("rosetta_pdf_fill_rect", patched)
+        self.assertIn("Rosetta: erase source text under translated paragraphs", patched)
+        self.assertIn("min_line_height = 1.2", patched)
+        self.assertIn("render_size = max(min_render_size, min(size, fit_size))", patched)
+        self.assertIn('draw_size = min(draw_size, render_size)', patched)
+        self.assertNotIn("line_height -= 0.05", patched)
+
+    def test_patch_narrows_formula_detection_for_visual_prose_text(self) -> None:
+        patched = self.run_patch(
+            self.converter_with_bold_helpers()
+            + '''            if re.match(                                            # latex 字体
+                    r"(CM[^R]|MS.M|XY|MT|BL|RM|EU|LA|RS|LINE|LCIRCLE|TeX-|rsfs|txsy|wasy|stmary|.*Mono|.*Code|.*Ital|.*Sym|.*Math)",
+                    font,
+                ):
+                    return True
+                if (                                                                                        # 判定当前字符是否属于公式
+                    cls == 0                                                                                # 1. 类别为保留区域
+                    or (cls == xt_cls and len(sstk[-1].strip()) > 1 and child.size < pstk[-1].size * 0.79)  # 2. 角标字体，有 0.76 的角标和 0.799 的大写，这里用 0.79 取中，同时考虑首字母放大的情况
+'''
+        )
+
+        self.assertNotIn(".*Ital|.*Sym", patched)
+        self.assertIn(".*Code|.*Sym", patched)
+        self.assertIn("rosetta_text_like_visual_char", patched)
+        self.assertIn("(cls == 0 and not rosetta_text_like_visual_char)", patched)
 
     def test_patch_replaces_existing_faux_bold_text_stroke_with_font_switch(self) -> None:
         for stroke_width in [
@@ -360,6 +407,155 @@ class Paragraph:
         self.assertIn("rosetta_bold_font_path = None", files["rosetta_engine"])
         self.assertIn("prepare_pdf_document(input_path, font_path, noto_name, rosetta_bold_font_path)", files["rosetta_engine"])
         self.assertIn('font_list.append(("notobold", bold_font_path))', files["rosetta_engine"])
+
+    def test_patch_prepares_only_selected_pages_in_rosetta_engine(self) -> None:
+        files = self.run_patch_for_package(
+            self.converter_with_bold_helpers(),
+            rosetta_engine_text="""from pathlib import Path
+import pymupdf
+from pdf2zh.converter import TranslateConverter
+from pdf2zh.high_level import NOTO_NAME, download_remote_fonts
+
+def prepareRun(inputPdf: str, pages: list[int] | None, langOut: str):
+    input_path = Path(inputPdf)
+    font_path = download_remote_fonts(langOut.lower())
+    noto_name = NOTO_NAME
+    rosetta_bold_font_path = None
+    doc = prepare_pdf_document(input_path, font_path, noto_name, rosetta_bold_font_path)
+    page_count = doc.page_count
+    selected_pages = normalize_pages(pages, page_count)
+    prepared_pdf_path = scratch_dir / "prepared.pdf"
+    doc.save(prepared_pdf_path)
+    with open(prepared_pdf_path, "rb") as fp:
+        pdf_pages = list(
+            PDFPage.get_pages(
+                fp,
+                [page - 1 for page in selected_pages],
+                maxpages=0,
+                password="",
+                caching=True,
+            )
+        )
+        for page, page_number in zip(pdf_pages, selected_pages):
+            page_index = page_number - 1
+            page.pageno = page_index
+            layout[page_index] = build_layout_mask(doc, page_index, model, options)
+    return PreparedRun(sourcePageCount=page_count, pages=selected_pages)
+
+def prepare_pdf_document(input_path: Path, font_path: str, noto_name: str, bold_font_path: str | None = None):
+    doc = pymupdf.open(str(input_path))
+    font_list = [("tiro", None), (noto_name, font_path)]
+    if bold_font_path:
+        font_list.append(("notobold", bold_font_path))
+    font_id = {}
+    for page in doc:
+        for font_name, font_file in font_list:
+            font_id[font_name] = page.insert_font(font_name, font_file)
+    return doc
+""",
+        )
+
+        patched = files["rosetta_engine"]
+        self.assertIn("prepare only selected PDF pages", patched)
+        self.assertIn("page_count = source_doc.page_count", patched)
+        self.assertIn("selected_pages = normalize_pages(pages, page_count)", patched)
+        self.assertIn("prepare_pdf_document(input_path, font_path, noto_name, rosetta_bold_font_path, selected_pages)", patched)
+        self.assertIn("list(range(len(selected_pages)))", patched)
+        self.assertIn("for prepared_page_index, (page, page_number) in enumerate(zip(pdf_pages, selected_pages))", patched)
+        self.assertIn("page_index = prepared_page_index", patched)
+        self.assertIn("selected_pages: list[int] | None = None", patched)
+        self.assertIn("doc.insert_pdf(source_doc, from_page=page_number - 1, to_page=page_number - 1)", patched)
+
+    def test_patch_filters_duplicate_text_layers_in_rosetta_engine(self) -> None:
+        files = self.run_patch_for_package(
+            self.converter_with_bold_helpers(),
+            rosetta_engine_text="""from dataclasses import asdict, dataclass
+from pathlib import Path
+import re
+import pymupdf
+from pdf2zh.converter import TranslateConverter
+from pdf2zh.high_level import NOTO_NAME, download_remote_fonts
+
+@dataclass
+class TranslationUnit:
+    unitId: str
+    sourceText: str
+    sourceChars: int
+    kind: str
+    requiresTranslation: bool
+
+def prepareRun(inputPdf: str, langOut: str):
+    input_path = Path(inputPdf)
+    font_path = download_remote_fonts(langOut.lower())
+    noto_name = NOTO_NAME
+    noto = pymupdf.Font(noto_name, font_path)
+    doc = prepare_pdf_document(input_path, font_path, noto_name)
+    return asdict(
+        PreparedRun(
+            unitCount=len(collector.units),
+            sourceChars=sum(unit.sourceChars for unit in collector.units),
+        )
+    )
+
+def prepare_pdf_document(input_path: Path, font_path: str, noto_name: str):
+    doc = pymupdf.open(str(input_path))
+    font_list = [("tiro", None), (noto_name, font_path)]
+    font_id = {}
+    for page in doc:
+        for font_name, font_file in font_list:
+            font_id[font_name] = page.insert_font(font_name, font_file)
+    return doc
+
+def collect_page_units():
+    page_units = translator.units[before_count:]
+    return _PageCache(
+        units=list(page_units),
+    )
+
+def render_one_page():
+    source_chars = sum(unit.sourceChars for unit in cache.units)
+    if not cache.units:
+        return PageResult(sourceUnitCount=0)
+    missing = [unit.unitId for unit in cache.units if unit.unitId not in translations_by_unit_id]
+    return PageResult(
+        sourceUnitCount=len(cache.units),
+    )
+
+class _RenderTranslator:
+    def translate_many(self):
+            if unit_id not in self.translations_by_unit_id:
+                raise ValueError(f"missing translation for unit: {unit_id}")
+            translated = self.translations_by_unit_id[unit_id]
+            if not isinstance(translated, str):
+                raise ValueError(f"translation is not a string for unit: {unit_id}")
+            if expected.requiresTranslation and expected.sourceText.strip() and not translated.strip():
+                self.empty_translation_count += 1
+
+def failed_page_result():
+    return PageResult(
+        sourceUnitCount=len(cache.units),
+        translatedUnitCount=translated_unit_count,
+    )
+
+def validate_translation_keys(units: list[TranslationUnit], translations: dict[str, str]) -> None:
+    pass
+""",
+        )
+
+        patched = files["rosetta_engine"]
+        self.assertIn("import difflib", patched)
+        self.assertIn("suppress duplicate PDF text layers", patched)
+        self.assertIn("mark_duplicate_text_layer_units(page_units)", patched)
+        self.assertIn("text.casefold()", patched)
+        self.assertIn("char.isalnum()", patched)
+        self.assertIn("duplicate.requiresTranslation = False", patched)
+        self.assertIn('duplicate.kind = "duplicate-layer"', patched)
+        self.assertIn("unitCount=translatable_unit_count(collector.units)", patched)
+        self.assertIn("sourceChars=translatable_source_chars(collector.units)", patched)
+        self.assertIn("if unit.requiresTranslation and unit.unitId not in translations_by_unit_id", patched)
+        self.assertIn("if expected.requiresTranslation:", patched)
+        self.assertIn("if not expected.requiresTranslation:", patched)
+        self.assertIn('outputs.append("")', patched)
 
     def test_release_pack_builders_apply_pdf_converter_patch(self) -> None:
         builders = [
