@@ -229,9 +229,49 @@ def patch_converter_formula_text_classification(text: str) -> tuple[str, bool]:
                     cls == 0                                                                                # 1. 类别为保留区域
                     or (cls == xt_cls and len(sstk[-1].strip()) > 1 and child.size < pstk[-1].size * 0.79)  # 2. 角标字体，有 0.76 的角标和 0.799 的大写，这里用 0.79 取中，同时考虑首字母放大的情况
 """
+    visual_text_gate = """        def rosetta_allow_text_like_visual_chars(ltpage: LTPage) -> bool:
+            try:
+                layout = self.layout[ltpage.pageid]
+                h, w = layout.shape
+            except Exception:
+                return True
+            visual_chars = []
+            for item in ltpage:
+                if not isinstance(item, LTChar):
+                    continue
+                cx = np.clip(int(item.x0), 0, w - 1)
+                cy = np.clip(int(item.y0), 0, h - 1)
+                if layout[cy, cx] == 0:
+                    visual_chars.append(item.get_text())
+            compact = " ".join("".join(visual_chars).split())
+            if len(compact) < 80:
+                return True
+            metric_hits = len(re.findall(r"\\b(?:ODS|OIS|mIoU|FLOPs?|Param\\.?|Methods?|Year|Size|AMCM|GBST|DSCD|UNet|SegFormer|SOTA|RIND|SFIAN|ICCV|CVPR|ICIP|WACV|ECCV|arXiv)\\b", compact))
+            numeric_tokens = len(re.findall(r"(?<![A-Za-z])\\d+(?:\\.\\d+)?(?:[A-Za-z%]+)?", compact))
+            without_decimal_points = re.sub(r"(?<=\\d)\\.(?=\\d)", "", compact)
+            sentence_marks = sum(without_decimal_points.count(mark) for mark in ".;:!?")
+            algorithm_hits = sum(
+                1
+                for token in ("Algorithm", "Input", "Output", "Initialize", "Return", "endif", "endfor")
+                if token in compact
+            )
+            if "Algorithm" in compact and algorithm_hits >= 3:
+                return False
+            if metric_hits >= 3 and numeric_tokens >= 8 and sentence_marks <= 10:
+                return False
+            if metric_hits >= 2 and numeric_tokens >= 18 and sentence_marks <= 12:
+                return False
+            if numeric_tokens >= 40 and sentence_marks <= 6:
+                return False
+            return True
+
+        rosetta_text_like_visual_chars_enabled = rosetta_allow_text_like_visual_chars(ltpage)
+
+"""
     new_cls_condition = """                # Rosetta: table/legal-prose PDFs often put normal text in visual regions.
                 rosetta_text_like_visual_char = (
                     cls == 0
+                    and rosetta_text_like_visual_chars_enabled
                     and bool(child.get_text())
                     and (
                         child.get_text().isalnum()
@@ -245,8 +285,79 @@ def patch_converter_formula_text_classification(text: str) -> tuple[str, bool]:
 """
     if "rosetta_text_like_visual_char" not in text:
         if old_cls_condition in text:
+            loop_anchor = """        ############################################################
+        # A. 原文档解析
+        for child in ltpage:
+"""
+            if loop_anchor in text and "def rosetta_allow_text_like_visual_chars(" not in text:
+                text = text.replace(loop_anchor, visual_text_gate + loop_anchor, 1)
             text = text.replace(old_cls_condition, new_cls_condition, 1)
             changed = True
+    elif "rosetta_text_like_visual_chars_enabled" not in text:
+        loop_anchor = """        ############################################################
+        # A. 原文档解析
+        for child in ltpage:
+"""
+        if loop_anchor not in text:
+            raise SystemExit(f"::error::could not find expected visual text gate anchor in {target}")
+        if "def rosetta_allow_text_like_visual_chars(" not in text:
+            text = text.replace(loop_anchor, visual_text_gate + loop_anchor, 1)
+        old_visual_condition = """                rosetta_text_like_visual_char = (
+                    cls == 0
+                    and bool(child.get_text())
+"""
+        new_visual_condition = """                rosetta_text_like_visual_char = (
+                    cls == 0
+                    and rosetta_text_like_visual_chars_enabled
+                    and bool(child.get_text())
+"""
+        if old_visual_condition not in text:
+            raise SystemExit(f"::error::could not find expected visual text condition in {target}")
+        text = text.replace(old_visual_condition, new_visual_condition, 1)
+        changed = True
+    old_visual_sentence_marks = '            sentence_marks = sum(compact.count(mark) for mark in ".;:!?")\n'
+    new_visual_sentence_marks = '''            without_decimal_points = re.sub(r"(?<=\\d)\\.(?=\\d)", "", compact)
+            sentence_marks = sum(without_decimal_points.count(mark) for mark in ".;:!?")
+'''
+    if old_visual_sentence_marks in text:
+        text = text.replace(old_visual_sentence_marks, new_visual_sentence_marks, 1)
+        changed = True
+    if (
+        "def rosetta_allow_text_like_visual_chars(" in text
+        and 'if "Algorithm" in compact and algorithm_hits >= 3:' not in text
+    ):
+        algorithm_gate_anchor = '''            without_decimal_points = re.sub(r"(?<=\\d)\\.(?=\\d)", "", compact)
+            sentence_marks = sum(without_decimal_points.count(mark) for mark in ".;:!?")
+            if metric_hits >= 3 and numeric_tokens >= 8 and sentence_marks <= 10:
+'''
+        algorithm_gate_replacement = '''            without_decimal_points = re.sub(r"(?<=\\d)\\.(?=\\d)", "", compact)
+            sentence_marks = sum(without_decimal_points.count(mark) for mark in ".;:!?")
+            algorithm_hits = sum(
+                1
+                for token in ("Algorithm", "Input", "Output", "Initialize", "Return", "endif", "endfor")
+                if token in compact
+            )
+            if "Algorithm" in compact and algorithm_hits >= 3:
+                return False
+            if metric_hits >= 3 and numeric_tokens >= 8 and sentence_marks <= 10:
+'''
+        if algorithm_gate_anchor not in text:
+            raise SystemExit(f"::error::could not find expected visual algorithm gate anchor in {target}")
+        text = text.replace(algorithm_gate_anchor, algorithm_gate_replacement, 1)
+        changed = True
+    old_numeric_dense_gate = '''            if metric_hits >= 2 and numeric_tokens >= 18 and sentence_marks <= 12:
+                return False
+            return True
+'''
+    new_numeric_dense_gate = '''            if metric_hits >= 2 and numeric_tokens >= 18 and sentence_marks <= 12:
+                return False
+            if numeric_tokens >= 40 and sentence_marks <= 6:
+                return False
+            return True
+'''
+    if "numeric_tokens >= 40" not in text and old_numeric_dense_gate in text:
+        text = text.replace(old_numeric_dense_gate, new_numeric_dense_gate, 1)
+        changed = True
 
     return text, changed
 
@@ -432,6 +543,231 @@ def patch_rosetta_engine_selected_page_window(root: Path) -> bool:
     return changed
 
 
+def nontranslatable_layout_helper() -> str:
+    return '''def rosetta_placeholder_count(text: str) -> int:
+    return len(re.findall(r"\\{v\\d+\\}", text))
+
+
+def rosetta_sentence_punctuation_count(text: str) -> int:
+    without_decimal_points = re.sub(r"(?<=\\d)\\.(?=\\d)", "", text)
+    return sum(without_decimal_points.count(mark) for mark in ".;:!?")
+
+
+def is_rosetta_page_number_unit(text: str) -> bool:
+    return re.fullmatch(r"\\d{1,4}", text.strip()) is not None
+
+
+def is_rosetta_formula_like_unit(text: str) -> bool:
+    compact = " ".join(text.split())
+    if len(compact) > 140:
+        return False
+    placeholder_count = rosetta_placeholder_count(compact)
+    if placeholder_count < 3:
+        return False
+    words = re.findall(r"[A-Za-z]{2,}", compact)
+    return len(words) <= 5
+
+
+def is_rosetta_table_like_unit(text: str) -> bool:
+    compact = " ".join(text.split())
+    if len(compact) < 80:
+        return False
+    metric_hits = len(
+        re.findall(
+            r"\\b(?:ODS|OIS|mIoU|FLOPs?|Param\\.?|Methods?|Year|Size|AMCM|GBST|DSCD|UNet|SegFormer|MFS|CSHF|SOTA|RIND|SFIAN|TITS|ICCV|CVPR|ICIP|WACV|ECCV|arXiv)\\b",
+            compact,
+        )
+    )
+    numeric_tokens = len(re.findall(r"(?<![A-Za-z])\\d+(?:\\.\\d+)?(?:[A-Za-z%]+)?", compact))
+    table_symbols = len(re.findall(r"[✓×]|(?<![A-Za-z])[xX](?![A-Za-z])", compact))
+    sentence_marks = rosetta_sentence_punctuation_count(compact)
+    if metric_hits >= 4 and numeric_tokens >= 8 and sentence_marks <= 8:
+        return True
+    if metric_hits >= 3 and table_symbols >= 4 and numeric_tokens >= 4:
+        return True
+    if numeric_tokens >= 18 and metric_hits >= 2 and sentence_marks <= 10:
+        return True
+    return False
+
+
+def is_rosetta_figure_panel_label_unit(text: str) -> bool:
+    compact = " ".join(text.split())
+    if len(compact) < 40 or len(compact) > 260:
+        return False
+    if re.match(r"(?i)^fig(?:ure)?\\b", compact):
+        return False
+    panel_labels = re.findall(r"\\([a-z]\\)", compact, flags=re.IGNORECASE)
+    if len(panel_labels) < 2:
+        return False
+    if not re.match(r"^\\([a-z]\\)", compact, flags=re.IGNORECASE):
+        return False
+    words = re.findall(r"[A-Za-z]{2,}", compact)
+    return len(words) >= 6
+
+
+def is_rosetta_diagram_label_unit(text: str, order_on_page: int) -> bool:
+    compact = " ".join(text.split())
+    if order_on_page > 4:
+        return False
+    if not compact or len(compact) > 480:
+        return False
+    if re.match(r"(?i)^(fig(?:ure)?|table)\\b", compact):
+        return False
+    if re.fullmatch(r"(?i)group\\s+[a-z0-9]+", compact):
+        return True
+    if re.search(r"[\\u4e00-\\u9fff]", compact) and len(compact) <= 20:
+        return True
+
+    placeholder_count = rosetta_placeholder_count(compact)
+    sentence_marks = rosetta_sentence_punctuation_count(compact)
+    label_sentence_marks = rosetta_sentence_punctuation_count(re.sub(r"\\.{2,}", "", compact))
+    words = re.findall(r"[A-Za-z]{2,}", compact)
+    label_hits = len(
+        re.findall(
+            r"\\b(?:Raw|GT|Conv|DWConv|Point|Dilated|Input|Output|Concat|Upsample|Layer|Norm|softmax|dropout|Attention|Inward|Outward|Shift|Graph[A-Z]?|Focus|Features?|SCIU|BLOCK|MoveCamera|Camera|Control|Get|Upload|Process(?:ed)?|Initial|Video|Split|Combine|Resize|Frame|RIND|SFIAN|CTCrackSeg|DTrCNet|Crackmer|SCSegamba|MambaIR|CSMamba|PlainMamba|SimCrack|SCRWKV)\\b",
+            compact,
+        )
+    )
+    if "...." in compact and placeholder_count >= 1:
+        return True
+    if "...." in compact and label_hits >= 2 and label_sentence_marks <= 2:
+        return True
+    if label_hits >= 2 and len(words) <= 8 and sentence_marks == 0:
+        return True
+    if label_hits >= 4 and label_sentence_marks <= 3:
+        return True
+    if placeholder_count >= 3 and len(words) <= 45 and sentence_marks <= 4:
+        return True
+    return False
+
+
+def mark_nontranslatable_layout_units(units: list[TranslationUnit]) -> None:
+    for unit in units:
+        if not unit.requiresTranslation:
+            continue
+        text = unit.sourceText.strip()
+        if is_rosetta_page_number_unit(text):
+            unit.requiresTranslation = False
+            unit.kind = "page-number"
+        elif is_rosetta_formula_like_unit(text):
+            unit.requiresTranslation = False
+            unit.kind = "formula"
+        elif is_rosetta_table_like_unit(text):
+            unit.requiresTranslation = False
+            unit.kind = "table-like"
+        elif is_rosetta_figure_panel_label_unit(text):
+            unit.requiresTranslation = False
+            unit.kind = "figure-panel-labels"
+        elif is_rosetta_diagram_label_unit(text, unit.orderOnPage):
+            unit.requiresTranslation = False
+            unit.kind = "diagram-label"
+
+
+def rosetta_nontranslatable_render_text(unit: TranslationUnit, text: str) -> str:
+    if unit.kind == "duplicate-layer":
+        return ""
+    return text
+
+
+'''
+
+
+def patch_rosetta_engine_render_unit_matching(root: Path) -> bool:
+    target = root / "rosetta_engine.py"
+    if not target.is_file():
+        return False
+
+    text = target.read_text(encoding="utf-8")
+    marker = "Rosetta: tolerate replay translate_many order drift."
+    if "class _RenderTranslator" not in text:
+        return False
+
+    changed = False
+    render_class_start = text.index("class _RenderTranslator")
+    misplaced_marker = text.find(f"    # {marker}", 0, render_class_start)
+    if misplaced_marker >= 0:
+        misplaced_end = text.find("    def translate(self, text, *args, **kwargs):", misplaced_marker)
+        if misplaced_end > misplaced_marker:
+            text = text[:misplaced_marker] + text[misplaced_end:]
+            changed = True
+
+    old_init = """        self.expected_by_unit_id = {unit.unitId: unit for unit in expected_units}
+        self.translations_by_unit_id = translations_by_unit_id
+"""
+    new_init = f"""        self.expected_by_unit_id = {{unit.unitId: unit for unit in expected_units}}
+        self.expected_by_page: dict[int, list[TranslationUnit]] = {{}}
+        for unit in expected_units:
+            self.expected_by_page.setdefault(unit.pageNumber, []).append(unit)
+        self._consumed_unit_ids: set[str] = set()
+        self.translations_by_unit_id = translations_by_unit_id
+"""
+    if old_init in text:
+        text = text.replace(old_init, new_init, 1)
+        changed = True
+    elif "self.expected_by_page" not in text:
+        return False
+
+    old_translate = """            unit_id = unit_id_for(self.current_page_number, order)
+            expected = self.expected_by_unit_id.get(unit_id)
+            if expected is None:
+                raise ValueError(f"unknown translation unit requested: {unit_id}")
+            if expected.sourceText != text:
+                raise ValueError(f"translation unit order mismatch at {unit_id}")
+            if unit_id not in self.translations_by_unit_id:
+"""
+    new_translate = """            unit_id = unit_id_for(self.current_page_number, order)
+            expected = self._match_expected_unit(unit_id, text)
+            unit_id = expected.unitId
+            if unit_id not in self.translations_by_unit_id:
+"""
+    if old_translate in text:
+        text = text.replace(old_translate, new_translate, 1)
+        changed = True
+    elif "expected = self._match_expected_unit(unit_id, text)" not in text:
+        return False
+
+    anchor = """    def translate(self, text, *args, **kwargs):
+        return self.translate_many([text])[0]
+"""
+    helper = f'''    # {marker}
+    def _match_expected_unit(self, unit_id: str, text: str) -> TranslationUnit:
+        expected = self.expected_by_unit_id.get(unit_id)
+        if (
+            expected is not None
+            and expected.unitId not in self._consumed_unit_ids
+            and expected.sourceText == text
+        ):
+            self._consumed_unit_ids.add(expected.unitId)
+            return expected
+        for candidate in self.expected_by_page.get(self.current_page_number, []):
+            if candidate.unitId in self._consumed_unit_ids:
+                continue
+            if candidate.sourceText == text:
+                self._consumed_unit_ids.add(candidate.unitId)
+                return candidate
+        if expected is None:
+            raise ValueError(f"unknown translation unit requested: {{unit_id}}")
+        raise ValueError(f"translation unit order mismatch at {{unit_id}}")
+
+'''
+    render_class_start = text.index("class _RenderTranslator")
+    render_class_end = text.find("\ndef prewarm", render_class_start)
+    if render_class_end < 0:
+        render_class_end = len(text)
+    render_class_text = text[render_class_start:render_class_end]
+    if helper.strip() not in render_class_text:
+        anchor_index = text.find(anchor, render_class_start, render_class_end)
+        if anchor_index < 0:
+            raise SystemExit(f"::error::could not find expected render translator anchor in {target}")
+        text = text[:anchor_index] + helper + text[anchor_index:]
+        changed = True
+
+    if changed:
+        target.write_text(text, encoding="utf-8")
+        print(f"[pdf2zh-pack] hardened Rosetta render unit matching in {target}")
+    return changed
+
+
 def patch_rosetta_engine_duplicate_text_layer_filter(root: Path) -> bool:
     target = root / "rosetta_engine.py"
     if not target.is_file():
@@ -463,6 +799,218 @@ def patch_rosetta_engine_duplicate_text_layer_filter(root: Path) -> bool:
 '''
         text = text.replace(old_canonical, new_canonical, 1)
         text = text.replace(">= 0.82", ">= 0.78")
+        old_sentence_count = '''def rosetta_sentence_punctuation_count(text: str) -> int:
+    return sum(text.count(mark) for mark in ".;:!?")
+'''
+        new_sentence_count = '''def rosetta_sentence_punctuation_count(text: str) -> int:
+    without_decimal_points = re.sub(r"(?<=\\d)\\.(?=\\d)", "", text)
+    return sum(without_decimal_points.count(mark) for mark in ".;:!?")
+'''
+        text = text.replace(old_sentence_count, new_sentence_count, 1)
+        text = text.replace(
+            '    without_decimal_points = re.sub(r"(?<=\\\\d)\\\\.(?=\\\\d)", "", text)\n',
+            '    without_decimal_points = re.sub(r"(?<=\\d)\\.(?=\\d)", "", text)\n',
+            1,
+        )
+        if "def mark_nontranslatable_layout_units(" not in text:
+            helper_anchor = "def validate_translation_keys(units: list[TranslationUnit], translations: dict[str, str]) -> None:\n"
+            if helper_anchor not in text:
+                raise SystemExit(f"::error::could not find expected rosetta_engine helper anchor in {target}")
+            text = text.replace(helper_anchor, nontranslatable_layout_helper() + helper_anchor, 1)
+        if "def is_rosetta_figure_panel_label_unit(" not in text:
+            panel_helper_anchor = "\n\ndef mark_nontranslatable_layout_units(units: list[TranslationUnit]) -> None:\n"
+            if panel_helper_anchor not in text:
+                raise SystemExit(f"::error::could not find expected nontranslatable layout helper anchor in {target}")
+            panel_helper = '''\n\ndef is_rosetta_figure_panel_label_unit(text: str) -> bool:
+    compact = " ".join(text.split())
+    if len(compact) < 40 or len(compact) > 260:
+        return False
+    if re.match(r"(?i)^fig(?:ure)?\\b", compact):
+        return False
+    panel_labels = re.findall(r"\\([a-z]\\)", compact, flags=re.IGNORECASE)
+    if len(panel_labels) < 2:
+        return False
+    if not re.match(r"^\\([a-z]\\)", compact, flags=re.IGNORECASE):
+        return False
+    words = re.findall(r"[A-Za-z]{2,}", compact)
+    return len(words) >= 6
+'''
+            text = text.replace(panel_helper_anchor, panel_helper + panel_helper_anchor, 1)
+        if "def is_rosetta_diagram_label_unit(" not in text:
+            diagram_helper_anchor = "\n\ndef mark_nontranslatable_layout_units(units: list[TranslationUnit]) -> None:\n"
+            if diagram_helper_anchor not in text:
+                raise SystemExit(f"::error::could not find expected diagram label helper anchor in {target}")
+            diagram_helper = '''\n\ndef is_rosetta_diagram_label_unit(text: str, order_on_page: int) -> bool:
+    compact = " ".join(text.split())
+    if order_on_page > 4:
+        return False
+    if not compact or len(compact) > 480:
+        return False
+    if re.match(r"(?i)^(fig(?:ure)?|table)\\b", compact):
+        return False
+    if re.fullmatch(r"(?i)group\\s+[a-z0-9]+", compact):
+        return True
+    if re.search(r"[\\u4e00-\\u9fff]", compact) and len(compact) <= 20:
+        return True
+
+    placeholder_count = rosetta_placeholder_count(compact)
+    sentence_marks = rosetta_sentence_punctuation_count(compact)
+    label_sentence_marks = rosetta_sentence_punctuation_count(re.sub(r"\\.{2,}", "", compact))
+    words = re.findall(r"[A-Za-z]{2,}", compact)
+    label_hits = len(
+        re.findall(
+            r"\\b(?:Raw|GT|Conv|DWConv|Point|Dilated|Input|Output|Concat|Upsample|Layer|Norm|softmax|dropout|Attention|Inward|Outward|Shift|Graph[A-Z]?|Focus|Features?|SCIU|BLOCK|MoveCamera|Camera|Control|Get|Upload|Process(?:ed)?|Initial|Video|Split|Combine|Resize|Frame|RIND|SFIAN|CTCrackSeg|DTrCNet|Crackmer|SCSegamba|MambaIR|CSMamba|PlainMamba|SimCrack|SCRWKV)\\b",
+            compact,
+        )
+    )
+    if "...." in compact and placeholder_count >= 1:
+        return True
+    if "...." in compact and label_hits >= 2 and label_sentence_marks <= 2:
+        return True
+    if label_hits >= 2 and len(words) <= 8 and sentence_marks == 0:
+        return True
+    if label_hits >= 4 and label_sentence_marks <= 3:
+        return True
+    if placeholder_count >= 3 and len(words) <= 45 and sentence_marks <= 4:
+        return True
+    return False
+'''
+            text = text.replace(diagram_helper_anchor, diagram_helper + diagram_helper_anchor, 1)
+        if "Attention|Inward|Outward|Shift" not in text:
+            text = text.replace(
+                "Attention|Shift|Graph[A-Z]?",
+                "Attention|Inward|Outward|Shift|Graph[A-Z]?",
+                1,
+            )
+        if "MoveCamera|Camera|Control|Get|Upload" not in text:
+            text = text.replace(
+                "SCIU|BLOCK|RIND",
+                "SCIU|BLOCK|MoveCamera|Camera|Control|Get|Upload|Process(?:ed)?|Initial|Video|Split|Combine|Resize|Frame|RIND",
+                1,
+            )
+        if 're.search(r"[\\u4e00-\\u9fff]", compact)' not in text:
+            cjk_anchor = '''    if re.fullmatch(r"(?i)group\\s+[a-z0-9]+", compact):
+        return True
+
+    placeholder_count = rosetta_placeholder_count(compact)
+'''
+            cjk_replacement = '''    if re.fullmatch(r"(?i)group\\s+[a-z0-9]+", compact):
+        return True
+    if re.search(r"[\\u4e00-\\u9fff]", compact) and len(compact) <= 20:
+        return True
+
+    placeholder_count = rosetta_placeholder_count(compact)
+'''
+            if cjk_anchor in text:
+                text = text.replace(cjk_anchor, cjk_replacement, 1)
+            else:
+                cjk_fallback_anchor = "    placeholder_count = rosetta_placeholder_count(compact)\n"
+                cjk_fallback_replacement = '''    if re.search(r"[\\u4e00-\\u9fff]", compact) and len(compact) <= 20:
+        return True
+    placeholder_count = rosetta_placeholder_count(compact)
+'''
+                if cjk_fallback_anchor not in text:
+                    raise SystemExit(f"::error::could not find expected diagram CJK-rule anchor in {target}")
+                text = text.replace(cjk_fallback_anchor, cjk_fallback_replacement, 1)
+        if "label_sentence_marks = rosetta_sentence_punctuation_count" not in text:
+            sentence_anchor = '''    placeholder_count = rosetta_placeholder_count(compact)
+    sentence_marks = rosetta_sentence_punctuation_count(compact)
+    words = re.findall(r"[A-Za-z]{2,}", compact)
+'''
+            sentence_replacement = '''    placeholder_count = rosetta_placeholder_count(compact)
+    sentence_marks = rosetta_sentence_punctuation_count(compact)
+    label_sentence_marks = rosetta_sentence_punctuation_count(re.sub(r"\\.{2,}", "", compact))
+    words = re.findall(r"[A-Za-z]{2,}", compact)
+'''
+            if sentence_anchor not in text:
+                raise SystemExit(f"::error::could not find expected diagram sentence-mark anchor in {target}")
+            text = text.replace(sentence_anchor, sentence_replacement, 1)
+        if "label_hits >= 2 and len(words) <= 8" not in text:
+            label_short_anchor = '''    if "...." in compact and placeholder_count >= 1:
+        return True
+    if label_hits >= 4 and sentence_marks <= 3:
+        return True
+'''
+            label_short_replacement = '''    if "...." in compact and placeholder_count >= 1:
+        return True
+    if label_hits >= 2 and len(words) <= 8 and sentence_marks == 0:
+        return True
+    if label_hits >= 4 and sentence_marks <= 3:
+        return True
+'''
+            if label_short_anchor not in text:
+                raise SystemExit(f"::error::could not find expected diagram label short-rule anchor in {target}")
+            text = text.replace(label_short_anchor, label_short_replacement, 1)
+        if '"...." in compact and label_hits >= 2' not in text:
+            dot_label_anchor = '''    if "...." in compact and placeholder_count >= 1:
+        return True
+    if label_hits >= 2 and len(words) <= 8 and sentence_marks == 0:
+'''
+            dot_label_replacement = '''    if "...." in compact and placeholder_count >= 1:
+        return True
+    if "...." in compact and label_hits >= 2 and sentence_marks <= 2:
+        return True
+    if label_hits >= 2 and len(words) <= 8 and sentence_marks == 0:
+'''
+            if dot_label_anchor not in text:
+                raise SystemExit(f"::error::could not find expected diagram dotted-label anchor in {target}")
+            text = text.replace(dot_label_anchor, dot_label_replacement, 1)
+        text = text.replace(
+            'if "...." in compact and label_hits >= 2 and sentence_marks <= 2:',
+            'if "...." in compact and label_hits >= 2 and label_sentence_marks <= 2:',
+            1,
+        )
+        text = text.replace(
+            "if label_hits >= 4 and sentence_marks <= 3:",
+            "if label_hits >= 4 and label_sentence_marks <= 3:",
+            1,
+        )
+        if "mark_nontranslatable_layout_units(page_units)" not in text:
+            text = text.replace(
+                "    mark_duplicate_text_layer_units(page_units)\n",
+                "    mark_duplicate_text_layer_units(page_units)\n    mark_nontranslatable_layout_units(page_units)\n",
+                1,
+            )
+        if 'unit.kind = "figure-panel-labels"' not in text:
+            table_branch = '''        elif is_rosetta_table_like_unit(text):
+            unit.requiresTranslation = False
+            unit.kind = "table-like"
+'''
+            panel_branch = '''        elif is_rosetta_table_like_unit(text):
+            unit.requiresTranslation = False
+            unit.kind = "table-like"
+        elif is_rosetta_figure_panel_label_unit(text):
+            unit.requiresTranslation = False
+            unit.kind = "figure-panel-labels"
+'''
+            if table_branch not in text:
+                raise SystemExit(f"::error::could not find expected table-like branch in {target}")
+            text = text.replace(table_branch, panel_branch, 1)
+        if 'unit.kind = "diagram-label"' not in text:
+            panel_branch = '''        elif is_rosetta_figure_panel_label_unit(text):
+            unit.requiresTranslation = False
+            unit.kind = "figure-panel-labels"
+'''
+            diagram_branch = '''        elif is_rosetta_figure_panel_label_unit(text):
+            unit.requiresTranslation = False
+            unit.kind = "figure-panel-labels"
+        elif is_rosetta_diagram_label_unit(text, unit.orderOnPage):
+            unit.requiresTranslation = False
+            unit.kind = "diagram-label"
+'''
+            if panel_branch not in text:
+                raise SystemExit(f"::error::could not find expected figure-panel branch in {target}")
+            text = text.replace(panel_branch, diagram_branch, 1)
+        if "def rosetta_nontranslatable_render_text(" not in text:
+            render_text_anchor = "\n\ndef validate_translation_keys(units: list[TranslationUnit], translations: dict[str, str]) -> None:\n"
+            if render_text_anchor not in text:
+                raise SystemExit(f"::error::could not find expected render text helper anchor in {target}")
+            render_text_helper = '''\n\ndef rosetta_nontranslatable_render_text(unit: TranslationUnit, text: str) -> str:
+    if unit.kind == "duplicate-layer":
+        return ""
+    return text
+'''
+            text = text.replace(render_text_anchor, render_text_helper + render_text_anchor, 1)
         old_non_required_render = '''            if not isinstance(translated, str):
                 raise ValueError(f"translation is not a string for unit: {unit_id}")
             if expected.requiresTranslation and expected.sourceText.strip() and not translated.strip():
@@ -471,12 +1019,23 @@ def patch_rosetta_engine_duplicate_text_layer_filter(root: Path) -> bool:
         new_non_required_render = '''            if not isinstance(translated, str):
                 raise ValueError(f"translation is not a string for unit: {unit_id}")
             if not expected.requiresTranslation:
-                outputs.append("")
+                outputs.append(rosetta_nontranslatable_render_text(expected, text))
                 continue
             if expected.sourceText.strip() and not translated.strip():
                 self.empty_translation_count += 1
 '''
         text = text.replace(old_non_required_render, new_non_required_render, 1)
+        text = text.replace(
+            '''                outputs.append("")
+                continue
+            translated = self.translations_by_unit_id[unit_id]
+''',
+            '''                outputs.append(rosetta_nontranslatable_render_text(expected, text))
+                continue
+            translated = self.translations_by_unit_id[unit_id]
+''',
+            1,
+        )
         if text != original:
             target.write_text(text, encoding="utf-8")
             print(f"[pdf2zh-pack] refreshed duplicate text layer filtering in {target}")
@@ -511,6 +1070,7 @@ def patch_rosetta_engine_duplicate_text_layer_filter(root: Path) -> bool:
 """,
             f"""    page_units = translator.units[before_count:]
     mark_duplicate_text_layer_units(page_units)
+    mark_nontranslatable_layout_units(page_units)
     return _PageCache(
 """,
         ),
@@ -555,7 +1115,7 @@ def patch_rosetta_engine_duplicate_text_layer_filter(root: Path) -> bool:
             """            if unit_id not in self.translations_by_unit_id:
                 if expected.requiresTranslation:
                     raise ValueError(f"missing translation for unit: {unit_id}")
-                outputs.append("")
+                outputs.append(rosetta_nontranslatable_render_text(expected, text))
                 continue
             translated = self.translations_by_unit_id[unit_id]
 """,
@@ -569,7 +1129,7 @@ def patch_rosetta_engine_duplicate_text_layer_filter(root: Path) -> bool:
             """            if not isinstance(translated, str):
                 raise ValueError(f"translation is not a string for unit: {unit_id}")
             if not expected.requiresTranslation:
-                outputs.append("")
+                outputs.append(rosetta_nontranslatable_render_text(expected, text))
                 continue
             if expected.sourceText.strip() and not translated.strip():
                 self.empty_translation_count += 1
@@ -655,7 +1215,7 @@ def mark_duplicate_text_layer_units(units: list[TranslationUnit]) -> None:
 '''
     if helper_anchor not in text:
         raise SystemExit(f"::error::could not find expected rosetta_engine helper anchor in {target}")
-    text = text.replace(helper_anchor, helper + helper_anchor, 1)
+    text = text.replace(helper_anchor, helper + nontranslatable_layout_helper() + helper_anchor, 1)
     changed = True
 
     if changed:
@@ -721,6 +1281,7 @@ if "def rosetta_pdf_is_bold_font(" in text and "rosetta_pdf_is_bold_font(child.f
     engine_bold_changed = patch_rosetta_engine_bold_font_registration(root)
     selected_window_changed = patch_rosetta_engine_selected_page_window(root)
     duplicate_layer_changed = patch_rosetta_engine_duplicate_text_layer_filter(root)
+    render_matching_changed = patch_rosetta_engine_render_unit_matching(root)
     any_changed = (
         changed
         or bold_font_changed
@@ -732,6 +1293,7 @@ if "def rosetta_pdf_is_bold_font(" in text and "rosetta_pdf_is_bold_font(child.f
         or engine_bold_changed
         or selected_window_changed
         or duplicate_layer_changed
+        or render_matching_changed
     )
     if any_changed:
         clear_pycache(root)

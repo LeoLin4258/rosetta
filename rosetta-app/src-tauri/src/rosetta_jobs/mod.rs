@@ -1709,6 +1709,24 @@ async fn translate_pdf_pages_inner(
                     "pending",
                 );
             } else {
+                let already_failed_with_page_error = state.pages.iter().any(|page| {
+                    page.page_number == *page_number
+                        && page.status == "failed"
+                        && page.last_run_id.as_deref() == Some(run_id.as_str())
+                        && page.error.as_deref().is_some_and(|error| !error.is_empty())
+                });
+                if already_failed_with_page_error {
+                    run_state::append_unique_page(&mut run.failed_pages, *page_number);
+                    emit_pdf_page_progress_for_run(
+                        app,
+                        job_id,
+                        target_lang,
+                        &run_id,
+                        *page_number,
+                        "failed",
+                    );
+                    continue;
+                }
                 page_state::upsert_pdf_page_with_run(
                     &mut state,
                     *page_number,

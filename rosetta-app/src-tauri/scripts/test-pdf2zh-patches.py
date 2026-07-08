@@ -324,7 +324,10 @@ class Paragraph:
     def test_patch_narrows_formula_detection_for_visual_prose_text(self) -> None:
         patched = self.run_patch(
             self.converter_with_bold_helpers()
-            + '''            if re.match(                                            # latex 字体
+            + '''        ############################################################
+        # A. 原文档解析
+        for child in ltpage:
+            if re.match(                                            # latex 字体
                     r"(CM[^R]|MS.M|XY|MT|BL|RM|EU|LA|RS|LINE|LCIRCLE|TeX-|rsfs|txsy|wasy|stmary|.*Mono|.*Code|.*Ital|.*Sym|.*Math)",
                     font,
                 ):
@@ -338,7 +341,42 @@ class Paragraph:
         self.assertNotIn(".*Ital|.*Sym", patched)
         self.assertIn(".*Code|.*Sym", patched)
         self.assertIn("rosetta_text_like_visual_char", patched)
+        self.assertIn("rosetta_allow_text_like_visual_chars", patched)
+        self.assertIn("rosetta_text_like_visual_chars_enabled", patched)
+        self.assertIn("metric_hits >= 3", patched)
+        self.assertIn("numeric_tokens >= 40", patched)
+        self.assertIn("algorithm_hits", patched)
+        self.assertIn('"Algorithm" in compact', patched)
+        self.assertIn("without_decimal_points", patched)
         self.assertIn("(cls == 0 and not rosetta_text_like_visual_char)", patched)
+
+    def test_patch_upgrades_existing_visual_prose_gate(self) -> None:
+        patched = self.run_patch(
+            self.converter_with_bold_helpers()
+            + '''        ############################################################
+        # A. 原文档解析
+        for child in ltpage:
+                # Rosetta: table/legal-prose PDFs often put normal text in visual regions.
+                rosetta_text_like_visual_char = (
+                    cls == 0
+                    and bool(child.get_text())
+                    and (
+                        child.get_text().isalnum()
+                        or child.get_text().isspace()
+                        or child.get_text() in ".,;:!?()[]{}<>/\\\\'\\\"-–—&$%#@*+=|"
+                    )
+                )
+                if (                                                                                        # 判定当前字符是否属于公式
+                    (cls == 0 and not rosetta_text_like_visual_char)                                         # 1. 类别为保留区域
+'''
+        )
+
+        self.assertIn("rosetta_allow_text_like_visual_chars", patched)
+        self.assertIn("rosetta_text_like_visual_chars_enabled", patched)
+        self.assertIn("and rosetta_text_like_visual_chars_enabled", patched)
+        self.assertIn("without_decimal_points", patched)
+        self.assertIn("numeric_tokens >= 40", patched)
+        self.assertIn("algorithm_hits", patched)
 
     def test_patch_replaces_existing_faux_bold_text_stroke_with_font_switch(self) -> None:
         for stroke_width in [
@@ -547,6 +585,12 @@ def validate_translation_keys(units: list[TranslationUnit], translations: dict[s
         self.assertIn("import difflib", patched)
         self.assertIn("suppress duplicate PDF text layers", patched)
         self.assertIn("mark_duplicate_text_layer_units(page_units)", patched)
+        self.assertIn("mark_nontranslatable_layout_units(page_units)", patched)
+        self.assertIn("is_rosetta_table_like_unit", patched)
+        self.assertIn("is_rosetta_formula_like_unit", patched)
+        self.assertIn("is_rosetta_page_number_unit", patched)
+        self.assertIn("is_rosetta_figure_panel_label_unit", patched)
+        self.assertIn("is_rosetta_diagram_label_unit", patched)
         self.assertIn("text.casefold()", patched)
         self.assertIn("char.isalnum()", patched)
         self.assertIn("duplicate.requiresTranslation = False", patched)
@@ -556,7 +600,300 @@ def validate_translation_keys(units: list[TranslationUnit], translations: dict[s
         self.assertIn("if unit.requiresTranslation and unit.unitId not in translations_by_unit_id", patched)
         self.assertIn("if expected.requiresTranslation:", patched)
         self.assertIn("if not expected.requiresTranslation:", patched)
-        self.assertIn('outputs.append("")', patched)
+        self.assertIn("rosetta_nontranslatable_render_text(expected, text)", patched)
+        self.assertIn('if unit.kind == "duplicate-layer":', patched)
+        self.assertIn('return ""', patched)
+
+    def test_patch_marks_table_formula_and_page_number_units_nontranslatable(self) -> None:
+        files = self.run_patch_for_package(
+            self.converter_with_bold_helpers(),
+            rosetta_engine_text="""from dataclasses import asdict, dataclass
+from pathlib import Path
+import re
+import pymupdf
+from pdf2zh.converter import TranslateConverter
+from pdf2zh.high_level import NOTO_NAME, download_remote_fonts
+
+@dataclass
+class TranslationUnit:
+    unitId: str
+    sourceText: str
+    sourceChars: int
+    kind: str
+    requiresTranslation: bool
+
+def prepareRun(inputPdf: str, langOut: str):
+    input_path = Path(inputPdf)
+    font_path = download_remote_fonts(langOut.lower())
+    noto_name = NOTO_NAME
+    noto = pymupdf.Font(noto_name, font_path)
+    doc = prepare_pdf_document(input_path, font_path, noto_name)
+    return asdict(
+        PreparedRun(
+            unitCount=len(collector.units),
+            sourceChars=sum(unit.sourceChars for unit in collector.units),
+        )
+    )
+
+def prepare_pdf_document(input_path: Path, font_path: str, noto_name: str):
+    doc = pymupdf.open(str(input_path))
+    font_list = [("tiro", None), (noto_name, font_path)]
+    font_id = {}
+    for page in doc:
+        for font_name, font_file in font_list:
+            font_id[font_name] = page.insert_font(font_name, font_file)
+    return doc
+
+def collect_page_units():
+    page_units = translator.units[before_count:]
+    return _PageCache(
+        units=list(page_units),
+    )
+
+def render_one_page():
+    source_chars = sum(unit.sourceChars for unit in cache.units)
+    if not cache.units:
+        return PageResult(sourceUnitCount=0)
+    missing = [unit.unitId for unit in cache.units if unit.unitId not in translations_by_unit_id]
+    return PageResult(
+        sourceUnitCount=len(cache.units),
+    )
+
+class _RenderTranslator:
+    def translate_many(self):
+            if unit_id not in self.translations_by_unit_id:
+                raise ValueError(f"missing translation for unit: {unit_id}")
+            translated = self.translations_by_unit_id[unit_id]
+            if not isinstance(translated, str):
+                raise ValueError(f"translation is not a string for unit: {unit_id}")
+            if expected.requiresTranslation and expected.sourceText.strip() and not translated.strip():
+                self.empty_translation_count += 1
+
+def failed_page_result():
+    return PageResult(
+        sourceUnitCount=len(cache.units),
+        translatedUnitCount=translated_unit_count,
+    )
+
+def validate_translation_keys(units: list[TranslationUnit], translations: dict[str, str]) -> None:
+    pass
+""",
+        )
+
+        namespace: dict[str, object] = {}
+        helper_start = files["rosetta_engine"].index("def rosetta_placeholder_count")
+        helper_end = files["rosetta_engine"].index("def validate_translation_keys")
+        exec("from __future__ import annotations\nimport re\n" + files["rosetta_engine"][helper_start:helper_end], namespace)
+
+        table_text = (
+            "Methods Year FLOPs Param. Size RIND ICCV 2021 695.77G 59.39M 453MB "
+            "SFIAN TITS 2023 84.57G 13.63M 56MB SCRWKV ICML 2026 22.78G 1.22M 28MB"
+        )
+        formula_text = "max {v8} 2 {v9}24{v10} {v11} 1 {v12} max {v13} 2 {v14}25{v15}"
+        prose_text = (
+            "For the TUT dataset, our method achieves SOTA performance, with F1 and mIoU "
+            "reaching 0.8428 and 0.8512, respectively."
+        )
+        panel_label_text = (
+            "(a) Comparison with SOTA methods. (c) Segmentation results in complex "
+            "interference conditions. (b) Different Enhancement Modules."
+        )
+        caption_text = (
+            "Figure 1. Performance of SCRWKV on multi-scenario TUT dataset. "
+            "(a) Comparison with SOTA methods. (b) Impact of enhancement modules."
+        )
+        diagram_text = (
+            "Conv Point Conv {v12} Concat Dilated Conv Q1 Q2 Concat DWConv "
+            "Input Output DWConv Spatial Attention Point Conv Concat"
+        )
+        legend_text = "Raw GT RIND SFIAN CTCrackSeg DTrCNet Crackmer SCSegamba MambaIR CSMamba PlainMamba SimCrack SCRWKV"
+        deployment_text = "MoveCamera Control ...... ...... Get Input Upload ...... ...... Output Process Initial Video Split Combine Processed Video Resize"
+        frame_text = "Frame 001 Frame 101 Frame 201 Frame 301 Frame 401 Frame {v0}"
+
+        self.assertTrue(namespace["is_rosetta_table_like_unit"](table_text))
+        self.assertTrue(namespace["is_rosetta_formula_like_unit"](formula_text))
+        self.assertTrue(namespace["is_rosetta_page_number_unit"]("8"))
+        self.assertTrue(namespace["is_rosetta_figure_panel_label_unit"](panel_label_text))
+        self.assertTrue(namespace["is_rosetta_diagram_label_unit"](diagram_text, 2))
+        self.assertTrue(namespace["is_rosetta_diagram_label_unit"]("Group A", 2))
+        self.assertTrue(namespace["is_rosetta_diagram_label_unit"]("Inward Shift Outward Shift", 4))
+        self.assertTrue(namespace["is_rosetta_diagram_label_unit"](legend_text, 1))
+        self.assertTrue(namespace["is_rosetta_diagram_label_unit"](deployment_text, 1))
+        self.assertTrue(namespace["is_rosetta_diagram_label_unit"](frame_text, 1))
+        self.assertTrue(namespace["is_rosetta_diagram_label_unit"]("第二篇中的", 2))
+        self.assertFalse(namespace["is_rosetta_table_like_unit"](prose_text))
+        self.assertFalse(namespace["is_rosetta_figure_panel_label_unit"](caption_text))
+        self.assertFalse(namespace["is_rosetta_diagram_label_unit"](caption_text, 2))
+        self.assertFalse(namespace["is_rosetta_diagram_label_unit"](diagram_text, 5))
+
+    def test_patch_upgrades_existing_nontranslatable_layout_helpers(self) -> None:
+        files = self.run_patch_for_package(
+            """def rosetta_pdf_is_bold_font(font):
+    return False
+""",
+            high_level_text="""# Rosetta: prefer Source Han Sans for simplified Chinese PDF output.
+# Rosetta: register Source Han Sans Bold for simplified Chinese PDF output.
+""",
+            rosetta_engine_text='''# Rosetta: suppress duplicate PDF text layers before translation.
+from babeldoc.assets.assets import get_font_and_metadata
+import re
+
+class TranslationUnit:
+    pass
+
+rosetta_bold_font_path = None
+font_list = [("tiro", None)]
+font_list.append(("notobold", bold_font_path))
+
+# Rosetta: prepare only selected PDF pages for translation windows.
+
+def is_rosetta_table_like_unit(text: str) -> bool:
+    return "Methods" in text
+
+def is_rosetta_diagram_label_unit(text: str, order_on_page: int) -> bool:
+    compact = " ".join(text.split())
+    if order_on_page > 4:
+        return False
+    if not compact or len(compact) > 480:
+        return False
+    placeholder_count = rosetta_placeholder_count(compact)
+    sentence_marks = rosetta_sentence_punctuation_count(compact)
+    words = re.findall(r"[A-Za-z]{2,}", compact)
+    label_hits = len(
+        re.findall(
+            r"\\b(?:Raw|GT|Conv|DWConv|Point|Dilated|Input|Output|Concat|Upsample|Layer|Norm|softmax|dropout|Attention|Shift|Graph[A-Z]?|Focus|Features?|SCIU|BLOCK|RIND|SFIAN|CTCrackSeg|DTrCNet|Crackmer|SCSegamba|MambaIR|CSMamba|PlainMamba|SimCrack|SCRWKV)\\b",
+            compact,
+        )
+    )
+    if "...." in compact and placeholder_count >= 1:
+        return True
+    if label_hits >= 4 and sentence_marks <= 3:
+        return True
+    if placeholder_count >= 3 and len(words) <= 45 and sentence_marks <= 4:
+        return True
+    return False
+
+def mark_nontranslatable_layout_units(units: list[TranslationUnit]) -> None:
+    for unit in units:
+        if not unit.requiresTranslation:
+            continue
+        text = unit.sourceText.strip()
+        if text == "8":
+            unit.requiresTranslation = False
+            unit.kind = "page-number"
+        elif is_rosetta_table_like_unit(text):
+            unit.requiresTranslation = False
+            unit.kind = "table-like"
+
+def collect_page_units():
+    page_units = translator.units[before_count:]
+    mark_duplicate_text_layer_units(page_units)
+    mark_nontranslatable_layout_units(page_units)
+    return page_units
+
+def validate_translation_keys(units: list[TranslationUnit], translations: dict[str, str]) -> None:
+    pass
+''',
+        )
+
+        patched = files["rosetta_engine"]
+        self.assertIn("def is_rosetta_figure_panel_label_unit", patched)
+        self.assertIn("def is_rosetta_diagram_label_unit", patched)
+        self.assertIn("Attention|Inward|Outward|Shift", patched)
+        self.assertIn("MoveCamera|Camera|Control|Get|Upload", patched)
+        self.assertIn('re.search(r"[\\u4e00-\\u9fff]", compact)', patched)
+        self.assertIn("label_hits >= 2 and len(words) <= 8", patched)
+        self.assertIn('"...." in compact and label_hits >= 2', patched)
+        self.assertIn("unit.kind = \"figure-panel-labels\"", patched)
+        self.assertIn("unit.kind = \"diagram-label\"", patched)
+        self.assertIn("def rosetta_nontranslatable_render_text", patched)
+
+    def test_patch_tolerates_render_translate_many_order_drift(self) -> None:
+        files = self.run_patch_for_package(
+            self.converter_with_bold_helpers(),
+            rosetta_engine_text="""from pathlib import Path
+import pymupdf
+from pdf2zh.converter import TranslateConverter
+from pdf2zh.high_level import NOTO_NAME, download_remote_fonts
+
+def prepareRun(inputPdf: str, langOut: str):
+    input_path = Path(inputPdf)
+    font_path = download_remote_fonts(langOut.lower())
+    noto_name = NOTO_NAME
+    noto = pymupdf.Font(noto_name, font_path)
+    doc = prepare_pdf_document(input_path, font_path, noto_name)
+    return doc
+
+def prepare_pdf_document(input_path: Path, font_path: str, noto_name: str):
+    doc = pymupdf.open(str(input_path))
+    font_list = [("tiro", None), (noto_name, font_path)]
+    font_id = {}
+    for page in doc:
+        for font_name, font_file in font_list:
+            font_id[font_name] = page.insert_font(font_name, font_file)
+    return doc
+
+class TranslationUnit:
+    pass
+
+class _RenderTranslator(_EngineTranslator):
+    def __init__(
+        self,
+        lang_in: str,
+        lang_out: str,
+        expected_units: list[TranslationUnit],
+        translations_by_unit_id: dict[str, str],
+    ):
+        super().__init__(lang_in, lang_out)
+        self.current_page_number = 0
+        self._orders_by_page: dict[int, int] = {}
+        self.expected_by_unit_id = {unit.unitId: unit for unit in expected_units}
+        self.translations_by_unit_id = translations_by_unit_id
+        self.translated_unit_count = 0
+        self.translated_chars = 0
+        self.empty_translation_count = 0
+        self.placeholder_mismatch_count = 0
+
+    def set_page(self, page_number: int):
+        self.current_page_number = page_number
+        self._orders_by_page.setdefault(page_number, 0)
+        self.translated_unit_count = 0
+        self.translated_chars = 0
+        self.empty_translation_count = 0
+        self.placeholder_mismatch_count = 0
+
+    def translate_many(self, texts, *args, **kwargs):
+        outputs = []
+        for text in list(texts):
+            self._orders_by_page[self.current_page_number] += 1
+            order = self._orders_by_page[self.current_page_number]
+            unit_id = unit_id_for(self.current_page_number, order)
+            expected = self.expected_by_unit_id.get(unit_id)
+            if expected is None:
+                raise ValueError(f"unknown translation unit requested: {unit_id}")
+            if expected.sourceText != text:
+                raise ValueError(f"translation unit order mismatch at {unit_id}")
+            if unit_id not in self.translations_by_unit_id:
+                if expected.requiresTranslation:
+                    raise ValueError(f"missing translation for unit: {unit_id}")
+                outputs.append("")
+                continue
+            translated = self.translations_by_unit_id[unit_id]
+            outputs.append(translated)
+        return outputs
+
+    def translate(self, text, *args, **kwargs):
+        return self.translate_many([text])[0]
+""",
+        )
+
+        patched = files["rosetta_engine"]
+        self.assertIn("tolerate replay translate_many order drift", patched)
+        self.assertIn("self.expected_by_page", patched)
+        self.assertIn("self._consumed_unit_ids", patched)
+        self.assertIn("def _match_expected_unit", patched)
+        self.assertIn("expected = self._match_expected_unit(unit_id, text)", patched)
+        self.assertNotIn("expected.sourceText != text", patched)
 
     def test_release_pack_builders_apply_pdf_converter_patch(self) -> None:
         builders = [
