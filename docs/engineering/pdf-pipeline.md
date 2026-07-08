@@ -199,6 +199,13 @@ The hard cap is coerced to be at least the target. These knobs are for local
 benchmark sweeps only; the strict checker must still reject any raw
 `truncated=true`, `stop_type=limit`, or empty llama.cpp completion.
 
+The native PDF v2 unit translator also keeps strict llama.cpp rejection in
+place. If a llama.cpp unit batch fails with `truncated=true` or
+`stop_type=limit`, Rosetta does not accept the partial response; it retries the
+affected PDF unit chunks with narrower split budgets before surfacing the
+failure. This mirrors the shim-era recovery boundary without weakening the
+provider parser.
+
 llama.cpp `/completion` requests use a translation-focused generation profile
 instead of the server's generic sampling defaults. Rosetta sends low-entropy
 sampling and repetition-control fields (`temperature`, `top_k`, `top_p`,

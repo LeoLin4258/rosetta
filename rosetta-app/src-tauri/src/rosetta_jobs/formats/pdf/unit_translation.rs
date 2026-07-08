@@ -14,7 +14,7 @@ use crate::{
     rwkv_providers::{
         llama_cpp_chat,
         mobile_batch_chat::{self, MobileBatchChatConfig},
-        ProviderTranslateBatch,
+        ProviderTranslateBatch, ProviderTranslateResult,
     },
 };
 
@@ -22,6 +22,10 @@ const LIGHTNING_MAX_BATCH_SIZE: usize = 256;
 const NON_LIGHTNING_DEFAULT_BATCH_SIZE: usize = 8;
 const NON_LIGHTNING_TARGET_PROMPT_TOKENS: usize = 72;
 const NON_LIGHTNING_HARD_PROMPT_TOKENS: usize = 88;
+const NON_LIGHTNING_RETRY_TARGET_PROMPT_TOKENS: usize = 36;
+const NON_LIGHTNING_RETRY_HARD_PROMPT_TOKENS: usize = 44;
+const NON_LIGHTNING_FINAL_RETRY_TARGET_PROMPT_TOKENS: usize = 24;
+const NON_LIGHTNING_FINAL_RETRY_HARD_PROMPT_TOKENS: usize = 32;
 
 #[derive(Debug, Clone)]
 pub(crate) struct LightningPdfApiConfig {
@@ -329,6 +333,8 @@ async fn translate_units_lightning(
 enum ProviderKind {
     Mobile(MobileBatchChatConfig),
     Llama(LlamaCppPdfApiConfig),
+    #[cfg(test)]
+    Scripted(std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<ProviderTranslateResult>>>),
 }
 
 async fn translate_units_provider_batches(
@@ -361,39 +367,15 @@ async fn translate_units_provider_batches(
             .map(|chunk| chunk.text.clone())
             .collect::<Vec<_>>();
         let started = Instant::now();
-        let result = match &provider {
-            ProviderKind::Mobile(config) => {
-                mobile_batch_chat::translate_batch(
-                    config,
-                    ProviderTranslateBatch {
-                        source_texts: &source_texts,
-                        source_lang,
-                        target_lang,
-                        timeout_ms: config.timeout_ms,
-                        cancel: cancel.clone(),
-                        debug_context: Some("pdf-unit-mobile"),
-                    },
-                )
-                .await
-            }
-            ProviderKind::Llama(config) => {
-                llama_cpp_chat::translate_batch(
-                    &llama_cpp_chat::LlamaCppChatConfig {
-                        base_url: config.base_url.clone(),
-                        timeout_ms: config.timeout_ms,
-                    },
-                    ProviderTranslateBatch {
-                        source_texts: &source_texts,
-                        source_lang,
-                        target_lang,
-                        timeout_ms: config.timeout_ms,
-                        cancel: cancel.clone(),
-                        debug_context: Some("pdf-unit-llama"),
-                    },
-                )
-                .await
-            }
-        };
+        let result = translate_provider_batch(
+            &provider,
+            source_lang,
+            target_lang,
+            &source_texts,
+            cancel.clone(),
+            provider_debug_context(&provider),
+        )
+        .await;
         let elapsed_ms = started.elapsed().as_millis() as u64;
         metrics.record_request(
             batch.len(),
@@ -410,12 +392,37 @@ async fn translate_units_provider_batches(
                 .sum(),
         );
         if !result.ok {
-            if result.message.contains("truncated=true")
-                || result.message.contains("stop_type=limit")
-            {
+            let limit_failure = is_llama_limit_failure(&result.message);
+            if limit_failure {
                 metrics.truncated_count += 1;
             }
-            return Err(result.message);
+            if provider_supports_llama_split_retry(&provider) && limit_failure {
+                let translations = translate_llama_batch_with_split_retry(
+                    &provider,
+                    source_lang,
+                    target_lang,
+                    batch,
+                    cancel.clone(),
+                    metrics,
+                )
+                .await?;
+                for (chunk, translation) in batch.iter().zip(translations) {
+                    chunk_outputs[chunk.chunk_index] = translation;
+                    chunk_ready[chunk.chunk_index] = true;
+                }
+                emit_ready_unit_outputs(
+                    units,
+                    &prepared,
+                    &chunk_outputs,
+                    &chunk_ready,
+                    target_lang,
+                    &mut emitted_unit_ids,
+                    on_unit_translation,
+                )?;
+                continue;
+            } else {
+                return Err(result.message);
+            }
         }
         if result.translations.len() != batch.len() {
             metrics.failed_request_count += 1;
@@ -441,6 +448,177 @@ async fn translate_units_provider_batches(
     }
 
     build_unit_outputs(units, &prepared, &chunk_outputs, target_lang)
+}
+
+async fn translate_llama_batch_with_split_retry(
+    provider: &ProviderKind,
+    source_lang: &str,
+    target_lang: &str,
+    batch: &[PreparedChunk],
+    cancel: Option<Arc<AtomicBool>>,
+    metrics: &mut PdfUnitTranslationMetrics,
+) -> Result<Vec<String>, String> {
+    let mut recovered = Vec::with_capacity(batch.len());
+    for chunk in batch {
+        ensure_not_cancelled(cancel.as_ref())?;
+        let translation = translate_llama_chunk_with_split_retry(
+            provider,
+            source_lang,
+            target_lang,
+            &chunk.text,
+            cancel.clone(),
+            metrics,
+        )
+        .await?;
+        recovered.push(translation);
+    }
+    Ok(recovered)
+}
+
+async fn translate_llama_chunk_with_split_retry(
+    provider: &ProviderKind,
+    source_lang: &str,
+    target_lang: &str,
+    text: &str,
+    cancel: Option<Arc<AtomicBool>>,
+    metrics: &mut PdfUnitTranslationMetrics,
+) -> Result<String, String> {
+    let retry_budgets = [
+        (
+            NON_LIGHTNING_RETRY_TARGET_PROMPT_TOKENS,
+            NON_LIGHTNING_RETRY_HARD_PROMPT_TOKENS,
+            "pdf-unit-llama-split-retry",
+        ),
+        (
+            NON_LIGHTNING_FINAL_RETRY_TARGET_PROMPT_TOKENS,
+            NON_LIGHTNING_FINAL_RETRY_HARD_PROMPT_TOKENS,
+            "pdf-unit-llama-final-split-retry",
+        ),
+    ];
+    let mut last_error = None;
+    for (target_tokens, hard_tokens, debug_context) in retry_budgets {
+        ensure_not_cancelled(cancel.as_ref())?;
+        let parts = split_pdf_text_with_budget(text, target_tokens, hard_tokens);
+        let started = Instant::now();
+        let result = translate_provider_batch(
+            provider,
+            source_lang,
+            target_lang,
+            &parts,
+            cancel.clone(),
+            debug_context,
+        )
+        .await;
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+        metrics.record_request(
+            parts.len(),
+            elapsed_ms,
+            result.ok,
+            parts.iter().map(|part| part.chars().count() as u64).sum(),
+            result
+                .translations
+                .iter()
+                .map(|text| text.chars().count() as u64)
+                .sum(),
+        );
+        if result.ok && result.translations.len() == parts.len() {
+            return Ok(join_translated_chunks(result.translations, target_lang));
+        }
+        let message = if result.ok {
+            format!(
+                "PDF unit split retry count mismatch (expected {}, got {}).",
+                parts.len(),
+                result.translations.len()
+            )
+        } else {
+            result.message
+        };
+        if is_llama_limit_failure(&message) {
+            metrics.truncated_count += 1;
+            last_error = Some(message);
+            continue;
+        }
+        return Err(message);
+    }
+    Err(last_error.unwrap_or_else(|| "PDF unit split retry failed.".to_string()))
+}
+
+async fn translate_provider_batch(
+    provider: &ProviderKind,
+    source_lang: &str,
+    target_lang: &str,
+    source_texts: &[String],
+    cancel: Option<Arc<AtomicBool>>,
+    debug_context: &str,
+) -> ProviderTranslateResult {
+    match provider {
+        ProviderKind::Mobile(config) => {
+            mobile_batch_chat::translate_batch(
+                config,
+                ProviderTranslateBatch {
+                    source_texts,
+                    source_lang,
+                    target_lang,
+                    timeout_ms: config.timeout_ms,
+                    cancel,
+                    debug_context: Some(debug_context),
+                },
+            )
+            .await
+        }
+        ProviderKind::Llama(config) => {
+            llama_cpp_chat::translate_batch(
+                &llama_cpp_chat::LlamaCppChatConfig {
+                    base_url: config.base_url.clone(),
+                    timeout_ms: config.timeout_ms,
+                },
+                ProviderTranslateBatch {
+                    source_texts,
+                    source_lang,
+                    target_lang,
+                    timeout_ms: config.timeout_ms,
+                    cancel,
+                    debug_context: Some(debug_context),
+                },
+            )
+            .await
+        }
+        #[cfg(test)]
+        ProviderKind::Scripted(results) => results
+            .lock()
+            .ok()
+            .and_then(|mut results| results.pop_front())
+            .unwrap_or_else(|| ProviderTranslateResult {
+                ok: false,
+                status_code: None,
+                translations: Vec::new(),
+                raw_response_preview: String::new(),
+                message: "scripted provider result queue is empty".to_string(),
+                latency_ms: 0,
+            }),
+    }
+}
+
+fn provider_debug_context(provider: &ProviderKind) -> &'static str {
+    match provider {
+        ProviderKind::Mobile(_) => "pdf-unit-mobile",
+        ProviderKind::Llama(_) => "pdf-unit-llama",
+        #[cfg(test)]
+        ProviderKind::Scripted(_) => "pdf-unit-llama",
+    }
+}
+
+fn provider_supports_llama_split_retry(provider: &ProviderKind) -> bool {
+    match provider {
+        ProviderKind::Llama(_) => true,
+        ProviderKind::Mobile(_) => false,
+        #[cfg(test)]
+        ProviderKind::Scripted(_) => true,
+    }
+}
+
+fn is_llama_limit_failure(message: &str) -> bool {
+    message.contains("truncated=true") || message.contains("stop_type=limit")
 }
 
 struct PreparedChunks {
@@ -687,9 +865,17 @@ fn find_pdf_placeholder(text: &str, from: usize) -> Option<(usize, usize)> {
 }
 
 fn split_pdf_text(text: &str) -> Vec<String> {
+    split_pdf_text_with_budget(
+        text,
+        NON_LIGHTNING_TARGET_PROMPT_TOKENS,
+        NON_LIGHTNING_HARD_PROMPT_TOKENS,
+    )
+}
+
+fn split_pdf_text_with_budget(text: &str, target_tokens: usize, hard_tokens: usize) -> Vec<String> {
     let normalized = normalize_pdf_text(text);
     let trimmed = normalized.trim();
-    if trimmed.is_empty() || estimate_prompt_tokens(trimmed) <= NON_LIGHTNING_HARD_PROMPT_TOKENS {
+    if trimmed.is_empty() || estimate_prompt_tokens(trimmed) <= hard_tokens {
         return vec![trimmed.to_string()];
     }
     let mut chunks = Vec::new();
@@ -700,7 +886,7 @@ fn split_pdf_text(text: &str) -> Vec<String> {
         } else {
             format!("{} {}", current, sentence)
         };
-        if estimate_prompt_tokens(&candidate) <= NON_LIGHTNING_TARGET_PROMPT_TOKENS {
+        if estimate_prompt_tokens(&candidate) <= target_tokens {
             current = candidate;
         } else {
             if !current.trim().is_empty() {
@@ -714,13 +900,17 @@ fn split_pdf_text(text: &str) -> Vec<String> {
     }
     chunks
         .into_iter()
-        .flat_map(split_oversized_chunk)
+        .flat_map(|chunk| split_oversized_chunk_with_budget(chunk, target_tokens, hard_tokens))
         .filter(|chunk| !chunk.trim().is_empty())
         .collect()
 }
 
-fn split_oversized_chunk(chunk: String) -> Vec<String> {
-    if estimate_prompt_tokens(&chunk) <= NON_LIGHTNING_HARD_PROMPT_TOKENS {
+fn split_oversized_chunk_with_budget(
+    chunk: String,
+    target_tokens: usize,
+    hard_tokens: usize,
+) -> Vec<String> {
+    if estimate_prompt_tokens(&chunk) <= hard_tokens {
         return vec![chunk];
     }
     let mut chunks = Vec::new();
@@ -731,7 +921,7 @@ fn split_oversized_chunk(chunk: String) -> Vec<String> {
         } else {
             format!("{current} {word}")
         };
-        if estimate_prompt_tokens(&candidate) <= NON_LIGHTNING_TARGET_PROMPT_TOKENS {
+        if estimate_prompt_tokens(&candidate) <= target_tokens {
             current = candidate;
         } else {
             if !current.trim().is_empty() {
@@ -883,6 +1073,64 @@ mod tests {
         assert!(chunks
             .iter()
             .all(|chunk| estimate_prompt_tokens(chunk) <= NON_LIGHTNING_HARD_PROMPT_TOKENS));
+    }
+
+    #[test]
+    fn split_retry_budget_breaks_medium_chunks_more_aggressively() {
+        let text = &"Alpha beta gamma delta epsilon zeta eta theta. ".repeat(4);
+        assert_eq!(split_pdf_text(text).len(), 1);
+
+        let retry_chunks = split_pdf_text_with_budget(
+            text,
+            NON_LIGHTNING_RETRY_TARGET_PROMPT_TOKENS,
+            NON_LIGHTNING_RETRY_HARD_PROMPT_TOKENS,
+        );
+
+        assert!(retry_chunks.len() > 1);
+        assert!(retry_chunks
+            .iter()
+            .all(|chunk| estimate_prompt_tokens(chunk) <= NON_LIGHTNING_RETRY_HARD_PROMPT_TOKENS));
+    }
+
+    #[tokio::test]
+    async fn llama_limit_failure_retries_with_smaller_pdf_chunks() {
+        let text = &"Alpha beta gamma delta epsilon zeta eta theta. ".repeat(4);
+        let retry_chunks = split_pdf_text_with_budget(
+            text,
+            NON_LIGHTNING_RETRY_TARGET_PROMPT_TOKENS,
+            NON_LIGHTNING_RETRY_HARD_PROMPT_TOKENS,
+        );
+        let scripted = std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::VecDeque::from(vec![
+                provider_error(
+                    "llama.cpp completion was truncated (truncated=true, stop_type=limit)",
+                ),
+                provider_success(vec!["甲".to_string(); retry_chunks.len()]),
+            ]),
+        ));
+        let provider = ProviderKind::Scripted(scripted);
+        let mut metrics = PdfUnitTranslationMetrics::default();
+        let mut emitted = Vec::new();
+
+        let translations = translate_units_provider_batches(
+            provider,
+            "en",
+            "zh-CN",
+            &[unit("a", text)],
+            1,
+            None,
+            &mut metrics,
+            &mut |translation| emitted.push(translation),
+        )
+        .await
+        .expect("split retry should recover");
+
+        assert_eq!(translations.len(), 1);
+        assert_eq!(translations[0].text, "甲".repeat(retry_chunks.len()));
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(metrics.request_count, 2);
+        assert_eq!(metrics.failed_request_count, 1);
+        assert_eq!(metrics.truncated_count, 1);
     }
 
     #[test]
@@ -1039,5 +1287,27 @@ mod tests {
             })
             .flatten()
             .collect()
+    }
+
+    fn provider_success(translations: Vec<String>) -> ProviderTranslateResult {
+        ProviderTranslateResult {
+            ok: true,
+            status_code: Some(200),
+            translations,
+            raw_response_preview: String::new(),
+            message: "ok".to_string(),
+            latency_ms: 0,
+        }
+    }
+
+    fn provider_error(message: &str) -> ProviderTranslateResult {
+        ProviderTranslateResult {
+            ok: false,
+            status_code: Some(200),
+            translations: Vec::new(),
+            raw_response_preview: String::new(),
+            message: message.to_string(),
+            latency_ms: 0,
+        }
     }
 }
