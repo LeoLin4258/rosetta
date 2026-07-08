@@ -307,6 +307,14 @@ separate PDF font resource named `notobold`. This keeps body text lighter,
 restores source-like emphasis without text-rendering stroke, and uses the same
 BabelDOC font assets on macOS and Windows.
 
+The managed pdf2zh pack must bundle the BabelDOC fonts Rosetta needs on the PDF
+path under `assets/babeldoc/fonts`: `SourceHanSansCN-Regular.ttf`,
+`SourceHanSansCN-Bold.ttf`, and `GoNotoKurrent-Regular.ttf`. The worker sets
+`ROSETTA_BABELDOC_CACHE_DIR` to that pack-local asset directory so PDF
+preparation does not depend on runtime downloads from BabelDOC's upstream font
+mirrors. Pack readiness checks include these font files; an installed pack that
+only contains the layout model is incomplete.
+
 ## Worker Prewarm
 
 App startup starts the persistent pdf2zh worker in the background after the

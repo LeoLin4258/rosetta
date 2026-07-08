@@ -5,6 +5,11 @@ use tauri::{AppHandle, Manager};
 use super::profile::Pdf2zhProfile;
 
 pub const DOCLAYOUT_MODEL_FILENAME: &str = "doclayout_yolo_docstructbench_imgsz1024.onnx";
+const REQUIRED_BABELDOC_FONTS: [&str; 3] = [
+    "SourceHanSansCN-Regular.ttf",
+    "SourceHanSansCN-Bold.ttf",
+    "GoNotoKurrent-Regular.ttf",
+];
 
 #[derive(Debug, Clone)]
 pub struct Pdf2zhLayout {
@@ -54,8 +59,20 @@ impl Pdf2zhLayout {
         self.pack_dir.join("models").join(DOCLAYOUT_MODEL_FILENAME)
     }
 
+    pub fn babeldoc_cache_dir(&self) -> PathBuf {
+        self.pack_dir.join("assets").join("babeldoc")
+    }
+
+    pub fn has_required_babeldoc_fonts(&self) -> bool {
+        REQUIRED_BABELDOC_FONTS
+            .iter()
+            .all(|font| self.babeldoc_cache_dir().join("fonts").join(font).is_file())
+    }
+
     pub fn managed_pack_ready(&self, profile: &Pdf2zhProfile) -> bool {
-        self.bin_path(profile).is_file() && self.doclayout_model_path().is_file()
+        self.bin_path(profile).is_file()
+            && self.doclayout_model_path().is_file()
+            && self.has_required_babeldoc_fonts()
     }
 
     pub fn ensure_dirs(&self) -> Result<(), String> {
@@ -70,8 +87,9 @@ impl Pdf2zhLayout {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::Pdf2zhLayout;
+    use super::{Pdf2zhLayout, REQUIRED_BABELDOC_FONTS};
     use crate::managed_pdf2zh::profile::{MACOS_ARM64_PDF2ZH, WINDOWS_AMD64_PDF2ZH};
 
     #[test]
@@ -94,5 +112,39 @@ mod tests {
                         .join("python.exe")
                 )
         );
+    }
+
+    #[test]
+    fn pdf_pack_ready_requires_bundled_babeldoc_fonts() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        let temp = std::env::temp_dir().join(format!(
+            "rosetta-pdf2zh-layout-test-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&temp).expect("create temp dir");
+        let layout = Pdf2zhLayout::resolve(temp.clone(), &MACOS_ARM64_PDF2ZH);
+        std::fs::create_dir_all(layout.bin_path(&MACOS_ARM64_PDF2ZH).parent().unwrap())
+            .expect("create bin dir");
+        std::fs::write(layout.bin_path(&MACOS_ARM64_PDF2ZH), b"bin").expect("write bin");
+        std::fs::create_dir_all(layout.doclayout_model_path().parent().unwrap())
+            .expect("create model dir");
+        std::fs::write(layout.doclayout_model_path(), b"model").expect("write model");
+
+        assert!(
+            !layout.managed_pack_ready(&MACOS_ARM64_PDF2ZH),
+            "a pack that still depends on runtime BabelDOC font downloads is incomplete"
+        );
+
+        let fonts_dir = layout.babeldoc_cache_dir().join("fonts");
+        std::fs::create_dir_all(&fonts_dir).expect("create fonts dir");
+        for font in REQUIRED_BABELDOC_FONTS {
+            std::fs::write(fonts_dir.join(font), b"font").expect("write font");
+        }
+
+        assert!(layout.managed_pack_ready(&MACOS_ARM64_PDF2ZH));
+        let _ = std::fs::remove_dir_all(temp);
     }
 }

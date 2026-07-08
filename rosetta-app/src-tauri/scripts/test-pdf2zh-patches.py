@@ -9,6 +9,7 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PATCH_SCRIPT = SCRIPT_DIR / "patch-pdf2zh-color-preservation.py"
+FONT_ASSETS_SCRIPT = SCRIPT_DIR / "stage-pdf2zh-font-assets.py"
 
 
 class Pdf2zhPatchTests(unittest.TestCase):
@@ -568,6 +569,58 @@ def validate_translation_keys(units: list[TranslationUnit], translations: dict[s
             with self.subTest(builder=builder.name):
                 text = builder.read_text()
                 self.assertIn("patch-pdf2zh-color-preservation.py", text)
+
+    def test_release_pack_builders_stage_babeldoc_font_assets(self) -> None:
+        builders = [
+            SCRIPT_DIR / "build-pdf2zh-pack-macos-arm64.sh",
+            SCRIPT_DIR / "build-pdf2zh-pack-windows-amd64.ps1",
+            SCRIPT_DIR / "stage-pdf2zh-pack-local.sh",
+        ]
+
+        for builder in builders:
+            with self.subTest(builder=builder.name):
+                text = builder.read_text()
+                self.assertIn("stage-pdf2zh-font-assets.py", text)
+                self.assertIn("ROSETTA_BABELDOC_CACHE_DIR", text)
+                self.assertIn("SourceHanSansCN-Regular.ttf", text)
+                self.assertIn("SourceHanSansCN-Bold.ttf", text)
+                self.assertIn("GoNotoKurrent-Regular.ttf", text)
+
+    def test_local_archive_checks_current_onnx_model_and_fonts(self) -> None:
+        text = (SCRIPT_DIR / "archive-pdf2zh-pack-local.sh").read_text()
+
+        self.assertIn("doclayout_yolo_docstructbench_imgsz1024.onnx", text)
+        self.assertNotIn("doclayout_yolo_docstructbench_imgsz1024.pt", text)
+        self.assertIn("assets/babeldoc/fonts/$font_name", text)
+
+    def test_font_asset_script_patches_babeldoc_cache_folder_env(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            package = root / "babeldoc"
+            package.mkdir()
+            (package / "__init__.py").write_text("")
+            (package / "const.py").write_text(
+                """import os
+from pathlib import Path
+
+CACHE_FOLDER = Path.home() / ".cache" / "babeldoc"
+"""
+            )
+
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(root)
+            subprocess.run(
+                [sys.executable, str(FONT_ASSETS_SCRIPT), "--patch-cache-env-only"],
+                env=env,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+
+            patched = (package / "const.py").read_text()
+            self.assertIn("ROSETTA_BABELDOC_CACHE_DIR", patched)
+            self.assertIn("allow the PDF component pack to own BabelDOC assets", patched)
 
 
 if __name__ == "__main__":

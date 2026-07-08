@@ -33,6 +33,7 @@
 #   PBS_TARBALL_URL=...    full override of the PBS download URL
 #   DOCLAYOUT_MODEL_URL=...  DocLayout ONNX model download URL
 #   DOCLAYOUT_MODEL_FILE=... copy an already-downloaded DocLayout ONNX model
+#   BABELDOC_FONT_SOURCE_DIR=... copy required BabelDOC fonts from this directory
 
 set -euo pipefail
 
@@ -45,6 +46,7 @@ PBS_TARBALL_URL="${PBS_TARBALL_URL:-$PBS_DEFAULT_URL}"
 DOCLAYOUT_MODEL_FILENAME="doclayout_yolo_docstructbench_imgsz1024.onnx"
 DOCLAYOUT_MODEL_URL="${DOCLAYOUT_MODEL_URL:-https://huggingface.co/wybxc/DocLayout-YOLO-DocStructBench-onnx/resolve/main/$DOCLAYOUT_MODEL_FILENAME?download=true}"
 DOCLAYOUT_MODEL_FILE="${DOCLAYOUT_MODEL_FILE:-}"
+BABELDOC_FONT_SOURCE_DIR="${BABELDOC_FONT_SOURCE_DIR:-}"
 
 if [[ "$(uname -s)-$(uname -m)" != "Darwin-arm64" ]]; then
   echo "::error::pdf2zh release pack build requires macOS arm64" >&2
@@ -73,6 +75,7 @@ PACK_DIR="$BUILD_ROOT/macos-arm64"
 PYTHON_DIR="$PACK_DIR/python"
 BIN_DIR="$PACK_DIR/bin"
 MODELS_DIR="$PACK_DIR/models"
+BABELDOC_CACHE_DIR="$PACK_DIR/assets/babeldoc"
 PBS_TARBALL="$BUILD_ROOT/pbs.tar.gz"
 
 echo "[pdf2zh-release] building PDFMathTranslate fork: $PDF2ZH_SOURCE_PATH" >&2
@@ -123,6 +126,13 @@ PY
 echo "[pdf2zh-release] applying PDF color preservation patch" >&2
 "$PYTHON_DIR/bin/python" "$SCRIPT_DIR/patch-pdf2zh-color-preservation.py"
 
+echo "[pdf2zh-release] staging BabelDOC font assets" >&2
+FONT_ARGS=(--cache-dir "$BABELDOC_CACHE_DIR")
+if [[ -n "$BABELDOC_FONT_SOURCE_DIR" ]]; then
+  FONT_ARGS+=(--font-source-dir "$BABELDOC_FONT_SOURCE_DIR")
+fi
+ROSETTA_BABELDOC_CACHE_DIR="$BABELDOC_CACHE_DIR" "$PYTHON_DIR/bin/python" "$SCRIPT_DIR/stage-pdf2zh-font-assets.py" "${FONT_ARGS[@]}"
+
 DOCLAYOUT_MODEL_PATH="$MODELS_DIR/$DOCLAYOUT_MODEL_FILENAME"
 if [[ -n "$DOCLAYOUT_MODEL_FILE" ]]; then
   echo "[pdf2zh-release] copying ONNX layout model:" >&2
@@ -139,15 +149,25 @@ if [[ ! -s "$DOCLAYOUT_MODEL_PATH" ]]; then
 fi
 
 echo "[pdf2zh-release] Rosetta engine smoke test:" >&2
-ROSETTA_DOCLAYOUT_MODEL="$DOCLAYOUT_MODEL_PATH" "$PYTHON_DIR/bin/python" - <<'PY'
+ROSETTA_DOCLAYOUT_MODEL="$DOCLAYOUT_MODEL_PATH" ROSETTA_BABELDOC_CACHE_DIR="$BABELDOC_CACHE_DIR" "$PYTHON_DIR/bin/python" - <<'PY'
 import os
 
 import pdf2zh
+from babeldoc.assets.assets import get_font_and_metadata
 from pdf2zh import rosetta_engine
 from pdf2zh.doclayout import OnnxModel
 
 if rosetta_engine.ENGINE_CONTRACT_VERSION != 2:
     raise SystemExit("::error::pdf2zh.rosetta_engine contract version is not 2")
+
+for font_name in [
+    "SourceHanSansCN-Regular.ttf",
+    "SourceHanSansCN-Bold.ttf",
+    "GoNotoKurrent-Regular.ttf",
+]:
+    font_path, _ = get_font_and_metadata(font_name)
+    if not str(font_path).startswith(os.environ["ROSETTA_BABELDOC_CACHE_DIR"]):
+        raise SystemExit(f"::error::BabelDOC font is not served from pack assets: {font_path}")
 
 model = OnnxModel(os.environ["ROSETTA_DOCLAYOUT_MODEL"])
 providers = ",".join(model.model.get_providers())
@@ -164,6 +184,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PACK_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 export PYTHONDONTWRITEBYTECODE=1
+export ROSETTA_BABELDOC_CACHE_DIR="${ROSETTA_BABELDOC_CACHE_DIR:-$PACK_ROOT/assets/babeldoc}"
 export ROSETTA_DOCLAYOUT_MODEL="${ROSETTA_DOCLAYOUT_MODEL:-$PACK_ROOT/models/doclayout_yolo_docstructbench_imgsz1024.onnx}"
 exec "$PACK_ROOT/python/bin/python" -m pdf2zh.pdf2zh "$@"
 SH

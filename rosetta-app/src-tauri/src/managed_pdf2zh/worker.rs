@@ -417,6 +417,10 @@ async fn spawn_worker(app: &AppHandle) -> Result<WorkerProcess, String> {
         .env("PYTHONNOUSERSITE", "1")
         .env("PYTHONPATH", "")
         .env("ROSETTA_DOCLAYOUT_MODEL", &doclayout_model)
+        .env(
+            "ROSETTA_BABELDOC_CACHE_DIR",
+            status.layout.babeldoc_cache_dir(),
+        )
         // Same loopback-proxy scrubbing as the CLI invocation: the shim is on
         // 127.0.0.1 and user proxies (Clash/Surge) can't reach it.
         .env("NO_PROXY", "127.0.0.1,localhost,::1")
@@ -440,6 +444,10 @@ async fn spawn_worker(app: &AppHandle) -> Result<WorkerProcess, String> {
     eprintln!("[pdf2zh-worker]   script:  {}", script_path.display());
     eprintln!("[pdf2zh-worker]   cwd:     {}", worker_dir.display());
     eprintln!("[pdf2zh-worker]   model:   {}", doclayout_model.display());
+    eprintln!(
+        "[pdf2zh-worker]   assets:  {}",
+        status.layout.babeldoc_cache_dir().display()
+    );
 
     let mut child = command
         .spawn()

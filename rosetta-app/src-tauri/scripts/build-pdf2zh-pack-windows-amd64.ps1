@@ -6,7 +6,8 @@ param(
     [string]$PythonUrl = "",
     [string]$PipIndexUrl = "https://pypi.org/simple",
     [string]$ModelFile = "",
-    [string]$ModelUrl = "https://huggingface.co/wybxc/DocLayout-YOLO-DocStructBench-onnx/resolve/main/doclayout_yolo_docstructbench_imgsz1024.onnx?download=true"
+    [string]$ModelUrl = "https://huggingface.co/wybxc/DocLayout-YOLO-DocStructBench-onnx/resolve/main/doclayout_yolo_docstructbench_imgsz1024.onnx?download=true",
+    [string]$FontSourceDir = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -118,6 +119,24 @@ else:
     Write-Host "[pdf2zh-pack] applying PDF color and bold preservation patch"
     Invoke-NativeChecked $PythonExe (Join-Path $ScriptDir "patch-pdf2zh-color-preservation.py")
 
+    $BabeldocCacheDir = Join-Path $PackDir "assets\babeldoc"
+    Write-Host "[pdf2zh-pack] staging BabelDOC font assets"
+    $PreviousBabeldocCacheDir = $env:ROSETTA_BABELDOC_CACHE_DIR
+    $env:ROSETTA_BABELDOC_CACHE_DIR = $BabeldocCacheDir
+    $FontArgs = @("--cache-dir", $BabeldocCacheDir)
+    if ($FontSourceDir) {
+        $FontArgs += @("--font-source-dir", $FontSourceDir)
+    }
+    try {
+        Invoke-NativeChecked $PythonExe (Join-Path $ScriptDir "stage-pdf2zh-font-assets.py") @FontArgs
+    } finally {
+        if ($null -eq $PreviousBabeldocCacheDir) {
+            Remove-Item Env:\ROSETTA_BABELDOC_CACHE_DIR -ErrorAction SilentlyContinue
+        } else {
+            $env:ROSETTA_BABELDOC_CACHE_DIR = $PreviousBabeldocCacheDir
+        }
+    }
+
     $ModelsDir = Join-Path $PackDir "models"
     New-Item -ItemType Directory -Path $ModelsDir -Force | Out-Null
     $ModelPath = Join-Path $ModelsDir $ModelName
@@ -148,6 +167,7 @@ import numpy
 import pymupdf
 import pdfminer
 import pdf2zh
+from babeldoc.assets.assets import get_font_and_metadata
 from pdf2zh import rosetta_engine
 from pdf2zh.converter import TranslateConverter
 from pdf2zh.doclayout import OnnxModel
@@ -156,12 +176,22 @@ from pdf2zh.translator import RosettaBatchTranslator
 if rosetta_engine.ENGINE_CONTRACT_VERSION != 2:
     raise SystemExit("pdf2zh.rosetta_engine contract version is not 2")
 
+for font_name in [
+    "SourceHanSansCN-Regular.ttf",
+    "SourceHanSansCN-Bold.ttf",
+    "GoNotoKurrent-Regular.ttf",
+]:
+    font_path, _ = get_font_and_metadata(font_name)
+    if not str(font_path).startswith(os.environ["ROSETTA_BABELDOC_CACHE_DIR"]):
+        raise SystemExit(f"BabelDOC font is not served from pack assets: {font_path}")
+
 model_path = os.environ["ROSETTA_DOCLAYOUT_MODEL"]
 model = OnnxModel(model_path)
 providers = ",".join(model.model.get_providers())
 print(f"pdf-pack-imports-ok pdf2zh={pdf2zh.__version__} contract={rosetta_engine.ENGINE_CONTRACT_VERSION} providers={providers}")
 '@
     $env:ROSETTA_DOCLAYOUT_MODEL = $ModelPath
+    $env:ROSETTA_BABELDOC_CACHE_DIR = $BabeldocCacheDir
     $Smoke | & $PythonExe -
     if ($LASTEXITCODE -ne 0) {
         throw "PDF runtime import smoke test failed"
@@ -187,6 +217,7 @@ print(f"pdf-pack-imports-ok pdf2zh={pdf2zh.__version__} contract={rosetta_engine
     }
 
     $env:ROSETTA_DOCLAYOUT_MODEL = $ModelPath
+    $env:ROSETTA_BABELDOC_CACHE_DIR = $BabeldocCacheDir
     $Smoke | & $PythonExe -
     if ($LASTEXITCODE -ne 0) {
         throw "Pruned PDF runtime import smoke test failed"
@@ -223,6 +254,7 @@ print(f"pdf-pack-imports-ok pdf2zh={pdf2zh.__version__} contract={rosetta_engine
     Write-Host "SHA256: $Sha"
 } finally {
     Remove-Item Env:\ROSETTA_DOCLAYOUT_MODEL -ErrorAction SilentlyContinue
+    Remove-Item Env:\ROSETTA_BABELDOC_CACHE_DIR -ErrorAction SilentlyContinue
     if (Test-Path -LiteralPath $ResolvedBuildRoot) {
         Remove-Item -LiteralPath $ResolvedBuildRoot -Recurse -Force
     }
