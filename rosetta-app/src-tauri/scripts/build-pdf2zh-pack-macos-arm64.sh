@@ -103,6 +103,7 @@ echo "[pdf2zh-release] PBS python ready: $PBS_REPORTED_VERSION" >&2
 echo "[pdf2zh-release] installing PDFMathTranslate fork into pack python" >&2
 "$PYTHON_DIR/bin/python" -m pip install --upgrade pip --quiet
 "$PYTHON_DIR/bin/python" -m pip install "$PDF2ZH_SOURCE_PATH" --quiet
+"$PYTHON_DIR/bin/python" -m pip install "tencentcloud-sdk-python-tmt==3.1.121" --quiet
 
 echo "[pdf2zh-release] applying NumPy 2 compatibility patch" >&2
 "$PYTHON_DIR/bin/python" - <<'PY'

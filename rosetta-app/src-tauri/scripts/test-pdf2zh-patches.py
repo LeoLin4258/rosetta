@@ -44,6 +44,109 @@ class Pdf2zhPatchTests(unittest.TestCase):
             adv = self.fontmap[fcur_].char_width(ord(ch)) * size
 """
 
+    def legacy_converter_text(self) -> str:
+        return """            def raw_string(fcur,cstk): # 编码字符串
+                if isinstance(self.fontmap[fcur],PDFCIDFont): # 判断编码长度
+                    return "".join(["%04x" % ord(c) for c in cstk])
+                else:
+                    return "".join(["%02x" % ord(c) for c in cstk])
+            _x,_y=0,0
+                            pstk.append([child.y0,child.x0,child.x0,child.x0,child.size,child.font,False])
+                            pstk[-1][5]=child.font
+                tx=x=pstk[id][1];y=pstk[id][0];lt=pstk[id][2];rt=pstk[id][3];ptr=0;size=pstk[id][4];font=pstk[id][5];lb=pstk[id][6] # 段落属性
+                            ops+=f'/{fcur} {size:f} Tf 1 0 0 1 {tx:f} {y:f} Tm [<{raw_string(fcur,cstk)}>] TJ '
+                            ops+=f"/{self.fontid[vch.font]} {vch.size:f} Tf 1 0 0 1 {x+vch.x0-var[vid][0].x0:f} {fix+y+vch.y0-var[vid][0].y0:f} Tm [<{raw_string(self.fontid[vch.font],vc)}>] TJ "
+                                ops+=f"ET q 1 0 0 1 {l.pts[0][0]+x-var[vid][0].x0:f} {l.pts[0][1]+fix+y-var[vid][0].y0:f} cm [] 0 d 0 J {l.linewidth:f} w 0 0 m {l.pts[1][0]-l.pts[0][0]:f} {l.pts[1][1]-l.pts[0][1]:f} l S Q BT "
+                    ops+=f"ET q 1 0 0 1 {l.pts[0][0]:f} {l.pts[0][1]:f} cm [] 0 d 0 J {l.linewidth:f} w 0 0 m {l.pts[1][0]-l.pts[0][0]:f} {l.pts[1][1]-l.pts[0][1]:f} l S Q BT "
+"""
+
+    def render_order_drift_engine_text(self) -> str:
+        return """# Rosetta: suppress duplicate PDF text layers before translation.
+from dataclasses import dataclass
+from pathlib import Path
+import pymupdf
+from pdf2zh.converter import TranslateConverter
+from pdf2zh.high_level import NOTO_NAME, download_remote_fonts
+
+@dataclass
+class TranslationUnit:
+    unitId: str
+    pageNumber: int
+    sourceText: str
+    requiresTranslation: bool
+
+def prepareRun(inputPdf: str, langOut: str):
+    input_path = Path(inputPdf)
+    font_path = download_remote_fonts(langOut.lower())
+    noto_name = NOTO_NAME
+    noto = pymupdf.Font(noto_name, font_path)
+    doc = prepare_pdf_document(input_path, font_path, noto_name)
+    return doc
+
+def prepare_pdf_document(input_path: Path, font_path: str, noto_name: str):
+    doc = pymupdf.open(str(input_path))
+    font_list = [("tiro", None), (noto_name, font_path)]
+    font_id = {}
+    for page in doc:
+        for font_name, font_file in font_list:
+            font_id[font_name] = page.insert_font(font_name, font_file)
+    return doc
+
+def validate_translation_keys(units: list[TranslationUnit], translations: dict[str, str]) -> None:
+    pass
+
+class _RenderTranslator(_EngineTranslator):
+    def __init__(
+        self,
+        lang_in: str,
+        lang_out: str,
+        expected_units: list[TranslationUnit],
+        translations_by_unit_id: dict[str, str],
+    ):
+        super().__init__(lang_in, lang_out)
+        self.current_page_number = 0
+        self._orders_by_page: dict[int, int] = {}
+        self.expected_by_unit_id = {unit.unitId: unit for unit in expected_units}
+        self.translations_by_unit_id = translations_by_unit_id
+        self.translated_unit_count = 0
+        self.translated_chars = 0
+        self.empty_translation_count = 0
+        self.placeholder_mismatch_count = 0
+
+    def set_page(self, page_number: int):
+        self.current_page_number = page_number
+        self._orders_by_page.setdefault(page_number, 0)
+        self.translated_unit_count = 0
+        self.translated_chars = 0
+        self.empty_translation_count = 0
+        self.placeholder_mismatch_count = 0
+
+    def translate_many(self, texts, *args, **kwargs):
+        outputs = []
+        for text in list(texts):
+            self._orders_by_page[self.current_page_number] += 1
+            order = self._orders_by_page[self.current_page_number]
+            unit_id = unit_id_for(self.current_page_number, order)
+            expected = self.expected_by_unit_id.get(unit_id)
+            if expected is None:
+                raise ValueError(f"unknown translation unit requested: {unit_id}")
+            if expected.sourceText != text:
+                raise ValueError(f"translation unit order mismatch at {unit_id}")
+            if unit_id not in self.translations_by_unit_id:
+                if expected.requiresTranslation:
+                    raise ValueError(f"missing translation for unit: {unit_id}")
+                outputs.append(rosetta_nontranslatable_render_text(expected, text))
+                continue
+            translated = self.translations_by_unit_id[unit_id]
+            if not isinstance(translated, str):
+                raise ValueError(f"translation is not a string for unit: {unit_id}")
+            outputs.append(translated)
+        return outputs
+
+    def translate(self, text, *args, **kwargs):
+        return self.translate_many([text])[0]
+"""
+
     def write_default_high_level(self, package: Path) -> None:
         (package / "high_level.py").write_text(
             """from babeldoc.assets.assets import get_font_and_metadata
@@ -159,20 +262,7 @@ def prepare_pdf_document(input_path: Path, font_path: str, noto_name: str):
             }
 
     def test_patch_preserves_color_and_marks_bold_paragraphs(self) -> None:
-        patched = self.run_patch("""            def raw_string(fcur,cstk): # 编码字符串
-                if isinstance(self.fontmap[fcur],PDFCIDFont): # 判断编码长度
-                    return "".join(["%04x" % ord(c) for c in cstk])
-                else:
-                    return "".join(["%02x" % ord(c) for c in cstk])
-            _x,_y=0,0
-                            pstk.append([child.y0,child.x0,child.x0,child.x0,child.size,child.font,False])
-                            pstk[-1][5]=child.font
-                tx=x=pstk[id][1];y=pstk[id][0];lt=pstk[id][2];rt=pstk[id][3];ptr=0;size=pstk[id][4];font=pstk[id][5];lb=pstk[id][6] # 段落属性
-                            ops+=f'/{fcur} {size:f} Tf 1 0 0 1 {tx:f} {y:f} Tm [<{raw_string(fcur,cstk)}>] TJ '
-                            ops+=f"/{self.fontid[vch.font]} {vch.size:f} Tf 1 0 0 1 {x+vch.x0-var[vid][0].x0:f} {fix+y+vch.y0-var[vid][0].y0:f} Tm [<{raw_string(self.fontid[vch.font],vc)}>] TJ "
-                                ops+=f"ET q 1 0 0 1 {l.pts[0][0]+x-var[vid][0].x0:f} {l.pts[0][1]+fix+y-var[vid][0].y0:f} cm [] 0 d 0 J {l.linewidth:f} w 0 0 m {l.pts[1][0]-l.pts[0][0]:f} {l.pts[1][1]-l.pts[0][1]:f} l S Q BT "
-                    ops+=f"ET q 1 0 0 1 {l.pts[0][0]:f} {l.pts[0][1]:f} cm [] 0 d 0 J {l.linewidth:f} w 0 0 m {l.pts[1][0]-l.pts[0][0]:f} {l.pts[1][1]-l.pts[0][1]:f} l S Q BT "
-""")
+        patched = self.run_patch(self.legacy_converter_text())
 
         self.assertIn("rosetta_pdf_color_operator", patched)
         self.assertIn("rosetta_pdf_is_bold_font", patched)
@@ -184,6 +274,18 @@ def prepare_pdf_document(input_path: Path, font_path: str, noto_name: str):
         self.assertNotIn("stroke_width = max(0.04, min(0.16, size * 0.006))", patched)
         self.assertNotIn("stroke_width = max(0.12, min(0.45, size * 0.018))", patched)
         self.assertNotIn("rosetta_pdf_is_bold_font(child.font)", patched)
+
+    def test_legacy_converter_patch_path_applies_render_order_drift_matching(self) -> None:
+        files = self.run_patch_for_package(
+            self.legacy_converter_text(),
+            rosetta_engine_text=self.render_order_drift_engine_text(),
+        )
+
+        patched = files["rosetta_engine"]
+        self.assertIn("tolerate replay translate_many order drift", patched)
+        self.assertIn("expected = self._match_expected_unit(unit_id, text)", patched)
+        self.assertIn("self._consumed_unit_ids", patched)
+        self.assertNotIn("expected.sourceText != text", patched)
 
     def test_patch_preserves_color_and_bold_for_paragraph_ops_converter(self) -> None:
         patched = self.run_patch("""class TranslateConverter(PDFConverterEx):
@@ -1042,6 +1144,17 @@ class _RenderTranslator(_EngineTranslator):
             with self.subTest(builder=builder.name):
                 text = builder.read_text()
                 self.assertIn("patch-pdf2zh-color-preservation.py", text)
+
+    def test_macos_pack_builders_pin_tencentcloud_tmt_import_compatible_version(self) -> None:
+        builders = [
+            SCRIPT_DIR / "build-pdf2zh-pack-macos-arm64.sh",
+            SCRIPT_DIR / "stage-pdf2zh-pack-local.sh",
+        ]
+
+        for builder in builders:
+            with self.subTest(builder=builder.name):
+                text = builder.read_text()
+                self.assertIn("tencentcloud-sdk-python-tmt==3.1.121", text)
 
     def test_release_pack_builders_stage_babeldoc_font_assets(self) -> None:
         builders = [
