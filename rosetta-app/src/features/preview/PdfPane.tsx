@@ -88,7 +88,10 @@ export function PdfPageImage({
   const [src, setSrc] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const cacheKey = `${jobId}:${kind}:${pageIndex}:${targetWidth}:${renderVersion}`;
-  const showLoadingBackdrop = kind === "translated" && canRender && !src && !!backdropSrc;
+  const showLoadingBackdrop =
+    kind === "translated" &&
+    !!backdropSrc &&
+    ((canRender && !src) || (!canRender && activity === "translating"));
 
   useEffect(() => {
     let cancelled = false;
@@ -142,6 +145,15 @@ export function PdfPageImage({
         )}
         style={{ aspectRatio: PDF_PAGE_ASPECT_RATIO }}
       >
+        {showLoadingBackdrop ? (
+          <img
+            src={backdropSrc}
+            alt=""
+            className="rosetta-pdf-page-backdrop"
+            draggable={false}
+            aria-hidden="true"
+          />
+        ) : null}
         {kind === "translated" ? (
           <PdfPagePlaceholder
             activity={activity}

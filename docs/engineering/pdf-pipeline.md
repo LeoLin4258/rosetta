@@ -1,6 +1,6 @@
 # PDF Pipeline
 
-Last updated: 2026-07-03
+Last updated: 2026-07-09
 
 This document describes the current PDF translation implementation. Older PDF
 plans are historical background only when they conflict with this file and
@@ -314,6 +314,136 @@ path under `assets/babeldoc/fonts`: `SourceHanSansCN-Regular.ttf`,
 preparation does not depend on runtime downloads from BabelDOC's upstream font
 mirrors. Pack readiness checks include these font files; an installed pack that
 only contains the layout model is incomplete.
+
+## Structured Content Preservation
+
+Rosetta's PDF target is a readable, local translated document. It is not a
+promise to translate every glyph in the source PDF. When a page contains
+structured visual content that the renderer cannot safely reflow, Rosetta
+should preserve the original box instead of translating it into flattened
+paragraph text. This applies especially to:
+
+- formulas and compact equation blocks;
+- dense metric, ablation, dataset-statistics, and comparison tables;
+- algorithm or pseudocode boxes;
+- diagram labels, visual legends, and figure panel labels;
+- duplicate source text layers that exist for PDF accessibility, extraction, or
+  rendering quirks.
+
+This policy came from the 2026-07 PDF regression work on the SCRWKV 18-page
+paper and the QianFSD 10-page paper. For those fixtures, forcing translation of
+structured regions caused repeated failures: overlapping CJK text, lost table
+highlights, blank table cells, translated mathematical operators, formula
+placeholder mismatches, render replay `ValueError`, and full-run aborts that
+made later pages appear unprocessed. Preserving the original structured box was
+more reliable and better matched user expectations than trying to translate the
+box with paragraph layout.
+
+The preservation logic lives in two layers:
+
+- The patched pdf2zh converter decides whether text-like characters inside
+  visual layout regions may be promoted to prose. The helper
+  `rosetta_allow_text_like_visual_chars` keeps normal prose recoverable while
+  refusing visual regions that look like dense tables, algorithms, formulas, or
+  dataset split tables.
+- The Rosetta engine post-processes collected `TranslationUnit[]` values with
+  `mark_nontranslatable_layout_units`. It marks page numbers, formula-like
+  units, table-like units, figure panel labels, diagram labels, and duplicate
+  text layers as `requiresTranslation=false` while keeping them in the unit
+  stream for render alignment.
+
+Keeping non-required units in order is intentional. pdf2zh render replay may
+ask for the same source regions in a slightly different order than collection,
+and some PDFs contain text layers that should not be translated but still keep
+the replay stream aligned. The renderer therefore:
+
+- matches expected units by `unitId`, then by page-local source text when
+  replay order drifts;
+- passes non-required preserved units back through as source text;
+- blanks only `duplicate-layer` units;
+- validates placeholders for required translated units, but does not fail a
+  page because a non-required preserved unit contains formula placeholders;
+- draws white source-text masks only for paragraphs that are actually
+  translated, so preserved formula/table regions do not erase original colored
+  highlights or table fills.
+
+The heuristics must stay conservative. Prefer adding narrow marker combinations
+over broad numeric or punctuation rules. Existing examples include:
+
+- metric and segmentation table markers such as `ODS`, `OIS`, `mIoU`, `FLOPs`,
+  `Param`, `F1mIoU`, and compact no-space forms such as `LayerNumODSOIS`;
+- formula/table markers such as `LDice`, `LBCE`, `Dice`, `BCE`, `alpha`, and
+  `beta`;
+- dataset split table markers such as `DatasetCategoryTrainValTest`,
+  `FarmInsects`, `IP102`, `QianFSD`, and `AgriInsect`;
+- formula operator markers such as `Partition`, `TopK`, `Gumbel`, `Softmax`,
+  `Flatten`, `EM`, `LN`, `FFN`, and `CR`, only when combined with many formula
+  placeholders and low sentence punctuation;
+- algorithm markers such as `Algorithm`, `Input`, `Output`, `Initialize`,
+  `Return`, `endif`, and `endfor`.
+
+Do not add a rule that simply preserves every numeric paragraph, every short
+line, or every placeholder-heavy sentence. Several real body paragraphs discuss
+formulas or tables and still need translation. A safe rule should require a
+specific structured-content signature plus density signals such as numeric
+tokens, placeholder count, table symbols, compact no-space table text, or low
+sentence punctuation.
+
+When changing the pdf2zh pack patch, update both fresh patch and upgrade paths.
+Installed packs may already contain an older Rosetta patch, so a source-only
+change is not enough. The patch tests should cover:
+
+- applying to a fresh upstream/legacy converter or engine;
+- upgrading an already-patched installed pack;
+- the positive fixture that should become non-translatable;
+- at least one nearby prose fixture that must remain translatable.
+
+After patching an installed pack, kill any existing `rosetta_pdf2zh_worker`
+process. A warm worker keeps imported Python modules in memory and can continue
+using old behavior even when files on disk have been patched.
+
+Useful installed-pack marker checks:
+
+```bash
+grep -n "rosetta_allow_text_like_visual_chars" "$CONVERTER"
+grep -n "math_table_signal_hits" "$CONVERTER"
+grep -n "compact_table_signal_hits" "$CONVERTER"
+grep -n "dataset_table_signal_hits" "$CONVERTER"
+grep -n "operator_hits = len(re.findall" "$ENGINE"
+grep -n "_match_expected_unit" "$ENGINE"
+grep -n "rosetta_nontranslatable_render_text" "$ENGINE"
+grep -n "unit.kind == \"duplicate-layer\"" "$ENGINE"
+```
+
+For layout-quality regressions, prefer engine smoke tests before UI testing:
+
+1. Run `prepareRun` for the exact selected pages and confirm
+   `sourcePageCount`, `pages`, unit count, and `pagesInUnits`.
+2. Inspect `collectUnits` for the suspicious source text. A structured table or
+   equation should either be absent from required body units or marked
+   `requiresTranslation=false` with an appropriate `kind`.
+3. Run identity `renderPages` with `unitId -> sourceText` for required units.
+   This isolates render replay and placeholder problems from model output.
+4. Run the full selected-window identity render, not just the failing page. A
+   render failure in the first window can stop later windows and make the UI
+   look as if only the first 10 pages were selected.
+5. Only after the engine passes should the UI be used to evaluate translation
+   quality.
+
+Regression fixture expectations from the July 2026 work:
+
+- SCRWKV 18-page PDF: full 18-page identity render should return 18 translated
+  page results with no bad pages; page 4 must not fail with render replay
+  `ValueError`; dense tables, formulas, algorithms, highlights, and diagram
+  labels should remain stable.
+- QianFSD 10-page PDF: page 4 `Partition` / `TopK` and `Gumbel` / `Flatten`
+  equation blocks should be `kind=formula`, `requiresTranslation=false`; page 6
+  right-bottom `Dataset / Category / Train / Val / Test` table should not be a
+  required body unit, while normal prose mentioning `QianFSD` or `AgriInsect`
+  remains translatable.
+
+These expectations are not a permanent fixture corpus, but they are the current
+minimum dogfood set for publishing a new PDF component pack.
 
 ## Worker Prewarm
 

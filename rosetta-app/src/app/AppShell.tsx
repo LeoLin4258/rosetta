@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, type Theme } from "@tauri-apps/api/window";
 import { FileText, Loader2 } from "lucide-react";
 import { AppSidebar } from "@/components/app-sidebar";
+import { useMeasuredContentWidth } from "@/components/animated-width";
 import { WindowTitleBar } from "@/components/window-title-bar";
 import { Separator } from "@/components/ui/separator";
 import {
@@ -228,6 +229,7 @@ function Pdf2zhWorkerBadge({
   status: Pdf2zhWorkerStatus | null;
   onOpenSettings: () => void;
 }) {
+  const { contentRef, widthStyle } = useMeasuredContentWidth<HTMLSpanElement>();
   const warmupElapsed = useWarmupElapsedSeconds(status?.state);
   if (!status || status.state === "idle") {
     return null;
@@ -273,7 +275,10 @@ function Pdf2zhWorkerBadge({
   const [tooltipTitle, ...tooltipDetails] = tooltipLines;
 
   const badgeContent = (
-    <>
+    <span
+      ref={contentRef}
+      className="flex w-max flex-none items-center gap-1.5 px-2"
+    >
       {spinning ? (
         <Loader2 className={cn("size-2.5 animate-spin", dotClass.replace("bg-", "text-"))} />
       ) : (
@@ -285,7 +290,7 @@ function Pdf2zhWorkerBadge({
           {actionLabel}
         </span>
       ) : null}
-    </>
+    </span>
   );
 
   return (
@@ -295,14 +300,16 @@ function Pdf2zhWorkerBadge({
           <button
             type="button"
             onClick={onOpenSettings}
-            className="flex h-6 items-center gap-1.5 rounded-lg border border-border/60 bg-muted/35 px-2 text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            className="inline-flex h-6 items-center overflow-hidden rounded-lg border border-border/60 bg-muted/35 px-0 text-[11px] text-muted-foreground transition-[width,background-color,border-color,color] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] hover:bg-muted hover:text-foreground motion-reduce:transition-none"
+            style={widthStyle}
             data-window-no-drag
           >
             {badgeContent}
           </button>
         ) : (
           <div
-            className="flex h-6 items-center gap-1.5 rounded-lg border border-border/60 bg-muted/35 px-2 text-[11px] text-muted-foreground"
+            className="inline-flex h-6 items-center overflow-hidden rounded-lg border border-border/60 bg-muted/35 px-0 text-[11px] text-muted-foreground transition-[width,background-color,border-color,color] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none"
+            style={widthStyle}
             data-window-no-drag
           >
             {badgeContent}

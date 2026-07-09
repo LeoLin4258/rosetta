@@ -18,6 +18,10 @@ import {
   Type,
 } from "lucide-react";
 
+import {
+  AnimatedWidth,
+  useMeasuredContentWidth,
+} from "@/components/animated-width";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -31,6 +35,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { cn } from "@/lib/utils";
 import type { RosettaJobSummary, RosettaTranslationFile } from "@/types/rosetta";
 
 const TARGET_LANGS = [
@@ -119,6 +124,95 @@ function formatElapsed(ms: number): string {
   return `${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
 }
 
+const topbarPanelClass =
+  "flex h-8 max-w-full items-center gap-1.5 rounded-lg border border-border/60 bg-card/80 px-2 text-xs text-muted-foreground shadow-none";
+const topbarButtonClass =
+  "h-8 gap-1.5 rounded-lg px-2.5 !text-xs font-normal leading-none transition-[width,background-color,border-color,color,opacity,transform] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)]";
+const topbarGhostButtonClass =
+  "h-6 rounded-md px-1.5 !text-xs font-normal leading-none !text-muted-foreground hover:bg-muted/70 hover:!text-foreground";
+
+function TopbarBadge({
+  children,
+  className,
+  variant = "outline",
+}: {
+  children: ReactNode;
+  className?: string;
+  variant?: "default" | "secondary" | "destructive" | "outline" | "ghost" | "link";
+}) {
+  const { contentRef, widthStyle } = useMeasuredContentWidth<HTMLSpanElement>();
+
+  return (
+    <Badge
+      variant={variant}
+      className={cn(
+        "h-5 overflow-hidden rounded-md px-0 font-normal tabular-nums transition-[width,background-color,border-color,color] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none",
+        variant === "secondary" && "bg-muted text-foreground",
+        className,
+      )}
+      style={widthStyle}
+    >
+      <span
+        ref={contentRef}
+        className="flex w-max flex-none items-center justify-center px-1.5"
+      >
+        {children}
+      </span>
+    </Badge>
+  );
+}
+
+function TopbarDivider() {
+  return <span className="h-4 w-px shrink-0 bg-border/70" aria-hidden="true" />;
+}
+
+function TopbarConfirm({
+  label,
+  confirmLabel,
+  cancelLabel = "取消",
+  destructive = false,
+  disabled = false,
+  title,
+  onConfirm,
+  onCancel,
+}: {
+  label: string;
+  confirmLabel: string;
+  cancelLabel?: string;
+  destructive?: boolean;
+  disabled?: boolean;
+  title?: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className={cn(topbarPanelClass, "gap-2 px-2.5")}>
+      <span className="whitespace-nowrap !text-xs !text-muted-foreground">{label}</span>
+      <button
+        type="button"
+        onClick={onConfirm}
+        disabled={disabled}
+        title={title}
+        className={cn(
+          "h-6 rounded-md px-1.5 !text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-40",
+          destructive
+            ? "!text-destructive/75 hover:bg-destructive/10 hover:!text-destructive"
+            : "!text-foreground hover:bg-muted/70",
+        )}
+      >
+        {confirmLabel}
+      </button>
+      <button
+        type="button"
+        onClick={onCancel}
+        className="h-6 rounded-md px-1.5 !text-xs !text-muted-foreground transition-colors hover:bg-muted/70 hover:!text-foreground"
+      >
+        {cancelLabel}
+      </button>
+    </div>
+  );
+}
+
 /// Hook: track elapsed ms while `isActive`. Anchored to `startedAtMs` (the
 /// run's persisted start timestamp) when available, so remounting this
 /// component mid-run — e.g. switching files and coming back — doesn't reset
@@ -158,7 +252,7 @@ function TranslationRunIndicator({
   elapsedLabel: string;
 }) {
   return (
-    <div className="flex h-9 max-w-[min(38rem,64vw)] items-center gap-2 rounded-lg border border-border/70 bg-muted/30 px-2.5">
+    <div className={cn(topbarPanelClass, "max-w-[min(38rem,64vw)] gap-2 px-2.5")}>
       <span className="relative flex size-2.5 shrink-0" aria-hidden="true">
         <span className="absolute inline-flex size-full animate-ping rounded-full bg-primary/25 motion-reduce:animate-none" />
         <span className="relative inline-flex size-2.5 rounded-full bg-primary/70" />
@@ -196,11 +290,11 @@ function RunMetric({
 }) {
   return (
     <span
-      className="flex min-w-0 items-center justify-center gap-1 rounded-md bg-background/70 px-1.5 py-0.5 !text-xs tabular-nums !text-muted-foreground"
+      className="flex h-5 min-w-0 items-center justify-center gap-1 rounded-md bg-background/75 px-1.5 !text-xs tabular-nums !text-muted-foreground"
       title={title}
     >
       <span className="shrink-0 !text-muted-foreground/70">{icon}</span>
-      <span className="truncate flex items-center justify-center">{children}</span>
+      <span className="flex items-center justify-center truncate">{children}</span>
     </span>
   );
 }
@@ -400,274 +494,250 @@ export function WorkspaceTopbar({
     : `${translatedCount}/${totalCount}`;
 
   return (
-    <div className="border-b border-border/60 bg-background/95 px-5 py-3" data-window-no-drag>
-      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
-        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-          {isPdf ? (
-            <div className="flex h-9 max-w-full items-center gap-2 rounded-lg border border-border/70 bg-muted/30 px-2.5">
-              <span className="!text-xs font-medium !text-foreground">页面范围</span>
-              <Badge
-                variant={pdfSelectionReady ? "secondary" : "outline"}
-                className="h-5 rounded-md px-1.5 font-normal tabular-nums"
-              >
-                {pageSelectionLabel}
-              </Badge>
-              <div className="flex items-center gap-1 border-l border-border/70 pl-1.5">
-                <Button
-                  size="xs"
-                  variant="ghost"
-                  className="h-6 px-1.5 !text-xs font-normal leading-none"
-                  onClick={onSelectAllPages}
-                  disabled={isTranslating || pdfSelectedPageCount === pdfPageCount}
-                >
-                  全选
-                </Button>
-                <Button
-                  size="xs"
-                  variant="ghost"
-                  className="h-6 px-1.5 !text-xs font-normal leading-none"
-                  onClick={onDeselectAllPages}
-                  disabled={isTranslating || pdfSelectedPageCount === 0}
-                >
-                  清空
-                </Button>
-                {showLongPdfControls ? (
+    <div className="border-b border-border/50 bg-background/95 px-4 py-2.5" data-window-no-drag>
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <AnimatedWidth className="min-w-0" contentClassName="min-w-0">
+            {isPdf ? (
+              <div className={cn(topbarPanelClass, "min-w-0")}>
+                <span className="shrink-0 !text-xs font-medium !text-foreground">
+                  页面范围
+                </span>
+                <TopbarBadge variant={pdfSelectionReady ? "secondary" : "outline"}>
+                  {pageSelectionLabel}
+                </TopbarBadge>
+                <TopbarDivider />
+                <div className="flex items-center gap-0.5">
                   <Button
                     size="xs"
                     variant="ghost"
-                    className="h-6 px-1.5 !text-xs font-normal leading-none"
-                    onClick={onSelectPreviewPages}
-                    disabled={isTranslating}
+                    className={topbarGhostButtonClass}
+                    onClick={onSelectAllPages}
+                    disabled={isTranslating || pdfSelectedPageCount === pdfPageCount}
                   >
-                    前 {longPdfPreviewPageCount} 页
+                    全选
                   </Button>
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    className={topbarGhostButtonClass}
+                    onClick={onDeselectAllPages}
+                    disabled={isTranslating || pdfSelectedPageCount === 0}
+                  >
+                    清空
+                  </Button>
+                  {showLongPdfControls ? (
+                    <Button
+                      size="xs"
+                      variant="ghost"
+                      className={topbarGhostButtonClass}
+                      onClick={onSelectPreviewPages}
+                      disabled={isTranslating}
+                    >
+                      前 {longPdfPreviewPageCount} 页
+                    </Button>
+                  ) : null}
+                </div>
+                <label className="flex h-6 cursor-pointer items-center gap-1.5 rounded-md px-1.5 !text-xs leading-none !text-muted-foreground transition-colors hover:bg-muted/70 hover:!text-foreground has-disabled:cursor-not-allowed has-disabled:opacity-50">
+                  <input
+                    type="checkbox"
+                    checked={pdfForceRetranslate}
+                    onChange={(e) => onPdfForceRetranslateChange?.(e.target.checked)}
+                    disabled={isTranslating}
+                    className="size-3 accent-primary"
+                  />
+                  强制重翻
+                </label>
+                {showLongPdfHint ? (
+                  <span className="max-w-[15rem] truncate !text-xs !text-muted-foreground">
+                    长 PDF，默认前 {longPdfPreviewPageCount} 页
+                  </span>
                 ) : null}
               </div>
-              <label className="ml-1 flex h-6 cursor-pointer items-center gap-1.5 rounded-md px-1.5 !text-xs leading-none !text-muted-foreground transition-colors hover:bg-background/80 hover:!text-foreground has-disabled:cursor-not-allowed has-disabled:opacity-50">
-                <input
-                  type="checkbox"
-                  checked={pdfForceRetranslate}
-                  onChange={(e) => onPdfForceRetranslateChange?.(e.target.checked)}
+            ) : selectedBlockCount > 0 ? (
+              <div className={topbarPanelClass}>
+                <span className="!text-xs font-medium !text-foreground">已选段落</span>
+                <TopbarBadge variant="secondary">{selectedBlockCount} 段</TopbarBadge>
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  className={topbarGhostButtonClass}
+                  onClick={onClearSelection}
                   disabled={isTranslating}
-                  className="size-3 accent-primary"
-                />
-                强制重翻
-              </label>
-              {showLongPdfHint ? (
-                <span className="max-w-[15rem] truncate !text-xs !text-muted-foreground">
-                  长 PDF，默认前 {longPdfPreviewPageCount} 页
-                </span>
-              ) : null}
-            </div>
-          ) : selectedBlockCount > 0 ? (
-            <div className="flex h-9 items-center gap-2 rounded-lg border border-border/70 bg-muted/30 px-2.5">
-              <span className="!text-xs font-medium !text-foreground">已选段落</span>
-              <Badge
-                variant="secondary"
-                className="h-5 rounded-md px-1.5 font-normal tabular-nums"
-              >
-                {selectedBlockCount} 段
-              </Badge>
-              <Button
-                size="xs"
-                variant="ghost"
-                className="h-6 px-1.5 !text-xs font-normal leading-none"
-                onClick={onClearSelection}
-                disabled={isTranslating}
-              >
-                清空
-              </Button>
-            </div>
-          ) : (
-            <div className="flex h-9 items-center gap-2 rounded-lg border border-transparent px-2.5">
-              <span className="!text-xs font-medium !text-foreground">整篇文档</span>
-              <Badge variant="outline" className="h-5 rounded-md px-1.5 font-normal tabular-nums">
-                {totalCount} 段
-              </Badge>
-            </div>
-          )}
+                >
+                  清空
+                </Button>
+              </div>
+            ) : (
+              <div className={cn(topbarPanelClass, "border-transparent bg-transparent")}>
+                <span className="!text-xs font-medium !text-foreground">整篇文档</span>
+                <TopbarBadge>{totalCount} 段</TopbarBadge>
+              </div>
+            )}
+          </AnimatedWidth>
         </div>
 
         <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
           {isTranslating ? (
             <>
-              <TranslationRunIndicator
-                phaseLabel={runPhaseLabel}
-                pageLabel={runPageLabel}
-                countValue={runCountValue}
-                countTitle={isPdf ? "已翻译字数" : "段落进度"}
-                elapsedLabel={elapsedLabel}
-              />
-              {isPausingTranslation ? (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled
-                  className="h-7 gap-1.5 px-2 !text-xs font-normal leading-none"
-                >
-                  <Loader2 className="size-3 animate-spin" />
-                  正在停止
-                </Button>
-              ) : confirmingCancel ? (
-                <div className="flex items-center gap-2">
-                  <span className="!text-xs !text-muted-foreground/60">确认暂停？</span>
-                  <button
-                    type="button"
-                    onClick={() => {
+              <AnimatedWidth>
+                <TranslationRunIndicator
+                  phaseLabel={runPhaseLabel}
+                  pageLabel={runPageLabel}
+                  countValue={runCountValue}
+                  countTitle={isPdf ? "已翻译字数" : "段落进度"}
+                  elapsedLabel={elapsedLabel}
+                />
+              </AnimatedWidth>
+              <AnimatedWidth>
+                {isPausingTranslation ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled
+                    className={cn(topbarButtonClass, "border-border/60 bg-card/80")}
+                  >
+                    <Loader2 className="size-3 animate-spin" />
+                    正在停止
+                  </Button>
+                ) : confirmingCancel ? (
+                  <TopbarConfirm
+                    label="确认暂停？"
+                    confirmLabel="暂停"
+                    cancelLabel="继续"
+                    destructive
+                    onConfirm={() => {
                       onCancelTranslation();
                       setConfirmingCancel(false);
                     }}
-                    className="!text-xs !text-destructive/70 transition-colors hover:!text-destructive"
+                    onCancel={() => setConfirmingCancel(false)}
+                  />
+                ) : (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setConfirmingCancel(true)}
+                    className={cn(topbarButtonClass, "border-border/60 bg-card/80")}
                   >
-                    暂停
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setConfirmingCancel(false)}
-                    className="!text-xs !text-muted-foreground/40 transition-colors hover:!text-muted-foreground"
-                  >
-                    继续
-                  </button>
-                </div>
-              ) : (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setConfirmingCancel(true)}
-                  className="h-7 gap-1.5 px-2 !text-xs font-normal leading-none"
-                >
-                  <Square className="size-3" /> 暂停
-                </Button>
-              )}
+                    <Square className="size-3" /> 暂停
+                  </Button>
+                )}
+              </AnimatedWidth>
             </>
           ) : (
             <>
               {hasTranslation && (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => onExport("translation")}
-                  className="h-7 gap-1.5 px-2 !text-xs font-normal leading-none"
-                >
-                  <Download className="size-3" /> 导出译文
-                </Button>
+                <AnimatedWidth>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => onExport("translation")}
+                    className={cn(topbarButtonClass, "border-border/60 bg-card/80")}
+                  >
+                    <Download className="size-3" /> 导出译文
+                  </Button>
+                </AnimatedWidth>
               )}
 
-              <div className="flex h-9 items-center gap-1 rounded-lg border border-border/70 bg-background px-1 shadow-xs">
-                <Select value={sourceLang} onValueChange={onSourceLangChange}>
-                  <SelectTrigger
-                    aria-label="原文语言"
-                    className="h-7 w-28 border-0 bg-transparent px-2 !text-xs shadow-none focus:ring-0"
-                  >
-                    <SelectValue placeholder="原文语言" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {SOURCE_LANGS.map((lang) => (
-                      <SelectItem key={lang.value} value={lang.value} className="!text-xs">
-                        {lang.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <ArrowRight className="size-3.5 !text-muted-foreground/50" aria-hidden="true" />
-                <Select value={targetLang} onValueChange={onTargetLangChange}>
-                  <SelectTrigger
-                    aria-label="译文语言"
-                    className="h-7 w-28 border-0 bg-transparent px-2 !text-xs shadow-none focus:ring-0"
-                  >
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {TARGET_LANGS.map((lang) => (
-                      <SelectItem key={lang.value} value={lang.value} className="!text-xs">
-                        {lang.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+              <AnimatedWidth>
+                <div className={cn(topbarPanelClass, "gap-1 px-1")}>
+                  <Select value={sourceLang} onValueChange={onSourceLangChange}>
+                    <SelectTrigger
+                      aria-label="原文语言"
+                      className="h-7 w-28 border-0 bg-transparent px-2 !text-xs shadow-none transition-colors focus:ring-0 data-[state=open]:bg-muted/70"
+                    >
+                      <SelectValue placeholder="原文语言" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {SOURCE_LANGS.map((lang) => (
+                        <SelectItem key={lang.value} value={lang.value} className="!text-xs">
+                          {lang.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <ArrowRight className="size-3.5 !text-muted-foreground/45" aria-hidden="true" />
+                  <Select value={targetLang} onValueChange={onTargetLangChange}>
+                    <SelectTrigger
+                      aria-label="译文语言"
+                      className="h-7 w-28 border-0 bg-transparent px-2 !text-xs shadow-none transition-colors focus:ring-0 data-[state=open]:bg-muted/70"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {TARGET_LANGS.map((lang) => (
+                        <SelectItem key={lang.value} value={lang.value} className="!text-xs">
+                          {lang.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </AnimatedWidth>
 
-              {isPdfEngineInstalling ? (
-                <Button
-                  size="sm"
-                  disabled
-                  className="h-7 gap-1.5 px-2 !text-xs font-normal leading-none"
-                >
-                  <Loader2 className="size-3 animate-spin" />
-                  {pdfEngineProgressMessage ?? "正在准备 PDF 引擎…"}
-                </Button>
-              ) : isRuntimeStarting ? (
-                <Button
-                  size="sm"
-                  disabled
-                  className="h-7 gap-1.5 px-2 !text-xs font-normal leading-none"
-                >
-                  <Loader2 className="size-3 animate-spin" />
-                  正在启动模型…
-                </Button>
-              ) : selectedBlockCount > 0 ? (
-                <Button
-                  size="sm"
-                  disabled={translateDisabled}
-                  onClick={onRetranslateSelected}
-                  className="h-7 gap-1.5 px-2 !text-xs font-normal leading-none"
-                  title={translateTitle}
-                >
-                  <RefreshCw className="size-3" />
-                  重翻选中 {selectedBlockCount} 段
-                </Button>
-              ) : allTranslated ? (
-                confirmingRetranslateAll ? (
-                  <div className="flex items-center gap-2">
-                    <span className="!text-xs !text-muted-foreground/60">
-                      {isPdf ? `确认重翻${selectedPdfLabel}？` : "确认重翻全部？"}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => {
+              <AnimatedWidth>
+                {isPdfEngineInstalling ? (
+                  <Button size="sm" disabled className={topbarButtonClass}>
+                    <Loader2 className="size-3 animate-spin" />
+                    {pdfEngineProgressMessage ?? "正在准备 PDF 引擎…"}
+                  </Button>
+                ) : isRuntimeStarting ? (
+                  <Button size="sm" disabled className={topbarButtonClass}>
+                    <Loader2 className="size-3 animate-spin" />
+                    正在启动模型…
+                  </Button>
+                ) : selectedBlockCount > 0 ? (
+                  <Button
+                    size="sm"
+                    disabled={translateDisabled}
+                    onClick={onRetranslateSelected}
+                    className={topbarButtonClass}
+                    title={translateTitle}
+                  >
+                    <RefreshCw className="size-3" />
+                    重翻选中 {selectedBlockCount} 段
+                  </Button>
+                ) : allTranslated ? (
+                  confirmingRetranslateAll ? (
+                    <TopbarConfirm
+                      label={isPdf ? `确认重翻${selectedPdfLabel}？` : "确认重翻全部？"}
+                      confirmLabel="确定"
+                      destructive
+                      disabled={translateDisabled}
+                      title={translateTitle}
+                      onConfirm={() => {
                         if (translateDisabled) return;
                         if (isPdf) onRetranslateSelected();
                         else onRetranslateAll();
                         setConfirmingRetranslateAll(false);
                       }}
+                      onCancel={() => setConfirmingRetranslateAll(false)}
+                    />
+                  ) : (
+                    <Button
+                      size="sm"
                       disabled={translateDisabled}
+                      onClick={() => setConfirmingRetranslateAll(true)}
+                      className={topbarButtonClass}
                       title={translateTitle}
-                      className="!text-xs !text-destructive/70 transition-colors hover:!text-destructive disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:!text-destructive/70"
                     >
-                      确定
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setConfirmingRetranslateAll(false)}
-                      className="!text-xs !text-muted-foreground/40 transition-colors hover:!text-muted-foreground"
-                    >
-                      取消
-                    </button>
-                  </div>
+                      <RefreshCw className="size-3" />
+                      {isPdf ? `重翻${selectedPdfLabel}` : "重翻全部"}
+                    </Button>
+                  )
                 ) : (
                   <Button
                     size="sm"
                     disabled={translateDisabled}
-                    onClick={() => setConfirmingRetranslateAll(true)}
-                    className="h-7 gap-1.5 px-2 !text-xs font-normal leading-none"
+                    onClick={() => onTranslate(targetLang, sourceLang)}
+                    className={topbarButtonClass}
                     title={translateTitle}
                   >
-                    <RefreshCw className="size-3" />
-                    {isPdf ? `重翻${selectedPdfLabel}` : "重翻全部"}
+                    <Play className="size-3" />
+                    {isPdf ? `翻译${selectedPdfLabel}` : "翻译"}
                   </Button>
-                )
-              ) : (
-                <Button
-                  size="sm"
-                  disabled={translateDisabled}
-                  onClick={() => onTranslate(targetLang, sourceLang)}
-                  className="h-7 gap-1.5 px-2 !text-xs font-normal leading-none"
-                  title={translateTitle}
-                >
-                  <Play className="size-3" />
-                  {isPdf ? `翻译${selectedPdfLabel}` : "翻译"}
-                </Button>
-              )}
+                )}
+              </AnimatedWidth>
             </>
           )}
         </div>
