@@ -3,7 +3,6 @@ import {
   AlertTriangle,
   CheckCircle2,
   ChevronDown,
-  Cpu,
   Download,
   LoaderCircle,
   Play,
@@ -179,10 +178,7 @@ export function LocalRwkvPanel({
   }
 
   async function setProfileDetailsOpen(profileId: string, nextOpen: boolean) {
-    setDetailsOpenByProfileId((current) => ({
-      ...current,
-      [profileId]: nextOpen,
-    }));
+    setDetailsOpenByProfileId(nextOpen ? { [profileId]: true } : {});
 
     if (!nextOpen || logsByProfileId[profileId] !== undefined) {
       return;
@@ -203,35 +199,21 @@ export function LocalRwkvPanel({
   return (
     <section
       className={cn(
-        "flex flex-col gap-4 rounded-lg border border-black/8 bg-muted/20 p-4 dark:border-white/8 dark:bg-muted/10",
+        "flex flex-col gap-4",
         className
       )}
       id="local-rwkv"
     >
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex min-w-0 gap-3">
-          <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-background text-muted-foreground ring-1 ring-black/8 dark:ring-white/8">
-            <Cpu className="size-4" />
-          </div>
-          <div className="min-w-0">
-            <h3 className="text-sm font-semibold tracking-normal">
-              本地运行时
-            </h3>
-            <p className="mt-1 max-w-2xl text-xs leading-5 text-muted-foreground">
-              选择、启动或修复本机翻译后端。
-            </p>
-          </div>
-        </div>
+      <div className="flex items-center justify-between gap-4">
+        <h3 className="text-sm font-semibold tracking-normal">本地模型</h3>
         <RuntimeBadge status={selectedStatus} isInstallActive={isInstallActive} />
       </div>
 
-      <div className="flex flex-col gap-3 border-t border-black/8 pt-3 dark:border-white/8">
+      <div className="flex flex-col gap-3">
         {isTranslationRunning && (
-          <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-300">
+          <div className="flex items-start gap-2 rounded-md border border-amber-500/25 bg-amber-500/8 px-3 py-2 text-sm text-amber-800 dark:text-amber-300">
             <AlertTriangle className="mt-0.5 size-4 shrink-0" />
-            <span>
-              正在翻译。完成或暂停当前任务后，才能切换、启动、停止或修复本地运行时。
-            </span>
+            <span>停止当前翻译后才能切换或修复本地模型。</span>
           </div>
         )}
 
@@ -245,9 +227,9 @@ export function LocalRwkvPanel({
         )}
 
         {profileStatuses.length > 0 ? (
-          <div className="grid gap-2.5">
+          <div className="overflow-hidden rounded-lg border border-border/70 bg-muted/15">
             {profileStatuses.map((profileStatus) => (
-              <RuntimeProfileCard
+              <RuntimeProfileRow
                 key={profileStatus.profile.id}
                 status={profileStatus}
                 isSelected={profileStatus.profile.id === activeProfileId}
@@ -293,9 +275,9 @@ export function LocalRwkvPanel({
             ))}
           </div>
         ) : (
-          <div className="flex items-center gap-2 rounded-md border bg-muted/20 p-3 text-sm text-muted-foreground">
+          <div className="flex items-center gap-2 rounded-md border border-border/70 bg-muted/20 p-3 text-sm text-muted-foreground">
             <LoaderCircle className="size-4 animate-spin" />
-            正在读取本地运行时状态
+            正在读取本地模型状态
           </div>
         )}
 
@@ -307,7 +289,7 @@ export function LocalRwkvPanel({
   );
 }
 
-function RuntimeProfileCard({
+function RuntimeProfileRow({
   status,
   isSelected,
   isActionTarget,
@@ -350,12 +332,8 @@ function RuntimeProfileCard({
   return (
     <article
       className={cn(
-        "rounded-lg border bg-card/62 p-4 transition-colors dark:bg-card/45",
-        isSelected
-          ? status.state === "ready"
-            ? "border-emerald-500/35 bg-emerald-500/5 ring-1 ring-emerald-500/15 dark:border-emerald-400/35 dark:bg-emerald-400/8"
-            : "border-foreground/20 ring-1 ring-foreground/10"
-          : "border-border"
+        "border-t border-border/70 p-4 transition-colors first:border-t-0",
+        isSelected && "bg-muted/35"
       )}
     >
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -367,7 +345,7 @@ function RuntimeProfileCard({
             {isRecommended && (
               <Badge
                 variant="outline"
-                className="h-5 border-transparent bg-emerald-500/12 px-1.5 text-[11px] text-emerald-700 ring-1 ring-inset ring-emerald-500/15 dark:text-emerald-300"
+                className="h-5 border-transparent bg-muted px-1.5 text-[11px] font-normal text-muted-foreground ring-1 ring-inset ring-border/70"
               >
                 推荐
               </Badge>
@@ -375,7 +353,7 @@ function RuntimeProfileCard({
             {isSelected && (
               <Badge
                 variant="outline"
-                className="h-5 border-transparent bg-foreground/8 px-1.5 text-[11px] text-foreground ring-1 ring-inset ring-black/6 dark:bg-white/10 dark:ring-white/8"
+                className="h-5 border-transparent bg-foreground/8 px-1.5 text-[11px] font-normal text-foreground ring-1 ring-inset ring-border/70 dark:bg-white/10"
               >
                 当前
               </Badge>
@@ -387,7 +365,7 @@ function RuntimeProfileCard({
               {specs.map((item) => (
                 <span
                   key={item}
-                  className="rounded-md bg-muted/55 px-2 py-1 text-[11px] leading-none text-muted-foreground"
+                  className="rounded-md bg-background/70 px-2 py-1 text-[11px] leading-none text-muted-foreground ring-1 ring-border/50"
                 >
                   {item}
                 </span>
@@ -424,7 +402,7 @@ function RuntimeProfileCard({
       </div>
 
       <div className="mt-3 flex flex-col gap-2">
-        <div className="flex items-start gap-2 rounded-md bg-muted/25 px-3 py-2 dark:bg-muted/15">
+        <div className="flex items-start gap-2 rounded-md bg-background/65 px-3 py-2 ring-1 ring-border/60">
           {summary.spinning ? (
             <LoaderCircle className="mt-0.5 size-3.5 shrink-0 animate-spin text-muted-foreground" />
           ) : (
@@ -451,15 +429,15 @@ function RuntimeProfileCard({
               >
                 <ChevronDown
                   className={cn(
-                    "size-3.5 transition-transform",
+                    "size-3.5 transition-transform duration-200 ease-[cubic-bezier(0.22,1,0.36,1)]",
                     detailsOpen && "rotate-180"
                   )}
                 />
-                技术信息与日志
+                详情
               </button>
             </CollapsibleTrigger>
-            <CollapsibleContent>
-              <div className="grid gap-4 border-t pt-4 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,0.8fr)]">
+            <CollapsibleContent className="rosetta-settings-collapsible-content">
+              <div className="mt-2 grid gap-4 border-t border-border/70 pt-4 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,0.8fr)]">
                 <ModelInfoRows status={status} />
                 <div className="flex min-w-0 flex-col gap-2">
                   <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -607,7 +585,7 @@ function RuntimeBadge({
     return (
       <Badge
         variant="outline"
-        className="gap-1 border-transparent bg-amber-500/12 text-amber-800 ring-1 ring-inset ring-black/5 dark:ring-white/6 dark:text-amber-300"
+        className="h-5 gap-1 border-transparent bg-amber-500/10 px-1.5 text-[11px] font-normal text-amber-800 ring-1 ring-inset ring-amber-500/20 dark:text-amber-300"
       >
         <LoaderCircle className="size-3 animate-spin" /> 安装中
       </Badge>
@@ -618,9 +596,9 @@ function RuntimeBadge({
     return (
       <Badge
         variant="outline"
-        className="gap-1 border-transparent bg-emerald-500/12 text-emerald-700 ring-1 ring-inset ring-black/5 dark:ring-white/6 dark:text-emerald-300"
+        className="h-5 gap-1 border-transparent bg-foreground/8 px-1.5 text-[11px] font-normal text-foreground ring-1 ring-inset ring-border/70 dark:bg-white/10"
       >
-        <CheckCircle2 className="size-3" /> 当前运行中
+        <CheckCircle2 className="size-3" /> 运行中
       </Badge>
     );
   }
@@ -628,7 +606,7 @@ function RuntimeBadge({
     return (
       <Badge
         variant="outline"
-        className="gap-1 border-transparent bg-cyan-500/12 text-cyan-700 ring-1 ring-inset ring-black/5 dark:ring-white/6 dark:text-cyan-300"
+        className="h-5 gap-1 border-transparent bg-muted px-1.5 text-[11px] font-normal text-muted-foreground ring-1 ring-inset ring-border/70"
       >
         <LoaderCircle className="size-3 animate-spin" /> 启动中
       </Badge>
@@ -641,7 +619,19 @@ function StateBadge({ state }: { state: ManagedRuntimeState }) {
   const label = stateLabel(state);
   if (!label) return null;
   return (
-    <Badge variant="outline" className="h-5 px-1.5 text-[11px] font-normal">
+    <Badge
+      variant="outline"
+      className={cn(
+        "h-5 border-transparent px-1.5 text-[11px] font-normal ring-1 ring-inset ring-border/70",
+        state === "failed"
+          ? "bg-destructive/10 text-destructive ring-destructive/20"
+          : state === "unsupported"
+            ? "bg-muted/60 text-muted-foreground"
+            : state === "not-installed" || state === "stopped" || state === "installed"
+              ? "bg-muted/70 text-muted-foreground"
+              : "bg-foreground/8 text-foreground dark:bg-white/10"
+      )}
+    >
       {label}
     </Badge>
   );
@@ -654,7 +644,7 @@ function resolveStatus(
   switch (state) {
     case "ready":
       return {
-        dot: status.process.cpuFallback ? "bg-amber-400" : "bg-emerald-500",
+        dot: status.process.cpuFallback ? "bg-amber-500" : "bg-primary",
         label: status.process.cpuFallback
           ? "运行中，当前为 CPU 回退模式"
           : "运行中，可用于本地翻译",
@@ -664,13 +654,13 @@ function resolveStatus(
       };
     case "starting":
       return {
-        dot: "bg-blue-500",
-        label: "正在启动本地服务",
+        dot: "bg-primary",
+        label: "正在启动本地模型",
         spinning: true,
       };
     case "installed":
       return {
-        dot: "bg-amber-400",
+        dot: "bg-muted-foreground/50",
         label: "已安装，启动后可以用于翻译",
       };
     case "stopped":
@@ -707,7 +697,7 @@ function resolveStatus(
 
 function summarizeRuntimeError(message: string | null | undefined): string {
   if (!message) {
-    return "本地运行时启动失败。";
+    return "本地模型启动失败。";
   }
   if (
     message.includes("Windows 无法连接") ||
@@ -896,7 +886,7 @@ function InstallProgressRow({
   return (
     <div className="flex flex-col gap-3 rounded-md border bg-muted/20 p-3">
       <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
-        <span className="truncate">{message || "正在安装本地运行时"}</span>
+        <span className="truncate">{message || "正在安装本地模型"}</span>
         <span className="shrink-0 tabular-nums">
           {percent}%{speedBytesPerSec > 0 ? ` · ${formatSpeed(speedBytesPerSec)}` : ""}
         </span>

@@ -51,7 +51,7 @@ export function Pdf2zhPanel({ className }: { className?: string }) {
   return (
     <section
       className={cn(
-        "flex flex-col gap-5 rounded-xl border border-black/8 bg-muted/28 p-5 dark:border-white/8 dark:bg-muted/12",
+        "flex flex-col gap-4",
         className
       )}
       id="pdf2zh"
@@ -124,15 +124,15 @@ export function Pdf2zhPanel({ className }: { className?: string }) {
               >
                 <ChevronDown
                   className={cn(
-                    "size-3.5 transition-transform",
+                    "size-3.5 transition-transform duration-200 ease-[cubic-bezier(0.22,1,0.36,1)]",
                     detailsOpen && "rotate-180"
                   )}
                 />
-                技术信息
+                详情
               </button>
             </CollapsibleTrigger>
-            <CollapsibleContent>
-              <div className="mt-2 flex flex-col gap-4 border-t pt-4">
+            <CollapsibleContent className="rosetta-settings-collapsible-content">
+              <div className="mt-2 flex flex-col gap-4 border-t border-border/70 pt-4">
                 {rt.status && <Pdf2zhInfoRows status={rt.status} />}
               </div>
             </CollapsibleContent>
@@ -182,7 +182,7 @@ function resolveStatus(
 ): { dot: string; label: string; sub?: string; spinning?: boolean } {
   if (isInstallActive) {
     return {
-      dot: "bg-blue-500",
+      dot: "bg-primary",
       label: "正在安装 PDF 组件",
       sub: "安装完成后即可翻译 PDF。",
       spinning: true,
@@ -197,7 +197,7 @@ function resolveStatus(
   }
   if (state === "installed") {
     return {
-      dot: "bg-emerald-500",
+      dot: "bg-primary",
       label: "PDF 组件已就绪",
     };
   }
@@ -212,7 +212,7 @@ function resolveStatus(
     return {
       dot: "bg-amber-500",
       label: "PDF 组件需要更新",
-      sub: "重新安装后即可使用新版内置版面模型。",
+      sub: "重新安装后即可使用新版组件。",
     };
   }
   return {
@@ -314,7 +314,7 @@ function Pdf2zhBadge({
       <Badge
         variant="outline"
         className={cn(
-          "gap-1 border-transparent bg-amber-500/12 text-amber-800 ring-1 ring-inset ring-black/5 dark:ring-white/6 dark:text-amber-300",
+          "h-5 gap-1 border-transparent bg-amber-500/10 px-1.5 text-[11px] font-normal text-amber-800 ring-1 ring-inset ring-amber-500/20 dark:text-amber-300",
           className
         )}
       >
@@ -327,7 +327,7 @@ function Pdf2zhBadge({
       <Badge
         variant="outline"
         className={cn(
-          "gap-1 border-transparent bg-emerald-500/12 text-emerald-700 ring-1 ring-inset ring-black/5 dark:ring-white/6 dark:text-emerald-300",
+          "h-5 gap-1 border-transparent bg-foreground/8 px-1.5 text-[11px] font-normal text-foreground ring-1 ring-inset ring-border/70 dark:bg-white/10",
           className
         )}
       >
@@ -340,7 +340,7 @@ function Pdf2zhBadge({
       <Badge
         variant="outline"
         className={cn(
-          "border-transparent bg-amber-500/12 text-amber-800 ring-1 ring-inset ring-black/5 dark:ring-white/6 dark:text-amber-300",
+          "h-5 border-transparent bg-muted px-1.5 text-[11px] font-normal text-muted-foreground ring-1 ring-inset ring-border/70",
           className
         )}
       >

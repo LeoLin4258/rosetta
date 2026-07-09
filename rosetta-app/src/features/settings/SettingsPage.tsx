@@ -35,7 +35,6 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import {
   Collapsible,
   CollapsibleContent,
@@ -94,10 +93,10 @@ type UpdateStatus =
   | "ready-to-restart"
   | "failed";
 
-const SETTINGS_CARD_CLASS =
-  "bg-card shadow-sm ring-1 ring-black/6 dark:bg-card/80 dark:ring-white/8 dark:shadow-[0_0_0_1px_rgba(255,255,255,0.02)]";
-const SETTINGS_SUBPANEL_CLASS =
-  "rounded-lg border border-black/8 bg-muted/28 dark:border-white/8 dark:bg-muted/12";
+const SETTINGS_SECTION_CLASS =
+  "grid gap-5 border-t border-border/70 py-7 md:grid-cols-[12rem_minmax(0,1fr)] md:gap-8";
+const SETTINGS_PANEL_CLASS =
+  "rounded-lg border border-border/70 bg-muted/20";
 
 export function SettingsPage() {
   const themeMode = useRosettaStore((state) => state.themeMode);
@@ -273,15 +272,12 @@ export function SettingsPage() {
 
   return (
     <ScrollArea className="h-full w-full">
-      <section className="mx-auto mb-24 flex w-full max-w-5xl flex-col gap-10 px-6 py-8">
-        <header className="flex flex-col gap-3">
+      <section className="mx-auto mb-24 flex w-full max-w-5xl flex-col gap-7 px-6 py-8">
+        <header className="flex flex-col gap-2">
           <h1 className="text-2xl font-semibold tracking-normal">设置</h1>
-          <p className="max-w-3xl text-sm text-muted-foreground">
-            选择翻译方式，检查本地组件，并管理外观与更新。
-          </p>
         </header>
 
-        <main className="flex w-full flex-col gap-10">
+        <main className="flex w-full flex-col">
           <AppearanceSettingsSection
             setThemeMode={setThemeMode}
             themeMode={themeMode}
@@ -393,13 +389,14 @@ function TranslationAiSection({
       return;
     }
     setLocalSettingsOpen(true);
+    onExternalApiOpenChange(false);
     window.setTimeout(() => {
       document.getElementById("local-rwkv")?.scrollIntoView({
         block: "start",
         behavior: "smooth",
       });
     }, 0);
-  }, [searchParams]);
+  }, [onExternalApiOpenChange, searchParams]);
 
   useEffect(() => {
     if (!switchingTo) return undefined;
@@ -423,154 +420,142 @@ function TranslationAiSection({
     setSwitchingTo(preference);
   }
 
+  function setLocalPanelOpen(nextOpen: boolean) {
+    setLocalSettingsOpen(nextOpen);
+    if (nextOpen) onExternalApiOpenChange(false);
+  }
+
+  function setRemotePanelOpen(nextOpen: boolean) {
+    onExternalApiOpenChange(nextOpen);
+    if (nextOpen) setLocalSettingsOpen(false);
+  }
+
   return (
-    <section className="flex flex-col gap-3" id="translation-ai">
-      <Card className={SETTINGS_CARD_CLASS}>
-        <CardContent className="flex flex-col gap-6 py-6">
-          <SettingsRowHeader
-            description={
-              <>
-                文档翻译使用的后端。
-                <SemanticBadge tone={currentEngineTone}>
-                  {currentEngineLabel}
-                  <span
-                    className={cn(
-                      "size-1.5 rounded-full",
-                      selectedProviderReady ? "bg-emerald-500" : "bg-amber-500"
-                    )}
-                  />
-                </SemanticBadge>
-              </>
+    <SettingsSection
+      description={
+        <>
+          当前使用
+          <SemanticBadge tone={currentEngineTone}>{currentEngineLabel}</SemanticBadge>
+        </>
+      }
+      icon={<Globe />}
+      id="translation-ai"
+      title="翻译引擎"
+    >
+      <div className="flex flex-col gap-4">
+        <div className={SETTINGS_PANEL_CLASS}>
+          <BackendChoiceRow
+            description={localServiceDescription(state, selectedRuntimeStatus)}
+            icon={<Cpu className="size-4" />}
+            label="本地模型"
+            onSelect={() => selectProviderPreference("local")}
+            selected={selectedLocal}
+            status={selectedLocal ? (localReady ? "active" : "blocked") : "idle"}
+            statusLabel={
+              switchingTo === "local"
+                ? "正在切换"
+                : selectedLocal
+                ? localReady
+                  ? "当前"
+                  : localServiceSelectedProblemLabel(state)
+                : localServiceStatusLabel(state)
             }
-            icon={<Globe />}
-            title="翻译引擎"
+            switchDisabled={switchDisabled}
           />
+          <BackendChoiceRow
+            description={
+              remoteApiConfigured
+                ? displayRemoteApiUrl(rwkv)
+                : "填写服务地址后可选择。"
+            }
+            icon={<Cloud className="size-4" />}
+            label="远程服务"
+            onSelect={() => selectProviderPreference("remote-api")}
+            selected={!selectedLocal}
+            status={!selectedLocal ? (remoteApiConfigured ? "active" : "blocked") : "idle"}
+            statusLabel={
+              switchingTo === "remote-api"
+                ? "正在切换"
+                : !selectedLocal
+                ? remoteApiConfigured
+                  ? "当前"
+                  : "缺少配置"
+                : remoteApiConfigured
+                  ? remoteApiFallbackLabel(apiStatus)
+                  : "未配置"
+            }
+            switchDisabled={switchDisabled}
+          />
+        </div>
 
-          <div className="grid gap-3 md:grid-cols-2">
-            <BackendChoiceCard
-              description={localServiceDescription(state, selectedRuntimeStatus)}
-              icon={<Cpu className="size-4" />}
-              label="本地模型"
-              onSelect={() => selectProviderPreference("local")}
-              selected={selectedLocal}
-              status={
-                selectedLocal ? (localReady ? "active" : "blocked") : "idle"
-              }
-              statusLabel={
-                switchingTo === "local"
-                  ? "正在切换"
-                  : selectedLocal
-                  ? localReady
-                    ? "已选择"
-                    : localServiceSelectedProblemLabel(state)
-                  : localServiceStatusLabel(state)
-              }
-              switchDisabled={switchDisabled}
-            />
-            <BackendChoiceCard
-              description={
-                remoteApiConfigured
-                  ? displayRemoteApiUrl(rwkv)
-                  : "配置地址和口令后可用。"
-              }
-              icon={<Cloud className="size-4" />}
-              label="远程服务"
-              onSelect={() => selectProviderPreference("remote-api")}
-              selected={!selectedLocal}
-              status={
-                !selectedLocal
-                  ? remoteApiConfigured
-                    ? "active"
-                    : "blocked"
-                  : "idle"
-              }
-              statusLabel={
-                switchingTo === "remote-api"
-                  ? "正在切换"
-                  : !selectedLocal
-                  ? remoteApiConfigured
-                    ? "已选择"
-                    : "缺少配置"
-                  : remoteApiConfigured
-                    ? remoteApiFallbackLabel(apiStatus)
-                    : "未配置"
-              }
-              switchDisabled={switchDisabled}
-            />
-          </div>
+        {isTranslationRunning ? (
+          <InlineNotice tone="warning">停止当前翻译后才能切换引擎。</InlineNotice>
+        ) : isSwitchingProvider ? (
+          <InlineNotice icon={<LoaderCircle className="size-3.5 animate-spin" />}>
+            正在切换翻译引擎
+          </InlineNotice>
+        ) : null}
 
-          {isTranslationRunning ? (
-            <p className="text-xs text-amber-700 dark:text-amber-300">
-              正在翻译。停止当前任务后再切换翻译引擎。
-            </p>
-          ) : isSwitchingProvider ? (
-            <p className="flex items-center gap-1.5 text-xs text-sky-700 dark:text-sky-300">
-              <LoaderCircle className="size-3.5 animate-spin" />
-              正在切换翻译引擎。
-            </p>
-          ) : null}
-
-          <div className="flex flex-wrap gap-2.5">
-            <Button
-              aria-expanded={localSettingsOpen}
-              onClick={() => setLocalSettingsOpen((open) => !open)}
-              size="sm"
-              type="button"
-              variant="outline"
-            >
-              <Cpu data-icon="inline-start" />
-              本地运行时
+        <div className="flex flex-wrap gap-2">
+          <Button
+            aria-expanded={localSettingsOpen}
+            onClick={() => setLocalPanelOpen(!localSettingsOpen)}
+            size="sm"
+            type="button"
+            variant={localSettingsOpen ? "secondary" : "outline"}
+          >
+            <Cpu data-icon="inline-start" />
+            本地模型
               <ChevronDown
                 className={cn(
-                  "ml-1 size-3.5 transition-transform",
+                  "ml-1 size-3.5 transition-transform duration-200 ease-[cubic-bezier(0.22,1,0.36,1)]",
                   localSettingsOpen && "rotate-180"
                 )}
               />
-            </Button>
-            <CollapsibleTriggerButton
-              icon={<Cloud data-icon="inline-start" />}
-              label="远程服务"
-              open={externalApiOpen}
-              onOpenChange={onExternalApiOpenChange}
-            />
-          </div>
-
-          <Collapsible
-            open={localSettingsOpen}
-            onOpenChange={setLocalSettingsOpen}
-          >
-            <CollapsibleContent>
-              <div className="border-t border-black/8 pt-6 dark:border-white/8">
-                <LocalRwkvPanel isTranslationRunning={isTranslationRunning} />
-              </div>
-            </CollapsibleContent>
-          </Collapsible>
-
-          <Collapsible
+          </Button>
+          <CollapsibleTriggerButton
+            icon={<Cloud data-icon="inline-start" />}
+            label="远程服务"
             open={externalApiOpen}
-            onOpenChange={onExternalApiOpenChange}
-          >
-            <CollapsibleContent>
-              <div className="border-t border-black/8 pt-6 dark:border-white/8">
-                <RemoteApiSettingsPanel
-                  apiError={apiError}
-                  apiProbeResult={apiProbeResult}
-                  apiStatus={apiStatus}
-                  canProbeApi={canProbeApi}
-                  isProbingApi={isProbingApi}
-                  missingConnectionFields={missingConnectionFields}
-                  onProbeApi={onProbeApi}
-                  rwkv={rwkv}
-                  setTranslationMode={setTranslationMode}
-                  updateTextField={updateTextField}
-                  updateTimeout={updateTimeout}
-                />
-              </div>
-            </CollapsibleContent>
-          </Collapsible>
-        </CardContent>
-      </Card>
-    </section>
+            onOpenChange={setRemotePanelOpen}
+          />
+        </div>
+
+        <Collapsible
+          open={localSettingsOpen}
+          onOpenChange={setLocalPanelOpen}
+        >
+          <CollapsibleContent className="rosetta-settings-collapsible-content">
+            <div className="border-t border-border/70 pt-4">
+              <LocalRwkvPanel isTranslationRunning={isTranslationRunning} />
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
+
+        <Collapsible
+          open={externalApiOpen}
+          onOpenChange={setRemotePanelOpen}
+        >
+          <CollapsibleContent className="rosetta-settings-collapsible-content">
+            <div className="border-t border-border/70 pt-4">
+              <RemoteApiSettingsPanel
+                apiError={apiError}
+                apiProbeResult={apiProbeResult}
+                apiStatus={apiStatus}
+                canProbeApi={canProbeApi}
+                isProbingApi={isProbingApi}
+                missingConnectionFields={missingConnectionFields}
+                onProbeApi={onProbeApi}
+                rwkv={rwkv}
+                setTranslationMode={setTranslationMode}
+                updateTextField={updateTextField}
+                updateTimeout={updateTimeout}
+              />
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
+      </div>
+    </SettingsSection>
   );
 }
 
@@ -591,13 +576,13 @@ function CollapsibleTriggerButton({
       onClick={() => onOpenChange(!open)}
       size="sm"
       type="button"
-      variant="outline"
+      variant={open ? "secondary" : "outline"}
     >
       {icon}
       {label}
       <ChevronDown
         className={cn(
-          "ml-1 size-3.5 transition-transform",
+          "ml-1 size-3.5 transition-transform duration-200 ease-[cubic-bezier(0.22,1,0.36,1)]",
           open && "rotate-180"
         )}
       />
@@ -636,21 +621,18 @@ function RemoteApiSettingsPanel({
   updateTimeout: (event: ChangeEvent<HTMLInputElement>) => void;
 }) {
   return (
-    <section className={cn("flex flex-col gap-6 p-5", SETTINGS_SUBPANEL_CLASS)}>
-      <div>
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <h3 className="text-sm font-semibold tracking-normal">
-              远程翻译服务
-            </h3>
-            <p className="mt-1 text-sm text-muted-foreground">
-              填写兼容 OpenAI Chat Completions 的服务地址。选择远程服务后，文本会发送到该地址。
-            </p>
-          </div>
-          <StatusBadge status={apiStatus} />
+    <section className="flex flex-col gap-5">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold tracking-normal">远程服务</h3>
+          <p className="mt-1 text-sm text-muted-foreground">
+            选择远程服务时，待翻译文本会发送到这里。
+          </p>
         </div>
+        <StatusBadge status={apiStatus} />
       </div>
-      <div className="flex flex-col gap-6">
+
+      <div className="flex flex-col gap-5">
         <div className="grid gap-4 md:grid-cols-2">
           <SettingField htmlFor="rwkv-base-url" label="服务地址">
             <Input
@@ -709,7 +691,7 @@ function RemoteApiSettingsPanel({
           </SettingField>
 
           <div className="flex flex-col gap-2">
-            <Label>译文生成模式</Label>
+            <Label>生成模式</Label>
             <ToggleGroup
               className="grid grid-cols-3"
               onValueChange={(value) => {
@@ -728,7 +710,7 @@ function RemoteApiSettingsPanel({
           </div>
         </div>
 
-        <div className="flex flex-col gap-3 rounded-lg border border-black/8 bg-background/60 p-4 dark:border-white/8 dark:bg-background/40">
+        <div className="flex flex-col gap-3 rounded-lg border border-border/70 bg-muted/20 p-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex min-w-0 items-center gap-2 text-sm">
               <ShieldCheck className="text-muted-foreground" />
@@ -758,7 +740,7 @@ function RemoteApiSettingsPanel({
   );
 }
 
-function BackendChoiceCard({
+function BackendChoiceRow({
   description,
   icon,
   label,
@@ -781,7 +763,7 @@ function BackendChoiceCard({
 }) {
   const badgeTone =
     status === "active"
-      ? "success"
+      ? "selected"
       : status === "blocked"
         ? "warning"
         : "neutral";
@@ -790,11 +772,10 @@ function BackendChoiceCard({
     <button
       aria-pressed={selected}
       className={cn(
-        "group flex min-h-24 w-full items-start gap-3 rounded-lg border border-black/8 bg-background/66 p-3.5 text-left transition-colors dark:border-white/8 dark:bg-background/28",
-        "hover:border-black/14 hover:bg-muted/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:hover:border-white/16 dark:hover:bg-muted/12",
-        selected &&
-          "border-emerald-500/35 bg-emerald-500/5 ring-1 ring-emerald-500/15 dark:border-emerald-400/35 dark:bg-emerald-400/8",
-        status === "blocked" && selected && "border-amber-500/25 bg-amber-500/8",
+        "group flex w-full items-start gap-3 border-t border-border/70 p-3 text-left transition-colors first:border-t-0",
+        "hover:bg-muted/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        selected && "bg-muted/35",
+        status === "blocked" && selected && "bg-amber-500/8",
         switchDisabled && !selected && "cursor-not-allowed opacity-60"
       )}
       disabled={switchDisabled && !selected}
@@ -803,12 +784,9 @@ function BackendChoiceCard({
     >
       <div
         className={cn(
-          "flex size-8 shrink-0 items-center justify-center rounded-md ring-1 ring-black/8 dark:ring-white/8",
-          status === "active" &&
-            "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-          status === "blocked" &&
-            "bg-amber-500/12 text-amber-700 dark:text-amber-300",
-          status === "idle" && "bg-muted/40 text-muted-foreground"
+          "mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md bg-background text-muted-foreground ring-1 ring-border/80",
+          selected && "text-foreground",
+          status === "blocked" && "text-amber-700 dark:text-amber-300"
         )}
       >
         {icon}
@@ -821,7 +799,7 @@ function BackendChoiceCard({
               {statusLabel}
             </SemanticBadge>
             {selected ? (
-              <CheckCircle2 className="size-4 text-emerald-700 dark:text-emerald-300" />
+              <CheckCircle2 className="size-4 text-foreground/70" />
             ) : null}
           </div>
         </div>
@@ -859,10 +837,10 @@ function localServiceDescription(
   status: ManagedRuntimeProfileStatus | null
 ) {
   if (isManagedRuntimeProfileReady(status)) {
-    return "本机运行中。";
+    return "已在本机运行。";
   }
   if (state === "installed" || state === "stopped") {
-    return "模型已安装但未启动。";
+    return "已安装，启动后可用。";
   }
   if (state === "starting") {
     return "模型正在加载。";
@@ -871,10 +849,10 @@ function localServiceDescription(
     return "尚未下载本地模型。";
   }
   if (state === "failed") {
-    return "本地模型启动失败。打开管理面板查看日志。";
+    return "启动失败，可在下方修复。";
   }
   if (state === "unsupported") {
-    return "当前设备不能运行 Rosetta 管理的本地模型。";
+    return "当前设备不支持。";
   }
   return "正在读取本地模型状态。";
 }
@@ -902,56 +880,46 @@ function AppearanceSettingsSection({
   themeMode: AppThemeMode;
 }) {
   return (
-    <Card className={SETTINGS_CARD_CLASS} id="appearance">
-      <CardContent className="flex flex-col gap-6 py-6">
-        <SettingsRowHeader
-          description="选择窗口主题。"
-          icon={<Palette />}
-          title="外观"
-        />
-
-        <div className="grid gap-3 border-t border-black/8 pt-6 dark:border-white/8 md:grid-cols-[8rem_minmax(18rem,1fr)] md:items-center">
-          <Label>主题</Label>
-          <ToggleGroup
-            className="grid grid-cols-3"
-            onValueChange={(value) => {
-              if (value) {
-                setThemeMode(value as AppThemeMode);
-              }
-            }}
-            type="single"
-            value={themeMode}
-            variant="outline"
-          >
-            {themeOptions.map((option) => (
-              <ToggleGroupItem key={option.value} value={option.value}>
-                {option.label}
-              </ToggleGroupItem>
-            ))}
-          </ToggleGroup>
-        </div>
-      </CardContent>
-    </Card>
+    <SettingsSection
+      description="窗口主题"
+      icon={<Palette />}
+      id="appearance"
+      title="外观"
+    >
+      <div className="grid gap-3 md:grid-cols-[8rem_minmax(18rem,1fr)] md:items-center">
+        <Label>主题</Label>
+        <ToggleGroup
+          className="grid grid-cols-3"
+          onValueChange={(value) => {
+            if (value) {
+              setThemeMode(value as AppThemeMode);
+            }
+          }}
+          type="single"
+          value={themeMode}
+          variant="outline"
+        >
+          {themeOptions.map((option) => (
+            <ToggleGroupItem key={option.value} value={option.value}>
+              {option.label}
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
+      </div>
+    </SettingsSection>
   );
 }
 
 function DocumentHandlingSection() {
   return (
-    <section className="flex flex-col gap-3" id="document-handling">
-      <Card className={SETTINGS_CARD_CLASS}>
-        <CardContent className="flex flex-col gap-6 py-6">
-          <SettingsRowHeader
-            description="安装本地 PDF 组件。"
-            icon={<FileText />}
-            title="PDF 组件"
-          />
-
-          <div className="border-t border-black/8 pt-6 dark:border-white/8">
-            <Pdf2zhPanel />
-          </div>
-        </CardContent>
-      </Card>
-    </section>
+    <SettingsSection
+      description="PDF 翻译所需"
+      icon={<FileText />}
+      id="document-handling"
+      title="PDF 组件"
+    >
+      <Pdf2zhPanel />
+    </SettingsSection>
   );
 }
 
@@ -975,76 +943,63 @@ function AboutSettingsSection({
   updateStatus: UpdateStatus;
 }) {
   return (
-    <section className="flex flex-col gap-3" id="about-settings">
-      <Card className={SETTINGS_CARD_CLASS}>
-        <CardContent className="flex flex-col gap-6 py-6">
-          <SettingsRowHeader
-            description="查看当前版本并检查更新。"
-            icon={<Info />}
-            title="关于"
-          />
-
-          <div className="grid gap-4 border-t border-black/8 pt-6 dark:border-white/8 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
-            <div className="flex min-w-0 flex-col gap-3">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <Label>Rosetta {appVersion}</Label>
-                    <UpdateStatusBadge status={updateStatus} />
-                  </div>
-                </div>
-              </div>
-
-              <CurrentVersionHighlights
-                note={getReleaseNote(appVersion)}
-              />
-
-              <UpdateStatusMessage
-                error={updateError}
-                progress={downloadProgress}
-                status={updateStatus}
-                update={availableUpdate}
-              />
-            </div>
-
-            <div className="flex flex-wrap gap-2 md:justify-end">
-              <Button
-                disabled={
-                  updateStatus === "checking" ||
-                  updateStatus === "downloading" ||
-                  updateStatus === "installing"
-                }
-                onClick={onCheckForUpdate}
-                type="button"
-                variant="outline"
-              >
-                <RefreshCw
-                  className={
-                    updateStatus === "checking" ? "animate-spin" : undefined
-                  }
-                  data-icon="inline-start"
-                />
-                检查应用更新
-              </Button>
-
-              {updateStatus === "available" && availableUpdate ? (
-                <Button onClick={onInstallUpdate} type="button">
-                  <Download data-icon="inline-start" />
-                  下载并安装更新
-                </Button>
-              ) : null}
-
-              {updateStatus === "ready-to-restart" ? (
-                <Button onClick={onRestart} type="button">
-                  <RefreshCw data-icon="inline-start" />
-                  重启完成更新
-                </Button>
-              ) : null}
-            </div>
+    <SettingsSection
+      description="版本与更新"
+      icon={<Info />}
+      id="about-settings"
+      title="关于"
+    >
+      <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
+        <div className="flex min-w-0 flex-col gap-3">
+          <div className="flex items-center gap-2">
+            <Label>Rosetta {appVersion}</Label>
+            <UpdateStatusBadge status={updateStatus} />
           </div>
-        </CardContent>
-      </Card>
-    </section>
+
+          <CurrentVersionHighlights note={getReleaseNote(appVersion)} />
+
+          <UpdateStatusMessage
+            error={updateError}
+            progress={downloadProgress}
+            status={updateStatus}
+            update={availableUpdate}
+          />
+        </div>
+
+        <div className="flex flex-wrap gap-2 md:justify-end">
+          <Button
+            disabled={
+              updateStatus === "checking" ||
+              updateStatus === "downloading" ||
+              updateStatus === "installing"
+            }
+            onClick={onCheckForUpdate}
+            type="button"
+            variant="outline"
+          >
+            <RefreshCw
+              className={updateStatus === "checking" ? "animate-spin" : undefined}
+              data-icon="inline-start"
+            />
+            检查更新
+          </Button>
+
+          {updateStatus === "available" && availableUpdate ? (
+            <Button onClick={onInstallUpdate} type="button">
+              <Download data-icon="inline-start" />
+              安装更新
+            </Button>
+          ) : null}
+
+          {updateStatus === "ready-to-restart" ? (
+            <Button onClick={onRestart} type="button">
+              <RefreshCw data-icon="inline-start" />
+              重启应用
+            </Button>
+          ) : null}
+        </div>
+      </div>
+    </SettingsSection>
   );
 }
 
@@ -1084,105 +1039,91 @@ function DangerSettingsSection({
     [];
 
   return (
-    <section className="flex flex-col gap-3" id="danger-settings">
-      <Card className="border-destructive/18 bg-destructive/[0.035] ring-1 ring-destructive/10 dark:bg-destructive/3">
-        <CardContent className="flex flex-col gap-6 py-6">
-          <SettingsRowHeader
-            description="清除这台电脑上的 Rosetta 数据。"
-            icon={<Trash2 />}
-            title="危险操作"
-          />
-
-          <div className="grid gap-4 border-t border-black/8 pt-6 dark:border-white/8 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
-            <div className="flex min-w-0 flex-col gap-3">
-              <div>
-                <p className="text-sm font-medium">清除本机数据</p>
-                <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                  删除任务历史、本地模型、PDF 组件和本机设置。不会删除原始文件、手动导出的文件或 Rosetta 应用本身。
-                </p>
-              </div>
-
-              {resetResult ? (
-                <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-800 dark:text-emerald-200">
-                  <p className="font-medium">
-                    已清除 Rosetta 本机数据。请重启应用以恢复初始设置。
-                  </p>
-                  <p className="mt-1 text-xs text-emerald-800/80 dark:text-emerald-200/80">
-                    {deletedItems.length > 0
-                      ? `已删除：${deletedItems.join("、")}。`
-                      : "未找到需要删除的本机数据目录。"}
-                  </p>
-                  {resetResult.runtimeStopError ? (
-                    <p className="mt-1 text-xs">
-                      本地模型停止时返回：{resetResult.runtimeStopError}
-                    </p>
-                  ) : null}
-                </div>
-              ) : null}
-
-              {resetError ? (
-                <p className="text-sm text-destructive">{resetError}</p>
-              ) : null}
-            </div>
-
-            <AlertDialog open={dialogOpen} onOpenChange={setDialogOpen}>
-              <AlertDialogTrigger asChild>
-                <Button
-                  className="justify-self-start md:justify-self-end"
-                  disabled={isClearing}
-                  type="button"
-                  variant="destructive"
-                >
-                  {isClearing ? (
-                    <LoaderCircle
-                      className="animate-spin"
-                      data-icon="inline-start"
-                    />
-                  ) : (
-                    <Trash2 data-icon="inline-start" />
-                  )}
-                  清除 Rosetta 数据
-                </Button>
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>清除 Rosetta 本机数据？</AlertDialogTitle>
-                  <AlertDialogDescription className="text-left leading-6">
-                    这会停止正在运行的本地模型，并删除任务历史、本地模型文件、PDF 组件和本机设置。原始文件、手动导出的文件和 Rosetta 应用不会被删除。
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <div className="rounded-lg bg-muted/50 p-3 text-xs leading-6 text-muted-foreground">
-                  删除后，Rosetta 下次启动会回到初始状态；本地模型和 PDF 组件需要重新安装。
-                </div>
-                <AlertDialogFooter>
-                  <AlertDialogCancel disabled={isClearing}>
-                    取消
-                  </AlertDialogCancel>
-                  <AlertDialogAction
-                    disabled={isClearing}
-                    onClick={(event) => {
-                      event.preventDefault();
-                      void clearLocalData();
-                    }}
-                    variant="destructive"
-                  >
-                    {isClearing ? (
-                      <LoaderCircle
-                        className="animate-spin"
-                        data-icon="inline-start"
-                      />
-                    ) : (
-                      <Trash2 data-icon="inline-start" />
-                    )}
-                    清除本机数据
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
+    <SettingsSection
+      description="本机数据"
+      icon={<Trash2 />}
+      id="danger-settings"
+      tone="danger"
+      title="危险操作"
+    >
+      <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
+        <div className="flex min-w-0 flex-col gap-3">
+          <div>
+            <p className="text-sm font-medium">清除本机数据</p>
+            <p className="mt-1 text-sm leading-6 text-muted-foreground">
+              删除任务历史、本地模型、PDF 组件和本机设置。不会删除原始文件和已导出的文件。
+            </p>
           </div>
-        </CardContent>
-      </Card>
-    </section>
+
+          {resetResult ? (
+            <InlineNotice tone="success">
+              {deletedItems.length > 0
+                ? `已清除：${deletedItems.join("、")}。重启后生效。`
+                : "未找到需要清除的数据。"}
+            </InlineNotice>
+          ) : null}
+
+          {resetResult?.runtimeStopError ? (
+            <p className="text-xs text-muted-foreground">
+              本地模型停止时返回：{resetResult.runtimeStopError}
+            </p>
+          ) : null}
+
+          {resetError ? (
+            <p className="text-sm text-destructive">{resetError}</p>
+          ) : null}
+        </div>
+
+        <AlertDialog open={dialogOpen} onOpenChange={setDialogOpen}>
+          <AlertDialogTrigger asChild>
+            <Button
+              className="justify-self-start md:justify-self-end"
+              disabled={isClearing}
+              type="button"
+              variant="destructive"
+            >
+              {isClearing ? (
+                <LoaderCircle className="animate-spin" data-icon="inline-start" />
+              ) : (
+                <Trash2 data-icon="inline-start" />
+              )}
+              清除数据
+            </Button>
+          </AlertDialogTrigger>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>清除本机数据？</AlertDialogTitle>
+              <AlertDialogDescription className="text-left leading-6">
+                将删除任务历史、本地模型、PDF 组件和本机设置。原始文件和已导出的文件会保留。
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <div className="rounded-lg bg-muted/50 p-3 text-xs leading-6 text-muted-foreground">
+              下次启动 Rosetta 时，需要重新安装本地模型和 PDF 组件。
+            </div>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={isClearing}>
+                取消
+              </AlertDialogCancel>
+              <AlertDialogAction
+                disabled={isClearing}
+                onClick={(event) => {
+                  event.preventDefault();
+                  void clearLocalData();
+                }}
+                variant="destructive"
+              >
+                {isClearing ? (
+                  <LoaderCircle className="animate-spin" data-icon="inline-start" />
+                ) : (
+                  <Trash2 data-icon="inline-start" />
+                )}
+                清除本机数据
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      </div>
+    </SettingsSection>
   );
 }
 
@@ -1192,32 +1133,87 @@ function errorMessage(error: unknown, fallback: string) {
   return fallback;
 }
 
-function SettingsRowHeader({
+function SettingsSection({
+  children,
   description,
   icon,
+  id,
   title,
+  tone = "default",
 }: {
-  description: React.ReactNode;
+  children: React.ReactNode;
+  description?: React.ReactNode;
   icon: React.ReactNode;
+  id: string;
   title: string;
+  tone?: "default" | "danger";
 }) {
   return (
-    <div className="flex min-w-0 gap-4">
-      <SettingsIconFrame>{icon}</SettingsIconFrame>
-      <div className="min-w-0 space-y-1">
-        <h2 className="text-base font-semibold tracking-normal">{title}</h2>
-        <div className="flex flex-wrap items-center gap-2 text-sm leading-6 text-muted-foreground">
-          {description}
+    <section
+      className={cn(
+        SETTINGS_SECTION_CLASS,
+        tone === "danger" && "border-destructive/25"
+      )}
+      id={id}
+    >
+      <div className="flex min-w-0 gap-3 md:sticky md:top-4 md:self-start">
+        <SettingsIconFrame tone={tone}>{icon}</SettingsIconFrame>
+        <div className="min-w-0 space-y-1">
+          <h2 className="text-sm font-semibold tracking-normal">{title}</h2>
+          {description ? (
+            <div className="flex flex-wrap items-center gap-1.5 text-xs leading-5 text-muted-foreground">
+              {description}
+            </div>
+          ) : null}
         </div>
       </div>
+      <div className="min-w-0">{children}</div>
+    </section>
+  );
+}
+
+function SettingsIconFrame({
+  children,
+  tone = "default",
+}: {
+  children: React.ReactNode;
+  tone?: "default" | "danger";
+}) {
+  return (
+    <div
+      className={cn(
+        "flex size-8 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-muted/35 text-muted-foreground",
+        tone === "danger" &&
+          "border-destructive/25 bg-destructive/8 text-destructive"
+      )}
+    >
+      {children}
     </div>
   );
 }
 
-function SettingsIconFrame({ children }: { children: React.ReactNode }) {
+function InlineNotice({
+  children,
+  icon,
+  tone = "neutral",
+}: {
+  children: React.ReactNode;
+  icon?: React.ReactNode;
+  tone?: "neutral" | "success" | "warning" | "danger";
+}) {
   return (
-    <div className="flex size-10 shrink-0 items-center justify-center rounded-lg border border-black/8 bg-muted/45 text-muted-foreground dark:border-white/8 dark:bg-muted/35">
-      {children}
+    <div
+      className={cn(
+        "flex items-start gap-2 rounded-md border border-border/70 bg-muted/25 px-3 py-2 text-sm text-muted-foreground",
+        tone === "success" && "border-primary/15 bg-primary/5 text-foreground",
+        tone === "warning" &&
+          "border-amber-500/25 bg-amber-500/8 text-amber-800 dark:text-amber-300",
+        tone === "danger" &&
+          "border-destructive/30 bg-destructive/8 text-destructive"
+      )}
+    >
+      {icon ? <span className="mt-0.5 shrink-0">{icon}</span> : null}
+      <span className="min-w-0">{children}</span>
     </div>
   );
 }
@@ -1259,18 +1255,18 @@ function SemanticBadge({
     <Badge
       variant="outline"
       className={cn(
-        "gap-1.5 border-transparent ring-1 ring-inset ring-black/6 dark:ring-white/6",
+        "h-5 gap-1.5 border-transparent px-1.5 text-[11px] font-normal ring-1 ring-inset ring-border/70",
         tone === "selected" &&
           "bg-foreground/8 text-foreground dark:bg-white/10 dark:text-white",
         tone === "success" &&
-          "bg-emerald-500/12 text-emerald-700 dark:text-emerald-300",
+          "bg-foreground/8 text-foreground dark:bg-white/10 dark:text-white",
         tone === "warning" &&
-          "bg-amber-500/12 text-amber-800 dark:text-amber-300",
+          "border-amber-500/20 bg-amber-500/10 text-amber-800 ring-amber-500/20 dark:text-amber-300",
         tone === "danger" &&
-          "bg-destructive/12 text-destructive dark:text-red-300",
-        tone === "info" && "bg-cyan-500/12 text-cyan-700 dark:text-cyan-300",
+          "border-destructive/20 bg-destructive/10 text-destructive ring-destructive/20",
+        tone === "info" && "bg-muted/70 text-foreground",
         tone === "neutral" &&
-          "bg-muted/80 text-muted-foreground dark:bg-muted/50"
+          "bg-muted/70 text-muted-foreground"
       )}
     >
       {children}
@@ -1374,14 +1370,14 @@ function CurrentVersionHighlights({ note }: { note: ReleaseNote | null }) {
         >
           <ChevronDown
             className={cn(
-              "size-3.5 transition-transform",
+              "size-3.5 transition-transform duration-200 ease-[cubic-bezier(0.22,1,0.36,1)]",
               open && "rotate-180"
             )}
           />
           当前版本特性
         </button>
       </CollapsibleTrigger>
-      <CollapsibleContent>
+      <CollapsibleContent className="rosetta-settings-collapsible-content">
         <ul className="ml-4 mt-2 list-disc space-y-1 text-sm leading-6 text-muted-foreground marker:text-muted-foreground/50">
           {note.highlights.map((line, index) => (
             <li key={index}>{line}</li>
@@ -1526,7 +1522,7 @@ function ApiProbeResult({
           <Timer />
           {result.latencyMs}ms
         </span>
-        {result.statusCode != null && <span>HTTP {result.statusCode}</span>}
+        {result.statusCode != null && <span>状态码 {result.statusCode}</span>}
       </div>
 
       {result.translations.length > 0 ? (
