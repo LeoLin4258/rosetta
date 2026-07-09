@@ -316,6 +316,7 @@ class Paragraph:
 
         self.assertIn("rosetta_pdf_fill_rect", patched)
         self.assertIn("Rosetta: erase source text under translated paragraphs", patched)
+        self.assertIn("self.should_translate_text(sstk[id])", patched)
         self.assertIn("min_line_height = 1.2", patched)
         self.assertIn("render_size = max(min_render_size, min(size, fit_size))", patched)
         self.assertIn('draw_size = min(draw_size, render_size)', patched)
@@ -346,6 +347,14 @@ class Paragraph:
         self.assertIn("metric_hits >= 3", patched)
         self.assertIn("numeric_tokens >= 40", patched)
         self.assertIn("algorithm_hits", patched)
+        self.assertIn("math_table_signal_hits", patched)
+        self.assertIn("compact_table_signal_hits", patched)
+        self.assertIn("dataset_table_signal_hits", patched)
+        self.assertIn("numeric_tokens >= 40 and math_table_signal_hits >= 2", patched)
+        self.assertIn("numeric_tokens >= 18 and compact_table_signal_hits >= 3", patched)
+        self.assertIn("numeric_tokens >= 12 and dataset_table_signal_hits >= 3", patched)
+        self.assertIn("DatasetCategoryTrainValTest", patched)
+        self.assertIn("QianFSD", patched)
         self.assertIn('"Algorithm" in compact', patched)
         self.assertIn("without_decimal_points", patched)
         self.assertIn("(cls == 0 and not rosetta_text_like_visual_char)", patched)
@@ -377,6 +386,53 @@ class Paragraph:
         self.assertIn("without_decimal_points", patched)
         self.assertIn("numeric_tokens >= 40", patched)
         self.assertIn("algorithm_hits", patched)
+        self.assertIn("math_table_signal_hits", patched)
+        self.assertIn("compact_table_signal_hits", patched)
+        self.assertIn("dataset_table_signal_hits", patched)
+        self.assertIn("numeric_tokens >= 12 and dataset_table_signal_hits >= 3", patched)
+
+    def test_patch_upgrades_existing_visual_table_gate_for_dataset_tables(self) -> None:
+        patched = self.run_patch(
+            self.converter_with_bold_helpers()
+            + '''        def rosetta_allow_text_like_visual_chars(ltpage: LTPage) -> bool:
+            compact = "DatasetCategoryTrainValTest FarmInsects IP102 QianFSD 143 4938 705 1411"
+            metric_hits = 0
+            numeric_tokens = 16
+            without_decimal_points = compact
+            sentence_marks = 0
+            algorithm_hits = 0
+            math_table_signal_hits = 0
+            compact_table_signal_hits = 0
+            if "Algorithm" in compact and algorithm_hits >= 3:
+                return False
+            if numeric_tokens >= 40 and math_table_signal_hits >= 2:
+                return False
+            if numeric_tokens >= 18 and compact_table_signal_hits >= 3:
+                return False
+            if metric_hits >= 3 and numeric_tokens >= 8 and sentence_marks <= 10:
+                return False
+            return True
+
+        rosetta_text_like_visual_chars_enabled = rosetta_allow_text_like_visual_chars(ltpage)
+        ############################################################
+        # A. 原文档解析
+        for child in ltpage:
+                rosetta_text_like_visual_char = (
+                    cls == 0
+                    and rosetta_text_like_visual_chars_enabled
+                    and bool(child.get_text())
+                )
+'''
+        )
+
+        self.assertIn("dataset_table_signal_hits", patched)
+        self.assertIn("DatasetCategoryTrainValTest", patched)
+        self.assertIn("QianFSD", patched)
+        self.assertIn("numeric_tokens >= 12 and dataset_table_signal_hits >= 3", patched)
+        self.assertLess(
+            patched.index("dataset_table_signal_hits = sum("),
+            patched.index("numeric_tokens >= 12 and dataset_table_signal_hits >= 3"),
+        )
 
     def test_patch_replaces_existing_faux_bold_text_stroke_with_font_switch(self) -> None:
         for stroke_width in [
@@ -601,6 +657,7 @@ def validate_translation_keys(units: list[TranslationUnit], translations: dict[s
         self.assertIn("if expected.requiresTranslation:", patched)
         self.assertIn("if not expected.requiresTranslation:", patched)
         self.assertIn("rosetta_nontranslatable_render_text(expected, text)", patched)
+        self.assertNotIn('outputs.append("")', patched)
         self.assertIn('if unit.kind == "duplicate-layer":', patched)
         self.assertIn('return ""', patched)
 
@@ -690,6 +747,11 @@ def validate_translation_keys(units: list[TranslationUnit], translations: dict[s
             "SFIAN TITS 2023 84.57G 13.63M 56MB SCRWKV ICML 2026 22.78G 1.22M 28MB"
         )
         formula_text = "max {v8} 2 {v9}24{v10} {v11} 1 {v12} max {v13} 2 {v14}25{v15}"
+        operator_formula_text = (
+            "1{v7} [0{v8}){v9} Partition(EM({v10})){v11}6{v12} "
+            "{v13} TopK( {v14} 1){v15} [0{v16}){v17}7{v18} "
+            "{v19} [0{v20}){v21} Partition({v22}){v23}8{v24}"
+        )
         prose_text = (
             "For the TUT dataset, our method achieves SOTA performance, with F1 and mIoU "
             "reaching 0.8428 and 0.8512, respectively."
@@ -709,9 +771,15 @@ def validate_translation_keys(units: list[TranslationUnit], translations: dict[s
         legend_text = "Raw GT RIND SFIAN CTCrackSeg DTrCNet Crackmer SCSegamba MambaIR CSMamba PlainMamba SimCrack SCRWKV"
         deployment_text = "MoveCamera Control ...... ...... Get Input Upload ...... ...... Output Process Initial Video Split Combine Processed Video Resize"
         frame_text = "Frame 001 Frame 101 Frame 201 Frame 301 Frame 401 Frame {v0}"
+        formula_intro_text = (
+            "To achieve an optimal equilibrium between pixel-level classification accuracy "
+            "and boundary continuity, the final crack detection objective incorporates {v0}, "
+            "{v1}, {v2}, {v3}, {v4}, {v5}, and {v6}, which are defined as follows:"
+        )
 
         self.assertTrue(namespace["is_rosetta_table_like_unit"](table_text))
         self.assertTrue(namespace["is_rosetta_formula_like_unit"](formula_text))
+        self.assertTrue(namespace["is_rosetta_formula_like_unit"](operator_formula_text))
         self.assertTrue(namespace["is_rosetta_page_number_unit"]("8"))
         self.assertTrue(namespace["is_rosetta_figure_panel_label_unit"](panel_label_text))
         self.assertTrue(namespace["is_rosetta_diagram_label_unit"](diagram_text, 2))
@@ -722,8 +790,10 @@ def validate_translation_keys(units: list[TranslationUnit], translations: dict[s
         self.assertTrue(namespace["is_rosetta_diagram_label_unit"](frame_text, 1))
         self.assertTrue(namespace["is_rosetta_diagram_label_unit"]("第二篇中的", 2))
         self.assertFalse(namespace["is_rosetta_table_like_unit"](prose_text))
+        self.assertFalse(namespace["is_rosetta_formula_like_unit"](formula_intro_text))
         self.assertFalse(namespace["is_rosetta_figure_panel_label_unit"](caption_text))
         self.assertFalse(namespace["is_rosetta_diagram_label_unit"](caption_text, 2))
+        self.assertFalse(namespace["is_rosetta_diagram_label_unit"](formula_intro_text, 4))
         self.assertFalse(namespace["is_rosetta_diagram_label_unit"](diagram_text, 5))
 
     def test_patch_upgrades_existing_nontranslatable_layout_helpers(self) -> None:
@@ -749,6 +819,16 @@ font_list.append(("notobold", bold_font_path))
 
 def is_rosetta_table_like_unit(text: str) -> bool:
     return "Methods" in text
+
+def is_rosetta_formula_like_unit(text: str) -> bool:
+    compact = " ".join(text.split())
+    if len(compact) > 140:
+        return False
+    placeholder_count = rosetta_placeholder_count(compact)
+    if placeholder_count < 3:
+        return False
+    words = re.findall(r"[A-Za-z]{2,}", compact)
+    return len(words) <= 5
 
 def is_rosetta_diagram_label_unit(text: str, order_on_page: int) -> bool:
     compact = " ".join(text.split())
@@ -799,14 +879,70 @@ def validate_translation_keys(units: list[TranslationUnit], translations: dict[s
         patched = files["rosetta_engine"]
         self.assertIn("def is_rosetta_figure_panel_label_unit", patched)
         self.assertIn("def is_rosetta_diagram_label_unit", patched)
+        self.assertIn("operator_hits = len(re.findall", patched)
+        self.assertIn("Partition|TopK|Gumbel|Softmax|Flatten|EM|LN|FFN|CR", patched)
         self.assertIn("Attention|Inward|Outward|Shift", patched)
         self.assertIn("MoveCamera|Camera|Control|Get|Upload", patched)
         self.assertIn('re.search(r"[\\u4e00-\\u9fff]", compact)', patched)
         self.assertIn("label_hits >= 2 and len(words) <= 8", patched)
         self.assertIn('"...." in compact and label_hits >= 2', patched)
+        self.assertIn("placeholder_count >= 3 and label_hits >= 2", patched)
+        self.assertNotIn("placeholder_count >= 3 and len(words) <= 45", patched)
         self.assertIn("unit.kind = \"figure-panel-labels\"", patched)
         self.assertIn("unit.kind = \"diagram-label\"", patched)
         self.assertIn("def rosetta_nontranslatable_render_text", patched)
+
+    def test_patch_upgrades_existing_nonrequired_render_to_preserve_source_text(self) -> None:
+        files = self.run_patch_for_package(
+            self.converter_with_bold_helpers(),
+            high_level_text="""# Rosetta: prefer Source Han Sans for simplified Chinese PDF output.
+# Rosetta: register Source Han Sans Bold for simplified Chinese PDF output.
+""",
+            rosetta_engine_text='''# Rosetta: suppress duplicate PDF text layers before translation.
+from babeldoc.assets.assets import get_font_and_metadata
+
+class TranslationUnit:
+    pass
+
+rosetta_bold_font_path = None
+font_list = [("tiro", None)]
+font_list.append(("notobold", bold_font_path))
+
+# Rosetta: prepare only selected PDF pages for translation windows.
+
+def rosetta_nontranslatable_render_text(unit: TranslationUnit, text: str) -> str:
+    if unit.kind == "duplicate-layer":
+        return ""
+    return text
+
+def validate_translation_keys(units: list[TranslationUnit], translations: dict[str, str]) -> None:
+    pass
+
+class _RenderTranslator:
+    def translate_many(self, texts, *args, **kwargs):
+        outputs = []
+        for text in list(texts):
+            unit_id = "p0001-u0001"
+            expected = self.expected_by_unit_id[unit_id]
+            if unit_id not in self.translations_by_unit_id:
+                if expected.requiresTranslation:
+                    raise ValueError(f"missing translation for unit: {unit_id}")
+                outputs.append(rosetta_nontranslatable_render_text(expected, text))
+                continue
+            translated = self.translations_by_unit_id[unit_id]
+            if not isinstance(translated, str):
+                raise ValueError(f"translation is not a string for unit: {unit_id}")
+            if not expected.requiresTranslation:
+                outputs.append("")
+                continue
+            outputs.append(translated)
+        return outputs
+''',
+        )
+
+        patched = files["rosetta_engine"]
+        self.assertIn("outputs.append(rosetta_nontranslatable_render_text(expected, text))", patched)
+        self.assertNotIn('outputs.append("")', patched)
 
     def test_patch_tolerates_render_translate_many_order_drift(self) -> None:
         files = self.run_patch_for_package(

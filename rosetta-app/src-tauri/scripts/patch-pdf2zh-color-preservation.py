@@ -182,7 +182,7 @@ def patch_converter_text_rendering_safety(text: str) -> tuple[str, bool]:
                     ops_list.append(gen_op_line(vals["x"], vals["dy"] + y - vals["lidx"] * size * line_height, vals["xlen"], vals["ylen"], vals["linewidth"], vals.get("color")))
 """
     new_line_height = """            # Rosetta: erase source text under translated paragraphs and keep CJK line spacing legible.
-            if str(new).strip():
+            if str(new).strip() and self.should_translate_text(sstk[id]):
                 ops_list.append(rosetta_pdf_fill_rect(x0, pstk[id].y0, x1, pstk[id].y1, max(1.0, size * 0.25)))
 
             line_count = lidx + 1
@@ -212,6 +212,16 @@ def patch_converter_text_rendering_safety(text: str) -> tuple[str, bool]:
         if old_line_height in text:
             text = text.replace(old_line_height, new_line_height, 1)
             changed = True
+    if (
+        "Rosetta: erase source text under translated paragraphs" in text
+        and "if str(new).strip():" in text
+    ):
+        text = text.replace(
+            "if str(new).strip():",
+            "if str(new).strip() and self.should_translate_text(sstk[id]):",
+            1,
+        )
+        changed = True
 
     return text, changed
 
@@ -255,7 +265,47 @@ def patch_converter_formula_text_classification(text: str) -> tuple[str, bool]:
                 for token in ("Algorithm", "Input", "Output", "Initialize", "Return", "endif", "endfor")
                 if token in compact
             )
+            math_table_signal_hits = sum(
+                1
+                for token in ("LDice", "LBCE", "Dice", "BCE", "mIoU", "ODSOIS", "F1mIoU", "β:α", "alpha", "beta")
+                if token in compact
+            )
+            compact_table_signal_hits = sum(
+                1
+                for token in (
+                    "LayerNumODSOIS",
+                    "HeadODSOIS",
+                    "MethodsOD",
+                    "AMCMGBSTDSCD",
+                    "F1mIoU",
+                    "Params",
+                    "FLOPs",
+                    "ModelSize",
+                )
+                if token in compact
+            )
+            dataset_table_signal_hits = sum(
+                1
+                for token in (
+                    "DatasetCategoryTrainValTest",
+                    "FarmInsects",
+                    "AgriculturalPests",
+                    "InsectRecognition",
+                    "ForestryPest",
+                    "Lidataset",
+                    "IP102",
+                    "QianFSD",
+                    "AgriInsect",
+                )
+                if token in compact
+            )
             if "Algorithm" in compact and algorithm_hits >= 3:
+                return False
+            if numeric_tokens >= 40 and math_table_signal_hits >= 2:
+                return False
+            if numeric_tokens >= 18 and compact_table_signal_hits >= 3:
+                return False
+            if numeric_tokens >= 12 and dataset_table_signal_hits >= 3:
                 return False
             if metric_hits >= 3 and numeric_tokens >= 8 and sentence_marks <= 10:
                 return False
@@ -344,6 +394,139 @@ def patch_converter_formula_text_classification(text: str) -> tuple[str, bool]:
         if algorithm_gate_anchor not in text:
             raise SystemExit(f"::error::could not find expected visual algorithm gate anchor in {target}")
         text = text.replace(algorithm_gate_anchor, algorithm_gate_replacement, 1)
+        changed = True
+    if (
+        "def rosetta_allow_text_like_visual_chars(" in text
+        and "math_table_signal_hits" not in text
+    ):
+        math_table_anchor = '''            if "Algorithm" in compact and algorithm_hits >= 3:
+                return False
+            if metric_hits >= 3 and numeric_tokens >= 8 and sentence_marks <= 10:
+'''
+        math_table_replacement = '''            math_table_signal_hits = sum(
+                1
+                for token in ("LDice", "LBCE", "Dice", "BCE", "mIoU", "ODSOIS", "F1mIoU", "β:α", "alpha", "beta")
+                if token in compact
+            )
+            compact_table_signal_hits = sum(
+                1
+                for token in (
+                    "LayerNumODSOIS",
+                    "HeadODSOIS",
+                    "MethodsOD",
+                    "AMCMGBSTDSCD",
+                    "F1mIoU",
+                    "Params",
+                    "FLOPs",
+                    "ModelSize",
+                )
+                if token in compact
+            )
+            dataset_table_signal_hits = sum(
+                1
+                for token in (
+                    "DatasetCategoryTrainValTest",
+                    "FarmInsects",
+                    "AgriculturalPests",
+                    "InsectRecognition",
+                    "ForestryPest",
+                    "Lidataset",
+                    "IP102",
+                    "QianFSD",
+                    "AgriInsect",
+                )
+                if token in compact
+            )
+            if "Algorithm" in compact and algorithm_hits >= 3:
+                return False
+            if numeric_tokens >= 40 and math_table_signal_hits >= 2:
+                return False
+            if numeric_tokens >= 18 and compact_table_signal_hits >= 3:
+                return False
+            if numeric_tokens >= 12 and dataset_table_signal_hits >= 3:
+                return False
+            if metric_hits >= 3 and numeric_tokens >= 8 and sentence_marks <= 10:
+'''
+        if math_table_anchor not in text:
+            raise SystemExit(f"::error::could not find expected visual math/table gate anchor in {target}")
+        text = text.replace(math_table_anchor, math_table_replacement, 1)
+        changed = True
+    if (
+        "def rosetta_allow_text_like_visual_chars(" in text
+        and "compact_table_signal_hits" not in text
+    ):
+        compact_table_anchor = '''            if "Algorithm" in compact and algorithm_hits >= 3:
+                return False
+            if numeric_tokens >= 40 and math_table_signal_hits >= 2:
+                return False
+            if metric_hits >= 3 and numeric_tokens >= 8 and sentence_marks <= 10:
+'''
+        compact_table_replacement = '''            compact_table_signal_hits = sum(
+                1
+                for token in (
+                    "LayerNumODSOIS",
+                    "HeadODSOIS",
+                    "MethodsOD",
+                    "AMCMGBSTDSCD",
+                    "F1mIoU",
+                    "Params",
+                    "FLOPs",
+                    "ModelSize",
+                )
+                if token in compact
+            )
+            if "Algorithm" in compact and algorithm_hits >= 3:
+                return False
+            if numeric_tokens >= 40 and math_table_signal_hits >= 2:
+                return False
+            if numeric_tokens >= 18 and compact_table_signal_hits >= 3:
+                return False
+            if metric_hits >= 3 and numeric_tokens >= 8 and sentence_marks <= 10:
+'''
+        if compact_table_anchor not in text:
+            raise SystemExit(f"::error::could not find expected visual compact-table gate anchor in {target}")
+        text = text.replace(compact_table_anchor, compact_table_replacement, 1)
+        changed = True
+    if (
+        "def rosetta_allow_text_like_visual_chars(" in text
+        and "dataset_table_signal_hits" not in text
+    ):
+        dataset_table_anchor = '''            if "Algorithm" in compact and algorithm_hits >= 3:
+                return False
+            if numeric_tokens >= 40 and math_table_signal_hits >= 2:
+                return False
+            if numeric_tokens >= 18 and compact_table_signal_hits >= 3:
+                return False
+            if metric_hits >= 3 and numeric_tokens >= 8 and sentence_marks <= 10:
+'''
+        dataset_table_replacement = '''            dataset_table_signal_hits = sum(
+                1
+                for token in (
+                    "DatasetCategoryTrainValTest",
+                    "FarmInsects",
+                    "AgriculturalPests",
+                    "InsectRecognition",
+                    "ForestryPest",
+                    "Lidataset",
+                    "IP102",
+                    "QianFSD",
+                    "AgriInsect",
+                )
+                if token in compact
+            )
+            if "Algorithm" in compact and algorithm_hits >= 3:
+                return False
+            if numeric_tokens >= 40 and math_table_signal_hits >= 2:
+                return False
+            if numeric_tokens >= 18 and compact_table_signal_hits >= 3:
+                return False
+            if numeric_tokens >= 12 and dataset_table_signal_hits >= 3:
+                return False
+            if metric_hits >= 3 and numeric_tokens >= 8 and sentence_marks <= 10:
+'''
+        if dataset_table_anchor not in text:
+            raise SystemExit(f"::error::could not find expected visual dataset-table gate anchor in {target}")
+        text = text.replace(dataset_table_anchor, dataset_table_replacement, 1)
         changed = True
     old_numeric_dense_gate = '''            if metric_hits >= 2 and numeric_tokens >= 18 and sentence_marks <= 12:
                 return False
@@ -559,12 +742,15 @@ def is_rosetta_page_number_unit(text: str) -> bool:
 
 def is_rosetta_formula_like_unit(text: str) -> bool:
     compact = " ".join(text.split())
-    if len(compact) > 140:
-        return False
     placeholder_count = rosetta_placeholder_count(compact)
     if placeholder_count < 3:
         return False
     words = re.findall(r"[A-Za-z]{2,}", compact)
+    operator_hits = len(re.findall(r"\\b(?:Partition|TopK|Gumbel|Softmax|Flatten|EM|LN|FFN|CR)\\b", compact))
+    if len(compact) <= 180 and placeholder_count >= 6 and operator_hits >= 2 and rosetta_sentence_punctuation_count(compact) <= 2:
+        return True
+    if len(compact) > 140:
+        return False
     return len(words) <= 5
 
 
@@ -636,7 +822,7 @@ def is_rosetta_diagram_label_unit(text: str, order_on_page: int) -> bool:
         return True
     if label_hits >= 4 and label_sentence_marks <= 3:
         return True
-    if placeholder_count >= 3 and len(words) <= 45 and sentence_marks <= 4:
+    if placeholder_count >= 3 and label_hits >= 2 and len(words) <= 45 and sentence_marks <= 4:
         return True
     return False
 
@@ -817,6 +1003,33 @@ def patch_rosetta_engine_duplicate_text_layer_filter(root: Path) -> bool:
             if helper_anchor not in text:
                 raise SystemExit(f"::error::could not find expected rosetta_engine helper anchor in {target}")
             text = text.replace(helper_anchor, nontranslatable_layout_helper() + helper_anchor, 1)
+        if "def is_rosetta_formula_like_unit(" in text and "operator_hits = len(re.findall" not in text:
+            old_formula_helper = '''def is_rosetta_formula_like_unit(text: str) -> bool:
+    compact = " ".join(text.split())
+    if len(compact) > 140:
+        return False
+    placeholder_count = rosetta_placeholder_count(compact)
+    if placeholder_count < 3:
+        return False
+    words = re.findall(r"[A-Za-z]{2,}", compact)
+    return len(words) <= 5
+'''
+            new_formula_helper = '''def is_rosetta_formula_like_unit(text: str) -> bool:
+    compact = " ".join(text.split())
+    placeholder_count = rosetta_placeholder_count(compact)
+    if placeholder_count < 3:
+        return False
+    words = re.findall(r"[A-Za-z]{2,}", compact)
+    operator_hits = len(re.findall(r"\\b(?:Partition|TopK|Gumbel|Softmax|Flatten|EM|LN|FFN|CR)\\b", compact))
+    if len(compact) <= 180 and placeholder_count >= 6 and operator_hits >= 2 and rosetta_sentence_punctuation_count(compact) <= 2:
+        return True
+    if len(compact) > 140:
+        return False
+    return len(words) <= 5
+'''
+            if old_formula_helper not in text:
+                raise SystemExit(f"::error::could not find expected formula-like helper anchor in {target}")
+            text = text.replace(old_formula_helper, new_formula_helper, 1)
         if "def is_rosetta_figure_panel_label_unit(" not in text:
             panel_helper_anchor = "\n\ndef mark_nontranslatable_layout_units(units: list[TranslationUnit]) -> None:\n"
             if panel_helper_anchor not in text:
@@ -871,7 +1084,7 @@ def patch_rosetta_engine_duplicate_text_layer_filter(root: Path) -> bool:
         return True
     if label_hits >= 4 and label_sentence_marks <= 3:
         return True
-    if placeholder_count >= 3 and len(words) <= 45 and sentence_marks <= 4:
+    if placeholder_count >= 3 and label_hits >= 2 and len(words) <= 45 and sentence_marks <= 4:
         return True
     return False
 '''
@@ -965,6 +1178,11 @@ def patch_rosetta_engine_duplicate_text_layer_filter(root: Path) -> bool:
             "if label_hits >= 4 and label_sentence_marks <= 3:",
             1,
         )
+        text = text.replace(
+            "if placeholder_count >= 3 and len(words) <= 45 and sentence_marks <= 4:",
+            "if placeholder_count >= 3 and label_hits >= 2 and len(words) <= 45 and sentence_marks <= 4:",
+            1,
+        )
         if "mark_nontranslatable_layout_units(page_units)" not in text:
             text = text.replace(
                 "    mark_duplicate_text_layer_units(page_units)\n",
@@ -1033,6 +1251,17 @@ def patch_rosetta_engine_duplicate_text_layer_filter(root: Path) -> bool:
             '''                outputs.append(rosetta_nontranslatable_render_text(expected, text))
                 continue
             translated = self.translations_by_unit_id[unit_id]
+''',
+            1,
+        )
+        text = text.replace(
+            '''            if not expected.requiresTranslation:
+                outputs.append("")
+                continue
+''',
+            '''            if not expected.requiresTranslation:
+                outputs.append(rosetta_nontranslatable_render_text(expected, text))
+                continue
 ''',
             1,
         )
