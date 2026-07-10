@@ -763,6 +763,68 @@ textarea {
   will-change: height, opacity;
 }
 
+.rosetta-settings-page {
+  --primary: oklch(0.4700 0.0700 220);
+  --primary-foreground: oklch(0.9850 0 0);
+  --ring: oklch(0.6000 0.0550 220);
+  --rosetta-settings-accent: oklch(0.4700 0.0700 220);
+  --rosetta-settings-accent-ink: oklch(0.3000 0.0550 220);
+  --rosetta-settings-accent-soft: oklch(0.9650 0.0100 220);
+  --rosetta-settings-accent-wash: oklch(0.9450 0.0140 220);
+  --rosetta-settings-accent-muted: oklch(0.9000 0.0180 220);
+  --rosetta-settings-accent-border: oklch(0.7650 0.0300 220);
+  --rosetta-settings-accent-ring: oklch(0.4700 0.0700 220 / 0.22);
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 1rem;
+  font-kerning: normal;
+  font-optical-sizing: auto;
+}
+
+.rosetta-settings-page h1,
+.rosetta-settings-page h2,
+.rosetta-settings-page h3 {
+  text-wrap: balance;
+}
+
+.dark .rosetta-settings-page {
+  --primary: oklch(0.7100 0.0600 220);
+  --primary-foreground: oklch(0.1450 0.0250 220);
+  --ring: oklch(0.6600 0.0520 220);
+  --rosetta-settings-accent: oklch(0.7100 0.0600 220);
+  --rosetta-settings-accent-ink: oklch(0.8600 0.0400 220);
+  --rosetta-settings-accent-soft: oklch(0.2450 0.0260 220);
+  --rosetta-settings-accent-wash: oklch(0.2850 0.0320 220);
+  --rosetta-settings-accent-muted: oklch(0.3350 0.0360 220);
+  --rosetta-settings-accent-border: oklch(0.4600 0.0400 220);
+  --rosetta-settings-accent-ring: oklch(0.7100 0.0600 220 / 0.24);
+}
+
+.rosetta-settings-accent-control {
+  border-color: var(--rosetta-settings-accent-border);
+  background: var(--rosetta-settings-accent-soft);
+  color: var(--rosetta-settings-accent-ink);
+}
+
+.rosetta-settings-accent-control:hover,
+.rosetta-settings-accent-control[aria-expanded="true"] {
+  border-color: var(--rosetta-settings-accent-border);
+  background: var(--rosetta-settings-accent-wash);
+  color: var(--rosetta-settings-accent-ink);
+}
+
+.rosetta-settings-accent-badge {
+  border-color: transparent;
+  background: var(--rosetta-settings-accent-soft);
+  color: var(--rosetta-settings-accent-ink);
+  box-shadow: inset 0 0 0 1px var(--rosetta-settings-accent-ring);
+}
+
+.rosetta-settings-toggle-item[data-state="on"] {
+  border-color: var(--rosetta-settings-accent-border);
+  background: var(--rosetta-settings-accent-soft);
+  color: var(--rosetta-settings-accent-ink);
+}
+
 .rosetta-settings-collapsible-content[data-state="open"] {
   animation: rosetta-settings-collapsible-down 200ms cubic-bezier(0.22, 1, 0.36, 1);
 }

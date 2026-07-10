@@ -259,14 +259,24 @@ function PdfPagePlaceholder({
   return (
     <div
       className={cn(
-        "relative z-10 flex h-full flex-col items-center justify-center gap-1.5 px-6 text-center text-xs",
+        "relative z-10 flex h-full flex-col items-center justify-center px-6 text-center",
+        translating ? "gap-2.5 text-sm" : "gap-1.5 text-xs",
         failed ? "text-destructive" : "text-muted-foreground",
       )}
     >
-      {translating || queued ? (
-        <Loader2 className="mb-0.5 size-4 animate-spin motion-reduce:animate-none" />
+      {translating ? (
+        <Loader2
+          className="mb-0.5 size-5 animate-spin motion-reduce:animate-none"
+        />
       ) : null}
-      <div className="font-medium text-foreground">{title}</div>
+      <div
+        className={cn(
+          "text-foreground",
+          translating ? "text-lg font-semibold" : "font-medium",
+        )}
+      >
+        {title}
+      </div>
       {failed || status ? (
         <div className="max-w-52 leading-5">
           {status ?? "可重试此页。"}

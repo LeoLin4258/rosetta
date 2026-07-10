@@ -120,28 +120,43 @@ export function PdfDocumentPreview({
     [selectedPages],
   );
 
-  const currentTranslatingPageNumber = useMemo(() => {
-    if (!isTranslating || !pdfProgress?.currentPage) return null;
-    const runPages =
+  const runPagesInOrder = useMemo(
+    () =>
       activePagesInRunOrder.length > 0
         ? activePagesInRunOrder
-        : selectedPagesInRunOrder;
-    return runPages[pdfProgress.currentPage - 1] ?? null;
+        : selectedPagesInRunOrder,
+    [activePagesInRunOrder, selectedPagesInRunOrder],
+  );
+
+  const currentTranslatingPageNumber = useMemo(() => {
+    if (!isTranslating) return null;
+
+    const explicitTranslatingPage = runPagesInOrder.find(
+      (pageNumber) => pagesByNumber.get(pageNumber)?.status === "translating",
+    );
+    if (explicitTranslatingPage != null) return explicitTranslatingPage;
+
+    const firstIncompletePage = runPagesInOrder.find((pageNumber) => {
+      const status = pagesByNumber.get(pageNumber)?.status ?? null;
+      return status !== "translated" && status !== "failed";
+    });
+    if (firstIncompletePage != null) return firstIncompletePage;
+
+    if (!pdfProgress?.currentPage) return null;
+    return runPagesInOrder[pdfProgress.currentPage - 1] ?? null;
   }, [
-    activePagesInRunOrder,
     isTranslating,
+    pagesByNumber,
     pdfProgress?.currentPage,
-    selectedPagesInRunOrder,
+    runPagesInOrder,
   ]);
 
   const activePageNumberSet = useMemo(
-    () => new Set(activePagesInRunOrder),
-    [activePagesInRunOrder],
+    () => new Set(runPagesInOrder),
+    [runPagesInOrder],
   );
   const activeTranslationPageCount =
-    activePagesInRunOrder.length > 0
-      ? activePagesInRunOrder.length
-      : selectedPagesInRunOrder.length;
+    runPagesInOrder.length;
   const stablePreviewMode =
     isTranslating &&
     activeTranslationPageCount > PDF_AUTO_SELECT_ALL_PAGE_LIMIT;
@@ -539,7 +554,7 @@ function translatedPageLabel(
   activity: ReturnType<typeof displayPageActivity>,
   stablePreviewMode: boolean,
 ) {
-  if (activity === "translating") return "RWKV 翻译中";
+  if (activity === "translating") return null;
   if (activity === "queued") return `等待第 ${pageNumber} 页译文`;
   if (!page) return null;
   if (page.status === "translated") {

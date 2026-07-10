@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import {
   AlertCircle,
-  CheckCircle2,
   ChevronDown,
   Download,
   FolderInput,
@@ -10,7 +9,6 @@ import {
   X,
 } from "lucide-react";
 
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Collapsible,
@@ -63,7 +61,6 @@ export function Pdf2zhPanel({ className }: { className?: string }) {
           isRefreshing={rt.isRefreshing}
           isInstallActive={isInstallActive}
         />
-        <Pdf2zhBadge state={state} isInstallActive={isInstallActive} className="shrink-0" />
       </div>
 
       <div className="flex flex-col gap-4">
@@ -100,7 +97,7 @@ export function Pdf2zhPanel({ className }: { className?: string }) {
             ) : (
               <RefreshCw className="size-4" />
             )}
-            重新检查
+            检查
           </Button>
         </div>
 
@@ -163,9 +160,9 @@ function StatusRow({
         <div className={cn("mt-1.5 size-2 shrink-0 rounded-full", dot)} />
       )}
       <div className="min-w-0 flex-1">
-        <p className="text-sm font-medium leading-5">{label}</p>
+        <p className="text-[0.95rem] font-semibold leading-5">{label}</p>
         {sub && (
-          <p className="mt-0.5 max-w-[72ch] text-xs leading-5 text-muted-foreground">
+          <p className="mt-0.5 max-w-[72ch] text-[0.85rem] leading-5 text-muted-foreground">
             {sub}
           </p>
         )}
@@ -183,42 +180,39 @@ function resolveStatus(
   if (isInstallActive) {
     return {
       dot: "bg-primary",
-      label: "正在安装 PDF 组件",
-      sub: "安装完成后即可翻译 PDF。",
+      label: "安装中",
       spinning: true,
     };
   }
   if (isRefreshing || state === null) {
     return {
       dot: "bg-muted-foreground/30",
-      label: "正在检查 PDF 组件",
+      label: "检查中",
       spinning: true,
     };
   }
   if (state === "installed") {
     return {
       dot: "bg-primary",
-      label: "PDF 组件已就绪",
+      label: "已就绪",
     };
   }
   if (state === "unsupported") {
     return {
       dot: "bg-muted-foreground/40",
-      label: "当前设备暂不支持 PDF 组件",
+      label: "不支持",
       sub: status?.message,
     };
   }
   if (status?.message.includes("需要更新")) {
     return {
       dot: "bg-amber-500",
-      label: "PDF 组件需要更新",
-      sub: "重新安装后即可使用新版组件。",
+      label: "需更新",
     };
   }
   return {
     dot: "bg-muted-foreground/30",
-    label: "PDF 组件尚未安装",
-    sub: status?.message,
+    label: "未安装",
   };
 }
 
@@ -258,7 +252,7 @@ function RepairActions({
           disabled={isInstalling}
           className="w-fit"
         >
-          <RefreshCw className="size-4" /> 重新安装 PDF 组件
+          <RefreshCw className="size-4" /> 重新安装
         </Button>
         <Button
           variant="ghost"
@@ -267,7 +261,7 @@ function RepairActions({
           disabled={isInstalling}
           className="w-fit text-muted-foreground"
         >
-          <FolderInput className="size-4" /> 从本地文件导入
+          <FolderInput className="size-4" /> 导入文件
         </Button>
       </div>
     );
@@ -285,7 +279,7 @@ function RepairActions({
         ) : (
           <Download className="size-4" />
         )}
-        安装 PDF 组件
+        安装
       </Button>
       <Button
         size="sm"
@@ -294,61 +288,10 @@ function RepairActions({
         disabled={isInstalling}
         className="w-fit"
       >
-        <FolderInput className="size-4" /> 从本地安装包导入
+        <FolderInput className="size-4" /> 导入安装包
       </Button>
     </div>
   );
-}
-
-function Pdf2zhBadge({
-  state,
-  isInstallActive,
-  className,
-}: {
-  state: Pdf2zhStatus["state"] | null;
-  isInstallActive: boolean;
-  className?: string;
-}) {
-  if (isInstallActive) {
-    return (
-      <Badge
-        variant="outline"
-        className={cn(
-          "h-5 gap-1 border-transparent bg-amber-500/10 px-1.5 text-[11px] font-normal text-amber-800 ring-1 ring-inset ring-amber-500/20 dark:text-amber-300",
-          className
-        )}
-      >
-        <LoaderCircle className="size-3 animate-spin" /> 安装中
-      </Badge>
-    );
-  }
-  if (state === "installed") {
-    return (
-      <Badge
-        variant="outline"
-        className={cn(
-          "h-5 gap-1 border-transparent bg-foreground/8 px-1.5 text-[11px] font-normal text-foreground ring-1 ring-inset ring-border/70 dark:bg-white/10",
-          className
-        )}
-      >
-        <CheckCircle2 className="size-3" /> 已就绪
-      </Badge>
-    );
-  }
-  if (state === "not-installed") {
-    return (
-      <Badge
-        variant="outline"
-        className={cn(
-          "h-5 border-transparent bg-muted px-1.5 text-[11px] font-normal text-muted-foreground ring-1 ring-inset ring-border/70",
-          className
-        )}
-      >
-        未安装
-      </Badge>
-    );
-  }
-  return null;
 }
 
 function showProxyInput(
@@ -367,14 +310,14 @@ function DownloadProxyField({ disabled }: { disabled: boolean }) {
     <div className="flex flex-col gap-1.5 rounded-md border bg-muted/30 p-3">
       <div className="flex items-baseline justify-between gap-3">
         <Label htmlFor="pdf2zh-download-proxy" className="text-xs font-medium">
-          组件下载代理（可选）
+          下载代理
         </Label>
-        <span className="text-[11px] text-muted-foreground">只影响 PDF 组件下载</span>
+        <span className="text-[11px] text-muted-foreground">可选</span>
       </div>
       <Input
         id="pdf2zh-download-proxy"
         type="text"
-        placeholder="例如 http://127.0.0.1:7897 或留空"
+        placeholder="http://127.0.0.1:7897"
         value={proxyUrl}
         disabled={disabled}
         spellCheck={false}

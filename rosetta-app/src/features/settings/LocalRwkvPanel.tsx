@@ -1,7 +1,6 @@
 import { useState, type ReactNode } from "react";
 import {
   AlertTriangle,
-  CheckCircle2,
   ChevronDown,
   Download,
   LoaderCircle,
@@ -62,6 +61,9 @@ export function LocalRwkvPanel({
   );
   const updateRwkvConfig = useRosettaStore((state) => state.updateRwkvConfig);
   const [detailsOpenByProfileId, setDetailsOpenByProfileId] = useState<
+    Record<string, boolean>
+  >({});
+  const [logsOpenByProfileId, setLogsOpenByProfileId] = useState<
     Record<string, boolean>
   >({});
   const [logsByProfileId, setLogsByProfileId] = useState<
@@ -177,8 +179,18 @@ export function LocalRwkvPanel({
     }
   }
 
-  async function setProfileDetailsOpen(profileId: string, nextOpen: boolean) {
+  function setProfileDetailsOpen(profileId: string, nextOpen: boolean) {
     setDetailsOpenByProfileId(nextOpen ? { [profileId]: true } : {});
+    if (!nextOpen) {
+      setLogsOpenByProfileId({});
+    }
+  }
+
+  async function setProfileLogsOpen(profileId: string, nextOpen: boolean) {
+    setLogsOpenByProfileId((current) => ({
+      ...current,
+      [profileId]: nextOpen,
+    }));
 
     if (!nextOpen || logsByProfileId[profileId] !== undefined) {
       return;
@@ -204,11 +216,6 @@ export function LocalRwkvPanel({
       )}
       id="local-rwkv"
     >
-      <div className="flex items-center justify-between gap-4">
-        <h3 className="text-sm font-semibold tracking-normal">本地模型</h3>
-        <RuntimeBadge status={selectedStatus} isInstallActive={isInstallActive} />
-      </div>
-
       <div className="flex flex-col gap-3">
         {isTranslationRunning && (
           <div className="flex items-start gap-2 rounded-md border border-amber-500/25 bg-amber-500/8 px-3 py-2 text-sm text-amber-800 dark:text-amber-300">
@@ -227,7 +234,7 @@ export function LocalRwkvPanel({
         )}
 
         {profileStatuses.length > 0 ? (
-          <div className="overflow-hidden rounded-lg border border-border/70 bg-muted/15">
+          <div className="overflow-hidden rounded-lg border border-border/70 bg-card">
             {profileStatuses.map((profileStatus) => (
               <RuntimeProfileRow
                 key={profileStatus.profile.id}
@@ -244,6 +251,9 @@ export function LocalRwkvPanel({
                   logsLoadingProfileId === profileStatus.profile.id &&
                   logsByProfileId[profileStatus.profile.id] === undefined
                 }
+                logsOpen={
+                  logsOpenByProfileId[profileStatus.profile.id] ?? false
+                }
                 isRecommended={isRecommendedRuntimeProfile(
                   profileStatus,
                   profileStatuses
@@ -254,7 +264,10 @@ export function LocalRwkvPanel({
                 onStart={() => void startProfile(profileStatus.profile.id)}
                 onStop={() => void stopProfile(profileStatus.profile.id)}
                 onDetailsOpenChange={(open) =>
-                  void setProfileDetailsOpen(profileStatus.profile.id, open)
+                  setProfileDetailsOpen(profileStatus.profile.id, open)
+                }
+                onLogsOpenChange={(open) =>
+                  void setProfileLogsOpen(profileStatus.profile.id, open)
                 }
                 connectivityPanel={
                   profileStatus.profile.id === activeProfileId &&
@@ -298,6 +311,7 @@ function RuntimeProfileRow({
   detailsOpen,
   logs,
   logsLoading,
+  logsOpen,
   isRecommended,
   onActivate,
   onInstall,
@@ -305,6 +319,7 @@ function RuntimeProfileRow({
   onStart,
   onStop,
   onDetailsOpenChange,
+  onLogsOpenChange,
   connectivityPanel,
 }: {
   status: ManagedRuntimeProfileStatus;
@@ -315,6 +330,7 @@ function RuntimeProfileRow({
   detailsOpen: boolean;
   logs: ManagedRuntimeLogsSummary | null;
   logsLoading: boolean;
+  logsOpen: boolean;
   isRecommended: boolean;
   onActivate: () => void;
   onInstall: () => void;
@@ -322,30 +338,43 @@ function RuntimeProfileRow({
   onStart: () => void;
   onStop: () => void;
   onDetailsOpenChange: (open: boolean) => void;
+  onLogsOpenChange: (open: boolean) => void;
   connectivityPanel?: ReactNode;
 }) {
+  const [pathsOpen, setPathsOpen] = useState(false);
   const isUnsupported = status.state === "unsupported";
   const isBusy = isActionTarget && actionsDisabled;
   const summary = resolveStatus(status.state, status);
-  const specs = runtimeSpecItems(status);
+  const showSummary =
+    summary.spinning ||
+    !!summary.sub ||
+    status.state === "failed" ||
+    status.state === "unsupported";
 
   return (
     <article
       className={cn(
-        "border-t border-border/70 p-4 transition-colors first:border-t-0",
-        isSelected && "bg-muted/35"
+        "border-t border-border/70 px-4 py-3.5 transition-colors first:border-t-0",
+        isSelected &&
+          status.state !== "failed" &&
+          !isUnsupported &&
+          "bg-muted/20",
+        isSelected &&
+          status.state === "failed" &&
+          "bg-destructive/5 ring-1 ring-inset ring-destructive/20",
+        isSelected && isUnsupported && "bg-muted/25"
       )}
     >
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-        <div className="min-w-0 space-y-2">
+      <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-start">
+        <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <h4 className="text-sm font-semibold tracking-normal">
+            <h4 className="text-[0.95rem] font-semibold leading-5 tracking-normal">
               {status.profile.runtimeLabel}
             </h4>
             {isRecommended && (
               <Badge
                 variant="outline"
-                className="h-5 border-transparent bg-muted px-1.5 text-[11px] font-normal text-muted-foreground ring-1 ring-inset ring-border/70"
+                className="h-5 border-transparent bg-muted px-1.5 text-xs font-medium text-muted-foreground ring-1 ring-inset ring-border/70"
               >
                 推荐
               </Badge>
@@ -353,33 +382,36 @@ function RuntimeProfileRow({
             {isSelected && (
               <Badge
                 variant="outline"
-                className="h-5 border-transparent bg-foreground/8 px-1.5 text-[11px] font-normal text-foreground ring-1 ring-inset ring-border/70 dark:bg-white/10"
+                className="rosetta-settings-accent-badge h-5 border-transparent px-1.5 text-xs font-medium"
               >
                 当前
               </Badge>
             )}
             <StateBadge state={status.state} />
           </div>
-          {specs.length > 0 && (
-            <div className="flex flex-wrap gap-1.5">
-              {specs.map((item) => (
+
+          {showSummary && (
+            <div className="mt-1.5 flex min-w-0 items-start gap-2 text-[0.85rem] leading-5 text-muted-foreground">
+              {summary.spinning ? (
+                <LoaderCircle className="mt-0.5 size-3.5 shrink-0 animate-spin" />
+              ) : (
                 <span
-                  key={item}
-                  className="rounded-md bg-background/70 px-2 py-1 text-[11px] leading-none text-muted-foreground ring-1 ring-border/50"
-                >
-                  {item}
+                  className={cn("mt-1.5 size-2 shrink-0 rounded-full", summary.dot)}
+                />
+              )}
+              <p className="min-w-0">
+                <span className="font-medium text-foreground/85">
+                  {summary.label}
                 </span>
-              ))}
+                {summary.sub ? (
+                  <span className="text-muted-foreground"> · {summary.sub}</span>
+                ) : null}
+              </p>
             </div>
-          )}
-          {status.profile.runtimeWarning && (
-            <p className="max-w-2xl text-xs leading-5 text-amber-700 dark:text-amber-300">
-              {status.profile.runtimeWarning}
-            </p>
           )}
         </div>
 
-        <div className="flex shrink-0 flex-wrap gap-2 lg:justify-end">
+        <div className="flex shrink-0 flex-wrap gap-2 xl:justify-end">
           <Button
             type="button"
             size="sm"
@@ -401,24 +433,8 @@ function RuntimeProfileRow({
         </div>
       </div>
 
-      <div className="mt-3 flex flex-col gap-2">
-        <div className="flex items-start gap-2 rounded-md bg-background/65 px-3 py-2 ring-1 ring-border/60">
-          {summary.spinning ? (
-            <LoaderCircle className="mt-0.5 size-3.5 shrink-0 animate-spin text-muted-foreground" />
-          ) : (
-            <div className={cn("mt-1.5 size-2 shrink-0 rounded-full", summary.dot)} />
-          )}
-          <div className="min-w-0">
-            <p className="text-xs font-medium">{summary.label}</p>
-            {summary.sub && (
-              <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                {summary.sub}
-              </p>
-            )}
-          </div>
-        </div>
-
-        {connectivityPanel}
+      <div className="mt-2 flex flex-col gap-2">
+        {connectivityPanel ? <div className="mt-1">{connectivityPanel}</div> : null}
 
         {!isUnsupported && (
           <Collapsible open={detailsOpen} onOpenChange={onDetailsOpenChange}>
@@ -437,15 +453,53 @@ function RuntimeProfileRow({
               </button>
             </CollapsibleTrigger>
             <CollapsibleContent className="rosetta-settings-collapsible-content">
-              <div className="mt-2 grid gap-4 border-t border-border/70 pt-4 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,0.8fr)]">
+              <div className="mt-2 flex flex-col gap-3 border-t border-border/70 pt-4">
                 <ModelInfoRows status={status} />
-                <div className="flex min-w-0 flex-col gap-2">
-                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                    <TerminalSquare className="size-3.5" />
-                    运行日志
-                  </div>
-                  <LogsSummaryBlock logs={logs} isLoading={logsLoading} />
-                </div>
+
+                <Collapsible open={pathsOpen} onOpenChange={setPathsOpen}>
+                  <CollapsibleTrigger asChild>
+                    <button
+                      type="button"
+                      className="flex h-7 w-fit items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      <ChevronDown
+                        className={cn(
+                          "size-3.5 transition-transform duration-200 ease-[cubic-bezier(0.22,1,0.36,1)]",
+                          pathsOpen && "rotate-180"
+                        )}
+                      />
+                      路径
+                    </button>
+                  </CollapsibleTrigger>
+                  <CollapsibleContent className="rosetta-settings-collapsible-content">
+                    <div className="pt-1">
+                      <PathInfoRows status={status} />
+                    </div>
+                  </CollapsibleContent>
+                </Collapsible>
+
+                <Collapsible open={logsOpen} onOpenChange={onLogsOpenChange}>
+                  <CollapsibleTrigger asChild>
+                    <button
+                      type="button"
+                      className="flex h-7 w-fit items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      <ChevronDown
+                        className={cn(
+                          "size-3.5 transition-transform duration-200 ease-[cubic-bezier(0.22,1,0.36,1)]",
+                          logsOpen && "rotate-180"
+                        )}
+                      />
+                      <TerminalSquare className="size-3.5" />
+                      日志
+                    </button>
+                  </CollapsibleTrigger>
+                  <CollapsibleContent className="rosetta-settings-collapsible-content">
+                    <div className="pt-1">
+                      <LogsSummaryBlock logs={logs} isLoading={logsLoading} />
+                    </div>
+                  </CollapsibleContent>
+                </Collapsible>
               </div>
             </CollapsibleContent>
           </Collapsible>
@@ -574,47 +628,6 @@ function isRecommendedRuntimeProfile(
   return status.profile.recommended;
 }
 
-function RuntimeBadge({
-  status,
-  isInstallActive,
-}: {
-  status: ManagedRuntimeProfileStatus | null;
-  isInstallActive: boolean;
-}) {
-  if (isInstallActive) {
-    return (
-      <Badge
-        variant="outline"
-        className="h-5 gap-1 border-transparent bg-amber-500/10 px-1.5 text-[11px] font-normal text-amber-800 ring-1 ring-inset ring-amber-500/20 dark:text-amber-300"
-      >
-        <LoaderCircle className="size-3 animate-spin" /> 安装中
-      </Badge>
-    );
-  }
-  if (!status) return null;
-  if (status.state === "ready") {
-    return (
-      <Badge
-        variant="outline"
-        className="h-5 gap-1 border-transparent bg-foreground/8 px-1.5 text-[11px] font-normal text-foreground ring-1 ring-inset ring-border/70 dark:bg-white/10"
-      >
-        <CheckCircle2 className="size-3" /> 运行中
-      </Badge>
-    );
-  }
-  if (status.state === "starting") {
-    return (
-      <Badge
-        variant="outline"
-        className="h-5 gap-1 border-transparent bg-muted px-1.5 text-[11px] font-normal text-muted-foreground ring-1 ring-inset ring-border/70"
-      >
-        <LoaderCircle className="size-3 animate-spin" /> 启动中
-      </Badge>
-    );
-  }
-  return null;
-}
-
 function StateBadge({ state }: { state: ManagedRuntimeState }) {
   const label = stateLabel(state);
   if (!label) return null;
@@ -622,14 +635,14 @@ function StateBadge({ state }: { state: ManagedRuntimeState }) {
     <Badge
       variant="outline"
       className={cn(
-        "h-5 border-transparent px-1.5 text-[11px] font-normal ring-1 ring-inset ring-border/70",
+        "h-5 border-transparent px-1.5 text-xs font-medium ring-1 ring-inset ring-border/70",
         state === "failed"
           ? "bg-destructive/10 text-destructive ring-destructive/20"
           : state === "unsupported"
             ? "bg-muted/60 text-muted-foreground"
             : state === "not-installed" || state === "stopped" || state === "installed"
               ? "bg-muted/70 text-muted-foreground"
-              : "bg-foreground/8 text-foreground dark:bg-white/10"
+              : "rosetta-settings-accent-badge"
       )}
     >
       {label}
@@ -645,23 +658,18 @@ function resolveStatus(
     case "ready":
       return {
         dot: status.process.cpuFallback ? "bg-amber-500" : "bg-primary",
-        label: status.process.cpuFallback
-          ? "运行中，当前为 CPU 回退模式"
-          : "运行中，可用于本地翻译",
-        sub: status.process.baseUrl
-          ? `监听 ${status.process.baseUrl}`
-          : undefined,
+        label: status.process.cpuFallback ? "CPU 回退运行中" : "运行中",
       };
     case "starting":
       return {
         dot: "bg-primary",
-        label: "正在启动本地模型",
+        label: "启动中",
         spinning: true,
       };
     case "installed":
       return {
         dot: "bg-muted-foreground/50",
-        label: "已安装，启动后可以用于翻译",
+        label: "已安装",
       };
     case "stopped":
       return {
@@ -677,14 +685,13 @@ function resolveStatus(
     case "unsupported":
       return {
         dot: "bg-muted-foreground/30",
-        label: "当前设备不支持",
-        sub: status.hardware.message,
+        label: "不支持",
+        sub: summarizeHardwareIssue(status.hardware.message),
       };
     case "not-installed":
       return {
         dot: "bg-muted-foreground/30",
-        label: "尚未安装",
-        sub: status.installPlan.message,
+        label: "未安装",
       };
     default:
       return {
@@ -720,27 +727,21 @@ function summarizeRuntimeError(message: string | null | undefined): string {
   return firstLine.length > 120 ? `${firstLine.slice(0, 120).trimEnd()}...` : firstLine;
 }
 
-function runtimeSpecItems(status: ManagedRuntimeProfileStatus): string[] {
-  const items: string[] = [];
-
-  if (!status.hardware.supported) {
-    return [status.hardware.message];
+function summarizeHardwareIssue(message: string): string {
+  if (message.includes("NVIDIA")) {
+    return "需要 NVIDIA GPU";
   }
-
-  if (status.profile.hardwareRequirement) {
-    items.push(status.profile.hardwareRequirement);
+  if (message.includes("Vulkan") || message.includes("vk::")) {
+    return "需要 Vulkan 可用显卡";
   }
-
-  items.push(formatBytes(status.profile.modelSizeBytes));
-
-  if (status.hardware.gpuName) {
-    items.push(status.hardware.gpuName);
+  const firstLine = message
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean);
+  if (!firstLine) {
+    return "当前设备不可用";
   }
-  if (status.hardware.computeCapability) {
-    items.push(`SM ${status.hardware.computeCapability}`);
-  }
-
-  return items;
+  return firstLine.length > 64 ? `${firstLine.slice(0, 64).trimEnd()}...` : firstLine;
 }
 
 function showProxyInput(
@@ -768,14 +769,14 @@ function DownloadProxyField({ disabled }: { disabled: boolean }) {
           htmlFor="managed-rwkv-download-proxy"
           className="text-xs font-medium"
         >
-          下载代理（可选）
+          下载代理
         </Label>
-        <span className="text-[11px] text-muted-foreground">只影响模型下载</span>
+        <span className="text-[11px] text-muted-foreground">可选</span>
       </div>
       <Input
         id="managed-rwkv-download-proxy"
         type="text"
-        placeholder="例如 http://127.0.0.1:7897，留空自动检测"
+        placeholder="http://127.0.0.1:7897"
         value={proxyUrl}
         disabled={disabled}
         spellCheck={false}
@@ -803,6 +804,13 @@ function ModelInfoRows({ status }: { status: ManagedRuntimeProfileStatus }) {
       label: "校验",
       value: `SHA-256 ${status.profile.modelSha256.slice(0, 16)}...`,
     },
+  ];
+
+  if (status.process.baseUrl) {
+    rows.push({ label: "监听", value: status.process.baseUrl });
+  }
+
+  rows.push(
     {
       label: "健康检查",
       value: status.profile.healthPath,
@@ -810,7 +818,32 @@ function ModelInfoRows({ status }: { status: ManagedRuntimeProfileStatus }) {
     {
       label: "翻译接口",
       value: status.profile.batchChatPath,
-    },
+    }
+  );
+
+  if (status.process.pid) {
+    rows.push({ label: "进程 PID", value: String(status.process.pid) });
+  }
+
+  return (
+    <dl className="grid min-w-0 gap-1.5 text-xs">
+      {rows.map((row) => (
+        <div
+          key={row.label}
+          className="grid min-w-0 grid-cols-[5rem_minmax(0,1fr)] gap-3"
+        >
+          <dt className="text-muted-foreground">{row.label}</dt>
+          <dd className="truncate font-mono text-[11px] text-foreground/70">
+            {row.value}
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function PathInfoRows({ status }: { status: ManagedRuntimeProfileStatus }) {
+  const rows: Array<{ label: string; value: string }> = [
     {
       label: "模型路径",
       value: status.paths.modelFile,
@@ -823,9 +856,6 @@ function ModelInfoRows({ status }: { status: ManagedRuntimeProfileStatus }) {
 
   if (status.paths.runtimeDir) {
     rows.push({ label: "运行包", value: status.paths.runtimeDir });
-  }
-  if (status.process.pid) {
-    rows.push({ label: "进程 PID", value: String(status.process.pid) });
   }
 
   return (
