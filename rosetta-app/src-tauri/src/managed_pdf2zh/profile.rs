@@ -29,11 +29,11 @@ pub const MACOS_ARM64_PDF2ZH: Pdf2zhProfile = Pdf2zhProfile {
     pack_directory_name: "macos-arm64",
     bin_relative_path: "bin/pdf2zh",
     pack_filename: "rosetta-pdf2zh-macos-arm64.tar.gz",
-    pack_size_bytes: Some(384_360_401),
-    pack_sha256: Some("60dff51fc3b3d336e9f068b747b3b7b5de86caca3adb44dd80068ef13c553e41"),
+    pack_size_bytes: Some(406_417_600),
+    pack_sha256: Some("6a43e390af9cc5c4518af960696e3bb6322c247177d619585edb719897090635"),
     pack_download_urls: &[
-        "https://githubdog.com/https://github.com/LeoLin4258/rosetta-assets/releases/download/pdf-layout-pack-macos-arm64-v2026.07.06.1/rosetta-pdf2zh-macos-arm64.tar.gz",
-        "https://github.com/LeoLin4258/rosetta-assets/releases/download/pdf-layout-pack-macos-arm64-v2026.07.06.1/rosetta-pdf2zh-macos-arm64.tar.gz",
+        "https://githubdog.com/https://github.com/LeoLin4258/rosetta-assets/releases/download/pdf-layout-pack-macos-arm64-v2026.07.10.1/rosetta-pdf2zh-macos-arm64.tar.gz",
+        "https://github.com/LeoLin4258/rosetta-assets/releases/download/pdf-layout-pack-macos-arm64-v2026.07.10.1/rosetta-pdf2zh-macos-arm64.tar.gz",
     ],
 };
 
@@ -45,11 +45,11 @@ pub const WINDOWS_AMD64_PDF2ZH: Pdf2zhProfile = Pdf2zhProfile {
     pack_directory_name: "windows-amd64",
     bin_relative_path: "python/python.exe",
     pack_filename: "rosetta-pdf2zh-windows-amd64.zip",
-    pack_size_bytes: Some(337_538_595),
-    pack_sha256: Some("394bcfe73781f9098814b8ce9fd82cddbd9107831596c3d6353ce909fbd44bfd"),
+    pack_size_bytes: Some(349_529_488),
+    pack_sha256: Some("80680b6fd94fba53a256e323337790bfd997af03c4703db0f99680a9dc1b2246"),
     pack_download_urls: &[
-        "https://githubdog.com/https://github.com/LeoLin4258/rosetta-assets/releases/download/pdf-layout-pack-windows-x64-v2026.07.06.1/rosetta-pdf2zh-windows-amd64.zip",
-        "https://github.com/LeoLin4258/rosetta-assets/releases/download/pdf-layout-pack-windows-x64-v2026.07.06.1/rosetta-pdf2zh-windows-amd64.zip",
+        "https://githubdog.com/https://github.com/LeoLin4258/rosetta-assets/releases/download/pdf-layout-pack-windows-x64-v2026.07.10.1/rosetta-pdf2zh-windows-amd64.zip",
+        "https://github.com/LeoLin4258/rosetta-assets/releases/download/pdf-layout-pack-windows-x64-v2026.07.10.1/rosetta-pdf2zh-windows-amd64.zip",
     ],
 };
 

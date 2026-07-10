@@ -34,6 +34,16 @@ export type ReleaseNote = {
  * appearing in `package.json` (e.g. `"0.1.0-beta.8"`), not semver tuples.
  */
 export const RELEASE_NOTES: Record<string, ReleaseNote> = {
+  "0.1.0-beta.20": {
+    version: "0.1.0-beta.20",
+    highlights: [
+      "PDF 组件更新到新的 beta.20 版，Windows 和 macOS 使用同一批版面修复",
+      "PDF 翻译会更稳地保留复杂表格、数学公式、算法框和图中标签，减少格式错乱",
+      "修复部分 PDF 译文文字重复叠加、底层英文残留和页面渲染失败的问题",
+      "PDF 组件内置所需字体，减少首次翻译时因网络下载字体失败而中断",
+      "旧版 PDF 组件会被识别为需要更新，避免升级后继续使用旧组件",
+    ],
+  },
   "0.1.0-beta.19": {
     version: "0.1.0-beta.19",
     highlights: [

@@ -105,10 +105,17 @@ pub fn build_static_status(app: &AppHandle) -> Result<StaticStatus, String> {
     let layout = Pdf2zhLayout::from_app(app, profile)?;
     let bin_path = locate_pdf2zh_bin(&layout, profile);
     let doclayout_model_path = locate_doclayout_model(&layout);
-    let ready = bin_path.as_ref().is_some_and(|path| path.is_file())
-        && doclayout_model_path
-            .as_ref()
-            .is_some_and(|path| path.is_file());
+    let bin_ready = bin_path.as_ref().is_some_and(|path| path.is_file());
+    let model_ready = doclayout_model_path
+        .as_ref()
+        .is_some_and(|path| path.is_file());
+    let using_runtime_overrides = std::env::var_os("ROSETTA_PDF2ZH_BIN").is_some()
+        || std::env::var_os("ROSETTA_DOCLAYOUT_MODEL").is_some();
+    let ready = if using_runtime_overrides {
+        bin_ready && model_ready
+    } else {
+        layout.managed_pack_ready(profile)
+    };
     let state = if ready {
         Pdf2zhState::Installed
     } else {
@@ -118,6 +125,9 @@ pub fn build_static_status(app: &AppHandle) -> Result<StaticStatus, String> {
         ready,
         message: if ready {
             "PDF 版面处理可用。".to_string()
+        } else if bin_ready && model_ready {
+            "PDF 版面处理组件需要更新：当前组件版本或内置字体与此版本不匹配。请重新安装 PDF 组件。"
+                .to_string()
         } else if bin_path.is_some() {
             format!(
                 "PDF 版面处理组件需要更新：缺少内置版面模型 models/{DOCLAYOUT_MODEL_FILENAME}。请重新安装 PDF 组件。"
@@ -196,6 +206,38 @@ mod tests {
         fs::write(bin, b"#!/usr/bin/env bash\n").expect("bin should be written");
     }
 
+    fn create_babeldoc_fonts(layout: &Pdf2zhLayout) {
+        let fonts_dir = layout.babeldoc_cache_dir().join("fonts");
+        fs::create_dir_all(&fonts_dir).expect("fonts dir should be created");
+        for font in [
+            "SourceHanSansCN-Regular.ttf",
+            "SourceHanSansCN-Bold.ttf",
+            "GoNotoKurrent-Regular.ttf",
+        ] {
+            fs::write(fonts_dir.join(font), b"font bytes").expect("font should be written");
+        }
+    }
+
+    fn write_matching_manifest(layout: &Pdf2zhLayout, profile: &Pdf2zhProfile) {
+        let contents = format!(
+            r#"{{
+  "schemaVersion": 1,
+  "profileId": "{}",
+  "packFilename": "{}",
+  "sha256": "{}",
+  "sizeBytes": {},
+  "sourceUrl": "file:///tmp/{}",
+  "installedAt": "0"
+}}"#,
+            profile.id,
+            profile.pack_filename,
+            profile.pack_sha256.unwrap_or_default(),
+            profile.pack_size_bytes.unwrap_or_default(),
+            profile.pack_filename
+        );
+        fs::write(&layout.manifest_file, contents).expect("manifest should be written");
+    }
+
     #[test]
     fn installed_pack_without_bundled_layout_model_is_not_ready() {
         let root = temp_root("missing-layout-model");
@@ -209,8 +251,8 @@ mod tests {
     }
 
     #[test]
-    fn installed_pack_with_bundled_layout_model_is_ready() {
-        let root = temp_root("with-layout-model");
+    fn installed_pack_with_current_manifest_and_assets_is_ready() {
+        let root = temp_root("with-current-assets");
         let profile = &MACOS_ARM64_PDF2ZH;
         let layout = Pdf2zhLayout::resolve(root, profile);
         create_pdf2zh_bin(&layout, profile);
@@ -218,6 +260,8 @@ mod tests {
         fs::create_dir_all(model.parent().expect("model should have parent"))
             .expect("model parent should be created");
         fs::write(model, b"model bytes").expect("model should be written");
+        create_babeldoc_fonts(&layout);
+        write_matching_manifest(&layout, profile);
 
         let ready = layout.managed_pack_ready(profile);
 
