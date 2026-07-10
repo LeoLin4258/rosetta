@@ -222,6 +222,12 @@ print(f"pdf-pack-imports-ok pdf2zh={pdf2zh.__version__} contract={rosetta_engine
     if ($LASTEXITCODE -ne 0) {
         throw "Pruned PDF runtime import smoke test failed"
     }
+    # The final smoke imports the runtime again, which recreates bytecode
+    # caches after the earlier pruning pass.
+    Get-ChildItem -LiteralPath $PackDir -Recurse -Directory -Filter "__pycache__" |
+        Remove-Item -Recurse -Force
+    Get-ChildItem -LiteralPath $PackDir -Recurse -File -Filter "*.pyc" |
+        Remove-Item -Force
     Remove-Item -LiteralPath "$ModelPath.optimized" -Force -ErrorAction SilentlyContinue
 
     if (Test-Path -LiteralPath $ArchivePath) {

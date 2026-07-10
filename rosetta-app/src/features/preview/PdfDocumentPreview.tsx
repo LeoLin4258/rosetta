@@ -341,9 +341,14 @@ export function PdfDocumentPreview({
         {pages.length === 0 ? (
           <div className="flex min-h-full flex-col items-center justify-center gap-2 px-8 text-center text-sm text-muted-foreground">
             {translationPlaceholderLoading ? (
-              <span className="rosetta-pdf-inline-progress" aria-hidden="true" />
+              <span className="rosetta-pdf-inline-progress-hide" aria-hidden="true" />
             ) : null}
-            {sourcePageCount == null ? "加载源 PDF..." : translationPlaceholder}
+            {sourcePageCount == null ? 
+             <div className="h-40 flex items-center justify-center ">
+              加载源 PDF...
+             </div>
+            : 
+            translationPlaceholder}
           </div>
         ) : (
           <div
