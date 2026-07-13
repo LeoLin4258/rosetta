@@ -1251,6 +1251,39 @@ mod tests {
     }
 
     #[test]
+    fn structural_line_break_placeholders_split_and_reassemble_list_items() {
+        let marker = "{v900000000}";
+        let source = format!("Title Page{marker}Gateway Introduction{marker}Preface");
+        let prepared = prepare_non_lightning_chunks(&[unit("a", &source)]);
+        let chunk_texts = prepared
+            .chunks
+            .iter()
+            .map(|chunk| chunk.text.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            chunk_texts,
+            vec!["Title Page", "Gateway Introduction", "Preface"]
+        );
+        let output = build_unit_outputs(
+            &[unit("a", &source)],
+            &prepared,
+            &[
+                "标题页".to_string(),
+                "门户介绍".to_string(),
+                "前言".to_string(),
+            ],
+            "zh-CN",
+        )
+        .expect("build structural line break output");
+
+        assert_eq!(
+            output[0].text,
+            format!("标题页{marker}门户介绍{marker}前言")
+        );
+    }
+
+    #[test]
     fn placeholder_only_unit_is_reconstructed_without_provider_chunks() {
         let prepared = prepare_non_lightning_chunks(&[unit("a", "{v0} {v1}")]);
 

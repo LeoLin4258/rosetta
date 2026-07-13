@@ -226,6 +226,262 @@ def patch_converter_text_rendering_safety(text: str) -> tuple[str, bool]:
     return text, changed
 
 
+def patch_converter_centered_single_line_alignment(text: str) -> tuple[str, bool]:
+    if "class TranslateConverter" not in text or "ops_vals: list[dict] = []" not in text:
+        return text, False
+
+    changed = False
+    helper_marker = "def rosetta_pdf_centered_alignment_shift("
+    old_helper_anchor = '''        def rosetta_pdf_fill_rect(x0, y0, x1, y1, pad):
+            left = min(x0, x1) - pad
+            bottom = min(y0, y1) - pad
+            width = abs(x1 - x0) + pad * 2
+            height = abs(y1 - y0) + pad * 2
+            return f"ET q 1 g {left:f} {bottom:f} {width:f} {height:f} re f Q BT "
+'''
+    new_helper_anchor = old_helper_anchor + '''
+        def rosetta_pdf_centered_alignment_shift(
+            page_left,
+            page_right,
+            source_left,
+            source_right,
+            translated_left,
+            translated_right,
+            size,
+            has_line_break,
+            line_count,
+        ):
+            page_width = page_right - page_left
+            source_width = source_right - source_left
+            translated_width = translated_right - translated_left
+            if (
+                has_line_break
+                or line_count != 1
+                or page_width <= 0
+                or source_width <= 0
+                or source_width > page_width * 0.8
+                or translated_width <= 0
+                or translated_width > page_width
+            ):
+                return 0.0
+            page_center = (page_left + page_right) / 2
+            source_center = (source_left + source_right) / 2
+            center_tolerance = max(2.0, min(12.0, size * 0.5))
+            if abs(source_center - page_center) > center_tolerance:
+                return 0.0
+            centered_left = max(
+                page_left,
+                min(page_right - translated_width, source_center - translated_width / 2),
+            )
+            return centered_left - translated_left
+'''
+    if helper_marker not in text:
+        if old_helper_anchor not in text:
+            raise SystemExit(f"::error::could not find expected pdf2zh fill rectangle helper in {target}")
+        text = text.replace(old_helper_anchor, new_helper_anchor, 1)
+        changed = True
+
+    alignment_marker = "Rosetta: preserve page-centered single-line paragraph alignment after translation."
+    old_alignment_anchor = '''            # Rosetta: erase source text under translated paragraphs and keep CJK line spacing legible.
+'''
+    new_alignment_anchor = '''            # Rosetta: preserve page-centered single-line paragraph alignment after translation.
+            alignment_shift = rosetta_pdf_centered_alignment_shift(
+                ltpage.x0,
+                ltpage.x1,
+                x0,
+                x1,
+                pstk[id].x,
+                x,
+                size,
+                brk,
+                lidx + 1,
+            )
+            if alignment_shift:
+                for vals in ops_vals:
+                    vals["x"] += alignment_shift
+
+            # Rosetta: erase source text under translated paragraphs and keep CJK line spacing legible.
+'''
+    if alignment_marker not in text:
+        if old_alignment_anchor not in text:
+            return text, changed
+        text = text.replace(old_alignment_anchor, new_alignment_anchor, 1)
+        changed = True
+
+    return text, changed
+
+
+def patch_converter_structural_line_breaks(text: str) -> tuple[str, bool]:
+    if "class TranslateConverter" not in text or "class Paragraph:" not in text:
+        return text, False
+
+    changed = False
+    line_break_placeholder = "{v900000000}"
+
+    old_paragraph_field = """        self.brk: bool = brk  # 换行标记
+        self.color = color
+"""
+    new_paragraph_field = """        self.brk: bool = brk  # 换行标记
+        self.rosetta_line_breaks: list[tuple[int, float]] = []
+        self.color = color
+"""
+    if "self.rosetta_line_breaks" not in text and old_paragraph_field in text:
+        text = text.replace(old_paragraph_field, new_paragraph_field, 1)
+        changed = True
+
+    old_break_capture = '''                        elif child.x1 < xt.x0:      # 添加换行空格并标记原文段落存在换行
+                            sstk[-1] += " "
+                            pstk[-1].brk = True
+'''
+    new_break_capture = '''                        elif child.x1 < xt.x0:      # 添加换行空格并标记原文段落存在换行
+                            pstk[-1].rosetta_line_breaks.append((len(sstk[-1]), xt.x1))
+                            sstk[-1] += " "
+                            pstk[-1].brk = True
+'''
+    if "rosetta_line_breaks.append" not in text and old_break_capture in text:
+        text = text.replace(old_break_capture, new_break_capture, 1)
+        changed = True
+
+    structural_marker = "Rosetta: preserve structural line breaks in list-like text blocks."
+    translation_anchor = '''        ############################################################
+        # B. 段落翻译
+'''
+    structural_block = f'''        # {structural_marker}
+        def rosetta_pdf_should_preserve_source_line_breaks(paragraph, source_text):
+            if len(re.findall(r"\\{{v\\d+\\}}", source_text)) >= 3:
+                return False
+            line_breaks = getattr(paragraph, "rosetta_line_breaks", [])
+            if len(line_breaks) < 3:
+                return False
+            paragraph_width = paragraph.x1 - paragraph.x0
+            if paragraph_width <= 0:
+                return False
+            short_line_gap = max(paragraph.size * 2.0, paragraph_width * 0.15)
+            short_line_count = sum(
+                1 for _offset, line_end in line_breaks
+                if paragraph.x1 - line_end >= short_line_gap
+            )
+            return short_line_count >= 2 and short_line_count * 3 >= len(line_breaks) * 2
+
+        for paragraph_id, paragraph in enumerate(pstk):
+            if not rosetta_pdf_should_preserve_source_line_breaks(paragraph, sstk[paragraph_id]):
+                continue
+            for offset, _line_end in reversed(paragraph.rosetta_line_breaks):
+                sstk[paragraph_id] = (
+                    sstk[paragraph_id][:offset]
+                    + "{line_break_placeholder}"
+                    + sstk[paragraph_id][offset + 1:]
+                )
+
+''' + translation_anchor
+    if structural_marker not in text and translation_anchor in text:
+        text = text.replace(translation_anchor, structural_block, 1)
+        changed = True
+    old_structural_helper = '''        def rosetta_pdf_should_preserve_source_line_breaks(paragraph):
+            line_breaks = getattr(paragraph, "rosetta_line_breaks", [])
+'''
+    new_structural_helper = '''        def rosetta_pdf_should_preserve_source_line_breaks(paragraph, source_text):
+            if len(re.findall(r"\\{v\\d+\\}", source_text)) >= 3:
+                return False
+            line_breaks = getattr(paragraph, "rosetta_line_breaks", [])
+'''
+    if old_structural_helper in text:
+        text = text.replace(old_structural_helper, new_structural_helper, 1)
+        text = text.replace(
+            "if not rosetta_pdf_should_preserve_source_line_breaks(paragraph):",
+            "if not rosetta_pdf_should_preserve_source_line_breaks(paragraph, sstk[paragraph_id]):",
+            1,
+        )
+        changed = True
+
+    old_modifier = """                mod = 0  # 文字修饰符
+                if vy_regex:  # 加载公式
+"""
+    new_modifier = """                mod = 0  # 文字修饰符
+                rosetta_forced_line_break = False
+                if vy_regex:  # 加载公式
+"""
+    if "rosetta_forced_line_break = False" not in text and old_modifier in text:
+        text = text.replace(old_modifier, new_modifier, 1)
+        changed = True
+
+    old_placeholder_load = """                        vid = int(vy_regex.group(1).replace(" ", ""))
+                        adv = vlen[vid]
+"""
+    new_placeholder_load = f"""                        vid = int(vy_regex.group(1).replace(" ", ""))
+                        if vid == 900000000:
+                            adv = 0
+                            rosetta_forced_line_break = True
+                        else:
+                            adv = vlen[vid]
+"""
+    if "if vid == 900000000:" not in text and old_placeholder_load in text:
+        text = text.replace(old_placeholder_load, new_placeholder_load, 1)
+        changed = True
+
+    old_modifier_guard = '''                    if var[vid][-1].get_text() and unicodedata.category(var[vid][-1].get_text()[0]) in ["Lm", "Mn", "Sk"]:  # 文字修饰符
+'''
+    new_modifier_guard = '''                    if not rosetta_forced_line_break and var[vid][-1].get_text() and unicodedata.category(var[vid][-1].get_text()[0]) in ["Lm", "Mn", "Sk"]:  # 文字修饰符
+'''
+    if "if not rosetta_forced_line_break and var[vid]" not in text and old_modifier_guard in text:
+        text = text.replace(old_modifier_guard, new_modifier_guard, 1)
+        changed = True
+
+    old_forced_break_anchor = '''                if brk and x + adv > x1 + 0.1 * size:  # 到达右边界且原文段落存在换行
+'''
+    new_forced_break_anchor = '''                if rosetta_forced_line_break:
+                    x = x0
+                    lidx += 1
+                    fcur = None
+                    continue
+                if brk and x + adv > x1 + 0.1 * size:  # 到达右边界且原文段落存在换行
+'''
+    if "if rosetta_forced_line_break:" not in text and old_forced_break_anchor in text:
+        text = text.replace(old_forced_break_anchor, new_forced_break_anchor, 1)
+        changed = True
+
+    return text, changed
+
+
+def patch_rosetta_engine_structural_line_breaks(root: Path) -> bool:
+    target = root / "rosetta_engine.py"
+    if not target.is_file():
+        return False
+
+    text = target.read_text(encoding="utf-8")
+    changed = False
+    old_placeholder_count = '''def rosetta_placeholder_count(text: str) -> int:
+    return len(re.findall(r"\\{v\\d+\\}", text))
+'''
+    new_placeholder_count = '''def rosetta_placeholder_count(text: str) -> int:
+    return sum(
+        1
+        for placeholder in re.findall(r"\\{v\\d+\\}", text)
+        if placeholder != "{v900000000}"
+    )
+'''
+    if old_placeholder_count in text:
+        text = text.replace(old_placeholder_count, new_placeholder_count, 1)
+        changed = True
+
+    old_source_chars = "                sourceChars=len(text),\n"
+    new_source_chars = '                sourceChars=len(text.replace("{v900000000}", "")),\n'
+    if old_source_chars in text:
+        text = text.replace(old_source_chars, new_source_chars, 1)
+        changed = True
+
+    old_translated_chars = "            self.translated_chars += len(translated)\n"
+    new_translated_chars = '            self.translated_chars += len(translated.replace("{v900000000}", ""))\n'
+    if old_translated_chars in text:
+        text = text.replace(old_translated_chars, new_translated_chars, 1)
+        changed = True
+
+    if changed:
+        target.write_text(text, encoding="utf-8")
+        print(f"[pdf2zh-pack] preserved structural PDF line breaks in {target}")
+    return changed
+
+
 def patch_converter_formula_text_classification(text: str) -> tuple[str, bool]:
     if "class TranslateConverter" not in text:
         return text, False
@@ -1492,8 +1748,10 @@ if "def rosetta_pdf_is_bold_font(" in text and "rosetta_pdf_is_bold_font(child.f
     text, bold_font_changed = patch_converter_bold_font_support(text)
     text, cumulative_bold_changed = patch_cumulative_bold_marking(text)
     text, rendering_safety_changed = patch_converter_text_rendering_safety(text)
+    text, centered_alignment_changed = patch_converter_centered_single_line_alignment(text)
+    text, structural_line_breaks_changed = patch_converter_structural_line_breaks(text)
     text, formula_text_changed = patch_converter_formula_text_classification(text)
-    if changed or bold_font_changed or cumulative_bold_changed or rendering_safety_changed or formula_text_changed:
+    if changed or bold_font_changed or cumulative_bold_changed or rendering_safety_changed or centered_alignment_changed or structural_line_breaks_changed or formula_text_changed:
         target.write_text(text, encoding="utf-8")
         if changed:
             print(f"[pdf2zh-pack] normalized PDF faux-bold text mode in {target}")
@@ -1503,6 +1761,10 @@ if "def rosetta_pdf_is_bold_font(" in text and "rosetta_pdf_is_bold_font(child.f
             print(f"[pdf2zh-pack] made PDF paragraph bold marking cumulative in {target}")
         if rendering_safety_changed:
             print(f"[pdf2zh-pack] hardened translated PDF text masking and CJK line spacing in {target}")
+        if centered_alignment_changed:
+            print(f"[pdf2zh-pack] preserved centered single-line PDF paragraph alignment in {target}")
+        if structural_line_breaks_changed:
+            print(f"[pdf2zh-pack] preserved structural line breaks in translated PDF paragraphs in {target}")
         if formula_text_changed:
             print(f"[pdf2zh-pack] narrowed PDF formula classification for prose text in {target}")
     font_changed = patch_simplified_chinese_font(root)
@@ -1511,11 +1773,14 @@ if "def rosetta_pdf_is_bold_font(" in text and "rosetta_pdf_is_bold_font(child.f
     selected_window_changed = patch_rosetta_engine_selected_page_window(root)
     duplicate_layer_changed = patch_rosetta_engine_duplicate_text_layer_filter(root)
     render_matching_changed = patch_rosetta_engine_render_unit_matching(root)
+    engine_structural_line_breaks_changed = patch_rosetta_engine_structural_line_breaks(root)
     any_changed = (
         changed
         or bold_font_changed
         or cumulative_bold_changed
         or rendering_safety_changed
+        or centered_alignment_changed
+        or structural_line_breaks_changed
         or formula_text_changed
         or font_changed
         or high_level_bold_changed
@@ -1523,6 +1788,7 @@ if "def rosetta_pdf_is_bold_font(" in text and "rosetta_pdf_is_bold_font(child.f
         or selected_window_changed
         or duplicate_layer_changed
         or render_matching_changed
+        or engine_structural_line_breaks_changed
     )
     if any_changed:
         clear_pycache(root)
@@ -1841,6 +2107,8 @@ text, _ = normalize_text_mode_operator(text)
 text, _ = patch_converter_bold_font_support(text)
 text, _ = patch_cumulative_bold_marking(text)
 text, _ = patch_converter_text_rendering_safety(text)
+text, _ = patch_converter_centered_single_line_alignment(text)
+text, _ = patch_converter_structural_line_breaks(text)
 text, _ = patch_converter_formula_text_classification(text)
 
 target.write_text(text, encoding="utf-8")
@@ -1851,4 +2119,5 @@ patch_rosetta_engine_bold_font_registration(root)
 patch_rosetta_engine_selected_page_window(root)
 patch_rosetta_engine_duplicate_text_layer_filter(root)
 patch_rosetta_engine_render_unit_matching(root)
+patch_rosetta_engine_structural_line_breaks(root)
 clear_pycache(root)

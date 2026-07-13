@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -200,6 +201,17 @@ def prepare_pdf_document(input_path: Path, font_path: str, noto_name: str):
         for font_name, font_file in font_list:
             font_id[font_name] = page.insert_font(font_name, font_file)
     return doc
+
+def rosetta_placeholder_count(text: str) -> int:
+    return len(re.findall(r"\\{v\\d+\\}", text))
+
+def collect_unit(text: str):
+    return dict(
+                sourceChars=len(text),
+    )
+
+def record_translation(self, translated: str):
+            self.translated_chars += len(translated)
 """
         )
 
@@ -460,6 +472,95 @@ class Paragraph:
         self.assertIn('"Algorithm" in compact', patched)
         self.assertIn("without_decimal_points", patched)
         self.assertIn("(cls == 0 and not rosetta_text_like_visual_char)", patched)
+
+    def test_patch_centers_only_page_centered_single_line_paragraphs(self) -> None:
+        converter = self.converter_with_bold_helpers() + '''
+        def gen_op_line(x, y, xlen, ylen, linewidth, color=None):
+            return ""
+
+        def rosetta_pdf_fill_rect(x0, y0, x1, y1, pad):
+            left = min(x0, x1) - pad
+            bottom = min(y0, y1) - pad
+            width = abs(x1 - x0) + pad * 2
+            height = abs(y1 - y0) + pad * 2
+            return f"ET q 1 g {left:f} {bottom:f} {width:f} {height:f} re f Q BT "
+
+            ops_vals: list[dict] = []
+            # Rosetta: erase source text under translated paragraphs and keep CJK line spacing legible.
+'''
+        patched = self.run_patch(converter)
+
+        marker = "        def rosetta_pdf_centered_alignment_shift("
+        helper_start = patched.index(marker)
+        helper_end = patched.index("            ops_vals: list[dict] = []")
+        namespace: dict[str, object] = {"re": re}
+        exec(patched[helper_start:helper_end].replace("        def ", "def ", 1), namespace)
+        shift = namespace["rosetta_pdf_centered_alignment_shift"]
+
+        self.assertAlmostEqual(shift(0, 612, 129.77, 482.22, 129.77, 354.75, 24, False, 1), 63.74, places=1)
+        self.assertEqual(shift(0, 612, 72, 300, 72, 220, 12, False, 1), 0.0)
+        self.assertEqual(shift(0, 612, 50, 562, 50, 300, 12, False, 1), 0.0)
+        self.assertEqual(shift(0, 612, 129.77, 482.22, 129.77, 354.75, 24, True, 2), 0.0)
+        self.assertIn("for vals in ops_vals:", patched)
+        self.assertIn('vals["x"] += alignment_shift', patched)
+
+    def test_patch_preserves_structural_but_not_soft_pdf_line_breaks(self) -> None:
+        converter = self.converter_with_bold_helpers() + '''
+class Paragraph:
+    def __init__(self, brk, color=None):
+        self.brk: bool = brk  # 换行标记
+        self.color = color
+
+        def gen_op_line(x, y, xlen, ylen, linewidth, color=None):
+            return f"ET q {rosetta_pdf_color_operator(color, True)}1 0 0 1 {x:f} {y:f} cm [] 0 d 0 J {linewidth:f} w 0 0 m {xlen:f} {ylen:f} l S Q BT "
+
+                        elif child.x1 < xt.x0:      # 添加换行空格并标记原文段落存在换行
+                            sstk[-1] += " "
+                            pstk[-1].brk = True
+
+        ############################################################
+        # B. 段落翻译
+            ops_vals: list[dict] = []
+                mod = 0  # 文字修饰符
+                if vy_regex:  # 加载公式
+                        vid = int(vy_regex.group(1).replace(" ", ""))
+                        adv = vlen[vid]
+                    if var[vid][-1].get_text() and unicodedata.category(var[vid][-1].get_text()[0]) in ["Lm", "Mn", "Sk"]:  # 文字修饰符
+                        mod = var[vid][-1].width
+                if brk and x + adv > x1 + 0.1 * size:  # 到达右边界且原文段落存在换行
+                    x = x0
+'''
+        files = self.run_patch_for_package(converter)
+        patched = files["converter"]
+
+        marker = "        def rosetta_pdf_should_preserve_source_line_breaks("
+        helper_start = patched.index(marker)
+        helper_end = patched.index("        for paragraph_id, paragraph in enumerate(pstk):")
+        namespace: dict[str, object] = {"re": re}
+        exec(patched[helper_start:helper_end].replace("        def ", "def ", 1), namespace)
+        should_preserve = namespace["rosetta_pdf_should_preserve_source_line_breaks"]
+
+        class ParagraphState:
+            x0 = 43.0
+            x1 = 400.0
+            size = 14.0
+
+        toc = ParagraphState()
+        toc.rosetta_line_breaks = [(10, 120.0), (20, 215.0), (30, 400.0)]
+        prose = ParagraphState()
+        prose.x0 = 77.0
+        prose.x1 = 535.0
+        prose.rosetta_line_breaks = [(10, 530.0), (20, 535.0), (30, 526.0), (40, 531.0)]
+
+        self.assertTrue(should_preserve(toc, "Title Page Gateway Introduction Preface Introduction"))
+        self.assertFalse(should_preserve(prose, "A normal prose paragraph with visual soft wraps."))
+        self.assertFalse(should_preserve(toc, "Input {v0} Conv {v1} Output {v2}"))
+        self.assertIn('"{v900000000}"', patched)
+        self.assertIn("if rosetta_forced_line_break:", patched)
+        self.assertIn("if not rosetta_forced_line_break and var[vid]", patched)
+        self.assertIn('placeholder != "{v900000000}"', files["rosetta_engine"])
+        self.assertIn('sourceChars=len(text.replace("{v900000000}", ""))', files["rosetta_engine"])
+        self.assertIn('self.translated_chars += len(translated.replace("{v900000000}", ""))', files["rosetta_engine"])
 
     def test_patch_upgrades_existing_visual_prose_gate(self) -> None:
         patched = self.run_patch(
