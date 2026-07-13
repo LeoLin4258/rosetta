@@ -156,6 +156,61 @@ fn pdf_page_result_commit_accepts_no_text_page_without_artifact() {
 }
 
 #[test]
+fn pdf_page_state_restores_pending_no_text_as_translated() {
+    let dir = unique_temp_dir("pdf-page-state-pending-no-text");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let mut state = empty_state(1, "zh-CN");
+    upsert_pdf_page_with_run(&mut state, 1, "pending", None, None, Some("run-1"));
+    set_pdf_page_result_metadata(
+        &mut state,
+        1,
+        Some("no_text".to_string()),
+        Some(0),
+        Some(0),
+        Some(0),
+        Some(0),
+    );
+    write_pdf_page_translation_state(&dir, &state).expect("write pending no-text state");
+
+    let restored = read_pdf_page_translation_state(&dir, 1, "zh-CN").expect("read no-text state");
+
+    assert_eq!(restored.pages[0].status, "translated");
+    assert_eq!(restored.pages[0].result_kind.as_deref(), Some("no_text"));
+    assert_eq!(restored.pages[0].translated_pdf_path, None);
+    fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn pdf_repair_preserves_no_text_page_without_artifact() {
+    let dir = unique_temp_dir("pdf-repair-no-text");
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let mut state = empty_state(1, "zh-CN");
+    let result = PdfPageResult {
+        page_number: 1,
+        status: "no_text".to_string(),
+        artifact_path: None,
+        source_unit_count: 0,
+        translated_unit_count: 0,
+        source_chars: 0,
+        translated_chars: 0,
+        empty_translation_count: 0,
+        placeholder_mismatch_count: 0,
+        artifact_bytes: None,
+        error: None,
+    };
+    super::commit_pdf_page_result(&dir, &mut state, "zh-CN", "run-1", &result)
+        .expect("commit no-text page result");
+
+    super::repair_pdf_page_artifacts(&dir, &mut state, "zh-CN").expect("repair no-text page state");
+
+    assert_eq!(state.pages[0].status, "translated");
+    assert_eq!(state.pages[0].result_kind.as_deref(), Some("no_text"));
+    assert_eq!(state.pages[0].translated_pdf_path, None);
+    assert!(super::pdf_page_has_completed_result(&state.pages[0]));
+    fs::remove_dir_all(dir).ok();
+}
+
+#[test]
 fn txt_source_edit_rebuilds_blocks_and_segments() {
     let mut bundle = build_blank_txt_bundle("job-txt-1", "1700000000000", "临时文本")
         .expect("build blank txt bundle");

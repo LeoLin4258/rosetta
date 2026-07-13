@@ -1,6 +1,6 @@
 # PDF Pipeline
 
-Last updated: 2026-07-09
+Last updated: 2026-07-13
 
 This document describes the current PDF translation implementation. Older PDF
 plans are historical background only when they conflict with this file and
@@ -60,6 +60,21 @@ AppData/Rosetta/jobs/
       <user-triggered exports>
 ```
 
+The PDF engine's prepared-window scratch files do not live under the job
+directory. They use a short app-local runtime path so a long source filename
+cannot push PyMuPDF past the Windows path limit:
+
+```txt
+AppLocalData/Rosetta/pdf-engine-scratch/
+  <process-timestamp-sequence>/
+    prepared-<engine-id>-prepared.pdf
+```
+
+The scratch directory is unique per engine invocation. The Python engine
+removes it during normal `disposeRun`, and a Rust-owned guard removes it when
+prepare, translation, rendering, or cancellation exits early. It is not job
+state and must never be used for repair, resume, preview, or export decisions.
+
 PDF v1 beta files are detected only to reset derived state:
 
 ```txt
@@ -96,7 +111,10 @@ Translation artifacts:
 
 Temporary runtime files:
 
-- `.tmp/pdf-runs/<runId>/...`: pdf2zh output before commit.
+- `.tmp/pdf-runs/<runId>/...`: page output before commit.
+- `AppLocalData/Rosetta/pdf-engine-scratch/...`: short-lived prepared PDF
+  windows used by the Python engine. This path intentionally excludes the job
+  ID and source filename to avoid Windows path-length failures.
 
 User exports:
 
@@ -676,6 +694,8 @@ Repair can:
 - ensure `segments.json` exists
 - write or update `pdf_source.json`
 - recover stale live runs to `paused`
+- restore legacy `pending` pages with `resultKind="no_text"` to completed
+  `translated` state without requiring a page artifact
 - copy readable legacy `pdf-pages/` artifacts into `translated-pages/`
 - mark `translated` pages without valid artifacts as `pending`
 - sync sidebar summary counts
@@ -731,6 +751,11 @@ fixtures. The raster adapter is a preview-only boundary:
 - it does not decide export readiness
 - it does not participate in repair
 - it can be cleared without losing translation progress
+
+Pages completed with `resultKind="no_text"` have no translated page artifact.
+In the bilingual preview, the translated pane reuses the source-page raster for
+those pages instead of showing an untranslated placeholder. The source page is
+the completed visual result when the engine finds no translatable text.
 
 If native PDF rendering is later verified on supported platforms, the raster
 adapter should be replaced and this document updated.

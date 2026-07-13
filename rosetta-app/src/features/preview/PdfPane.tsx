@@ -71,6 +71,8 @@ export function PdfPageImage({
   status,
   activity,
   backdropSrc,
+  staticSrc,
+  imageAlt,
   onRendered,
 }: {
   jobId: string;
@@ -83,15 +85,18 @@ export function PdfPageImage({
   status?: React.ReactNode;
   activity?: PdfPageActivity | null;
   backdropSrc?: string | null;
+  staticSrc?: string | null;
+  imageAlt?: string;
   onRendered?: (pageIndex: number, src: string | null) => void;
 }) {
   const [src, setSrc] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const cacheKey = `${jobId}:${kind}:${pageIndex}:${targetWidth}:${renderVersion}`;
+  const displaySrc = staticSrc ?? src;
   const showLoadingBackdrop =
     kind === "translated" &&
     !!backdropSrc &&
-    ((canRender && !src) || (!canRender && activity === "translating"));
+    ((canRender && !displaySrc) || (!canRender && activity === "translating"));
 
   useEffect(() => {
     let cancelled = false;
@@ -99,6 +104,11 @@ export function PdfPageImage({
 
     (async () => {
       try {
+        if (staticSrc) {
+          onRendered?.(pageIndex, staticSrc);
+          return;
+        }
+
         if (!canRender) {
           setSrc(null);
           onRendered?.(pageIndex, null);
@@ -134,7 +144,17 @@ export function PdfPageImage({
     return () => {
       cancelled = true;
     };
-  }, [cacheKey, canRender, jobId, kind, onRendered, pageIndex, renderPage, targetWidth]);
+  }, [
+    cacheKey,
+    canRender,
+    jobId,
+    kind,
+    onRendered,
+    pageIndex,
+    renderPage,
+    staticSrc,
+    targetWidth,
+  ]);
 
   if (!canRender) {
     return (
@@ -183,7 +203,7 @@ export function PdfPageImage({
     );
   }
 
-  if (!src) {
+  if (!displaySrc) {
     return (
       <div
         className={cn(
@@ -221,8 +241,8 @@ export function PdfPageImage({
         />
       ) : null}
       <img
-        src={src}
-        alt={`第 ${pageIndex + 1} 页`}
+        src={displaySrc}
+        alt={imageAlt ?? `第 ${pageIndex + 1} 页`}
         className="rosetta-pdf-page-image block size-full rounded border border-border bg-background shadow-sm"
         draggable={false}
       />

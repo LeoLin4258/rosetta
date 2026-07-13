@@ -118,6 +118,13 @@ pub(crate) fn read_pdf_page_translation_state(
     state.schema_version = PDF_PAGE_STATE_SCHEMA_VERSION;
     state.source_page_count = source_page_count;
     for page in &mut state.pages {
+        if page.status == "pending" && page.result_kind.as_deref() == Some("no_text") {
+            page.status = "translated".to_string();
+            page.translated_pdf_path = None;
+            clear_pdf_page_artifact_metadata(page);
+            page.error = None;
+            page.updated_at = timestamp_ms_string();
+        }
         if page.status == "translating" || page.status == "queued" {
             page.status = "pending".to_string();
             page.result_kind = None;

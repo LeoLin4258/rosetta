@@ -854,6 +854,22 @@ fn repair_pdf_page_artifacts(
         if page.status != "translated" {
             continue;
         }
+        if page.result_kind.as_deref() == Some("no_text") {
+            let had_artifact_state = page.translated_pdf_path.is_some()
+                || page.artifact_version.is_some()
+                || page.artifact_compression.is_some()
+                || page.artifact_bytes.is_some()
+                || page.artifact_compression_error.is_some()
+                || page.error.is_some();
+            page.translated_pdf_path = None;
+            page_state::clear_pdf_page_artifact_metadata(page);
+            page.error = None;
+            if had_artifact_state {
+                page.updated_at = path::timestamp_ms_string();
+                repaired = true;
+            }
+            continue;
+        }
         let Some(path) = find_existing_pdf_page_artifact(
             dir,
             target_lang,
@@ -1249,11 +1265,10 @@ async fn translate_pdf_pages_inner(
             if force {
                 return true;
             }
-            !state.pages.iter().any(|page| {
-                page.page_number == *page_number
-                    && page.status == "translated"
-                    && page.translated_pdf_path.is_some()
-            })
+            !state
+                .pages
+                .iter()
+                .any(|page| page.page_number == *page_number && pdf_page_has_completed_result(page))
         })
         .collect();
     let pdf_run_chunk_size = pdf_run_chunk_size_for_provider(&provider, pages_to_process.len());
@@ -1682,10 +1697,7 @@ async fn translate_pdf_pages_inner(
         let chunk_had_failure = failure_message.is_some();
         for page_number in &chunk_pages {
             let translated = state.pages.iter().any(|page| {
-                page.page_number == *page_number
-                    && page.status == "translated"
-                    && (page.translated_pdf_path.is_some()
-                        || page.result_kind.as_deref() == Some("no_text"))
+                page.page_number == *page_number && pdf_page_has_completed_result(page)
             });
             if translated {
                 run_state::append_unique_page(&mut run.completed_pages, *page_number);
@@ -1942,6 +1954,11 @@ fn commit_pdf_page_result(
             "PDF 第 {page_number} 页返回未知 PageResult 状态 `{other}`。"
         )),
     }
+}
+
+fn pdf_page_has_completed_result(page: &formats::pdf::page_state::PdfPageTranslation) -> bool {
+    page.status == "translated"
+        && (page.translated_pdf_path.is_some() || page.result_kind.as_deref() == Some("no_text"))
 }
 
 fn commit_pdf_page_artifact(worker_file: &Path, target_path: &Path) -> Result<(), String> {

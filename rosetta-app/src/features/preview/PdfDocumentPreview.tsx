@@ -359,6 +359,8 @@ export function PdfDocumentPreview({
               const pageIndex = pages[item.index];
               const pageNumber = pageIndex + 1;
               const status = pageStatus(pageIndex);
+              const sourcePageSrc = sourcePageImages[pageIndex] ?? null;
+              const showSourceAsTranslation = status?.resultKind === "no_text";
               const activity = displayPageActivity(
                 status?.status ?? null,
                 pageNumber,
@@ -421,13 +423,20 @@ export function PdfDocumentPreview({
                         renderVersion={translatedPageRenderVersion(pageNumber, status)}
                         targetWidth={rasterTargetWidth}
                         canRender={
-                          status?.status === "translated" &&
-                          !!status.translatedPdfPath &&
-                          status.resultKind !== "no_text" &&
-                          !stablePreviewMode
+                          showSourceAsTranslation
+                            ? !!sourcePageSrc
+                            : status?.status === "translated" &&
+                              !!status.translatedPdfPath &&
+                              !stablePreviewMode
                         }
                         activity={activity}
-                        backdropSrc={sourcePageImages[pageIndex] ?? null}
+                        backdropSrc={showSourceAsTranslation ? null : sourcePageSrc}
+                        staticSrc={showSourceAsTranslation ? sourcePageSrc : null}
+                        imageAlt={
+                          showSourceAsTranslation
+                            ? `第 ${pageNumber} 页译文：无可翻译文本，显示原页`
+                            : `第 ${pageNumber} 页译文`
+                        }
                         renderPage={renderTranslatedPdfPage}
                         status={translatedPageLabel(
                           pageNumber,

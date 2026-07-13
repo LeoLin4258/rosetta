@@ -1,14 +1,16 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::Path,
+    io,
+    path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         Arc,
     },
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
@@ -26,6 +28,58 @@ use crate::{
 };
 
 const PDF2ZH_PROGRESS_EVENT: &str = "rosetta-pdf2zh-progress";
+const PDF_ENGINE_SCRATCH_ROOT: &str = "pdf-engine-scratch";
+static PDF_ENGINE_SCRATCH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+struct PdfEngineScratchDir {
+    path: PathBuf,
+}
+
+impl PdfEngineScratchDir {
+    fn create(app: &AppHandle) -> Result<Self, PdfError> {
+        let root = app
+            .path()
+            .app_local_data_dir()
+            .map_err(|error| PdfError::Read(format!("无法定位 PDF engine 临时目录: {error}")))?
+            .join(PDF_ENGINE_SCRATCH_ROOT);
+        Self::create_in(&root)
+            .map_err(|error| PdfError::Read(format!("无法创建 PDF engine 临时目录: {error}")))
+    }
+
+    fn create_in(root: &Path) -> io::Result<Self> {
+        std::fs::create_dir_all(root)?;
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let process_id = std::process::id();
+
+        for _ in 0..32 {
+            let sequence = PDF_ENGINE_SCRATCH_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let path = root.join(format!("{process_id:x}-{timestamp:x}-{sequence:x}"));
+            match std::fs::create_dir(&path) {
+                Ok(()) => return Ok(Self { path }),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+        }
+
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "could not allocate a unique PDF engine scratch directory",
+        ))
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for PdfEngineScratchDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -79,9 +133,6 @@ pub(crate) async fn invoke_pdf2zh(
     let invoke_started = std::time::Instant::now();
     std::fs::create_dir_all(output_dir)
         .map_err(|error| PdfError::Read(format!("无法创建 PDF engine 输出目录: {error}")))?;
-    let temp_dir = output_dir.join("tmp");
-    std::fs::create_dir_all(&temp_dir)
-        .map_err(|error| PdfError::Read(format!("无法创建 PDF engine 临时目录: {error}")))?;
 
     emit_progress(
         app,
@@ -103,6 +154,7 @@ pub(crate) async fn invoke_pdf2zh(
             "PDF 版面处理组件缺少内置 ONNX 版面模型，请更新 PDF 组件。".to_string(),
         ));
     }
+    let scratch_dir = PdfEngineScratchDir::create(app)?;
 
     let pages_done = Arc::new(AtomicU32::new(0));
     let mut stderr_lines = Vec::<String>::new();
@@ -119,13 +171,13 @@ pub(crate) async fn invoke_pdf2zh(
         serde_json::json!({
             "file": source_path.to_string_lossy(),
             "outputDir": output_dir.to_string_lossy(),
-            "tmpDir": temp_dir.to_string_lossy(),
+            "tmpDir": scratch_dir.path().to_string_lossy(),
             "pages": options.pages.clone(),
             "langIn": pdf2zh_lang(&options.source_lang),
             "langOut": pdf2zh_lang(&options.target_lang),
             "thread": 1,
             "options": {
-                "cleanupScratchDir": false,
+                "cleanupScratchDir": true,
             },
         }),
         &mut on_stderr,
@@ -579,7 +631,43 @@ fn emit_progress(
 
 #[cfg(test)]
 mod tests {
-    use super::completed_page_progress_payload;
+    use std::path::PathBuf;
+
+    use super::{completed_page_progress_payload, PdfEngineScratchDir};
+
+    fn scratch_test_root() -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "rosetta-pdf-engine-scratch-test-{}-{nanos}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn pdf_engine_scratch_dirs_are_unique_and_removed_on_drop() {
+        let root = scratch_test_root();
+        let first = PdfEngineScratchDir::create_in(&root).expect("create first scratch dir");
+        let second = PdfEngineScratchDir::create_in(&root).expect("create second scratch dir");
+        let first_path = first.path().to_path_buf();
+        let second_path = second.path().to_path_buf();
+
+        assert!(first_path.starts_with(&root));
+        assert!(second_path.starts_with(&root));
+        assert_ne!(first_path, second_path);
+        assert!(first_path.is_dir());
+        assert!(second_path.is_dir());
+
+        drop(first);
+        assert!(!first_path.exists());
+        assert!(second_path.exists());
+
+        drop(second);
+        assert!(!second_path.exists());
+        std::fs::remove_dir(&root).expect("remove scratch test root");
+    }
 
     #[test]
     fn completed_page_progress_carries_translated_chars() {
