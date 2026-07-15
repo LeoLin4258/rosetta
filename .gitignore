@@ -18,6 +18,11 @@ rosetta-app/src-tauri/target/
 rosetta-data/
 supabase/.temp/
 
+# Local model debugging artifacts
+.tmp-rwkv-badcase/
+rwkv-lightning-repetition-badcase-*/
+rwkv-lightning-repetition-badcase-*.zip
+
 # Logs and local environment
 *.log
 *.local
