@@ -318,6 +318,17 @@ body {
   background: transparent;
 }
 
+body.rosetta-window-framed:not(.rosetta-window-maximized) {
+  overflow: hidden;
+  border-radius: 12px;
+  clip-path: inset(0 round 12px);
+}
+
+body.rosetta-window-framed:not(.rosetta-window-maximized) #root {
+  overflow: hidden;
+  border-radius: 12px;
+}
+
 button,
 input,
 select,

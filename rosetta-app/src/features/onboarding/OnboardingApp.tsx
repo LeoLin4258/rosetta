@@ -22,6 +22,7 @@ import {
 import { useManagedRwkvRuntime } from "@/lib/useManagedRwkvRuntime";
 import { useRosettaStore } from "@/store/useRosettaStore";
 import { cn } from "@/lib/utils";
+import { WindowFrame } from "@/components/window-frame";
 import type {
   ManagedRuntimeConnectivityDiagnostics,
   ManagedRuntimeLogsSummary,
@@ -497,13 +498,14 @@ export function OnboardingApp() {
     "兼容更多 Windows 设备。之后仍可在设置里切回 Lightning。";
 
   return (
-    <div
+    <WindowFrame
       className={cn(
-        "rosetta-onboarding flex h-screen flex-col select-none text-foreground",
+        "rosetta-onboarding relative flex h-screen flex-col select-none text-foreground",
         desktopPlatform === "linux" ? "bg-background" : "bg-transparent",
         desktopPlatformClass,
         systemPrefersDark && "dark"
       )}
+      resizable={false}
     >
       <div
         className="h-10 w-full shrink-0"
@@ -685,7 +687,7 @@ export function OnboardingApp() {
           />
         )}
       </div>
-    </div>
+    </WindowFrame>
   );
 }
 

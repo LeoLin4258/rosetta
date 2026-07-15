@@ -10,7 +10,7 @@
         "minHeight": 640,
         "decorations": false,
         "shadow": true,
-        "transparent": false,
+        "transparent": true,
         "visible": false
       },
       {
@@ -24,7 +24,7 @@
         "center": true,
         "decorations": false,
         "shadow": true,
-        "transparent": false,
+        "transparent": true,
         "visible": false
       }
     ]

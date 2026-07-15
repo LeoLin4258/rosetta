@@ -25,6 +25,16 @@ validated a production AppImage through a real PDF translation workflow.
 - Made closing the Linux main window enter the same managed shutdown path as
   Windows, so hidden utility windows cannot keep the AppImage and its managed
   PDF/RWKV child processes alive.
+- Kept the Linux window undecorated so its titlebar remains visually integrated
+  with the Rosetta sidebar, while adding Ubuntu-style circular window controls.
+- Added explicit eight-direction Tauri resize hitboxes so Linux edges and
+  corners use predictable resize cursors and do not depend on the compositor's
+  narrow undecorated-window hit area.
+- Added transparent four-corner window clipping that follows maximized state.
+  The document-level clip also contains the fixed sidebar, preventing square or
+  aliased corners from escaping the React shell.
+- Removed the Windows-only rounded content-inset corner from Linux so the
+  sidebar divider does not combine an inner curve with a square panel edge.
 
 No persistent data format changed.
 
@@ -59,6 +69,9 @@ public release.
 - Standard X11 `WM_DELETE_WINDOW` close with both managed services running:
   Rosetta, the AppImage runtime, PDF worker, Lightning CUDA, FUSE mount, and
   utility windows were all removed.
+- Manual Ubuntu X11 window preview confirmed smooth four-corner clipping,
+  integrated window controls, maximize/restore behavior, and usable resize
+  cursors on all four edges and corners.
 
 The signed `.AppImage.tar.gz` updater artifact, Supabase release row, updater
 smoke test, and website download are intentionally left for later stages.

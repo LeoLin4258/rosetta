@@ -6,6 +6,7 @@ import { FileText, Loader2 } from "lucide-react";
 import { AppSidebar } from "@/components/app-sidebar";
 import { useMeasuredContentWidth } from "@/components/animated-width";
 import { WindowTitleBar } from "@/components/window-title-bar";
+import { WindowFrame } from "@/components/window-frame";
 import { Separator } from "@/components/ui/separator";
 import {
   SidebarInset,
@@ -415,7 +416,8 @@ export function AppShell() {
   );
   const isDark = themeMode === "system" ? systemPrefersDark : themeMode === "dark";
   const title = pageTitles[location.pathname] ?? activeDocument?.filename ?? "Rosetta";
-  const titlebarHeight = isMacPlatform ? "0px" : "2.25rem";
+  const usesCustomTitlebar = !isMacPlatform;
+  const titlebarHeight = usesCustomTitlebar ? "2.25rem" : "0px";
   const selectedRuntimeStatus = selectManagedRuntimeProfileStatus(
     managedRuntimeStatus,
     rwkv.managedRuntimeProfileId
@@ -532,15 +534,15 @@ export function AppShell() {
 
   return (
     <TooltipProvider>
-      <div
+      <WindowFrame
         className={cn(
-          "flex h-screen flex-col text-foreground",
+          "relative flex h-screen flex-col text-foreground",
           desktopPlatform === "linux" ? "bg-background" : "bg-transparent",
           desktopPlatformClass,
           isDark && "dark"
         )}
       >
-        {!isMacPlatform && <WindowTitleBar />}
+        {usesCustomTitlebar && <WindowTitleBar />}
         <SidebarProvider
           className="h-full min-h-0 flex-1 bg-transparent text-foreground"
           style={
@@ -554,7 +556,11 @@ export function AppShell() {
           <SidebarInset
             className={cn(
               "min-h-0 overflow-hidden ",
-              isMacPlatform ? "rounded-none" : "rounded-tl-xl border-t"
+              desktopPlatform === "windows"
+                ? "rounded-tl-xl border-t"
+                : isMacPlatform
+                  ? "rounded-none"
+                  : "rounded-none border-t"
             )}
           >
             <AppHeader
@@ -568,7 +574,7 @@ export function AppShell() {
             </div>
           </SidebarInset>
         </SidebarProvider>
-      </div>
+      </WindowFrame>
     </TooltipProvider>
   );
 }
