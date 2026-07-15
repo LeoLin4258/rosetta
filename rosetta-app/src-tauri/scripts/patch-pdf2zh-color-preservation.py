@@ -1799,6 +1799,291 @@ def disposeRun(preparedRunId: str) -> None:
     return True
 
 
+def patch_rosetta_engine_persistent_layout_cache(root: Path) -> bool:
+    target = root / "rosetta_engine.py"
+    if not target.is_file():
+        raise SystemExit(f"::error::could not find rosetta_engine.py in {root}")
+
+    text = target.read_text(encoding="utf-8")
+    marker = "_PERSISTENT_LAYOUT_CACHE_SCHEMA = 1"
+    if marker in text:
+        old_version = 'ENGINE_VERSION = "rosetta-pdf-engine-v2"'
+        new_version = 'ENGINE_VERSION = "rosetta-pdf-engine-v2.1"'
+        if old_version in text:
+            target.write_text(text.replace(old_version, new_version, 1), encoding="utf-8")
+            print(f"[pdf2zh-pack] versioned durable layout cache in {target}")
+            return True
+        return False
+    if "ENGINE_CONTRACT_VERSION = 2" not in text or "def prepareRun(" not in text:
+        return False
+    if (
+        "selected_pages = normalize_pages(pages, page_count)" not in text
+        or "layout[page_index] = build_layout_mask" not in text
+        or "class EngineCapabilities:" not in text
+    ):
+        return False
+
+    old_version = 'ENGINE_VERSION = "rosetta-pdf-engine-v2"'
+    new_version = 'ENGINE_VERSION = "rosetta-pdf-engine-v2.1"'
+    if old_version not in text and new_version not in text:
+        raise SystemExit(f"::error::could not find rosetta_engine version in {target}")
+    text = text.replace(old_version, new_version, 1)
+
+    if "import json\n" not in text:
+        import_anchor = "import io\n"
+        if import_anchor not in text:
+            raise SystemExit(f"::error::could not find rosetta_engine import anchor in {target}")
+        text = text.replace(import_anchor, import_anchor + "import json\n", 1)
+
+    registry_anchor = '_PRISTINE_PREPARED_PDFS: dict[str, bytes] = {}\n'
+    if registry_anchor not in text:
+        raise SystemExit(f"::error::could not find prepared PDF registry in {target}")
+    text = text.replace(
+        registry_anchor,
+        registry_anchor
+        + "_PERSISTENT_LAYOUT_CACHE_SCHEMA = 1\n"
+        + "_PERSISTENT_LAYOUT_CACHE_MAX_ENTRIES = 12\n"
+        + "_PERSISTENT_LAYOUT_CACHE_MAX_BYTES = 256 * 1024 * 1024\n",
+        1,
+    )
+
+    prepared_run_anchor = """    sourceChars: int
+
+
+@dataclass
+class EngineCapabilities:
+"""
+    prepared_run_replacement = """    sourceChars: int
+    persistentLayoutCacheHit: bool = False
+
+
+@dataclass
+class EngineCapabilities:
+"""
+    if prepared_run_anchor not in text:
+        raise SystemExit(f"::error::could not find PreparedRun fields in {target}")
+    text = text.replace(prepared_run_anchor, prepared_run_replacement, 1)
+
+    prepare_anchor = "\ndef prepareRun(\n"
+    if prepare_anchor not in text:
+        raise SystemExit(f"::error::could not find prepareRun anchor in {target}")
+    helpers = r'''
+
+def persistent_layout_model_signature(model_path: str) -> dict[str, Any]:
+    path = Path(model_path)
+    stat = path.stat()
+    return {
+        "filename": path.name,
+        "bytes": stat.st_size,
+        "modifiedNs": stat.st_mtime_ns,
+    }
+
+
+def load_persistent_layout_cache(
+    cache_dir: Path | None,
+    cache_key: str,
+    source_fingerprint: str,
+    selected_pages: list[int],
+    model_path: str,
+) -> dict[int, Any] | None:
+    if cache_dir is None or not cache_key:
+        return None
+    manifest_path = cache_dir / "manifest.json"
+    layout_path = cache_dir / "layout.npz"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        expected = {
+            "schemaVersion": _PERSISTENT_LAYOUT_CACHE_SCHEMA,
+            "engineVersion": ENGINE_VERSION,
+            "cacheKey": cache_key,
+            "sourceFingerprint": source_fingerprint,
+            "pages": selected_pages,
+            "model": persistent_layout_model_signature(model_path),
+        }
+        if any(manifest.get(key) != value for key, value in expected.items()):
+            return None
+        expected_names = {f"page_{index}" for index in range(len(selected_pages))}
+        with np.load(layout_path, allow_pickle=False) as archive:
+            if set(archive.files) != expected_names:
+                return None
+            layout = {}
+            for index in range(len(selected_pages)):
+                mask = archive[f"page_{index}"]
+                if mask.ndim != 2 or mask.dtype.kind not in "biuf":
+                    return None
+                layout[index] = np.ascontiguousarray(mask)
+        now = time.time()
+        os.utime(cache_dir, (now, now))
+        return layout
+    except Exception:
+        return None
+
+
+def persistent_layout_cache_entry_size(cache_dir: Path) -> int:
+    total = 0
+    try:
+        for child in cache_dir.iterdir():
+            if child.is_file():
+                total += child.stat().st_size
+    except OSError:
+        return 0
+    return total
+
+
+def prune_persistent_layout_cache(cache_root: Path, keep_dir: Path) -> None:
+    try:
+        entries = [child for child in cache_root.iterdir() if child.is_dir()]
+    except OSError:
+        return
+    rows = []
+    for entry in entries:
+        try:
+            modified_ns = entry.stat().st_mtime_ns
+        except OSError:
+            modified_ns = 0
+        rows.append((entry, modified_ns, persistent_layout_cache_entry_size(entry)))
+    rows.sort(key=lambda row: row[1], reverse=True)
+    total_bytes = sum(row[2] for row in rows)
+    kept = len(rows)
+    for entry, _modified_ns, entry_bytes in reversed(rows):
+        if kept <= _PERSISTENT_LAYOUT_CACHE_MAX_ENTRIES and total_bytes <= _PERSISTENT_LAYOUT_CACHE_MAX_BYTES:
+            break
+        if entry == keep_dir:
+            continue
+        shutil.rmtree(entry, ignore_errors=True)
+        total_bytes -= entry_bytes
+        kept -= 1
+
+
+def write_persistent_layout_cache(
+    cache_dir: Path | None,
+    cache_key: str,
+    source_fingerprint: str,
+    selected_pages: list[int],
+    model_path: str,
+    layout: dict[int, Any],
+) -> None:
+    if cache_dir is None or not cache_key:
+        return
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    token = uuid.uuid4().hex
+    layout_tmp = cache_dir / f".layout-{token}.npz"
+    manifest_tmp = cache_dir / f".manifest-{token}.json"
+    layout_path = cache_dir / "layout.npz"
+    manifest_path = cache_dir / "manifest.json"
+    now_ms = int(time.time() * 1000)
+    try:
+        np.savez_compressed(
+            layout_tmp,
+            **{f"page_{index}": layout[index] for index in range(len(selected_pages))},
+        )
+        manifest = {
+            "schemaVersion": _PERSISTENT_LAYOUT_CACHE_SCHEMA,
+            "engineVersion": ENGINE_VERSION,
+            "cacheKey": cache_key,
+            "sourceFingerprint": source_fingerprint,
+            "pages": selected_pages,
+            "model": persistent_layout_model_signature(model_path),
+            "layoutFile": "layout.npz",
+            "createdAt": now_ms,
+            "updatedAt": now_ms,
+        }
+        manifest_tmp.write_text(
+            json.dumps(manifest, ensure_ascii=False, sort_keys=True),
+            encoding="utf-8",
+        )
+        os.replace(layout_tmp, layout_path)
+        os.replace(manifest_tmp, manifest_path)
+        now = time.time()
+        os.utime(cache_dir, (now, now))
+        prune_persistent_layout_cache(cache_dir.parent, cache_dir)
+    except Exception:
+        for temporary in (layout_tmp, manifest_tmp):
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
+
+'''
+    text = text.replace(prepare_anchor, helpers + prepare_anchor, 1)
+
+    selected_pages_anchor = """    selected_pages = normalize_pages(pages, page_count)
+    doc = prepare_pdf_document(input_path, font_path, noto_name, rosetta_bold_font_path, selected_pages)
+"""
+    selected_pages_replacement = """    selected_pages = normalize_pages(pages, page_count)
+    model_path = _model_path_from_options(options)
+    persistent_cache_text = str(options.get("persistentLayoutCacheDir") or "").strip()
+    persistent_cache_dir = Path(persistent_cache_text) if persistent_cache_text else None
+    persistent_cache_key = str(options.get("persistentLayoutCacheKey") or "")
+    persistent_source_fingerprint = str(options.get("persistentSourceFingerprint") or "")
+    persistent_layout = load_persistent_layout_cache(
+        persistent_cache_dir,
+        persistent_cache_key,
+        persistent_source_fingerprint,
+        selected_pages,
+        model_path,
+    )
+    persistent_layout_cache_hit = persistent_layout is not None
+    doc = prepare_pdf_document(input_path, font_path, noto_name, rosetta_bold_font_path, selected_pages)
+"""
+    if selected_pages_anchor not in text:
+        raise SystemExit(f"::error::could not find selected page prepare anchor in {target}")
+    text = text.replace(selected_pages_anchor, selected_pages_replacement, 1)
+
+    model_anchor = """    model = get_layout_model(_model_path_from_options(options))
+    layout: dict[int, Any] = {}
+"""
+    model_replacement = """    model = get_layout_model(model_path)
+    layout: dict[int, Any] = {}
+"""
+    if model_anchor not in text:
+        raise SystemExit(f"::error::could not find layout model anchor in {target}")
+    text = text.replace(model_anchor, model_replacement, 1)
+
+    layout_anchor = "            layout[page_index] = build_layout_mask(doc, page_index, model, options)\n"
+    layout_replacement = """            if persistent_layout is None:
+                layout[page_index] = build_layout_mask(doc, page_index, model, options)
+            else:
+                layout[page_index] = persistent_layout[page_index]
+"""
+    if layout_anchor not in text:
+        raise SystemExit(f"::error::could not find layout inference anchor in {target}")
+    text = text.replace(layout_anchor, layout_replacement, 1)
+
+    state_anchor = """    state = _PreparedState(
+"""
+    state_replacement = """    if not persistent_layout_cache_hit:
+        write_persistent_layout_cache(
+            persistent_cache_dir,
+            persistent_cache_key,
+            persistent_source_fingerprint,
+            selected_pages,
+            model_path,
+            layout,
+        )
+
+    state = _PreparedState(
+"""
+    if state_anchor not in text:
+        raise SystemExit(f"::error::could not find prepared state anchor in {target}")
+    text = text.replace(state_anchor, state_replacement, 1)
+
+    result_anchor = """            sourceChars=translatable_source_chars(collector.units),
+        )
+"""
+    result_replacement = """            sourceChars=translatable_source_chars(collector.units),
+            persistentLayoutCacheHit=persistent_layout_cache_hit,
+        )
+"""
+    if result_anchor not in text:
+        raise SystemExit(f"::error::could not find PreparedRun result anchor in {target}")
+    text = text.replace(result_anchor, result_replacement, 1)
+
+    target.write_text(text, encoding="utf-8")
+    print(f"[pdf2zh-pack] enabled durable layout cache in {target}")
+    return True
+
+
 def clear_pycache(root: Path) -> None:
     for cache_dir in root.rglob("__pycache__"):
         for child in cache_dir.iterdir():
@@ -1838,6 +2123,7 @@ if "def rosetta_pdf_is_bold_font(" in text and "rosetta_pdf_is_bold_font(child.f
     render_matching_changed = patch_rosetta_engine_render_unit_matching(root)
     engine_structural_line_breaks_changed = patch_rosetta_engine_structural_line_breaks(root)
     prepared_cache_changed = patch_rosetta_engine_prepared_cache(root)
+    persistent_layout_cache_changed = patch_rosetta_engine_persistent_layout_cache(root)
     any_changed = (
         changed
         or bold_font_changed
@@ -1854,6 +2140,7 @@ if "def rosetta_pdf_is_bold_font(" in text and "rosetta_pdf_is_bold_font(child.f
         or render_matching_changed
         or engine_structural_line_breaks_changed
         or prepared_cache_changed
+        or persistent_layout_cache_changed
     )
     if any_changed:
         clear_pycache(root)
@@ -2186,4 +2473,5 @@ patch_rosetta_engine_duplicate_text_layer_filter(root)
 patch_rosetta_engine_render_unit_matching(root)
 patch_rosetta_engine_structural_line_breaks(root)
 patch_rosetta_engine_prepared_cache(root)
+patch_rosetta_engine_persistent_layout_cache(root)
 clear_pycache(root)

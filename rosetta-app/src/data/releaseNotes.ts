@@ -34,6 +34,15 @@ export type ReleaseNote = {
  * appearing in `package.json` (e.g. `"0.1.0-beta.8"`), not semver tuples.
  */
 export const RELEASE_NOTES: Record<string, ReleaseNote> = {
+  "0.1.0-beta.22": {
+    version: "0.1.0-beta.22",
+    highlights: [
+      "PDF 预解析可同时保留多个文档，来回切换时会直接复用已完成的准备结果",
+      "PDF 版面预解析结果会持久保存在本机，关闭并重启 Rosetta 后仍可继续复用",
+      "侧边栏以克制的绿色标记提示已预解析 PDF，并更新 PDF、Markdown 和文本文件图标",
+      "预解析缓存会校验源文件、页码、语言和引擎版本，并自动限制磁盘占用",
+    ],
+  },
   "0.1.0-beta.21": {
     version: "0.1.0-beta.21",
     highlights: [

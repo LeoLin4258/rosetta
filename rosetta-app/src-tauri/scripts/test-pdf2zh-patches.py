@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import ast
 import os
 import re
 import subprocess
@@ -14,6 +15,94 @@ FONT_ASSETS_SCRIPT = SCRIPT_DIR / "stage-pdf2zh-font-assets.py"
 
 
 class Pdf2zhPatchTests(unittest.TestCase):
+    def test_patch_adds_versioned_durable_layout_cache_contract(self) -> None:
+        module = ast.parse(PATCH_SCRIPT.read_text(encoding="utf-8"))
+        function = next(
+            node
+            for node in module.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "patch_rosetta_engine_persistent_layout_cache"
+        )
+        namespace = {"Path": Path}
+        exec(
+            compile(
+                ast.Module(body=[function], type_ignores=[]),
+                str(PATCH_SCRIPT),
+                "exec",
+            ),
+            namespace,
+        )
+
+        fixture = '''from dataclasses import asdict, dataclass
+import io
+from pathlib import Path
+
+ENGINE_CONTRACT_VERSION = 2
+ENGINE_VERSION = "rosetta-pdf-engine-v2"
+_PREPARED_RUNS: dict[str, "_PreparedState"] = {}
+_PRISTINE_PREPARED_PDFS: dict[str, bytes] = {}
+
+@dataclass
+class PreparedRun:
+    preparedRunId: str
+    sourcePageCount: int
+    pages: list[int]
+    unitCount: int
+    sourceChars: int
+
+
+@dataclass
+class EngineCapabilities:
+    engineVersion: str
+
+
+def prepareRun(
+    inputPdf,
+    pages,
+    langIn,
+    langOut,
+    options,
+):
+    selected_pages = normalize_pages(pages, page_count)
+    doc = prepare_pdf_document(input_path, font_path, noto_name, rosetta_bold_font_path, selected_pages)
+    prepared_pdf_path = scratch_dir / "prepared.pdf"
+    doc.save(prepared_pdf_path)
+    model = get_layout_model(_model_path_from_options(options))
+    layout: dict[int, Any] = {}
+    with prepared_pdf_path.open("rb"):
+        for page_index in range(len(selected_pages)):
+            layout[page_index] = build_layout_mask(doc, page_index, model, options)
+    state = _PreparedState(
+        prepared_run_id=prepared_run_id,
+    )
+    return asdict(
+        PreparedRun(
+            preparedRunId=prepared_run_id,
+            sourcePageCount=page_count,
+            pages=selected_pages,
+            unitCount=translatable_unit_count(collector.units),
+            sourceChars=translatable_source_chars(collector.units),
+        )
+    )
+'''
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            engine = root / "rosetta_engine.py"
+            engine.write_text(fixture, encoding="utf-8")
+
+            changed = namespace["patch_rosetta_engine_persistent_layout_cache"](root)
+            self.assertTrue(changed)
+            patched = engine.read_text(encoding="utf-8")
+            self.assertIn('ENGINE_VERSION = "rosetta-pdf-engine-v2.1"', patched)
+            self.assertIn("_PERSISTENT_LAYOUT_CACHE_SCHEMA = 1", patched)
+            self.assertIn("def load_persistent_layout_cache(", patched)
+            self.assertIn("allow_pickle=False", patched)
+            self.assertIn("np.savez_compressed(", patched)
+            self.assertIn("persistentLayoutCacheHit=persistent_layout_cache_hit", patched)
+            self.assertFalse(
+                namespace["patch_rosetta_engine_persistent_layout_cache"](root)
+            )
+
     def converter_with_bold_helpers(self, text_mode_body: str = '            return "0 Tr "\\n') -> str:
         return f"""class TranslateConverter(PDFConverterEx):
     def __init__(

@@ -135,6 +135,10 @@ AppData/Rosetta/jobs/
     translated-pages/
       <targetLang>/
         page-0001.pdf
+    pdf-prepare-cache/
+      v1/<prepare-key-sha256>/
+        manifest.json
+        layout.npz
     .tmp/pdf-runs/<runId>/
     translation_revisions.json
     exports/
@@ -164,6 +168,28 @@ AppData/Rosetta/jobs/
 - PDF 页级译文文件保存在 `translated-pages/<targetLang>/page-000N.pdf`。这些文件是 Rosetta 内部译文产物，不是用户导出文件。旧任务中的 `pdf-pages/<targetLang>/page-000N.pdf` 和 `pdf-pages/page-000N.pdf` 只作为兼容读取入口；repair 应迁移或复制到 `translated-pages/`。
 - 旧任务中的 `pdf_page_translations.<targetLang>.json` 和 `pdf_page_translations.json` 只作为兼容读取入口，新写入必须使用 `pdf_pages.<targetLang>.json`。
 - `.tmp/pdf-runs/<runId>/` 只保存当前批次输出。批次提交成功后应清理；启动/repair 可清理无 active lease 的旧临时目录。
+- `pdf-prepare-cache/v1/<prepare-key-sha256>/` 是可删除的 PDF 派生缓存，不是翻译事实。`layout.npz` 只保存压缩后的 ONNX layout masks；`manifest.json` 保存 schema、source fingerprint、页选择、语言方向、engine/model signature 和时间戳。读取时任何身份或版本不匹配都必须视为 miss，不能复用旧数组。
+- PDF prepare cache 必须先原子替换 `layout.npz`、最后原子替换 `manifest.json`；只有完整且通过校验的 manifest 才表示可用。每个 job 最多保留 12 个窗口且总量最多 256MB，按最近使用时间淘汰。删除 job 时随 job 目录一并删除，不跨 job 共享。
+
+PDF prepare cache manifest:
+
+```json
+{
+  "schemaVersion": 1,
+  "engineVersion": "rosetta-pdf-engine-v2.1",
+  "cacheKey": "{...}",
+  "sourceFingerprint": "...",
+  "pages": [1, 2, 3],
+  "model": {
+    "filename": "doclayout_yolo_docstructbench_imgsz1024.onnx",
+    "bytes": 123456789,
+    "modifiedNs": 1784104077254000000
+  },
+  "layoutFile": "layout.npz",
+  "createdAt": 1784104077254,
+  "updatedAt": 1784104077254
+}
+```
 
 PDF source metadata:
 

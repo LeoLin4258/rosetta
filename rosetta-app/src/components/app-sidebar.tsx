@@ -4,9 +4,6 @@ import {
   AlertCircleIcon,
   CheckCircle2Icon,
   CircleIcon,
-  FileCodeIcon,
-  FileTextIcon,
-  FileTypeIcon,
   Loader2Icon,
   PlusIcon,
   SettingsIcon,
@@ -46,16 +43,11 @@ import {
 } from "@/components/ui/sidebar";
 import type { RosettaJobSummary } from "@/types/rosetta";
 import { cn } from "@/lib/utils";
+import { DocumentFormatIcon } from "@/components/document-format-icon";
 
 type AppSidebarProps = React.ComponentProps<typeof Sidebar> & {
   hasMacTitlebarOverlay?: boolean;
 };
-
-function DocumentFormatIcon({ format }: { format: RosettaJobSummary["format"] }) {
-  if (format === "pdf") return <FileTypeIcon />;
-  if (format === "markdown") return <FileCodeIcon />;
-  return <FileTextIcon />;
-}
 
 type SidebarJobTranslationState =
   | "running"
@@ -152,7 +144,7 @@ function SidebarJobStatusIndicator({
         role="img"
         title={label}
       >
-        <CircleIcon className="size-3.5 fill-current" />
+        <CircleIcon className="size-3.5" />
       </span>
     );
   }
@@ -178,6 +170,7 @@ export function AppSidebar({
   const jobs = useRosettaStore((s) => s.jobs);
   const activeJobId = useRosettaStore((s) => s.activeJobId);
   const activeTranslationRun = useRosettaStore((s) => s.activeTranslationRun);
+  const pdfPreparedJobIds = useRosettaStore((s) => s.pdfPreparedJobIds);
   const setJobList = useRosettaStore((s) => s.setJobList);
   const clearActiveJob = useRosettaStore((s) => s.clearActiveJob);
   const setActiveBundle = useRosettaStore((s) => s.setActiveBundle);
@@ -334,20 +327,29 @@ export function AppSidebar({
                     total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : 0;
                   const isActive = !isSettingsRoute && activeJobId === job.id;
                   const emphasizeRunning = translationState === "running" && isActive;
+                  const isPdfPrepared =
+                    job.format === "pdf" && pdfPreparedJobIds.includes(job.id);
 
                   return (
                     <SidebarMenuItem key={job.id}>
                       <SidebarMenuButton
                         className={cn(
-                          "relative h-9 gap-1.5 !pr-2 text-[0.8125rem]",
+                          "relative h-9 gap-1.5 !pr-2 text-[0.8125rem] active:scale-100",
                           emphasizeRunning &&
                             "bg-blue-500/10 text-sidebar-foreground ring-1 ring-blue-500/25 hover:bg-blue-500/15 data-active:bg-blue-500/15 data-active:text-sidebar-foreground"
                         )}
                         isActive={isActive}
                         onClick={() => void openJob(job)}
-                        tooltip={job.filename}
+                        tooltip={
+                          isPdfPrepared
+                            ? `${job.filename} · PDF 已预解析`
+                            : job.filename
+                        }
                       >
-                        <DocumentFormatIcon format={job.format} />
+                        <DocumentFormatIcon
+                          format={job.format}
+                          isPdfPrepared={isPdfPrepared}
+                        />
                         <span className="min-w-0 flex-1 truncate">{job.filename}</span>
                         <span className="flex shrink-0 items-center transition-opacity duration-150 group-hover/menu-item:opacity-0 group-focus-within/menu-item:opacity-0">
                           <SidebarJobStatusIndicator
@@ -388,7 +390,7 @@ export function AppSidebar({
                 {recentJobs.length === 0 && (
                   <SidebarMenuItem>
                     <SidebarMenuButton className="text-muted-foreground/50" disabled>
-                      <FileTextIcon />
+                      <DocumentFormatIcon format="txt" isPdfPrepared={false} />
                       <span>暂无文档</span>
                     </SidebarMenuButton>
                   </SidebarMenuItem>

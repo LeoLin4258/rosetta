@@ -63,11 +63,11 @@ pub const LINUX_X64_PDF2ZH: Pdf2zhProfile = Pdf2zhProfile {
     pack_directory_name: "linux-x64",
     bin_relative_path: "bin/pdf2zh",
     pack_filename: "rosetta-pdf2zh-linux-x64.tar.gz",
-    pack_size_bytes: Some(510_384_173),
-    pack_sha256: Some("4f71a0ea881f899d2c10a8a76874f453b4829840f8a1f36efcc19fde9bfd3f5d"),
+    pack_size_bytes: Some(510_388_352),
+    pack_sha256: Some("f6492939a7ea919d8d01923f59a78e2c5761abd5428264ca4a636da73dda2034"),
     pack_download_urls: &[
-        "https://githubdog.com/https://github.com/LeoLin4258/rosetta-assets/releases/download/pdf-layout-pack-linux-x64-v2026.07.14.1/rosetta-pdf2zh-linux-x64.tar.gz",
-        "https://github.com/LeoLin4258/rosetta-assets/releases/download/pdf-layout-pack-linux-x64-v2026.07.14.1/rosetta-pdf2zh-linux-x64.tar.gz",
+        "https://githubdog.com/https://github.com/LeoLin4258/rosetta-assets/releases/download/pdf-layout-pack-linux-x64-v2026.07.15.1/rosetta-pdf2zh-linux-x64.tar.gz",
+        "https://github.com/LeoLin4258/rosetta-assets/releases/download/pdf-layout-pack-linux-x64-v2026.07.15.1/rosetta-pdf2zh-linux-x64.tar.gz",
     ],
 };
 
@@ -141,10 +141,10 @@ mod tests {
         assert!(LINUX_X64_PDF2ZH.enabled);
         assert_eq!(LINUX_X64_PDF2ZH.pack_directory_name, "linux-x64");
         assert_eq!(LINUX_X64_PDF2ZH.bin_relative_path, "bin/pdf2zh");
-        assert_eq!(LINUX_X64_PDF2ZH.pack_size_bytes, Some(510_384_173));
+        assert_eq!(LINUX_X64_PDF2ZH.pack_size_bytes, Some(510_388_352));
         assert_eq!(
             LINUX_X64_PDF2ZH.pack_sha256,
-            Some("4f71a0ea881f899d2c10a8a76874f453b4829840f8a1f36efcc19fde9bfd3f5d")
+            Some("f6492939a7ea919d8d01923f59a78e2c5761abd5428264ca4a636da73dda2034")
         );
         assert!(LINUX_X64_PDF2ZH
             .pack_download_urls

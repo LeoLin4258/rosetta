@@ -1261,6 +1261,7 @@ pub async fn preparse_rosetta_pdf_pages(
     let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
     let result = pdf2zh_invoke::preparse_pdf2zh(
         &app,
+        &job_id,
         &source_path,
         pages.clone(),
         &source_lang,
@@ -1280,6 +1281,7 @@ pub async fn preparse_rosetta_pdf_pages(
                     .details(json!({
                         "pages": &pages,
                         "cacheHit": output.cache_hit,
+                        "cacheTier": output.cache_tier,
                         "unitCount": output.unit_count,
                         "timingsMs": &output.timings_ms,
                     })),
@@ -1288,6 +1290,7 @@ pub async fn preparse_rosetta_pdf_pages(
                 "status": if output.cache_hit { "cached" } else { "prepared" },
                 "pages": pages,
                 "cacheHit": output.cache_hit,
+                "cacheTier": output.cache_tier,
                 "durationMs": output.warmup_ms,
                 "timingsMs": output.timings_ms,
                 "unitCount": output.unit_count,
@@ -1784,6 +1787,7 @@ async fn translate_pdf_pages_inner(
                             "pages": chunk_pages.clone(),
                             "warmupMs": output.warmup_ms,
                             "prepareCacheHit": output.prepare_cache_hit,
+                            "prepareCacheTier": output.prepare_cache_tier,
                             "prepareTimingsMs": &output.prepare_timings_ms,
                             "renderMs": output.render_ms,
                             "renderCallCount": output.render_call_count,

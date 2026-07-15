@@ -10,6 +10,7 @@ use std::{
 };
 
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{mpsc, oneshot};
 
@@ -20,6 +21,7 @@ use crate::{
     },
     rosetta_jobs::formats::pdf::{
         errors::PdfError,
+        source_state,
         unit_translation::{
             translate_pdf_units_with_events, PdfUnitProviderConfig, PdfUnitTranslation,
             PdfUnitTranslationBatchResult, PdfUnitTranslationMetrics,
@@ -120,6 +122,7 @@ pub(crate) struct Pdf2zhOutput {
     pub warmup_ms: u64,
     pub process_ms: u64,
     pub prepare_cache_hit: bool,
+    pub prepare_cache_tier: String,
     pub prepare_timings_ms: PdfPrepareTimings,
     pub render_ms: u64,
     pub render_call_count: u32,
@@ -130,6 +133,7 @@ pub(crate) struct Pdf2zhOutput {
 pub(crate) struct Pdf2zhPreparseOutput {
     pub warmup_ms: u64,
     pub cache_hit: bool,
+    pub cache_tier: String,
     pub timings_ms: PdfPrepareTimings,
     pub unit_count: usize,
 }
@@ -154,10 +158,21 @@ fn pdf_prepare_cache_key(
         .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
         .map(|duration| duration.as_nanos())
         .unwrap_or_default();
+    let source_fingerprint = source_path
+        .parent()
+        .and_then(|job_dir| {
+            source_state::read_pdf_source_metadata(job_dir)
+                .ok()
+                .flatten()
+        })
+        .map(|metadata| metadata.source_fingerprint)
+        .unwrap_or_default();
     Ok(serde_json::json!({
+        "schemaVersion": 1,
         "sourcePath": source_path.to_string_lossy(),
         "sourceBytes": metadata.len(),
         "sourceModifiedNs": modified_ns,
+        "sourceFingerprint": source_fingerprint,
         "pages": pages,
         "sourceLang": source_lang,
         "targetLang": target_lang,
@@ -166,8 +181,32 @@ fn pdf_prepare_cache_key(
     .to_string())
 }
 
+fn persistent_layout_cache_dir(source_path: &Path, cache_key: &str) -> Result<PathBuf, PdfError> {
+    let job_dir = source_path
+        .parent()
+        .ok_or_else(|| PdfError::Read("无法定位 PDF 项目目录，不能创建预解析缓存。".to_string()))?;
+    let digest = Sha256::digest(cache_key.as_bytes());
+    Ok(job_dir
+        .join("pdf-prepare-cache")
+        .join("v1")
+        .join(format!("{digest:x}")))
+}
+
+fn persistent_source_fingerprint(source_path: &Path) -> String {
+    source_path
+        .parent()
+        .and_then(|job_dir| {
+            source_state::read_pdf_source_metadata(job_dir)
+                .ok()
+                .flatten()
+        })
+        .map(|metadata| metadata.source_fingerprint)
+        .unwrap_or_default()
+}
+
 pub(crate) async fn preparse_pdf2zh(
     app: &AppHandle,
+    cache_owner_key: &str,
     source_path: &Path,
     pages: Vec<u32>,
     source_lang: &str,
@@ -186,6 +225,8 @@ pub(crate) async fn preparse_pdf2zh(
 
     let scratch_dir = PdfEngineScratchDir::create(app)?;
     let cache_key = pdf_prepare_cache_key(source_path, Some(&pages), source_lang, target_lang)?;
+    let persistent_cache_dir = persistent_layout_cache_dir(source_path, &cache_key)?;
+    let source_fingerprint = persistent_source_fingerprint(source_path);
     let mut stderr_lines = Vec::<String>::new();
     let mut on_stderr = |line: &str| {
         if stderr_lines.len() >= 30 {
@@ -206,8 +247,12 @@ pub(crate) async fn preparse_pdf2zh(
             "langOut": pdf2zh_lang(target_lang),
             "thread": 1,
             "cacheKey": cache_key,
+            "cacheOwnerKey": cache_owner_key,
             "options": {
                 "cleanupScratchDir": true,
+                "persistentLayoutCacheDir": persistent_cache_dir.to_string_lossy(),
+                "persistentLayoutCacheKey": &cache_key,
+                "persistentSourceFingerprint": source_fingerprint,
             },
         }),
         &mut on_stderr,
@@ -219,6 +264,7 @@ pub(crate) async fn preparse_pdf2zh(
     Ok(Pdf2zhPreparseOutput {
         warmup_ms: started.elapsed().as_millis() as u64,
         cache_hit: prepared.cache_hit,
+        cache_tier: prepared.cache_tier,
         timings_ms: prepared.timings_ms,
         unit_count: prepared.units.len(),
     })
@@ -274,6 +320,8 @@ pub(crate) async fn invoke_pdf2zh(
         &options.source_lang,
         &options.target_lang,
     )?;
+    let persistent_cache_dir = persistent_layout_cache_dir(source_path, &prepare_cache_key)?;
+    let source_fingerprint = persistent_source_fingerprint(source_path);
     let prepared = crate::managed_pdf2zh::worker::prepare_pdf_window(
         app,
         serde_json::json!({
@@ -285,8 +333,12 @@ pub(crate) async fn invoke_pdf2zh(
             "langOut": pdf2zh_lang(&options.target_lang),
             "thread": 1,
             "cacheKey": prepare_cache_key,
+            "cacheOwnerKey": &options.job_id,
             "options": {
                 "cleanupScratchDir": true,
+                "persistentLayoutCacheDir": persistent_cache_dir.to_string_lossy(),
+                "persistentLayoutCacheKey": &prepare_cache_key,
+                "persistentSourceFingerprint": source_fingerprint,
             },
         }),
         &mut on_stderr,
@@ -535,6 +587,7 @@ pub(crate) async fn invoke_pdf2zh(
         warmup_ms,
         process_ms: process_ms.max(invoke_started.elapsed().as_millis() as u64),
         prepare_cache_hit: prepared.cache_hit,
+        prepare_cache_tier: prepared.cache_tier,
         prepare_timings_ms: prepared.timings_ms,
         render_ms: render_metrics.total_ms,
         render_call_count: render_metrics.call_count,
@@ -624,7 +677,7 @@ fn worker_outcome_to_pdf_error(
 ) -> PdfError {
     match outcome {
         crate::managed_pdf2zh::worker::WorkerTranslateOutcome::Cancelled => PdfError::Cancelled,
-        crate::managed_pdf2zh::worker::WorkerTranslateOutcome::JobFailed(message)
+        crate::managed_pdf2zh::worker::WorkerTranslateOutcome::JobFailed { message, .. }
         | crate::managed_pdf2zh::worker::WorkerTranslateOutcome::WorkerLost(message)
         | crate::managed_pdf2zh::worker::WorkerTranslateOutcome::Unavailable(message) => {
             PdfError::Pdf2zhFailed(message)
@@ -753,8 +806,8 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        completed_page_progress_payload, pdf_prepare_cache_key, Pdf2zhInvokeOptions,
-        PdfEngineScratchDir,
+        completed_page_progress_payload, pdf_prepare_cache_key, persistent_layout_cache_dir,
+        Pdf2zhInvokeOptions, PdfEngineScratchDir,
     };
     use crate::rosetta_jobs::formats::pdf::unit_translation::{
         LlamaCppPdfApiConfig, PdfUnitProviderConfig,
@@ -849,6 +902,30 @@ mod tests {
         assert_ne!(first, other_pages);
         assert_ne!(first, other_language);
         std::fs::remove_dir_all(&root).expect("remove cache key test root");
+    }
+
+    #[test]
+    fn persistent_layout_cache_is_versioned_and_keyed_below_the_job() {
+        let root = scratch_test_root();
+        std::fs::create_dir_all(&root).expect("create persistent cache test root");
+        let source = root.join("source.pdf");
+        std::fs::write(&source, b"pdf-cache-dir-fixture").expect("write cache dir fixture");
+        let cache_key =
+            pdf_prepare_cache_key(&source, Some(&[1, 2]), "en", "zh-CN").expect("build cache key");
+        let first = persistent_layout_cache_dir(&source, &cache_key).expect("build cache dir");
+        let second = persistent_layout_cache_dir(&source, &cache_key).expect("rebuild cache dir");
+
+        assert_eq!(first, second);
+        assert!(first.starts_with(root.join("pdf-prepare-cache").join("v1")));
+        assert_eq!(
+            first
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::len),
+            Some(64)
+        );
+
+        std::fs::remove_dir_all(&root).expect("remove persistent cache test root");
     }
 
     #[test]

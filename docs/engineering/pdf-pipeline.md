@@ -508,10 +508,18 @@ normal 10-page window. It does not call the translation provider, render pages,
 or modify page/run state.
 
 Background preparse is skipped while a PDF translation run is active. Success
-populates the worker's single process-local prepared cache, so the later
+populates the worker's bounded process-local prepared-run LRU, so the later
 translation starts with a cache reset instead of layout inference and unit
-collection. Failures remain content-free timeline diagnostics and do not make
-the imported job fail.
+collection. It also writes compressed layout masks to the job-local durable
+cache. After an app or worker restart, matching masks skip ONNX inference while
+background preparse rebuilds the non-serializable pdfminer unit/replay state.
+Failures remain content-free timeline diagnostics and do not make the imported
+job fail.
+
+Worker startup scans the job-local durable manifests and reports owners whose
+schema, source fingerprint, engine version, model signature, and files are
+still valid. This restores the sidebar's prepared indicator across app restarts
+without loading source text or running layout inference for every PDF.
 
 ## Page State
 
@@ -638,12 +646,16 @@ Run states:
    avoids common overlap failures when a source PDF classifies ordinary prose
    as table/formula-like visual content or when translated CJK text needs more
    vertical leading than the original Latin text.
-   The worker retains at most one successful prepared window in memory. An
+   The worker retains up to six successful prepared windows in a bounded LRU by
+   default. An
    immediate retranslation reuses it only when source path, size, modification
    time, page selection, language pair, and engine thread count all match. The
    engine reopens pristine prepared-PDF bytes before the next render so prior
-   translated text cannot leak into the new run. A different key replaces and
-   disposes the previous entry.
+   translated text cannot leak into the new run. Once capacity is reached, a
+   different key evicts and disposes the least recently used entry. The engine
+   also persists compressed layout masks under the owning job. A matching disk
+   entry survives worker restart and skips layout inference, but unit
+   collection still runs to rebuild live pdfminer objects.
 8. Rust translates all required units in the window through
    `translate_pdf_units`. Lightning keeps large ordered batches but splits
    oversized text to a target/hard prompt budget of `160/220` estimated tokens.
@@ -664,11 +676,13 @@ Run states:
    `translated-pages/<targetLang>/page-XXXX.pdf`, recorded with v2 metadata,
    and emitted to the UI. `no_text` pages are completed without pretending to
    have translated text or a translated artifact.
-11. After a successful run, Rust leaves the single prepared window active for
-    a possible immediate retranslation. Failure or cancellation disposes it.
-    Worker restart also clears the cache; packs without the optional `resetRun`
-    method always perform a full prepare. If worker state is not trustworthy,
-    the worker is killed and the next run prewarms a fresh worker.
+11. After a successful run, Rust leaves the prepared window in the bounded LRU
+    for a possible immediate retranslation. Failure or cancellation disposes
+    its live run. Worker restart clears only the memory tier; the next
+    background prepare can restore a compatible disk layout entry. Packs
+    without the optional `resetRun` method always perform a full live prepare.
+    If worker state is not trustworthy, the worker is killed and the next run
+    prewarms a fresh worker.
 12. The run file is updated as pages complete, fail, pause, or finish. Job
     summary and translation-file summary are synced from reconciled page state.
 

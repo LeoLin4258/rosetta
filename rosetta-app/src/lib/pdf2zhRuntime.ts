@@ -138,3 +138,20 @@ export function subscribePdf2zhWorkerStatus(
     (event) => handler(event.payload)
   );
 }
+
+export type PdfPrepareCacheStatus = {
+  readyJobIds: string[];
+};
+
+export function getPdf2zhPrepareCacheStatus() {
+  return invoke<PdfPrepareCacheStatus>("get_pdf2zh_prepare_cache_status");
+}
+
+export function subscribePdf2zhPrepareCacheStatus(
+  handler: (status: PdfPrepareCacheStatus) => void
+): Promise<UnlistenFn> {
+  return listen<PdfPrepareCacheStatus>(
+    "rosetta-pdf2zh-prepare-cache-status",
+    (event) => handler(event.payload)
+  );
+}

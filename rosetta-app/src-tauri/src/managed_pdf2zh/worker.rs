@@ -49,7 +49,7 @@ fn sanitize_python_environment(command: &mut Command) {
 
 #[cfg(test)]
 mod tests {
-    use super::{sanitize_python_environment, WORKER_SCRIPT};
+    use super::{sanitize_python_environment, WorkerState, WORKER_SCRIPT};
     use tokio::process::Command;
 
     #[test]
@@ -112,12 +112,30 @@ mod tests {
     }
 
     #[test]
-    fn worker_reuses_only_resettable_prepared_windows_and_reports_timings() {
+    fn prepare_cache_status_starts_empty() {
+        let state = WorkerState::default();
+
+        assert!(state
+            .prepare_cache_status_snapshot()
+            .ready_job_ids
+            .is_empty());
+    }
+
+    #[test]
+    fn worker_uses_bounded_lru_for_resettable_prepared_windows_and_reports_timings() {
         assert!(WORKER_SCRIPT.contains("callable(reset_run)"));
+        assert!(WORKER_SCRIPT.contains("_prepare_cache.move_to_end(cache_key)"));
+        assert!(WORKER_SCRIPT.contains("_prepare_cache.popitem(last=False)"));
+        assert!(WORKER_SCRIPT.contains("ROSETTA_PDF_PREPARE_CACHE_ENTRIES"));
+        assert!(WORKER_SCRIPT.contains("\"cachedOwnerKeys\": cached_owner_keys()"));
         assert!(WORKER_SCRIPT.contains("reset_run(active[\"preparedRunId\"])"));
         assert!(WORKER_SCRIPT.contains("\"cacheHit\": cache_hit"));
+        assert!(WORKER_SCRIPT.contains("persistentLayoutCacheHit"));
+        assert!(WORKER_SCRIPT.contains("\"cacheTier\": cache_tier"));
+        assert!(WORKER_SCRIPT.contains("discover_persistent_cache_owner_keys"));
+        assert!(WORKER_SCRIPT.contains("\"cacheEntryCount\": len(_prepare_cache)"));
         assert!(WORKER_SCRIPT.contains("\"timingsMs\": timings"));
-        assert!(WORKER_SCRIPT.contains("dispose_active_prepare_cache(engine)"));
+        assert!(WORKER_SCRIPT.contains("dispose_prepare_cache(engine)"));
     }
 
     #[cfg(target_os = "windows")]
@@ -190,6 +208,25 @@ impl Default for Pdf2zhWorkerStatus {
 }
 
 const WORKER_STATUS_EVENT: &str = "rosetta-pdf2zh-worker-status";
+const PREPARE_CACHE_STATUS_EVENT: &str = "rosetta-pdf2zh-prepare-cache-status";
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PdfPrepareCacheStatus {
+    pub ready_job_ids: Vec<String>,
+}
+
+fn emit_prepare_cache_status(app: &AppHandle, ready_job_ids: Vec<String>) {
+    if let Some(worker_state) = app.try_state::<WorkerState>() {
+        if let Ok(mut guard) = worker_state.prepare_cache_ready_job_ids.lock() {
+            *guard = ready_job_ids.clone();
+        }
+    }
+    let _ = app.emit(
+        PREPARE_CACHE_STATUS_EVENT,
+        PdfPrepareCacheStatus { ready_job_ids },
+    );
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -237,7 +274,9 @@ pub(crate) struct PreparedPdfWindow {
     pub prepared_run: PreparedPdfRun,
     pub units: Vec<PdfTranslationUnit>,
     pub cache_hit: bool,
+    pub cache_tier: String,
     pub timings_ms: PdfPrepareTimings,
+    pub cached_owner_keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -255,6 +294,7 @@ pub(crate) struct PdfPrepareTimings {
 pub struct WorkerState {
     inner: Mutex<Option<WorkerProcess>>,
     status: StdMutex<Pdf2zhWorkerStatus>,
+    prepare_cache_ready_job_ids: StdMutex<Vec<String>>,
     shutdown_requested: AtomicBool,
 }
 
@@ -263,6 +303,7 @@ impl Default for WorkerState {
         Self {
             inner: Mutex::new(None),
             status: StdMutex::new(Pdf2zhWorkerStatus::default()),
+            prepare_cache_ready_job_ids: StdMutex::new(Vec::new()),
             shutdown_requested: AtomicBool::new(false),
         }
     }
@@ -278,6 +319,16 @@ impl WorkerState {
 
     pub fn request_shutdown(&self) {
         self.shutdown_requested.store(true, Ordering::SeqCst);
+    }
+
+    pub fn prepare_cache_status_snapshot(&self) -> PdfPrepareCacheStatus {
+        PdfPrepareCacheStatus {
+            ready_job_ids: self
+                .prepare_cache_ready_job_ids
+                .lock()
+                .map(|guard| guard.clone())
+                .unwrap_or_default(),
+        }
     }
 
     fn should_shutdown(&self) -> bool {
@@ -337,7 +388,10 @@ pub enum WorkerTranslateOutcome {
     Cancelled,
     /// The job failed but the worker is still healthy (translator error,
     /// bad input, …).
-    JobFailed(String),
+    JobFailed {
+        message: String,
+        cached_owner_keys: Option<Vec<String>>,
+    },
     /// The worker process died mid-job.
     WorkerLost(String),
     /// No worker could be started (pack missing / old layout). The v2 product
@@ -374,8 +428,12 @@ struct WorkerEvent {
     units: Option<Vec<PdfTranslationUnit>>,
     #[serde(default, rename = "cacheHit")]
     cache_hit: Option<bool>,
+    #[serde(default, rename = "cacheTier")]
+    cache_tier: Option<String>,
     #[serde(default, rename = "timingsMs")]
     timings_ms: Option<PdfPrepareTimings>,
+    #[serde(default, rename = "cachedOwnerKeys")]
+    cached_owner_keys: Option<Vec<String>>,
     #[serde(default, rename = "pageResult")]
     page_result: Option<PdfPageResult>,
     /// 1-based phase index on `warming` events emitted during the import
@@ -456,6 +514,11 @@ async fn spawn_worker(app: &AppHandle) -> Result<WorkerProcess, String> {
     set_worker_status(app, "starting", None, None);
     status.layout.ensure_dirs()?;
     let worker_dir = status.layout.root_dir.join("worker");
+    let jobs_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法定位 PDF 预解析缓存目录: {error}"))?
+        .join("jobs");
     std::fs::create_dir_all(&worker_dir)
         .map_err(|error| format!("无法创建 worker 目录: {error}"))?;
     let script_path = worker_dir.join("rosetta_pdf2zh_worker.py");
@@ -473,6 +536,7 @@ async fn spawn_worker(app: &AppHandle) -> Result<WorkerProcess, String> {
         .env("PYTHONIOENCODING", "utf-8")
         .env("PYTHONNOUSERSITE", "1")
         .env("ROSETTA_DOCLAYOUT_MODEL", &doclayout_model)
+        .env("ROSETTA_PDF_PREPARE_CACHE_JOBS_ROOT", &jobs_root)
         .env(
             "ROSETTA_BABELDOC_CACHE_DIR",
             status.layout.babeldoc_cache_dir(),
@@ -644,7 +708,10 @@ async fn spawn_worker(app: &AppHandle) -> Result<WorkerProcess, String> {
                                 event.yolo_warmup_device.as_deref().unwrap_or("-"),
                                 event.yolo_warmup_reason.as_deref().unwrap_or("-")
                             );
-                            return Ok(import_ms);
+                            return Ok((
+                                import_ms,
+                                event.cached_owner_keys.unwrap_or_default(),
+                            ));
                         }
                         "fatal" => {
                             let detail = format_stderr_tail(&capture_ref);
@@ -674,8 +741,9 @@ async fn spawn_worker(app: &AppHandle) -> Result<WorkerProcess, String> {
     .await;
 
     match ready {
-        Ok(Ok(import_ms)) => {
+        Ok(Ok((import_ms, cached_owner_keys))) => {
             set_worker_status(app, "ready", None, Some(import_ms));
+            emit_prepare_cache_status(app, cached_owner_keys);
             Ok(worker)
         }
         Ok(Err(message)) => {
@@ -754,23 +822,30 @@ impl WorkerProcess {
                     match event.event.as_str() {
                         "prepared_pdf_window" if event.id.as_deref() == Some(job_id.as_str()) => {
                             let prepared_run = event.prepared_run.ok_or_else(|| {
-                                WorkerTranslateOutcome::JobFailed(
-                                    "PDF worker prepared event missing preparedRun.".to_string(),
-                                )
+                                WorkerTranslateOutcome::JobFailed {
+                                    message: "PDF worker prepared event missing preparedRun."
+                                        .to_string(),
+                                    cached_owner_keys: event.cached_owner_keys.clone(),
+                                }
                             })?;
                             let units = event.units.unwrap_or_default();
                             return Ok(PreparedPdfWindow {
                                 prepared_run,
                                 units,
                                 cache_hit: event.cache_hit.unwrap_or(false),
+                                cache_tier: event.cache_tier.unwrap_or_else(|| "miss".to_string()),
                                 timings_ms: event.timings_ms.unwrap_or_default(),
+                                cached_owner_keys: event.cached_owner_keys.unwrap_or_default(),
                             });
                         }
                         "stage" if event.id.as_deref() == Some(job_id.as_str()) => {}
                         "error" if event.id.as_deref() == Some(job_id.as_str()) || event.id.is_none() => {
-                            return Err(WorkerTranslateOutcome::JobFailed(
-                                event.message.unwrap_or_else(|| "未知 worker 错误".to_string()),
-                            ));
+                            return Err(WorkerTranslateOutcome::JobFailed {
+                                message: event
+                                    .message
+                                    .unwrap_or_else(|| "未知 worker 错误".to_string()),
+                                cached_owner_keys: event.cached_owner_keys,
+                            });
                         }
                         "fatal" => {
                             return Err(WorkerTranslateOutcome::WorkerLost(
@@ -833,9 +908,12 @@ impl WorkerProcess {
                             return WorkerTranslateOutcome::Completed;
                         }
                         "error" if event.id.as_deref() == Some(job_id.as_str()) || event.id.is_none() => {
-                            return WorkerTranslateOutcome::JobFailed(
-                                event.message.unwrap_or_else(|| "未知 worker 错误".to_string()),
-                            );
+                            return WorkerTranslateOutcome::JobFailed {
+                                message: event
+                                    .message
+                                    .unwrap_or_else(|| "未知 worker 错误".to_string()),
+                                cached_owner_keys: event.cached_owner_keys,
+                            };
                         }
                         "fatal" => {
                             return WorkerTranslateOutcome::WorkerLost(
@@ -859,7 +937,10 @@ impl WorkerProcess {
         }
     }
 
-    async fn run_dispose_pdf_window(&mut self, prepared_run_id: &str) -> WorkerTranslateOutcome {
+    async fn run_dispose_pdf_window(
+        &mut self,
+        prepared_run_id: &str,
+    ) -> Result<Vec<String>, WorkerTranslateOutcome> {
         self.next_job += 1;
         let job_id = format!("wjob-{}", self.next_job);
         let mut line = json!({
@@ -871,10 +952,14 @@ impl WorkerProcess {
         line.push('\n');
 
         if let Err(error) = self.stdin.write_all(line.as_bytes()).await {
-            return WorkerTranslateOutcome::WorkerLost(format!("写入 worker 任务失败: {error}"));
+            return Err(WorkerTranslateOutcome::WorkerLost(format!(
+                "写入 worker 任务失败: {error}"
+            )));
         }
         if let Err(error) = self.stdin.flush().await {
-            return WorkerTranslateOutcome::WorkerLost(format!("写入 worker 任务失败: {error}"));
+            return Err(WorkerTranslateOutcome::WorkerLost(format!(
+                "写入 worker 任务失败: {error}"
+            )));
         }
 
         loop {
@@ -883,18 +968,30 @@ impl WorkerProcess {
                     if event.id.as_deref() == Some(job_id.as_str())
                         && event.event == "disposed_pdf_window" =>
                 {
-                    return WorkerTranslateOutcome::Completed;
+                    return Ok(event.cached_owner_keys.unwrap_or_default());
+                }
+                Some(event)
+                    if event.id.as_deref() == Some(job_id.as_str()) && event.event == "error" =>
+                {
+                    return Err(WorkerTranslateOutcome::JobFailed {
+                        message: event
+                            .message
+                            .unwrap_or_else(|| "未知 worker 错误".to_string()),
+                        cached_owner_keys: event.cached_owner_keys,
+                    });
                 }
                 Some(event) if event.event == "fatal" => {
-                    return WorkerTranslateOutcome::WorkerLost(
+                    return Err(WorkerTranslateOutcome::WorkerLost(
                         event
                             .message
                             .unwrap_or_else(|| "worker 致命错误".to_string()),
-                    );
+                    ));
                 }
                 Some(_) => {}
                 None => {
-                    return WorkerTranslateOutcome::WorkerLost("worker 进程意外退出。".to_string());
+                    return Err(WorkerTranslateOutcome::WorkerLost(
+                        "worker 进程意外退出。".to_string(),
+                    ));
                 }
             }
         }
@@ -921,7 +1018,15 @@ pub(crate) async fn prepare_pdf_window(
         .run_prepare_pdf_window(payload, on_stderr, cancel_rx)
         .await;
     match &outcome {
-        Ok(_) | Err(WorkerTranslateOutcome::JobFailed(_)) => {
+        Ok(prepared) => emit_prepare_cache_status(app, prepared.cached_owner_keys.clone()),
+        Err(WorkerTranslateOutcome::JobFailed {
+            cached_owner_keys: Some(ready_job_ids),
+            ..
+        }) => emit_prepare_cache_status(app, ready_job_ids.clone()),
+        _ => {}
+    }
+    match &outcome {
+        Ok(_) | Err(WorkerTranslateOutcome::JobFailed { .. }) => {
             set_worker_status(app, "ready", None, None);
         }
         Err(WorkerTranslateOutcome::Cancelled) | Err(WorkerTranslateOutcome::WorkerLost(_)) => {
@@ -930,6 +1035,7 @@ pub(crate) async fn prepare_pdf_window(
             }
             drop(guard);
             set_worker_status(app, "idle", None, None);
+            emit_prepare_cache_status(app, Vec::new());
             if !state.should_shutdown() {
                 let app_clone = app.clone();
                 tokio::spawn(async move {
@@ -973,6 +1079,7 @@ pub(crate) async fn render_pdf_window(
         }
         drop(guard);
         set_worker_status(app, "idle", None, None);
+        emit_prepare_cache_status(app, Vec::new());
         if !state.should_shutdown() {
             let app_clone = app.clone();
             tokio::spawn(async move {
@@ -992,11 +1099,20 @@ pub(crate) async fn dispose_pdf_window(app: &AppHandle, prepared_run_id: &str) {
         return;
     };
     let outcome = worker.run_dispose_pdf_window(prepared_run_id).await;
-    if matches!(outcome, WorkerTranslateOutcome::WorkerLost(_)) {
-        if let Some(mut dead) = guard.take() {
-            kill_process_tree(&mut dead.child).await;
+    match outcome {
+        Ok(ready_job_ids) => emit_prepare_cache_status(app, ready_job_ids),
+        Err(WorkerTranslateOutcome::WorkerLost(_)) => {
+            if let Some(mut dead) = guard.take() {
+                kill_process_tree(&mut dead.child).await;
+            }
+            set_worker_status(app, "idle", None, None);
+            emit_prepare_cache_status(app, Vec::new());
         }
-        set_worker_status(app, "idle", None, None);
+        Err(WorkerTranslateOutcome::JobFailed {
+            cached_owner_keys: Some(ready_job_ids),
+            ..
+        }) => emit_prepare_cache_status(app, ready_job_ids),
+        Err(_) => {}
     }
 }
 
@@ -1039,6 +1155,7 @@ pub(crate) async fn shutdown_worker(app: &AppHandle) -> bool {
 
     kill_process_tree(&mut worker.child).await;
     set_worker_status(app, "idle", None, None);
+    emit_prepare_cache_status(app, Vec::new());
     true
 }
 
@@ -1054,6 +1171,7 @@ pub(crate) async fn stop_worker_for_install(app: &AppHandle) -> bool {
 
     kill_process_tree(&mut worker.child).await;
     set_worker_status(app, "idle", None, None);
+    emit_prepare_cache_status(app, Vec::new());
     true
 }
 

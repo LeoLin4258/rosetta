@@ -90,6 +90,7 @@ type RosettaState = {
   translationRevisions: TranslationRevision[];
   activeTranslationRun: ActiveTranslationRun | null;
   pdfRunProgressByJobId: Record<string, PdfRunProgress>;
+  pdfPreparedJobIds: string[];
   /**
    * Lifecycle of the persistent pdf2zh worker, shown in the app header so the
    * user can see whether the engine is warm. Updated by AppShell from the
@@ -102,6 +103,7 @@ type RosettaState = {
   defaultTargetLang: string;
   langByJobId: Record<string, { sourceLang: string; targetLang: string }>;
   setPdf2zhWorkerStatus: (status: Pdf2zhWorkerStatus | null) => void;
+  setPdfPreparedJobIds: (jobIds: string[]) => void;
   setManagedRuntimeStatus: (status: ManagedRuntimeStatus | null) => void;
   setManagedRuntimeProgress: (
     progress: ManagedRuntimeInstallProgress | null
@@ -352,6 +354,7 @@ export const useRosettaStore = create<RosettaState>()(
       translationRevisions: [],
       activeTranslationRun: null,
       pdfRunProgressByJobId: {},
+      pdfPreparedJobIds: [],
       pdf2zhWorker: null,
       managedRuntime: {
         status: null,
@@ -376,6 +379,8 @@ export const useRosettaStore = create<RosettaState>()(
           },
         })),
       setPdf2zhWorkerStatus: (status) => set({ pdf2zhWorker: status }),
+      setPdfPreparedJobIds: (jobIds) =>
+        set({ pdfPreparedJobIds: [...new Set(jobIds)] }),
       setManagedRuntimeStatus: (status) =>
         set((state) => ({
           managedRuntime: {
@@ -726,6 +731,7 @@ export const useRosettaStore = create<RosettaState>()(
           translationSegments: [],
           translationRevisions: [],
           activeTranslationRun: null,
+          pdfPreparedJobIds: [],
         }),
       updateActiveSegments: (segments) => set((state) => applySegments(state, segments)),
       updateActiveTranslationSegments: (segments) =>

@@ -160,6 +160,10 @@ from pdf2zh.doclayout import OnnxModel
 
 if rosetta_engine.ENGINE_CONTRACT_VERSION != 2:
     raise SystemExit("::error::pdf2zh.rosetta_engine contract version is not 2")
+if not callable(getattr(rosetta_engine, "resetRun", None)):
+    raise SystemExit("::error::Rosetta PDF engine does not support reusable prepared runs")
+if not callable(getattr(rosetta_engine, "load_persistent_layout_cache", None)):
+    raise SystemExit("::error::Rosetta PDF engine does not support durable layout cache")
 
 for font_name in [
     "SourceHanSansCN-Regular.ttf",

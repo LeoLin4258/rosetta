@@ -175,6 +175,10 @@ from pdf2zh.translator import RosettaBatchTranslator
 
 if rosetta_engine.ENGINE_CONTRACT_VERSION != 2:
     raise SystemExit("pdf2zh.rosetta_engine contract version is not 2")
+if not callable(getattr(rosetta_engine, "resetRun", None)):
+    raise SystemExit("pdf2zh.rosetta_engine does not support reusable prepared runs")
+if not callable(getattr(rosetta_engine, "load_persistent_layout_cache", None)):
+    raise SystemExit("pdf2zh.rosetta_engine does not support durable layout cache")
 
 for font_name in [
     "SourceHanSansCN-Regular.ttf",

@@ -12,7 +12,7 @@ use tauri::{AppHandle, Manager, State};
 
 pub use install::Pdf2zhInstallRegistry as InstallStateRegistry;
 pub use status::build_static_status;
-pub use worker::{Pdf2zhWorkerStatus, WorkerState as Pdf2zhWorkerState};
+pub use worker::{Pdf2zhWorkerStatus, PdfPrepareCacheStatus, WorkerState as Pdf2zhWorkerState};
 
 /// Warm up the persistent pdf2zh worker (heavy Python imports + layout model)
 /// so the first translate click doesn't pay the ~13 s import. Fire-and-forget;
@@ -31,6 +31,13 @@ pub fn get_pdf2zh_worker_status(
     state: State<'_, Pdf2zhWorkerState>,
 ) -> Result<Pdf2zhWorkerStatus, String> {
     Ok(state.status_snapshot())
+}
+
+#[tauri::command]
+pub fn get_pdf2zh_prepare_cache_status(
+    state: State<'_, Pdf2zhWorkerState>,
+) -> Result<PdfPrepareCacheStatus, String> {
+    Ok(state.prepare_cache_status_snapshot())
 }
 
 /// Kick off prewarm in the background. Called once from lib.rs setup after

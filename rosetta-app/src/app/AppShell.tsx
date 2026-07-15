@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, type Theme } from "@tauri-apps/api/window";
 import { FileText, Loader2 } from "lucide-react";
 import { AppSidebar } from "@/components/app-sidebar";
+import { DocumentFormatIcon } from "@/components/document-format-icon";
 import { useMeasuredContentWidth } from "@/components/animated-width";
 import { WindowTitleBar } from "@/components/window-title-bar";
 import { WindowFrame } from "@/components/window-frame";
@@ -22,7 +23,9 @@ import {
 } from "@/components/ui/tooltip";
 import { createWelcomeDocument, listRosettaJobs, loadRosettaJob } from "@/lib/rosettaJobs";
 import {
+  getPdf2zhPrepareCacheStatus,
   getPdf2zhWorkerStatus,
+  subscribePdf2zhPrepareCacheStatus,
   subscribePdf2zhWorkerStatus,
   type Pdf2zhWorkerStatus,
 } from "@/lib/pdf2zhRuntime";
@@ -166,12 +169,46 @@ function usePdf2zhWorkerStatusEvents() {
   }, [setPdf2zhWorkerStatus]);
 }
 
+function usePdf2zhPrepareCacheStatusEvents() {
+  const setPdfPreparedJobIds = useRosettaStore((s) => s.setPdfPreparedJobIds);
+
+  useEffect(() => {
+    let unmounted = false;
+    let unlisten: (() => void) | null = null;
+    let eventVersion = 0;
+
+    subscribePdf2zhPrepareCacheStatus((status) => {
+      eventVersion += 1;
+      if (!unmounted) setPdfPreparedJobIds(status.readyJobIds);
+    })
+      .then(async (fn) => {
+        if (unmounted) {
+          fn();
+          return;
+        }
+        unlisten = fn;
+        const snapshotVersion = eventVersion;
+        const status = await getPdf2zhPrepareCacheStatus();
+        if (!unmounted && eventVersion === snapshotVersion) {
+          setPdfPreparedJobIds(status.readyJobIds);
+        }
+      })
+      .catch(console.error);
+
+    return () => {
+      unmounted = true;
+      unlisten?.();
+    };
+  }, [setPdfPreparedJobIds]);
+}
+
 function MenuEventHandler() {
   const { toggleSidebar } = useSidebar();
   useMenuEvents(toggleSidebar);
   useOnboardingCompleted();
   usePdfRunProgressEvents();
   usePdf2zhWorkerStatusEvents();
+  usePdf2zhPrepareCacheStatusEvents();
   return null;
 }
 
@@ -386,7 +423,14 @@ function AppHeader({
         <SidebarTrigger />
         <Separator className="h-5" orientation="vertical" />
         <div className="flex min-w-0 items-center gap-2">
-          <FileText className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+          {location.pathname === "/" && activeSourceFile ? (
+            <DocumentFormatIcon
+              format={activeSourceFile.format}
+              className="text-muted-foreground"
+            />
+          ) : (
+            <FileText className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+          )}
           <h1 className="truncate text-sm font-semibold leading-none tracking-normal">{title}</h1>
         </div>
       </div>

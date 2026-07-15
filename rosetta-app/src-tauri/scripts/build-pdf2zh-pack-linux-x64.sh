@@ -189,6 +189,10 @@ from pdf2zh.doclayout import OnnxModel
 
 if rosetta_engine.ENGINE_CONTRACT_VERSION != 2:
     raise SystemExit("::error::unexpected Rosetta PDF engine contract")
+if not callable(getattr(rosetta_engine, "resetRun", None)):
+    raise SystemExit("::error::Rosetta PDF engine does not support reusable prepared runs")
+if not callable(getattr(rosetta_engine, "load_persistent_layout_cache", None)):
+    raise SystemExit("::error::Rosetta PDF engine does not support durable layout cache")
 
 cache = Path(os.environ["ROSETTA_BABELDOC_CACHE_DIR"]).resolve()
 for font_name in (
@@ -221,6 +225,9 @@ with tempfile.TemporaryDirectory(prefix="rosetta-pdf-pack-smoke-") as temp:
             "scratchDir": str(root / "scratch"),
             "modelPath": os.environ["ROSETTA_DOCLAYOUT_MODEL"],
             "cleanupScratchDir": False,
+            "persistentLayoutCacheDir": str(root / "layout-cache"),
+            "persistentLayoutCacheKey": "pack-smoke-v1",
+            "persistentSourceFingerprint": "pack-smoke-source",
         },
     )
     try:
@@ -240,8 +247,37 @@ with tempfile.TemporaryDirectory(prefix="rosetta-pdf-pack-smoke-") as temp:
                 raise SystemExit("::error::rendered PDF is unreadable or has no text")
         finally:
             rendered.close()
+        rosetta_engine.resetRun(prepared["preparedRunId"])
+        reset_results = rosetta_engine.renderPages(
+            prepared["preparedRunId"], translations, str(root / "out-reset"), pages=[1]
+        )
+        if len(reset_results) != 1 or reset_results[0]["status"] != "translated":
+            raise SystemExit(f"::error::real PDF reset render failed: {reset_results}")
     finally:
         rosetta_engine.disposeRun(prepared["preparedRunId"])
+
+    restored = rosetta_engine.prepareRun(
+        str(source),
+        [1],
+        "en",
+        "zh",
+        {
+            "scratchDir": str(root / "scratch-restored"),
+            "modelPath": os.environ["ROSETTA_DOCLAYOUT_MODEL"],
+            "cleanupScratchDir": False,
+            "persistentLayoutCacheDir": str(root / "layout-cache"),
+            "persistentLayoutCacheKey": "pack-smoke-v1",
+            "persistentSourceFingerprint": "pack-smoke-source",
+        },
+    )
+    try:
+        if not restored.get("persistentLayoutCacheHit"):
+            raise SystemExit("::error::real PDF durable layout cache did not restore")
+        restored_units = rosetta_engine.collectUnits(restored["preparedRunId"])
+        if len(restored_units) != len(units):
+            raise SystemExit("::error::durable layout restore changed translation units")
+    finally:
+        rosetta_engine.disposeRun(restored["preparedRunId"])
 
 print("pdf-pack-real-render-ok providers=" + ",".join(model.model.get_providers()))
 PY

@@ -216,6 +216,7 @@ pub fn run() {
             managed_pdf2zh::install_pdf2zh_pack,
             managed_pdf2zh::prewarm_pdf2zh_worker,
             managed_pdf2zh::get_pdf2zh_worker_status,
+            managed_pdf2zh::get_pdf2zh_prepare_cache_status,
             local_data_reset::clear_rosetta_local_data,
             onboarding::complete_onboarding_and_open_main,
             onboarding::get_onboarding_decision,
