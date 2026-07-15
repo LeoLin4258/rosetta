@@ -19,6 +19,9 @@ Supabase remains the authoritative metadata and publication service.
   artifacts, and write an unpublished Supabase metadata row.
 - Limited the Linux Tauri resource glob to Linux PDFium instead of bundling
   the Windows and macOS PDFium libraries.
+- Reused Rosetta's persisted download proxy setting for Tauri update checks and
+  downloads. This keeps the direct GitHub asset as the canonical source while
+  allowing mainland users to route it through their local Clash proxy.
 
 ## Validation
 
@@ -28,5 +31,7 @@ Supabase remains the authoritative metadata and publication service.
 - Build the signed AppImage from a clean Ubuntu checkout and confirm only the
   Linux PDFium resource is present.
 - Verify GitHub asset size and SHA256, then verify the unpublished Supabase row.
+- Compare direct GitHub, githubdog, and local proxy throughput on the Ubuntu
+  release host before choosing the updater route.
 - Publish the Linux row only after manual download and in-app updater smoke
   tests pass.

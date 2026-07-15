@@ -144,6 +144,7 @@ export function SettingsPage() {
   const themeMode = useRosettaStore((state) => state.themeMode);
   const setThemeMode = useRosettaStore((state) => state.setThemeMode);
   const rwkv = useRosettaStore((state) => state.rwkv);
+  const downloadProxyUrl = useRosettaStore((state) => state.downloadProxy.url);
   const managedRuntimeStatus = useRosettaStore(
     (state) => state.managedRuntime.status
   );
@@ -231,7 +232,9 @@ export function SettingsPage() {
     setDownloadProgress({ downloaded: 0, total: null });
 
     try {
-      const update = await check();
+      const update = await check({
+        proxy: downloadProxyUrl.trim() || undefined,
+      });
 
       if (update) {
         setAvailableUpdate(update);
