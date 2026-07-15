@@ -106,4 +106,5 @@ Tailwind CSS 和 shadcn/ui 是默认样式方式。全局样式只放入 `src/st
 - macOS 右侧主 header 是窗口拖拽区；按钮、链接、输入控件和带 `data-window-no-drag` 的元素不能触发拖拽。双击 header 空白区域可以切换最大化。
 - macOS sidebar 合并时，header 左侧的侧边栏开关和页面标题必须向右偏移并保留动画，避免和 traffic lights 重叠。当前使用 `duration-300 ease-out`，与 sidebar 合并动画保持一致。
 - Windows 窗口标题栏由 `src/components/window-title-bar.tsx` 渲染。不要把 Windows 改回原生 decorations，除非新增 ADR 说明原因。
+- Linux 使用 `src-tauri/tauri.linux.conf.json` 关闭窗口透明度，并使用实色语义背景。平台判断必须显式区分 Windows 和 Linux，不能把所有非 macOS 平台套用 Windows Mica 样式。
 - `src/components/ui/sidebar.tsx` 的 desktop fixed sidebar 在 Windows 必须从 `--window-titlebar-height` 下方开始，不能延伸到 title bar 后面，否则半透明 `--sidebar` 会在左上角叠加两次并造成色差。macOS 使用原生 overlay titlebar 时 `--window-titlebar-height` 为 `0px`，sidebar 可以延伸到窗口顶部，但 `src/components/app-sidebar.tsx` 必须为 traffic lights 留出顶部 padding。

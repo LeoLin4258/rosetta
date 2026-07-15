@@ -14,6 +14,7 @@ import traceback
 
 
 _emit_lock = threading.Lock()
+_active_prepare_cache = None
 
 
 def make_protocol_channel():
@@ -54,9 +55,64 @@ def emit_stage(proto, job_id, stage, status, duration_ms=None, details=None):
     emit(proto, payload)
 
 
+def timed_prepare_run(engine, *args, **kwargs):
+    buckets = {
+        "fontAssets": 0.0,
+        "prepareDocument": 0.0,
+        "layout": 0.0,
+        "unitCollection": 0.0,
+    }
+    targets = {
+        "download_remote_fonts": "fontAssets",
+        "prepare_pdf_document": "prepareDocument",
+        "build_layout_mask": "layout",
+        "collect_page_units": "unitCollection",
+    }
+    originals = {}
+
+    for name, bucket in targets.items():
+        original = getattr(engine, name, None)
+        if original is None:
+            continue
+        originals[name] = original
+
+        def timed(*call_args, _original=original, _bucket=bucket, **call_kwargs):
+            started = time.perf_counter()
+            try:
+                return _original(*call_args, **call_kwargs)
+            finally:
+                buckets[_bucket] += (time.perf_counter() - started) * 1000
+
+        setattr(engine, name, timed)
+
+    started = time.perf_counter()
+    try:
+        prepared = engine.prepareRun(*args, **kwargs)
+    finally:
+        total_ms = (time.perf_counter() - started) * 1000
+        for name, original in originals.items():
+            setattr(engine, name, original)
+
+    measured_ms = sum(buckets.values())
+    timings = {key: int(value) for key, value in buckets.items()}
+    timings["total"] = int(total_ms)
+    timings["other"] = max(0, int(total_ms - measured_ms))
+    timings["cacheReset"] = 0
+    return prepared, timings
+
+
+def dispose_active_prepare_cache(engine):
+    global _active_prepare_cache
+    active = _active_prepare_cache
+    _active_prepare_cache = None
+    if active is not None:
+        engine.disposeRun(active["preparedRunId"])
+
+
 def run_prepare(job, proto, engine):
+    global _active_prepare_cache
     job_id = str(job.get("id", ""))
-    started_at = time.time()
+    started_at = time.perf_counter()
     input_pdf = job["file"]
     output_dir = job.get("outputDir")
     scratch_dir = job.get("tmpDir") or (
@@ -85,26 +141,64 @@ def run_prepare(job, proto, engine):
         not in ("0", "false", "no", "off"),
     )
 
+    cache_key = str(job.get("cacheKey") or "")
+    cache_hit = False
     emit_stage(proto, job_id, "preparePdfWindow", "started")
-    prepared = engine.prepareRun(
-        input_pdf,
-        job.get("pages"),
-        job.get("langIn", "en"),
-        job.get("langOut", "zh"),
-        options,
-    )
-    units = engine.collectUnits(prepared["preparedRunId"])
+    active = _active_prepare_cache
+    reset_run = getattr(engine, "resetRun", None)
+    if (
+        cache_key
+        and active is not None
+        and active["cacheKey"] == cache_key
+        and callable(reset_run)
+    ):
+        reset_started = time.perf_counter()
+        reset_run(active["preparedRunId"])
+        reset_ms = int((time.perf_counter() - reset_started) * 1000)
+        prepared = active["prepared"]
+        units = active["units"]
+        timings = {
+            "total": reset_ms,
+            "fontAssets": 0,
+            "prepareDocument": 0,
+            "layout": 0,
+            "unitCollection": 0,
+            "other": 0,
+            "cacheReset": reset_ms,
+        }
+        cache_hit = True
+    else:
+        dispose_active_prepare_cache(engine)
+        prepared, timings = timed_prepare_run(
+            engine,
+            input_pdf,
+            job.get("pages"),
+            job.get("langIn", "en"),
+            job.get("langOut", "zh"),
+            options,
+        )
+        units = engine.collectUnits(prepared["preparedRunId"])
+        _active_prepare_cache = {
+            "cacheKey": cache_key,
+            "preparedRunId": prepared["preparedRunId"],
+            "prepared": prepared,
+            "units": units,
+        }
+
+    duration_ms = int((time.perf_counter() - started_at) * 1000)
     emit_stage(
         proto,
         job_id,
         "preparePdfWindow",
         "completed",
-        duration_ms=int((time.time() - started_at) * 1000),
+        duration_ms=duration_ms,
         details={
             "preparedRunId": prepared["preparedRunId"],
             "pageCount": len(prepared.get("pages") or []),
             "unitCount": len(units),
             "sourceChars": sum(unit.get("sourceChars", 0) for unit in units),
+            "cacheHit": cache_hit,
+            "timingsMs": timings,
         },
     )
     emit(
@@ -114,6 +208,8 @@ def run_prepare(job, proto, engine):
             "event": "prepared_pdf_window",
             "preparedRun": prepared,
             "units": units,
+            "cacheHit": cache_hit,
+            "timingsMs": timings,
         },
     )
 
@@ -173,9 +269,15 @@ def run_render(job, proto, engine):
 
 
 def run_dispose(job, proto, engine):
+    global _active_prepare_cache
     job_id = str(job.get("id", ""))
     prepared_run_id = job.get("preparedRunId")
     if prepared_run_id:
+        if (
+            _active_prepare_cache is not None
+            and _active_prepare_cache["preparedRunId"] == prepared_run_id
+        ):
+            _active_prepare_cache = None
         engine.disposeRun(prepared_run_id)
     emit(proto, {"id": job_id, "event": "disposed_pdf_window"})
 

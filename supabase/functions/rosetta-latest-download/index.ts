@@ -34,7 +34,8 @@ function jsonResponse(body: unknown, status = 200): Response {
 function isSupportedPlatform(target: string, arch: string): boolean {
   return (
     (target === "darwin" && arch === "aarch64") ||
-    (target === "windows" && arch === "x86_64")
+    (target === "windows" && arch === "x86_64") ||
+    (target === "linux" && arch === "x86_64")
   );
 }
 

@@ -19,6 +19,9 @@ use crate::{
 };
 
 const LIGHTNING_MAX_BATCH_SIZE: usize = 256;
+const LIGHTNING_TARGET_PROMPT_TOKENS: usize = 160;
+const LIGHTNING_HARD_PROMPT_TOKENS: usize = 220;
+const REFERENCE_ENTRY_MIN_CHARS: usize = 40;
 const NON_LIGHTNING_DEFAULT_BATCH_SIZE: usize = 8;
 const NON_LIGHTNING_TARGET_PROMPT_TOKENS: usize = 72;
 const NON_LIGHTNING_HARD_PROMPT_TOKENS: usize = 88;
@@ -142,13 +145,7 @@ pub(crate) async fn translate_pdf_units_with_events(
         })
         .collect::<Vec<_>>();
 
-    let mut metrics = PdfUnitTranslationMetrics {
-        total_input_chars: translatable
-            .iter()
-            .map(|unit| unit.source_chars)
-            .sum::<u64>(),
-        ..PdfUnitTranslationMetrics::default()
-    };
+    let mut metrics = PdfUnitTranslationMetrics::default();
 
     if translatable.is_empty() {
         for translation in passthrough.iter().cloned() {
@@ -663,6 +660,7 @@ struct UnitChunkPlan {
 enum UnitPlanPart {
     Text(Vec<usize>),
     Placeholder(String),
+    Literal(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -672,14 +670,20 @@ enum PdfTextPart {
 }
 
 fn prepare_lightning_chunks(units: &[PdfTranslationUnit]) -> PreparedChunks {
-    prepare_provider_chunks(units, false)
+    prepare_provider_chunks(units, PdfChunkPolicy::Lightning)
 }
 
 fn prepare_non_lightning_chunks(units: &[PdfTranslationUnit]) -> PreparedChunks {
-    prepare_provider_chunks(units, true)
+    prepare_provider_chunks(units, PdfChunkPolicy::NonLightning)
 }
 
-fn prepare_provider_chunks(units: &[PdfTranslationUnit], split_long_text: bool) -> PreparedChunks {
+#[derive(Clone, Copy)]
+enum PdfChunkPolicy {
+    Lightning,
+    NonLightning,
+}
+
+fn prepare_provider_chunks(units: &[PdfTranslationUnit], policy: PdfChunkPolicy) -> PreparedChunks {
     let mut chunks = Vec::new();
     let mut unit_plans = BTreeMap::new();
     for unit in units {
@@ -690,16 +694,18 @@ fn prepare_provider_chunks(units: &[PdfTranslationUnit], split_long_text: bool) 
                     parts.push(UnitPlanPart::Placeholder(placeholder));
                 }
                 PdfTextPart::Text(text) => {
-                    let text_chunks = if split_long_text {
-                        split_pdf_text(&text)
-                    } else {
-                        let normalized = normalize_pdf_text(&text);
-                        let trimmed = normalized.trim();
-                        if trimmed.is_empty() {
-                            Vec::new()
-                        } else {
-                            vec![trimmed.to_string()]
-                        }
+                    let normalized = normalize_pdf_text(&text);
+                    let trimmed = normalized.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    if should_passthrough_pdf_fragment(trimmed) {
+                        parts.push(UnitPlanPart::Literal(trimmed.to_string()));
+                        continue;
+                    }
+                    let text_chunks = match policy {
+                        PdfChunkPolicy::Lightning => split_pdf_text_for_lightning(trimmed),
+                        PdfChunkPolicy::NonLightning => split_pdf_text(trimmed),
                     }
                     .into_iter()
                     .filter(|chunk| !chunk.trim().is_empty())
@@ -777,7 +783,7 @@ fn emit_ready_unit_outputs(
 
 fn unit_plan_ready(plan: &UnitChunkPlan, chunk_ready: &[bool]) -> bool {
     plan.parts.iter().all(|part| match part {
-        UnitPlanPart::Placeholder(_) => true,
+        UnitPlanPart::Placeholder(_) | UnitPlanPart::Literal(_) => true,
         UnitPlanPart::Text(indices) => indices
             .iter()
             .all(|index| chunk_ready.get(*index).copied().unwrap_or(false)),
@@ -795,6 +801,9 @@ fn render_unit_plan(
         match part {
             UnitPlanPart::Placeholder(placeholder) => {
                 append_pdf_placeholder(&mut output, placeholder, compact);
+            }
+            UnitPlanPart::Literal(literal) => {
+                append_pdf_literal(&mut output, literal, compact);
             }
             UnitPlanPart::Text(indices) => {
                 let translated_chunks = indices
@@ -844,6 +853,24 @@ fn append_translated_text(output: &mut String, text: &str, compact: bool) {
     output.push_str(trimmed);
 }
 
+fn append_pdf_literal(output: &mut String, text: &str, compact: bool) {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    if !compact
+        && !output.is_empty()
+        && !output.chars().next_back().is_some_and(char::is_whitespace)
+        && !trimmed
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_ascii_punctuation())
+    {
+        output.push(' ');
+    }
+    output.push_str(trimmed);
+}
+
 fn collapse_whitespace(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -884,6 +911,86 @@ fn find_pdf_placeholder(text: &str, from: usize) -> Option<(usize, usize)> {
         index += 1;
     }
     None
+}
+
+fn should_passthrough_pdf_fragment(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    let alphabetic_count = trimmed.chars().filter(|ch| ch.is_alphabetic()).count();
+    alphabetic_count == 0 || (alphabetic_count <= 2 && trimmed.chars().all(|ch| ch.is_ascii()))
+}
+
+fn split_pdf_text_for_lightning(text: &str) -> Vec<String> {
+    split_reference_entries(text)
+        .into_iter()
+        .flat_map(|entry| {
+            split_pdf_text_with_budget(
+                &entry,
+                LIGHTNING_TARGET_PROMPT_TOKENS,
+                LIGHTNING_HARD_PROMPT_TOKENS,
+            )
+        })
+        .filter(|chunk| !chunk.trim().is_empty())
+        .collect()
+}
+
+fn split_reference_entries(text: &str) -> Vec<String> {
+    let normalized = normalize_pdf_text(text);
+    let trimmed = normalized.trim();
+    let markers = numeric_reference_markers(trimmed);
+    if !markers.windows(2).any(|window| {
+        window[0].1.checked_add(1) == Some(window[1].1)
+            && window[1].0.saturating_sub(window[0].0) >= REFERENCE_ENTRY_MIN_CHARS
+    }) {
+        return vec![trimmed.to_string()];
+    }
+
+    let mut entries = Vec::with_capacity(markers.len() + 1);
+    if markers[0].0 > 0 {
+        let prefix = trimmed[..markers[0].0].trim();
+        if !prefix.is_empty() {
+            entries.push(prefix.to_string());
+        }
+    }
+    for (index, (start, _)) in markers.iter().enumerate() {
+        let end = markers
+            .get(index + 1)
+            .map(|marker| marker.0)
+            .unwrap_or(trimmed.len());
+        let entry = trimmed[*start..end].trim();
+        if !entry.is_empty() {
+            entries.push(entry.to_string());
+        }
+    }
+    entries
+}
+
+fn numeric_reference_markers(text: &str) -> Vec<(usize, u32)> {
+    let bytes = text.as_bytes();
+    let mut markers = Vec::new();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        if bytes[index] != b'[' {
+            index += 1;
+            continue;
+        }
+        let mut end = index + 1;
+        let digits_start = end;
+        while end < bytes.len() && bytes[end].is_ascii_digit() {
+            end += 1;
+        }
+        if end > digits_start && end < bytes.len() && bytes[end] == b']' {
+            if let Ok(number) = text[digits_start..end].parse::<u32>() {
+                markers.push((index, number));
+            }
+            index = end + 1;
+        } else {
+            index += 1;
+        }
+    }
+    markers
 }
 
 fn split_pdf_text(text: &str) -> Vec<String> {
@@ -1105,6 +1212,90 @@ mod tests {
     }
 
     #[test]
+    fn lightning_splits_long_text_within_its_prompt_budget() {
+        let text = "This is a sentence about PDF translation stability. ".repeat(80);
+        let chunks = split_pdf_text_for_lightning(&text);
+
+        assert!(chunks.len() > 1);
+        assert!(chunks
+            .iter()
+            .all(|chunk| estimate_prompt_tokens(chunk) <= LIGHTNING_HARD_PROMPT_TOKENS));
+    }
+
+    #[test]
+    fn lightning_splits_consecutive_reference_entries_before_translation() {
+        let source = concat!(
+            ": Squeeze-enhanced axial transformer for mobile visual recognition. ",
+            "International Journal of Computer Vision, pages 1-22, 2025. 6 ",
+            "[44] Haoyang Wang et al. Wcg-vmamba. 2 ",
+            "[45] Qianning Wang et al. Insectmamba. 3 ",
+            "[46] Xiaoping Wu et al. Ip102. 6, 7 ",
+            "[47] Chengjun Xie et al. Automatic classification. 6 ",
+            "[48] Fei Xie et al. Quadmamba. 4 ",
+            "[49] Saining Xie, Ross Girshick, Piotr Doll"
+        );
+        let chunks = split_pdf_text_for_lightning(source);
+
+        assert_eq!(chunks.len(), 7);
+        assert!(chunks[0].starts_with(": Squeeze-enhanced"));
+        for (offset, chunk) in chunks.iter().skip(1).enumerate() {
+            assert!(chunk.starts_with(&format!("[{}]", 44 + offset)));
+        }
+    }
+
+    #[test]
+    fn prose_citations_do_not_trigger_reference_list_splitting() {
+        let source = "Prior work [2] introduced the task, while [8] and [19] improved it.";
+
+        assert_eq!(split_reference_entries(source), vec![source.to_string()]);
+    }
+
+    #[test]
+    fn adjacent_inline_citations_do_not_trigger_reference_list_splitting() {
+        let source = "The baselines [1] and [2] use different visual encoders.";
+
+        assert_eq!(split_reference_entries(source), vec![source.to_string()]);
+    }
+
+    #[test]
+    fn lightning_splits_two_long_consecutive_reference_entries() {
+        let source = concat!(
+            "A continuation from the previous reference. ",
+            "[50] Zhiwen Yang, Jiayin Li, Hui Zhang, Dan Zhao, Bingzheng Wei, and Yan Xu. ",
+            "Restore-rwkv: Efficient and effective medical image restoration with rwkv. 2, 3, 5 ",
+            "[51] Haobo Yuan, Xiangtai Li, Lu Qi, Tao Zhang, Ming-Hsuan Yang, Shuicheng Yan, ",
+            "and Chen Change Loy. Mamba or rwkv: Exploring efficient segmentation models."
+        );
+        let chunks = split_reference_entries(source);
+
+        assert_eq!(chunks.len(), 3);
+        assert!(chunks[0].starts_with("A continuation"));
+        assert!(chunks[1].starts_with("[50]"));
+        assert!(chunks[2].starts_with("[51]"));
+    }
+
+    #[test]
+    fn trivial_pdf_fragments_bypass_the_translation_provider() {
+        let units = [
+            unit("number", "2."),
+            unit("letters", "el"),
+            unit("colon", ":"),
+            unit("period", "."),
+        ];
+        let prepared = prepare_lightning_chunks(&units);
+
+        assert!(prepared.chunks.is_empty());
+        let output = build_unit_outputs(&units, &prepared, &[], "zh-CN").expect("build output");
+        assert_eq!(
+            output
+                .iter()
+                .map(|translation| translation.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["2.", "el", ":", "."]
+        );
+    }
+
+    #[test]
     fn split_retry_budget_breaks_medium_chunks_more_aggressively() {
         let text = &"Alpha beta gamma delta epsilon zeta eta theta. ".repeat(4);
         assert_eq!(split_pdf_text(text).len(), 1);
@@ -1236,18 +1427,18 @@ mod tests {
             .map(|chunk| chunk.text.as_str())
             .collect::<Vec<_>>();
 
-        assert_eq!(chunk_texts, vec!["Alpha", "beta", "."]);
+        assert_eq!(chunk_texts, vec!["Alpha", "beta"]);
         assert!(chunk_texts.iter().all(|chunk| !chunk.contains("{v")));
 
         let output = build_unit_outputs(
             &[unit("a", "Alpha {v0} beta {v12}.")],
             &prepared,
-            &["甲".to_string(), "乙".to_string(), "。".to_string()],
+            &["甲".to_string(), "乙".to_string()],
             "zh-CN",
         )
         .expect("build output");
 
-        assert_eq!(output[0].text, "甲{v0}乙{v12}。");
+        assert_eq!(output[0].text, "甲{v0}乙{v12}.");
     }
 
     #[test]
@@ -1373,7 +1564,7 @@ mod tests {
             .iter()
             .filter_map(|part| match part {
                 UnitPlanPart::Text(indices) => Some(indices.clone()),
-                UnitPlanPart::Placeholder(_) => None,
+                UnitPlanPart::Placeholder(_) | UnitPlanPart::Literal(_) => None,
             })
             .flatten()
             .collect()

@@ -41,9 +41,38 @@ const WORKER_SCRIPT: &str = include_str!("rosetta_pdf2zh_worker.py");
 /// First spawn includes Python imports and ONNX layout warmup; be generous.
 const READY_TIMEOUT: Duration = Duration::from_secs(300);
 
+fn sanitize_python_environment(command: &mut Command) {
+    command.env_remove("PYTHONHOME").env_remove("PYTHONPATH");
+    #[cfg(target_os = "linux")]
+    command.env_remove("LD_LIBRARY_PATH");
+}
+
 #[cfg(test)]
 mod tests {
-    use super::WORKER_SCRIPT;
+    use super::{sanitize_python_environment, WORKER_SCRIPT};
+    use tokio::process::Command;
+
+    #[test]
+    fn worker_clears_packaged_app_python_environment() {
+        let mut command = Command::new("python");
+        command
+            .env("PYTHONHOME", "/tmp/app/usr")
+            .env("PYTHONPATH", "/tmp/app/usr/lib/python3.12");
+        #[cfg(target_os = "linux")]
+        command.env("LD_LIBRARY_PATH", "/tmp/app/usr/lib");
+
+        sanitize_python_environment(&mut command);
+
+        let removed = command
+            .as_std()
+            .get_envs()
+            .filter_map(|(key, value)| value.is_none().then(|| key.to_string_lossy().into_owned()))
+            .collect::<Vec<_>>();
+        assert!(removed.iter().any(|key| key == "PYTHONHOME"));
+        assert!(removed.iter().any(|key| key == "PYTHONPATH"));
+        #[cfg(target_os = "linux")]
+        assert!(removed.iter().any(|key| key == "LD_LIBRARY_PATH"));
+    }
 
     #[test]
     fn persistent_worker_never_enters_job_output_directory() {
@@ -80,6 +109,15 @@ mod tests {
             WORKER_SCRIPT.contains("\"capabilities\": capabilities"),
             "startup must report the PDF engine contract version and prewarm timings"
         );
+    }
+
+    #[test]
+    fn worker_reuses_only_resettable_prepared_windows_and_reports_timings() {
+        assert!(WORKER_SCRIPT.contains("callable(reset_run)"));
+        assert!(WORKER_SCRIPT.contains("reset_run(active[\"preparedRunId\"])"));
+        assert!(WORKER_SCRIPT.contains("\"cacheHit\": cache_hit"));
+        assert!(WORKER_SCRIPT.contains("\"timingsMs\": timings"));
+        assert!(WORKER_SCRIPT.contains("dispose_active_prepare_cache(engine)"));
     }
 
     #[cfg(target_os = "windows")]
@@ -198,6 +236,20 @@ pub(crate) struct PreparedPdfRun {
 pub(crate) struct PreparedPdfWindow {
     pub prepared_run: PreparedPdfRun,
     pub units: Vec<PdfTranslationUnit>,
+    pub cache_hit: bool,
+    pub timings_ms: PdfPrepareTimings,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PdfPrepareTimings {
+    pub total: u64,
+    pub font_assets: u64,
+    pub prepare_document: u64,
+    pub layout: u64,
+    pub unit_collection: u64,
+    pub other: u64,
+    pub cache_reset: u64,
 }
 
 pub struct WorkerState {
@@ -320,6 +372,10 @@ struct WorkerEvent {
     prepared_run: Option<PreparedPdfRun>,
     #[serde(default)]
     units: Option<Vec<PdfTranslationUnit>>,
+    #[serde(default, rename = "cacheHit")]
+    cache_hit: Option<bool>,
+    #[serde(default, rename = "timingsMs")]
+    timings_ms: Option<PdfPrepareTimings>,
     #[serde(default, rename = "pageResult")]
     page_result: Option<PdfPageResult>,
     /// 1-based phase index on `warming` events emitted during the import
@@ -407,6 +463,7 @@ async fn spawn_worker(app: &AppHandle) -> Result<WorkerProcess, String> {
         .map_err(|error| format!("无法写入 worker 脚本: {error}"))?;
 
     let mut command = Command::new(&python);
+    sanitize_python_environment(&mut command);
     command
         .arg(&script_path)
         .current_dir(&worker_dir)
@@ -415,7 +472,6 @@ async fn spawn_worker(app: &AppHandle) -> Result<WorkerProcess, String> {
         .env("PYTHONUTF8", "1")
         .env("PYTHONIOENCODING", "utf-8")
         .env("PYTHONNOUSERSITE", "1")
-        .env("PYTHONPATH", "")
         .env("ROSETTA_DOCLAYOUT_MODEL", &doclayout_model)
         .env(
             "ROSETTA_BABELDOC_CACHE_DIR",
@@ -703,7 +759,12 @@ impl WorkerProcess {
                                 )
                             })?;
                             let units = event.units.unwrap_or_default();
-                            return Ok(PreparedPdfWindow { prepared_run, units });
+                            return Ok(PreparedPdfWindow {
+                                prepared_run,
+                                units,
+                                cache_hit: event.cache_hit.unwrap_or(false),
+                                timings_ms: event.timings_ms.unwrap_or_default(),
+                            });
                         }
                         "stage" if event.id.as_deref() == Some(job_id.as_str()) => {}
                         "error" if event.id.as_deref() == Some(job_id.as_str()) || event.id.is_none() => {

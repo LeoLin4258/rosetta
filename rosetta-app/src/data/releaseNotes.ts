@@ -34,6 +34,17 @@ export type ReleaseNote = {
  * appearing in `package.json` (e.g. `"0.1.0-beta.8"`), not semver tuples.
  */
 export const RELEASE_NOTES: Record<string, ReleaseNote> = {
+  "0.1.0-beta.21": {
+    version: "0.1.0-beta.21",
+    highlights: [
+      "首次提供 Ubuntu 24.04 或更新版本的 Linux x64 AppImage，并支持应用内更新",
+      "Linux NVIDIA 显卡优先使用 RWKV Lightning CUDA，本地批量翻译速度显著提升",
+      "Linux 可在线安装 PDF 版面处理组件，PDF 导入、翻译、预览和导出形成完整流程",
+      "PDF 导入后会在后台预解析并复用页面准备结果，重复翻译和整篇翻译等待更短",
+      "优化 PDF 文本切分和参考文献拆分，减少过长批次、碎片输入、漏译和重复生成",
+      "修复 AppImage 的 Python 环境隔离及关窗清理，退出后不再残留模型或 PDF 进程",
+    ],
+  },
   "0.1.0-beta.20": {
     version: "0.1.0-beta.20",
     highlights: [

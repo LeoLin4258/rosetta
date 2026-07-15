@@ -764,6 +764,84 @@ def prepare_pdf_document(input_path: Path, font_path: str, noto_name: str, bold_
         self.assertIn("selected_pages: list[int] | None = None", patched)
         self.assertIn("doc.insert_pdf(source_doc, from_page=page_number - 1, to_page=page_number - 1)", patched)
 
+    def test_patch_adds_pristine_prepared_run_reset_contract(self) -> None:
+        files = self.run_patch_for_package(
+            self.converter_with_bold_helpers(),
+            rosetta_engine_text="""from dataclasses import dataclass
+from pathlib import Path
+import pymupdf
+from babeldoc.assets.assets import get_font_and_metadata
+from pdf2zh.converter import TranslateConverter
+
+ENGINE_CONTRACT_VERSION = 2
+_PREPARED_RUNS: dict[str, "_PreparedState"] = {}
+
+@dataclass
+class _PreparedState:
+    doc: object
+
+def _bold_registration_marker(font_list, bold_font_path):
+    rosetta_bold_font_path = None
+    font_list.append(("notobold", bold_font_path))
+
+def prepareRun(inputPdf: str):
+    prepared_run_id = "prepared-1"
+    prepared_pdf_path = Path(inputPdf)
+    state = _PreparedState(doc=pymupdf.open(str(prepared_pdf_path)))
+    _PREPARED_RUNS[prepared_run_id] = state
+    return {"preparedRunId": prepared_run_id}
+
+def prepared_state(preparedRunId: str) -> _PreparedState:
+    return _PREPARED_RUNS[preparedRunId]
+
+def disposeRun(preparedRunId: str) -> None:
+    state = _PREPARED_RUNS.pop(preparedRunId, None)
+    if state is None:
+        return
+    state.doc.close()
+""",
+        )
+
+        patched = files["rosetta_engine"]
+        self.assertIn('_PRISTINE_PREPARED_PDFS: dict[str, bytes] = {}', patched)
+        self.assertIn(
+            "_PRISTINE_PREPARED_PDFS[prepared_run_id] = prepared_pdf_path.read_bytes()",
+            patched,
+        )
+        self.assertIn("def resetRun(preparedRunId: str) -> None:", patched)
+        self.assertIn("_PRISTINE_PREPARED_PDFS.pop(preparedRunId, None)", patched)
+
+        reset_start = patched.index("def resetRun(")
+        reset_end = patched.index("def disposeRun(", reset_start)
+
+        class FakeDoc:
+            def __init__(self, content: bytes):
+                self.content = content
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        class FakePymupdf:
+            @staticmethod
+            def open(*, stream: bytes, filetype: str):
+                self.assertEqual(filetype, "pdf")
+                return FakeDoc(stream)
+
+        old_doc = FakeDoc(b"mutated")
+        state = type("State", (), {"doc": old_doc})()
+        namespace = {
+            "pymupdf": FakePymupdf,
+            "prepared_state": lambda prepared_run_id: state,
+            "_PRISTINE_PREPARED_PDFS": {"prepared-1": b"pristine"},
+        }
+        exec(patched[reset_start:reset_end], namespace)
+        namespace["resetRun"]("prepared-1")
+
+        self.assertTrue(old_doc.closed)
+        self.assertEqual(state.doc.content, b"pristine")
+        self.assertFalse(state.doc.closed)
+
     def test_patch_filters_duplicate_text_layers_in_rosetta_engine(self) -> None:
         files = self.run_patch_for_package(
             self.converter_with_bold_helpers(),

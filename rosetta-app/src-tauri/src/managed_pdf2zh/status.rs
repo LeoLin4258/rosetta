@@ -61,8 +61,7 @@ impl StaticStatus {
             state: Pdf2zhState::Unsupported,
             install_plan: Pdf2zhInstallPlan {
                 ready: false,
-                message: "当前平台暂不支持自动处理 PDF 版面（v1 仅支持 macOS Apple Silicon）。"
-                    .to_string(),
+                message: "当前平台暂不支持自动处理 PDF 版面。".to_string(),
             },
         }
     }

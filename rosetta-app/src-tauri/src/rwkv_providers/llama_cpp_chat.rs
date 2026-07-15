@@ -534,6 +534,7 @@ fn log_llama_rwkv_io(
         status_code,
         ok,
         error,
+        request_body: None,
         inputs: inputs.to_vec(),
         outputs: translations.iter().map(String::as_str).collect(),
         raw_response,

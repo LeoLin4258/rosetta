@@ -210,6 +210,10 @@ impl PdfTranslationCancelState {
             })
             .unwrap_or(false)
     }
+
+    fn is_run_active(&self) -> bool {
+        self.run_active.load(Ordering::SeqCst)
+    }
 }
 
 impl Default for PdfTranslationCancelState {
@@ -1168,7 +1172,16 @@ fn pdf_run_chunk_size_for_provider(
     provider: &PdfUnitProviderConfig,
     pages_to_process: usize,
 ) -> usize {
-    if matches!(provider, PdfUnitProviderConfig::Lightning(_)) {
+    let provider_id = match provider {
+        PdfUnitProviderConfig::Lightning(_) => Some("rwkv-lightning-contents"),
+        PdfUnitProviderConfig::MobileBatch(_) => Some("rwkv-mobile-batch-chat"),
+        PdfUnitProviderConfig::LlamaCpp(_) => Some("llama-cpp-chat-completions"),
+    };
+    pdf_run_chunk_size_for_provider_id(provider_id, pages_to_process)
+}
+
+fn pdf_run_chunk_size_for_provider_id(provider_id: Option<&str>, pages_to_process: usize) -> usize {
+    if provider_id == Some("rwkv-lightning-contents") {
         if let Some(override_size) = std::env::var(LIGHTNING_PDF_RUN_CHUNK_SIZE_ENV)
             .ok()
             .and_then(|value| value.trim().parse::<usize>().ok())
@@ -1184,6 +1197,116 @@ fn pdf_run_chunk_size_for_provider(
         return LIGHTNING_PDF_RUN_CHUNK_SIZE_DEFAULT;
     }
     formats::pdf::run_state::PDF_RUN_CHUNK_SIZE
+}
+
+fn pdf_preparse_window_pages(selected_pages: &[u32], provider_id: Option<&str>) -> Vec<u32> {
+    let chunk_size = pdf_run_chunk_size_for_provider_id(provider_id, selected_pages.len());
+    selected_pages.iter().copied().take(chunk_size).collect()
+}
+
+#[tauri::command]
+pub async fn preparse_rosetta_pdf_pages(
+    app: AppHandle,
+    cancel_state: State<'_, PdfTranslationCancelState>,
+    job_id: String,
+    page_selection: String,
+    target_lang: String,
+    provider_id: Option<String>,
+    source_lang: Option<String>,
+) -> Result<serde_json::Value, String> {
+    use formats::pdf::{diagnostics, page_state, pdf2zh_invoke};
+
+    if cancel_state.is_run_active() {
+        return Ok(json!({
+            "status": "skipped",
+            "reason": "translation-active",
+        }));
+    }
+
+    let bundle = store::load_job_bundle(&app, &job_id)?;
+    if bundle.document.format != "pdf" {
+        return Err("当前文档不是 PDF，无法后台预解析。".to_string());
+    }
+
+    let source_path = store::cached_pdf_source_path(&app, &job_id)?;
+    let page_count =
+        formats::pdf::count_pages(&app, &source_path).map_err(|error| error.user_message())?;
+    let selected_pages = page_state::parse_pdf_page_selection(&page_selection, page_count)?;
+    let selected_page_count = selected_pages.len();
+    let pages = pdf_preparse_window_pages(&selected_pages, provider_id.as_deref());
+    let source_lang = source_lang
+        .filter(|lang| lang != "auto")
+        .or_else(|| {
+            bundle
+                .document
+                .files
+                .first()
+                .and_then(|file| file.source_lang.clone())
+        })
+        .unwrap_or_else(|| "en".to_string());
+    let root = path::jobs_root(&app)?;
+    let dir = path::checked_job_dir(&root, &job_id)?;
+
+    diagnostics::append_timeline_event(
+        &dir,
+        diagnostics::PdfTimelineEvent::new(&job_id, "preparse", "started")
+            .target_lang(&target_lang)
+            .details(json!({
+                "pages": &pages,
+                "selectedPageCount": selected_page_count,
+                "providerId": provider_id.as_deref().unwrap_or("default"),
+            })),
+    );
+
+    let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
+    let result = pdf2zh_invoke::preparse_pdf2zh(
+        &app,
+        &source_path,
+        pages.clone(),
+        &source_lang,
+        &target_lang,
+        cancel_rx,
+    )
+    .await;
+    drop(cancel_tx);
+
+    match result {
+        Ok(output) => {
+            diagnostics::append_timeline_event(
+                &dir,
+                diagnostics::PdfTimelineEvent::new(&job_id, "preparse", "completed")
+                    .target_lang(&target_lang)
+                    .duration_ms(output.warmup_ms)
+                    .details(json!({
+                        "pages": &pages,
+                        "cacheHit": output.cache_hit,
+                        "unitCount": output.unit_count,
+                        "timingsMs": &output.timings_ms,
+                    })),
+            );
+            Ok(json!({
+                "status": if output.cache_hit { "cached" } else { "prepared" },
+                "pages": pages,
+                "cacheHit": output.cache_hit,
+                "durationMs": output.warmup_ms,
+                "timingsMs": output.timings_ms,
+                "unitCount": output.unit_count,
+            }))
+        }
+        Err(error) => {
+            let message = error.user_message();
+            diagnostics::append_timeline_event(
+                &dir,
+                diagnostics::PdfTimelineEvent::new(&job_id, "preparse", "failed")
+                    .target_lang(&target_lang)
+                    .details(json!({
+                        "pages": &pages,
+                        "error": &message,
+                    })),
+            );
+            Err(message)
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1378,9 +1501,18 @@ async fn translate_pdf_pages_inner(
                     "pagesTranslated": profile.pages_translated,
                     "pagesFailed": profile.pages_failed,
                     "invocationCount": profile.invocation_count,
+                    "preparedCacheHits": profile.prepared_cache_hits,
+                    "renderCallCount": profile.render_call_count,
                     "durationsMs": {
                         "total": profile.durations_ms.total,
                         "pdf2zhWarmup": profile.durations_ms.pdf2zh_warmup,
+                        "pdfPrepareFontAssets": profile.durations_ms.pdf_prepare_font_assets,
+                        "pdfPrepareDocument": profile.durations_ms.pdf_prepare_document,
+                        "pdfLayout": profile.durations_ms.pdf_layout,
+                        "pdfUnitCollection": profile.durations_ms.pdf_unit_collection,
+                        "pdfPrepareOther": profile.durations_ms.pdf_prepare_other,
+                        "pdfPrepareCacheReset": profile.durations_ms.pdf_prepare_cache_reset,
+                        "pdfRender": profile.durations_ms.pdf_render,
                         "pdf2zhProcess": profile.durations_ms.pdf2zh_process,
                         "pageArtifactAssembly": profile.durations_ms.page_artifact_assembly,
                     },
@@ -1627,7 +1759,20 @@ async fn translate_pdf_pages_inner(
         match invoke_result {
             Ok(output) => {
                 profile.durations_ms.pdf2zh_warmup += output.warmup_ms;
+                profile.durations_ms.pdf_prepare_font_assets +=
+                    output.prepare_timings_ms.font_assets;
+                profile.durations_ms.pdf_prepare_document +=
+                    output.prepare_timings_ms.prepare_document;
+                profile.durations_ms.pdf_layout += output.prepare_timings_ms.layout;
+                profile.durations_ms.pdf_unit_collection +=
+                    output.prepare_timings_ms.unit_collection;
+                profile.durations_ms.pdf_prepare_other += output.prepare_timings_ms.other;
+                profile.durations_ms.pdf_prepare_cache_reset +=
+                    output.prepare_timings_ms.cache_reset;
+                profile.durations_ms.pdf_render += output.render_ms;
                 profile.durations_ms.pdf2zh_process += output.process_ms;
+                profile.prepared_cache_hits += u32::from(output.prepare_cache_hit);
+                profile.render_call_count += output.render_call_count;
                 diagnostics::append_timeline_event(
                     &dir,
                     diagnostics::PdfTimelineEvent::new(job_id, "translation", "chunk.completed")
@@ -1638,6 +1783,10 @@ async fn translate_pdf_pages_inner(
                             "chunkIndex": chunk_index,
                             "pages": chunk_pages.clone(),
                             "warmupMs": output.warmup_ms,
+                            "prepareCacheHit": output.prepare_cache_hit,
+                            "prepareTimingsMs": &output.prepare_timings_ms,
+                            "renderMs": output.render_ms,
+                            "renderCallCount": output.render_call_count,
                             "processMs": output.process_ms,
                             "rwkv": diagnostics::rwkv_snapshot_details(&output.rwkv_metrics),
                         })),

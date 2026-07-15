@@ -438,6 +438,7 @@ fn log_mobile_rwkv_io(
         status_code,
         ok,
         error,
+        request_body: None,
         inputs: inputs.iter().map(|text| text.as_ref()).collect(),
         outputs: translations.iter().map(String::as_str).collect(),
         raw_response,

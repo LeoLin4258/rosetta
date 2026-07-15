@@ -280,13 +280,21 @@ pub async fn start_sidecar(
         if let Some(lib_dir_name) = profile.runtime_library_dir_name {
             let lib_dir = sidecar_dir.join(lib_dir_name);
             if lib_dir.is_dir() {
-                eprintln!("[rwkv-lifecycle]   prepend PATH: {}", lib_dir.display());
-                let current_path = std::env::var_os("PATH").unwrap_or_default();
+                let library_path_variable = if cfg!(target_os = "linux") {
+                    "LD_LIBRARY_PATH"
+                } else {
+                    "PATH"
+                };
+                eprintln!(
+                    "[rwkv-lifecycle]   prepend {library_path_variable}: {}",
+                    lib_dir.display()
+                );
+                let current_path = std::env::var_os(library_path_variable).unwrap_or_default();
                 let mut paths = vec![lib_dir];
                 paths.extend(std::env::split_paths(&current_path));
                 let joined = std::env::join_paths(paths)
-                    .map_err(|error| format!("拼接 PATH 失败: {error}"))?;
-                command.env("PATH", joined);
+                    .map_err(|error| format!("拼接 {library_path_variable} 失败: {error}"))?;
+                command.env(library_path_variable, joined);
             }
         }
         command

@@ -1,7 +1,7 @@
-# Windows and macOS Release Checklist
+# Cross-Platform Release Checklist
 
-Rosetta releases Windows x64 and macOS Apple Silicon from the same `main`
-commit and version.
+Rosetta releases Windows x64, macOS Apple Silicon, and Linux x64 from the same
+`main` commit and version.
 
 Supabase Storage and `app_releases` are the only distribution channel for
 Rosetta application installers, updater artifacts, signatures, hashes, and
@@ -13,6 +13,7 @@ Platform packages are always produced natively:
 
 - build Windows only on the Windows release machine;
 - build macOS only on the Apple Silicon Mac;
+- build Linux only on the Linux x64 release machine;
 - do not cross-compile or package one platform from the other.
 
 ## Prepare
@@ -48,6 +49,7 @@ temporarily unavailable.
 
 - On Windows, follow [windows-release.md](windows-release.md).
 - On Apple Silicon, follow [macos-release.md](macos-release.md).
+- On Linux x64, follow [linux-release.md](linux-release.md).
 
 Upload both platform releases as unpublished rows first.
 
@@ -57,8 +59,10 @@ Upload both platform releases as unpublished rows first.
 2. Test the Windows in-app update and website download.
 3. Smoke test the unpublished macOS artifacts, then publish only its row.
 4. Test the macOS in-app update and website download.
-5. Verify updater requests for the current version return `204 No Content`.
-6. After both platform rows are published and verified, optionally create a
+5. Smoke test the unpublished Linux artifacts, then publish only its row.
+6. Test the Linux in-app update and website download.
+7. Verify updater requests for the current version return `204 No Content`.
+8. After all platform rows are published and verified, optionally create a
    source-code git tag. Do not create a GitHub Release or upload application
    installers to GitHub.
 

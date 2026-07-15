@@ -631,7 +631,7 @@ async fn request_translations(
             &url,
             source_lang,
             target_lang,
-            &body.contents,
+            &body,
             Some(status_code),
             false,
             Some("HTTP error"),
@@ -675,7 +675,7 @@ async fn request_translations(
                 &url,
                 source_lang,
                 target_lang,
-                &body.contents,
+                &body,
                 Some(status_code),
                 true,
                 None,
@@ -705,7 +705,7 @@ async fn request_translations(
                 &url,
                 source_lang,
                 target_lang,
-                &body.contents,
+                &body,
                 Some(status_code),
                 false,
                 Some(error),
@@ -1016,7 +1016,7 @@ async fn request_translations_for_language_pair_with_cancel(
             &url,
             source_lang,
             target_lang,
-            &body.contents,
+            &body,
             Some(status_code),
             false,
             Some("HTTP error"),
@@ -1060,7 +1060,7 @@ async fn request_translations_for_language_pair_with_cancel(
                 &url,
                 source_lang,
                 target_lang,
-                &body.contents,
+                &body,
                 Some(status_code),
                 true,
                 None,
@@ -1090,7 +1090,7 @@ async fn request_translations_for_language_pair_with_cancel(
                 &url,
                 source_lang,
                 target_lang,
-                &body.contents,
+                &body,
                 Some(status_code),
                 false,
                 Some(error),
@@ -1166,7 +1166,7 @@ fn log_lightning_rwkv_io(
     endpoint: &str,
     source_lang: &str,
     target_lang: &str,
-    inputs: &[String],
+    request: &RwkvChatCompletionsRequest,
     status_code: Option<u16>,
     ok: bool,
     error: Option<&str>,
@@ -1176,6 +1176,7 @@ fn log_lightning_rwkv_io(
     if !crate::rwkv_io_debug::enabled() {
         return;
     }
+    let request_body = lightning_debug_request_body(request);
     crate::rwkv_io_debug::log_record(crate::rwkv_io_debug::RwkvIoDebugRecord {
         provider: "rwkv-lightning-contents",
         context: debug_context,
@@ -1185,10 +1186,24 @@ fn log_lightning_rwkv_io(
         status_code,
         ok,
         error,
-        inputs: inputs.iter().map(String::as_str).collect(),
+        request_body,
+        inputs: request.contents.iter().map(String::as_str).collect(),
         outputs: translations.iter().map(String::as_str).collect(),
         raw_response,
     });
+}
+
+fn lightning_debug_request_body(request: &RwkvChatCompletionsRequest) -> Option<serde_json::Value> {
+    let mut request_body = serde_json::to_value(request).ok();
+    if !request.password.is_empty() {
+        if let Some(password) = request_body
+            .as_mut()
+            .and_then(|body| body.get_mut("password"))
+        {
+            *password = serde_json::Value::String("[redacted]".to_string());
+        }
+    }
+    request_body
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2493,6 +2508,22 @@ mod tests {
         assert_eq!(value["alpha_decay"], json!(0.99));
         assert_eq!(value["stream"], json!(false));
         assert_eq!(value["password"], json!("model-password"));
+    }
+
+    #[test]
+    fn io_debug_request_body_preserves_parameters_and_redacts_password() {
+        let source_texts = vec!["Hello world.".to_string()];
+        let request =
+            build_chat_completions_request(&source_texts, "model-password", "en", "zh-CN");
+        let value = lightning_debug_request_body(&request).expect("request should serialize");
+
+        assert_eq!(
+            value["contents"],
+            json!(["English: Hello world.\n\nChinese:"])
+        );
+        assert_eq!(value["max_tokens"], json!(1024));
+        assert_eq!(value["top_k"], json!(1));
+        assert_eq!(value["password"], json!("[redacted]"));
     }
 
     #[test]

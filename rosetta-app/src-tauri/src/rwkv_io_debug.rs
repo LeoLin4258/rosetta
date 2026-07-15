@@ -35,7 +35,7 @@ pub(crate) fn init() {
         .truncate(true)
         .open(&log_path);
     eprintln!(
-        "[rwkv-io-debug] enabled by {DEBUG_ENV}; writing full RWKV inputs/outputs to {}",
+        "[rwkv-io-debug] enabled by {DEBUG_ENV}; writing full RWKV request bodies and responses to {} (secrets are redacted)",
         log_path.display()
     );
 }
@@ -61,6 +61,7 @@ pub(crate) struct RwkvIoDebugRecord<'a> {
     pub status_code: Option<u16>,
     pub ok: bool,
     pub error: Option<&'a str>,
+    pub request_body: Option<serde_json::Value>,
     pub inputs: Vec<&'a str>,
     pub outputs: Vec<&'a str>,
     pub raw_response: Option<&'a str>,
@@ -78,6 +79,7 @@ struct SerializableRwkvIoDebugRecord<'a> {
     status_code: Option<u16>,
     ok: bool,
     error: Option<&'a str>,
+    request_body: Option<serde_json::Value>,
     inputs: Vec<&'a str>,
     outputs: Vec<&'a str>,
     raw_response: Option<&'a str>,
@@ -111,6 +113,7 @@ pub(crate) fn log_record(record: RwkvIoDebugRecord<'_>) {
         status_code: record.status_code,
         ok: record.ok,
         error: record.error,
+        request_body: record.request_body,
         inputs: record.inputs,
         outputs: record.outputs,
         raw_response: record.raw_response,

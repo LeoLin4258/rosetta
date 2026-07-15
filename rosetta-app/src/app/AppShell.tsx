@@ -26,13 +26,15 @@ import {
   type Pdf2zhWorkerStatus,
 } from "@/lib/pdf2zhRuntime";
 import { selectManagedRuntimeProfileStatus } from "@/lib/managedRuntimeSelection";
+import {
+  desktopPlatform,
+  desktopPlatformClass,
+  isMacPlatform,
+} from "@/lib/desktopPlatform";
 import { getManagedRwkvRuntimeStatus, startManagedRwkvRuntime } from "@/lib/rwkvRuntime";
 import { useMenuEvents } from "@/lib/useMenuEvents";
 import { useRosettaStore } from "@/store/useRosettaStore";
 import { cn } from "@/lib/utils";
-
-const isMacPlatform =
-  typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/.test(navigator.platform);
 
 const pageTitles: Record<string, string> = {
   "/settings": "设置",
@@ -532,9 +534,9 @@ export function AppShell() {
     <TooltipProvider>
       <div
         className={cn(
-          "flex h-screen flex-col bg-transparent text-foreground",
-          isMacPlatform && "rosetta-macos",
-          !isMacPlatform && "rosetta-windows",
+          "flex h-screen flex-col text-foreground",
+          desktopPlatform === "linux" ? "bg-background" : "bg-transparent",
+          desktopPlatformClass,
           isDark && "dark"
         )}
       >

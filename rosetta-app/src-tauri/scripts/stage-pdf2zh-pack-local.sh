@@ -4,7 +4,8 @@
 # This is a dogfood/staging helper, not the final downloadable release-pack
 # builder. It creates the path that `managed_pdf2zh` already probes:
 #
-#   ~/Library/Application Support/com.rosetta.desktop/pdf2zh-sidecar/pack/macos-arm64/bin/pdf2zh
+#   macOS: ~/Library/Application Support/com.rosetta.desktop/pdf2zh-sidecar/pack/macos-arm64/bin/pdf2zh
+#   Linux: ~/.local/share/com.rosetta.desktop/pdf2zh-sidecar/pack/linux-x64/bin/pdf2zh
 #
 # The pack ships a relocatable CPython (python-build-standalone "install_only"
 # variant), NOT a `python -m venv` of the developer's system Python. A venv
@@ -32,8 +33,6 @@ PDF2ZH_VERSION="${PDF2ZH_VERSION:-1.9.11}"
 PDF2ZH_SOURCE_PATH="${PDF2ZH_SOURCE_PATH:-}"
 PBS_RELEASE="${PBS_RELEASE:-20260602}"
 PBS_PYTHON_VERSION="${PBS_PYTHON_VERSION:-3.12.13}"
-PBS_DEFAULT_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_RELEASE}/cpython-${PBS_PYTHON_VERSION}+${PBS_RELEASE}-aarch64-apple-darwin-install_only.tar.gz"
-PBS_TARBALL_URL="${PBS_TARBALL_URL:-$PBS_DEFAULT_URL}"
 DOCLAYOUT_MODEL_FILENAME="doclayout_yolo_docstructbench_imgsz1024.onnx"
 DOCLAYOUT_MODEL_URL="${DOCLAYOUT_MODEL_URL:-https://huggingface.co/wybxc/DocLayout-YOLO-DocStructBench-onnx/resolve/main/$DOCLAYOUT_MODEL_FILENAME?download=true}"
 DOCLAYOUT_MODEL_FILE="${DOCLAYOUT_MODEL_FILE:-}"
@@ -42,10 +41,25 @@ APP_ID="${ROSETTA_APP_ID:-com.rosetta.desktop}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROSETTA_APP_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-if [[ "$(uname -s)-$(uname -m)" != "Darwin-arm64" ]]; then
-  echo "::error::local pdf2zh pack staging currently supports macOS arm64 only" >&2
-  exit 2
-fi
+case "$(uname -s)-$(uname -m)" in
+  Darwin-arm64)
+    PLATFORM_DIR="macos-arm64"
+    PBS_TARGET="aarch64-apple-darwin"
+    APP_DATA_ROOT="$HOME/Library/Application Support/$APP_ID"
+    ;;
+  Linux-x86_64)
+    PLATFORM_DIR="linux-x64"
+    PBS_TARGET="x86_64-unknown-linux-gnu"
+    APP_DATA_ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/$APP_ID"
+    ;;
+  *)
+    echo "::error::local pdf2zh pack staging supports macOS arm64 and Linux x86_64" >&2
+    exit 2
+    ;;
+esac
+
+PBS_DEFAULT_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_RELEASE}/cpython-${PBS_PYTHON_VERSION}+${PBS_RELEASE}-${PBS_TARGET}-install_only.tar.gz"
+PBS_TARBALL_URL="${PBS_TARBALL_URL:-$PBS_DEFAULT_URL}"
 
 if [[ -z "$PDF2ZH_SOURCE_PATH" ]]; then
   PDF2ZH_SOURCE_PATH="$(cd "$ROSETTA_APP_DIR/../.." && pwd)/PDFMathTranslate"
@@ -56,7 +70,7 @@ if [[ ! -f "$PDF2ZH_SOURCE_PATH/pyproject.toml" ]]; then
   exit 1
 fi
 
-PACK_ROOT="${ROSETTA_PDF2ZH_PACK_DIR:-$HOME/Library/Application Support/$APP_ID/pdf2zh-sidecar/pack/macos-arm64}"
+PACK_ROOT="${ROSETTA_PDF2ZH_PACK_DIR:-$APP_DATA_ROOT/pdf2zh-sidecar/pack/$PLATFORM_DIR}"
 PYTHON_DIR="$PACK_ROOT/python"
 BIN_DIR="$PACK_ROOT/bin"
 MODELS_DIR="$PACK_ROOT/models"
@@ -64,6 +78,7 @@ BABELDOC_CACHE_DIR="$PACK_ROOT/assets/babeldoc"
 
 echo "[pdf2zh-pack] staging PDFMathTranslate fork into:" >&2
 echo "  $PACK_ROOT" >&2
+echo "[pdf2zh-pack] platform: $PLATFORM_DIR" >&2
 echo "[pdf2zh-pack] source: $PDF2ZH_SOURCE_PATH" >&2
 echo "[pdf2zh-pack] version label: $PDF2ZH_VERSION" >&2
 echo "[pdf2zh-pack] PBS python: $PBS_PYTHON_VERSION (release $PBS_RELEASE)" >&2

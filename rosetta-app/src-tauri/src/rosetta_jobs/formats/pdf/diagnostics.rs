@@ -36,6 +36,10 @@ pub(crate) struct PdfTranslationProfile {
     pub durations_ms: PdfTranslationDurations,
     /// Number of pdf2zh process invocations in this run.
     pub invocation_count: u32,
+    /// Number of invocations that reused the worker's active prepared PDF.
+    pub prepared_cache_hits: u32,
+    /// Number of page-window render calls made to the worker.
+    pub render_call_count: u32,
     /// Aggregated RWKV request stats across all invocations. `None` when the
     /// run was cancelled/failed before any invocation finished.
     pub rwkv: Option<RwkvAggregate>,
@@ -46,9 +50,16 @@ pub(crate) struct PdfTranslationProfile {
 pub(crate) struct PdfTranslationDurations {
     /// Wall time of the whole command.
     pub total: u64,
-    /// Sum of per-invocation warmup (status resolution, shim spawn, role
-    /// setup, process spawn).
+    /// Sum of per-invocation PDF prepare wall time, including worker protocol
+    /// overhead and cache reset time.
     pub pdf2zh_warmup: u64,
+    pub pdf_prepare_font_assets: u64,
+    pub pdf_prepare_document: u64,
+    pub pdf_layout: u64,
+    pub pdf_unit_collection: u64,
+    pub pdf_prepare_other: u64,
+    pub pdf_prepare_cache_reset: u64,
+    pub pdf_render: u64,
     /// Sum of per-invocation pdf2zh process wall time (parse + layout +
     /// translate + render). RWKV time happens inside this window; subtract
     /// `rwkv.totalRequestMs` for a lower bound on pure PDF processing.
@@ -153,6 +164,8 @@ pub(crate) fn new_profile(
         ended_at: String::new(),
         durations_ms: PdfTranslationDurations::default(),
         invocation_count: 0,
+        prepared_cache_hits: 0,
+        render_call_count: 0,
         rwkv: None,
     }
 }

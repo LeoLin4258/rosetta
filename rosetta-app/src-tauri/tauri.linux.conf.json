@@ -1,0 +1,41 @@
+{
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Rosetta",
+        "width": 1280,
+        "height": 780,
+        "minWidth": 960,
+        "minHeight": 640,
+        "decorations": false,
+        "shadow": true,
+        "transparent": false,
+        "visible": false
+      },
+      {
+        "label": "onboarding",
+        "title": "Welcome to Rosetta",
+        "width": 720,
+        "height": 560,
+        "resizable": false,
+        "maximizable": false,
+        "minimizable": true,
+        "center": true,
+        "decorations": false,
+        "shadow": true,
+        "transparent": false,
+        "visible": false
+      }
+    ]
+  },
+  "bundle": {
+    "targets": [
+      "appimage"
+    ],
+    "createUpdaterArtifacts": false,
+    "resources": [
+      "resources/pdf-sidecar/pdfium/*/*"
+    ]
+  }
+}

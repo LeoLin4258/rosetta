@@ -229,6 +229,94 @@ pub const WINDOWS_AMD64_LLAMACPP_VULKAN: RuntimeProfile = RuntimeProfile {
     bind_host: "127.0.0.1",
 };
 
+/// Linux x64 llama.cpp Vulkan profile for development and hardware testing.
+///
+/// The runtime is staged locally by `stage-llamacpp-linux-local.sh` until a
+/// distributable Linux runtime pack is published. The GGUF is identical to
+/// the Windows Vulkan profile, so provider behavior stays platform-neutral.
+#[allow(dead_code)]
+pub const LINUX_X64_LLAMACPP_VULKAN: RuntimeProfile = RuntimeProfile {
+    id: "linux-x64-llamacpp-vulkan",
+    provider_id: "llama-cpp-chat-completions",
+    platform_os: "linux",
+    platform_arch: "x86_64",
+    runtime_label: "llama.cpp Vulkan",
+    hardware_requirement: "Vulkan-capable GPU or CPU fallback",
+    recommended: true,
+    runtime_warning: None,
+    enabled: true,
+    backend: "vulkan",
+    launch_kind: RuntimeLaunchKind::LlamaCppServer,
+    sidecar_binary_name: "llama-server",
+    managed_runtime_directory_name: Some("llama-cpp-vulkan-b9775-linux-x64"),
+    runtime_archive_filename: None,
+    runtime_archive_size_bytes: None,
+    runtime_archive_sha256: None,
+    runtime_download_urls: &[],
+    runtime_library_dir_name: None,
+    tokenizer_filename: "",
+    model_directory_name: "rwkv7-g1d-0.4b-translate-gguf-q8",
+    model_filename: "RWKV_v7_G1d_0.4B_Translate_ctx4096_20260607-Q8_0.gguf",
+    model_is_zip: false,
+    model_size_bytes: 501_498_208,
+    model_sha256: "f0f1c64455d075236df309457e4730fe763489e5fc8c038ce3f29d9963dec96b",
+    model_download_urls: &[
+        "https://modelscope.cn/models/RWKV/rwkv-mobile-models/resolve/master/gguf/RWKV_v7_G1d_0.4B_Translate_ctx4096_20260607-Q8_0.gguf",
+        "https://aifasthub.com/mollysama/rwkv-mobile-models/resolve/main/gguf/RWKV_v7_G1d_0.4B_Translate_ctx4096_20260607-Q8_0.gguf?download=true",
+        "https://hf-mirror.com/mollysama/rwkv-mobile-models/resolve/main/gguf/RWKV_v7_G1d_0.4B_Translate_ctx4096_20260607-Q8_0.gguf?download=true",
+        "https://huggingface.co/mollysama/rwkv-mobile-models/resolve/main/gguf/RWKV_v7_G1d_0.4B_Translate_ctx4096_20260607-Q8_0.gguf",
+    ],
+    supported_directions: &["en-zh", "zh-en"],
+    model_name_arg: "rwkv-translate",
+    health_path: "/v1/models",
+    batch_chat_path: "/completion",
+    bind_host: "127.0.0.1",
+};
+
+/// Linux x64 NVIDIA CUDA profile using the upstream V1.0.3 self-contained ZIP.
+#[allow(dead_code)]
+pub const LINUX_X64_CUDA: RuntimeProfile = RuntimeProfile {
+    id: "linux-x64-rwkv-lightning-cuda",
+    provider_id: "rwkv-lightning-contents",
+    platform_os: "linux",
+    platform_arch: "x86_64",
+    runtime_label: "RWKV Lightning NVIDIA CUDA",
+    hardware_requirement: "NVIDIA GPU, SM75 or newer",
+    recommended: true,
+    runtime_warning: None,
+    enabled: true,
+    backend: "cuda-openai",
+    launch_kind: RuntimeLaunchKind::LightningCuda,
+    sidecar_binary_name: "rwkv_lighting_cuda",
+    managed_runtime_directory_name: Some("rwkv-lightning-cuda-sm75-gcc15-v1.0.3-linux-x64"),
+    runtime_archive_filename: Some("RWKV_lightning_CUDA_sm75+_Linux_GCC15_V1.0.3.zip"),
+    runtime_archive_size_bytes: Some(430_509_983),
+    runtime_archive_sha256: Some(
+        "403c34ddaa52661f3cd9d20bb4d4995036978bc0b8b0bf9119360a1655d21005",
+    ),
+    runtime_download_urls: &[
+        "https://githubdog.com/https://github.com/Alic-Li/rwkv_lightning_cuda/releases/download/V1.0.3/RWKV_lightning_CUDA_sm75+_Linux_GCC15_V1.0.3.zip",
+        "https://github.com/Alic-Li/rwkv_lightning_cuda/releases/download/V1.0.3/RWKV_lightning_CUDA_sm75+_Linux_GCC15_V1.0.3.zip",
+    ],
+    runtime_library_dir_name: Some("lib"),
+    tokenizer_filename: "rwkv_vocab_v20230424.txt",
+    model_directory_name: "rwkv7-0.4b-translate-pth",
+    model_filename: "RWKV_v7_G1d_0.4B_Translate_ctx4096_20260607.pth",
+    model_is_zip: false,
+    model_size_bytes: 901_775_740,
+    model_sha256: "b9a1b013c3a938515f8b9bc23c28d815fa6f839eef77a943e92e7e70d35a0527",
+    model_download_urls: &[
+        "https://hf-mirror.com/Alic-Li/RWKV_v7_G1_Translate/resolve/main/RWKV_v7_G1d_0.4B_Translate_ctx4096_20260607.pth",
+        "https://modelscope.cn/models/AlicLi/RWKV_v7_G1_Translate/resolve/master/RWKV_v7_G1d_0.4B_Translate_ctx4096_20260607.pth",
+        "https://huggingface.co/Alic-Li/RWKV_v7_G1_Translate/resolve/main/RWKV_v7_G1d_0.4B_Translate_ctx4096_20260607.pth",
+    ],
+    supported_directions: &["en-zh", "zh-en"],
+    model_name_arg: "rwkv-translate",
+    health_path: "/v1/models",
+    batch_chat_path: "/v1/batch/completions",
+    bind_host: "127.0.0.1",
+};
+
 /// Windows NVIDIA CUDA profile.
 #[allow(dead_code)]
 pub const WINDOWS_AMD64_CUDA: RuntimeProfile = RuntimeProfile {
@@ -276,7 +364,7 @@ pub const WINDOWS_AMD64_CUDA: RuntimeProfile = RuntimeProfile {
 };
 
 /// Returns the profile valid for the current host, or `None` when the
-/// platform is unsupported (e.g. Intel Mac or Linux).
+/// platform is unsupported (e.g. Intel Mac or Linux on a non-x64 host).
 pub fn current_profile() -> Option<&'static RuntimeProfile> {
     // Match against the *runtime* OS+ARCH so a single Rosetta build can
     // honestly report "unsupported" on Intel Macs / non-macOS hosts instead
@@ -353,6 +441,8 @@ const ALL_PROFILES: &[RuntimeProfile] = &[
     MACOS_ARM64_WEBRWKV,
     WINDOWS_AMD64_LLAMACPP_VULKAN,
     WINDOWS_AMD64_CUDA,
+    LINUX_X64_CUDA,
+    LINUX_X64_LLAMACPP_VULKAN,
 ];
 
 #[cfg(test)]
@@ -402,6 +492,53 @@ mod tests {
             .iter()
             .any(|url| url.starts_with("https://github.com/")));
         assert!(!WINDOWS_AMD64_LLAMACPP_VULKAN.requires_tokenizer());
+    }
+
+    #[test]
+    fn linux_profile_is_locally_staged_llamacpp_vulkan() {
+        assert!(LINUX_X64_LLAMACPP_VULKAN.enabled);
+        assert!(LINUX_X64_LLAMACPP_VULKAN.recommended);
+        assert_eq!(LINUX_X64_LLAMACPP_VULKAN.platform_os, "linux");
+        assert_eq!(LINUX_X64_LLAMACPP_VULKAN.platform_arch, "x86_64");
+        assert_eq!(
+            LINUX_X64_LLAMACPP_VULKAN.launch_kind,
+            RuntimeLaunchKind::LlamaCppServer
+        );
+        assert_eq!(
+            LINUX_X64_LLAMACPP_VULKAN.provider_id,
+            "llama-cpp-chat-completions"
+        );
+        assert_eq!(
+            LINUX_X64_LLAMACPP_VULKAN.sidecar_binary_name,
+            "llama-server"
+        );
+        assert_eq!(LINUX_X64_LLAMACPP_VULKAN.bind_host, "127.0.0.1");
+        assert_eq!(LINUX_X64_LLAMACPP_VULKAN.batch_chat_path, "/completion");
+        assert_eq!(LINUX_X64_LLAMACPP_VULKAN.runtime_archive_filename, None);
+        assert!(LINUX_X64_LLAMACPP_VULKAN.runtime_download_urls.is_empty());
+        assert_eq!(
+            LINUX_X64_LLAMACPP_VULKAN.model_sha256,
+            WINDOWS_AMD64_LLAMACPP_VULKAN.model_sha256
+        );
+        assert!(!LINUX_X64_LLAMACPP_VULKAN.requires_tokenizer());
+    }
+
+    #[test]
+    fn linux_cuda_profile_uses_upstream_v103_loopback_contract() {
+        assert!(LINUX_X64_CUDA.enabled);
+        assert!(LINUX_X64_CUDA.recommended);
+        assert_eq!(LINUX_X64_CUDA.platform_os, "linux");
+        assert_eq!(LINUX_X64_CUDA.platform_arch, "x86_64");
+        assert_eq!(LINUX_X64_CUDA.launch_kind, RuntimeLaunchKind::LightningCuda);
+        assert_eq!(LINUX_X64_CUDA.provider_id, "rwkv-lightning-contents");
+        assert_eq!(LINUX_X64_CUDA.bind_host, "127.0.0.1");
+        assert_eq!(LINUX_X64_CUDA.runtime_library_dir_name, Some("lib"));
+        assert_eq!(
+            LINUX_X64_CUDA.runtime_archive_sha256,
+            Some("403c34ddaa52661f3cd9d20bb4d4995036978bc0b8b0bf9119360a1655d21005")
+        );
+        assert_eq!(LINUX_X64_CUDA.model_sha256, WINDOWS_AMD64_CUDA.model_sha256);
+        assert!(LINUX_X64_CUDA.requires_tokenizer());
     }
 
     #[test]
@@ -457,6 +594,10 @@ mod tests {
             ("windows", "x86_64") => assert!(
                 resolved.is_some_and(|p| p.id == "windows-amd64-llamacpp-vulkan"),
                 "expected Windows llama.cpp Vulkan profile"
+            ),
+            ("linux", "x86_64") => assert!(
+                resolved.is_some_and(|p| p.id == "linux-x64-rwkv-lightning-cuda"),
+                "expected Linux RWKV Lightning CUDA profile"
             ),
             _ => assert!(
                 resolved.is_none(),

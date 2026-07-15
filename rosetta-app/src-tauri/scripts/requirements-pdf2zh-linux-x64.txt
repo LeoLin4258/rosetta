@@ -1,0 +1,29 @@
+# Runtime-only dependencies for the Rosetta PDF worker on Linux x64.
+# pdf2zh itself is installed from the pinned Rosetta PDFMathTranslate fork
+# with --no-deps, so optional web UI/backend dependencies stay out of the pack.
+azure-ai-translation-text==1.0.1
+BabelDOC==0.2.33
+charset-normalizer==3.4.7
+cryptography==49.0.0
+deepl==1.30.0
+fonttools==4.63.0
+huggingface-hub==1.21.0
+numpy==2.5.0
+ollama==0.6.2
+onnx==1.22.0
+onnxruntime==1.27.0
+openai==2.44.0
+opencv-python-headless==4.13.0.92
+pdfminer-six==20250416
+peewee==4.1.1
+pikepdf==10.9.1
+pillow==11.3.0
+psutil==7.2.2
+pydantic==2.11.10
+PyMuPDF==1.25.2
+requests==2.34.2
+rich==15.0.0
+tenacity==9.1.4
+tencentcloud-sdk-python-tmt==3.1.121
+tqdm==4.68.3
+xinference-client==2.11.0

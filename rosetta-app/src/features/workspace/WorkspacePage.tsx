@@ -24,6 +24,7 @@ import {
   loadRosettaTranslationFile,
   pauseRosettaPdfRun,
   pickRosettaExportPath,
+  preparseRosettaPdfPages,
   translateRosettaPdfPages,
   updateTxtSourceFile,
 } from "@/lib/rosettaJobs";
@@ -119,6 +120,7 @@ export function WorkspacePage() {
   const pdfRunProgressByJobId = useRosettaStore((s) => s.pdfRunProgressByJobId);
 
   const cancelRef = useRef<(() => void) | null>(null);
+  const pdfPreparseIdentityRef = useRef<string | null>(null);
   const pdf2zhRuntime = useManagedPdf2zhRuntime();
 
   // Per-job language selections, with fallback to document default / global default
@@ -205,6 +207,14 @@ export function WorkspacePage() {
     rwkv.managedRuntimeProfileId
   );
   const managedRuntimeReady = isManagedRuntimeProfileReady(selectedRuntimeStatus);
+  const selectedProvider = selectProvider({
+    config: rwkv,
+    managedRuntimeReady,
+    managedRuntimeProviderId: selectedRuntimeStatus?.profile.providerId,
+    managedRuntimeBaseUrl: selectedRuntimeStatus?.process.baseUrl ?? undefined,
+    managedRuntimeEndpoint:
+      selectedRuntimeStatus?.profile.batchChatPath ?? undefined,
+  });
   const localRuntimeRequired = rwkv.providerPreference === "local";
   const localRuntimeUnavailable = localRuntimeRequired && !managedRuntimeReady;
   const localRuntimeStarting =
@@ -229,6 +239,62 @@ export function WorkspacePage() {
     if (!isPdfJob) return;
     void prewarmPdf2zhWorker().catch(() => {});
   }, [isPdfJob, activeJobId]);
+
+  // Prepare the first translation window after import or page-selection
+  // changes. Debouncing prevents checkbox sweeps from queuing obsolete layout
+  // work; the backend keeps this content-free and outside durable job state.
+  useEffect(() => {
+    if (
+      !isPdfJob ||
+      !activeJobId ||
+      pdfPageCount <= 0 ||
+      pdfSelectedPages.length === 0 ||
+      isTranslating ||
+      isTranslationBusyElsewhere ||
+      pdfEngineUnavailable
+    ) {
+      return;
+    }
+
+    const pages = normalizePdfPageNumbers(pdfSelectedPages, pdfPageCount);
+    if (pages.length === 0) return;
+    const pageSelection = formatPageSelection(pages);
+    const identity = [
+      activeJobId,
+      pageSelection,
+      sourceLang,
+      targetLang,
+      selectedProvider.id,
+    ].join("|");
+    if (pdfPreparseIdentityRef.current === identity) return;
+    const timer = window.setTimeout(() => {
+      void preparseRosettaPdfPages(activeJobId, {
+        pageSelection,
+        targetLang,
+        providerId: selectedProvider.id,
+        sourceLang,
+      })
+        .then((result) => {
+          if (result.status !== "skipped") {
+            pdfPreparseIdentityRef.current = identity;
+          }
+        })
+        .catch(() => {});
+    }, 750);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    activeJobId,
+    isPdfJob,
+    isTranslating,
+    isTranslationBusyElsewhere,
+    pdfEngineUnavailable,
+    pdfPageCount,
+    pdfSelectedPages,
+    selectedProvider.id,
+    sourceLang,
+    targetLang,
+  ]);
 
   useEffect(() => {
     if (!isPdfJob) return;
@@ -321,14 +387,7 @@ export function WorkspacePage() {
   );
 
   function buildProvider() {
-    return selectProvider({
-      config: rwkv,
-      managedRuntimeReady: isManagedRuntimeProfileReady(selectedRuntimeStatus),
-      managedRuntimeProviderId: selectedRuntimeStatus?.profile.providerId,
-      managedRuntimeBaseUrl: selectedRuntimeStatus?.process.baseUrl ?? undefined,
-      managedRuntimeEndpoint:
-        selectedRuntimeStatus?.profile.batchChatPath ?? undefined,
-    });
+    return selectedProvider;
   }
 
   function buildCancelPair(): [Promise<"stopped">, () => void] {

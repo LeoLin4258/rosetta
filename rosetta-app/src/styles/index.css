@@ -206,6 +206,11 @@
   color: var(--sidebar-foreground);
 }
 
+.rosetta-linux [data-slot="sidebar-inner"] {
+  background-color: var(--sidebar);
+  border-right: 1px solid var(--sidebar-border);
+}
+
 .rosetta-windows {
   --sidebar: oklch(0.9800 0.0020 264 / 18%);
   --sidebar-accent: oklch(0.9800 0.0040 264 / 14%);

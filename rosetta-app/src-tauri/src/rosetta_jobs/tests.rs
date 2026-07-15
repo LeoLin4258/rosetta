@@ -679,8 +679,26 @@ fn lightning_pdf_chunk_policy_keeps_only_short_runs_wide() {
         super::LIGHTNING_PDF_LARGE_RUN_CHUNK_SIZE,
     );
     assert_eq!(
+        super::pdf_run_chunk_size_for_provider_id(Some("rwkv-lightning-contents"), 30),
+        super::LIGHTNING_PDF_RUN_CHUNK_SIZE_DEFAULT,
+    );
+    assert_eq!(
+        super::pdf_preparse_window_pages(
+            &(1..=31).collect::<Vec<_>>(),
+            Some("rwkv-lightning-contents"),
+        ),
+        (1..=10).collect::<Vec<_>>(),
+    );
+    assert_eq!(
         super::pdf_run_chunk_size_for_provider(&llama, 400),
         PDF_RUN_CHUNK_SIZE,
+    );
+    assert_eq!(
+        super::pdf_preparse_window_pages(
+            &(1..=30).collect::<Vec<_>>(),
+            Some("llama-cpp-chat-completions"),
+        ),
+        (1..=10).collect::<Vec<_>>(),
     );
 
     if let Some(value) = original_override {

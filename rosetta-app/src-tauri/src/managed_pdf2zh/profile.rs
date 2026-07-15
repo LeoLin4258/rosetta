@@ -53,7 +53,26 @@ pub const WINDOWS_AMD64_PDF2ZH: Pdf2zhProfile = Pdf2zhProfile {
     ],
 };
 
-const ALL_PROFILES: &[Pdf2zhProfile] = &[MACOS_ARM64_PDF2ZH, WINDOWS_AMD64_PDF2ZH];
+/// Linux x64 release profile built from the pinned Rosetta PDFMathTranslate
+/// fork and a relocatable python-build-standalone runtime.
+pub const LINUX_X64_PDF2ZH: Pdf2zhProfile = Pdf2zhProfile {
+    id: "linux-x64-pdf2zh",
+    platform_os: "linux",
+    platform_arch: "x86_64",
+    enabled: true,
+    pack_directory_name: "linux-x64",
+    bin_relative_path: "bin/pdf2zh",
+    pack_filename: "rosetta-pdf2zh-linux-x64.tar.gz",
+    pack_size_bytes: Some(510_384_173),
+    pack_sha256: Some("4f71a0ea881f899d2c10a8a76874f453b4829840f8a1f36efcc19fde9bfd3f5d"),
+    pack_download_urls: &[
+        "https://githubdog.com/https://github.com/LeoLin4258/rosetta-assets/releases/download/pdf-layout-pack-linux-x64-v2026.07.14.1/rosetta-pdf2zh-linux-x64.tar.gz",
+        "https://github.com/LeoLin4258/rosetta-assets/releases/download/pdf-layout-pack-linux-x64-v2026.07.14.1/rosetta-pdf2zh-linux-x64.tar.gz",
+    ],
+};
+
+const ALL_PROFILES: &[Pdf2zhProfile] =
+    &[MACOS_ARM64_PDF2ZH, WINDOWS_AMD64_PDF2ZH, LINUX_X64_PDF2ZH];
 
 pub fn current_profile() -> Option<&'static Pdf2zhProfile> {
     let os = std::env::consts::OS;
@@ -85,7 +104,7 @@ impl Pdf2zhProfileSummary {
 
 #[cfg(test)]
 mod tests {
-    use super::{MACOS_ARM64_PDF2ZH, WINDOWS_AMD64_PDF2ZH};
+    use super::{current_profile, LINUX_X64_PDF2ZH, MACOS_ARM64_PDF2ZH, WINDOWS_AMD64_PDF2ZH};
 
     #[test]
     fn macos_pdf_pack_defaults_to_mainland_download_mirror() {
@@ -115,5 +134,35 @@ mod tests {
             .pack_download_urls
             .iter()
             .any(|url| url.starts_with("https://github.com/")));
+    }
+
+    #[test]
+    fn linux_profile_pins_the_release_pack() {
+        assert!(LINUX_X64_PDF2ZH.enabled);
+        assert_eq!(LINUX_X64_PDF2ZH.pack_directory_name, "linux-x64");
+        assert_eq!(LINUX_X64_PDF2ZH.bin_relative_path, "bin/pdf2zh");
+        assert_eq!(LINUX_X64_PDF2ZH.pack_size_bytes, Some(510_384_173));
+        assert_eq!(
+            LINUX_X64_PDF2ZH.pack_sha256,
+            Some("4f71a0ea881f899d2c10a8a76874f453b4829840f8a1f36efcc19fde9bfd3f5d")
+        );
+        assert!(LINUX_X64_PDF2ZH
+            .pack_download_urls
+            .first()
+            .is_some_and(|url| url.starts_with("https://githubdog.com/")));
+        assert!(LINUX_X64_PDF2ZH
+            .pack_download_urls
+            .iter()
+            .any(|url| url.starts_with("https://github.com/")));
+    }
+
+    #[test]
+    fn current_profile_resolves_linux_x64() {
+        if (std::env::consts::OS, std::env::consts::ARCH) == ("linux", "x86_64") {
+            assert_eq!(
+                current_profile().map(|profile| profile.id),
+                Some("linux-x64-pdf2zh")
+            );
+        }
     }
 }

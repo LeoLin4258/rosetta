@@ -19,8 +19,7 @@ pub struct HardwareSupport {
 }
 
 pub fn inspect(profile: &RuntimeProfile) -> HardwareSupport {
-    if profile.platform_os != "windows" || profile.launch_kind == RuntimeLaunchKind::LlamaCppServer
-    {
+    if profile.launch_kind != RuntimeLaunchKind::LightningCuda {
         return HardwareSupport {
             supported: true,
             gpu_name: None,
@@ -28,7 +27,7 @@ pub fn inspect(profile: &RuntimeProfile) -> HardwareSupport {
             message: profile.hardware_requirement.to_string(),
         };
     }
-    inspect_windows_nvidia()
+    inspect_nvidia(profile.platform_os)
 }
 
 pub fn ensure_supported(profile: &RuntimeProfile) -> Result<HardwareSupport, String> {
@@ -40,12 +39,13 @@ pub fn ensure_supported(profile: &RuntimeProfile) -> Result<HardwareSupport, Str
     }
 }
 
-fn inspect_windows_nvidia() -> HardwareSupport {
-    let Some(executable) = locate_nvidia_smi() else {
+fn inspect_nvidia(platform_os: &str) -> HardwareSupport {
+    let executable = locate_nvidia_smi(platform_os);
+    let Some(executable) = executable else {
         return unsupported(
             None,
             None,
-            "未检测到 NVIDIA 驱动。Windows 版 Rosetta 需要 NVIDIA GPU，且计算能力不低于 SM75。",
+            "未检测到 NVIDIA 驱动。RWKV Lightning 需要 NVIDIA GPU，且计算能力不低于 SM75。",
         );
     };
 
@@ -103,7 +103,7 @@ fn inspect_windows_nvidia() -> HardwareSupport {
             Some(name.clone()),
             Some(capability.clone()),
             format!(
-                "检测到 {name}（计算能力 {capability}），但 Windows 版 Rosetta 需要 SM75 或更新的 NVIDIA GPU。"
+                "检测到 {name}（计算能力 {capability}），但 RWKV Lightning 需要 SM75 或更新的 NVIDIA GPU。"
             ),
         );
     }
@@ -111,11 +111,17 @@ fn inspect_windows_nvidia() -> HardwareSupport {
     unsupported(
         None,
         None,
-        "未检测到可用的 NVIDIA CUDA GPU。Windows 版 Rosetta 仅支持 SM75 或更新的 NVIDIA GPU。",
+        "未检测到可用的 NVIDIA CUDA GPU。RWKV Lightning 仅支持 SM75 或更新的 NVIDIA GPU。",
     )
 }
 
-fn locate_nvidia_smi() -> Option<PathBuf> {
+fn locate_nvidia_smi(platform_os: &str) -> Option<PathBuf> {
+    if platform_os == "linux" {
+        return Some(PathBuf::from("nvidia-smi"));
+    }
+    if platform_os != "windows" {
+        return None;
+    }
     let fixed = [
         PathBuf::from(r"C:\Windows\System32\nvidia-smi.exe"),
         PathBuf::from(r"C:\Program Files\NVIDIA Corporation\NVSMI\nvidia-smi.exe"),

@@ -67,7 +67,9 @@ PDFIUM_SHA_mac_arm64="2b733774416de02482281c0abc7589b08dc908896ecef2bfc31a85c5b5
 # 2026-06-18.
 PDFIUM_SHA_mac_x64=""
 PDFIUM_SHA_win_x64="0abfacf8aacc919f98eff2c3efa2927c3dc9faf07e31f22558a1f1cf93809612"
-PDFIUM_SHA_linux_x64=""
+# Linux x64 was verified against the same chromium/7834 release on
+# 2026-07-13.
+PDFIUM_SHA_linux_x64="e10b18234af3e988b3021547786e574b8905a24511067f14773f29c9cac12365"
 
 # --- target layout -----------------------------------------------------------
 

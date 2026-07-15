@@ -173,11 +173,11 @@ pub fn run() {
             app.emit("rosetta-menu-event", payload).ok();
         })
         .on_window_event(|_window, _event| {
-            // Windows users expect closing the primary window to exit the
-            // application. Destroying only `main` leaves the pre-created
-            // onboarding/preview windows alive, so ExitRequested never runs
-            // and managed RWKV/PDF child processes remain in Task Manager.
-            #[cfg(target_os = "windows")]
+            // Windows and Linux users expect closing the primary window to
+            // exit the application. Destroying only `main` leaves the
+            // pre-created onboarding/preview windows alive, so ExitRequested
+            // never runs and managed RWKV/PDF child processes remain alive.
+            #[cfg(any(target_os = "windows", target_os = "linux"))]
             if let tauri::WindowEvent::CloseRequested { api, .. } = _event {
                 if _window.label() == "main" {
                     api.prevent_close();
@@ -241,6 +241,7 @@ pub fn run() {
             rosetta_jobs::get_rosetta_pdf_page_status,
             rosetta_jobs::get_rosetta_pdf_snapshot,
             rosetta_jobs::pause_rosetta_pdf_run,
+            rosetta_jobs::preparse_rosetta_pdf_pages,
             rosetta_jobs::pick_rosetta_export_path,
             rosetta_jobs::pick_rosetta_import_directory,
             rosetta_jobs::pick_rosetta_import_path,

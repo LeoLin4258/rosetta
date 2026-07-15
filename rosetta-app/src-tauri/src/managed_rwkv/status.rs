@@ -239,7 +239,7 @@ impl StaticStatus {
             install_plan: ManagedRuntimeInstallPlan {
                 ready: false,
                 items: Vec::new(),
-                message: "Current platform does not support managed RWKV runtime. Supported targets are macOS Apple Silicon and Windows x64 managed runtime profiles."
+                message: "Current platform does not support managed RWKV runtime. Supported targets are macOS Apple Silicon, Windows x64, and Linux x64 managed runtime profiles."
                     .to_string(),
             },
             hardware: HardwareSupport {

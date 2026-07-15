@@ -5,6 +5,7 @@
 //!
 //!   Windows: %APPDATA%/com.rosetta.desktop/logs/rosetta.log
 //!   macOS:   ~/Library/Application Support/com.rosetta.desktop/logs/rosetta.log
+//!   Linux:   $XDG_DATA_HOME/com.rosetta.desktop/logs/rosetta.log
 //!
 //! Old log files are rotated on startup: the previous run's log is renamed to
 //! `rosetta.prev.log` (one generation only — keeps disk use bounded).
@@ -65,7 +66,16 @@ pub fn logs_dir() -> Option<PathBuf> {
                 .join("logs")
         })
     }
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    {
+        std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share"))
+            })
+            .map(|data_dir| data_dir.join(APP_ID).join("logs"))
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {
         None
     }

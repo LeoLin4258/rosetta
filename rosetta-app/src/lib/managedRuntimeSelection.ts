@@ -6,6 +6,8 @@ import type {
 export const WINDOWS_LIGHTNING_PROFILE_ID =
   "windows-amd64-rwkv-lightning-cuda";
 export const WINDOWS_LLAMACPP_PROFILE_ID = "windows-amd64-llamacpp-vulkan";
+export const LINUX_LIGHTNING_PROFILE_ID = "linux-x64-rwkv-lightning-cuda";
+export const LINUX_LLAMACPP_PROFILE_ID = "linux-x64-llamacpp-vulkan";
 export const MACOS_MLX_PROFILE_ID = "macos-arm64-mlx";
 
 export function selectManagedRuntimeProfileStatus(
@@ -42,18 +44,30 @@ export function isManagedRuntimeProfileReady(
 function defaultManagedRuntimeProfileStatus(
   profileStatuses: ManagedRuntimeProfileStatus[]
 ): ManagedRuntimeProfileStatus | null {
-  const lightning = findProfile(profileStatuses, WINDOWS_LIGHTNING_PROFILE_ID);
+  const lightning = profileStatuses.find(isLightningProfile) ?? null;
   if (lightning?.hardware.supported) {
     return lightning;
   }
 
   return (
     findProfile(profileStatuses, MACOS_MLX_PROFILE_ID) ??
-    findProfile(profileStatuses, WINDOWS_LLAMACPP_PROFILE_ID) ??
+    profileStatuses.find(isLlamaCppProfile) ??
     profileStatuses.find((entry) => entry.state !== "unsupported") ??
     profileStatuses[0] ??
     null
   );
+}
+
+export function isLightningProfile(
+  status: ManagedRuntimeProfileStatus
+): boolean {
+  return status.profile.providerId === "rwkv-lightning-contents";
+}
+
+export function isLlamaCppProfile(
+  status: ManagedRuntimeProfileStatus
+): boolean {
+  return status.profile.providerId === "llama-cpp-chat-completions";
 }
 
 function findProfile(

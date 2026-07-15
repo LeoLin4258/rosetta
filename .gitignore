@@ -1,6 +1,10 @@
 # Dependencies
 node_modules/
 
+# Python bytecode
+__pycache__/
+*.py[cod]
+
 # Frontend build output
 dist/
 dist-ssr/

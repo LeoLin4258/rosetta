@@ -21,9 +21,9 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
+  isLightningProfile,
+  isLlamaCppProfile,
   selectManagedRuntimeProfileStatus,
-  WINDOWS_LIGHTNING_PROFILE_ID,
-  WINDOWS_LLAMACPP_PROFILE_ID,
 } from "@/lib/managedRuntimeSelection";
 import { ManagedRuntimeConnectivityPanel } from "@/features/runtime/ManagedRuntimeConnectivityPanel";
 import { cn } from "@/lib/utils";
@@ -612,16 +612,14 @@ function isRecommendedRuntimeProfile(
   profileStatuses: ManagedRuntimeProfileStatus[]
 ): boolean {
   const lightningAvailable = profileStatuses.some(
-    (entry) =>
-      entry.profile.id === WINDOWS_LIGHTNING_PROFILE_ID &&
-      entry.hardware.supported
+    (entry) => isLightningProfile(entry) && entry.hardware.supported
   );
 
-  if (status.profile.id === WINDOWS_LIGHTNING_PROFILE_ID) {
+  if (isLightningProfile(status)) {
     return status.hardware.supported;
   }
 
-  if (status.profile.id === WINDOWS_LLAMACPP_PROFILE_ID && lightningAvailable) {
+  if (isLlamaCppProfile(status) && lightningAvailable) {
     return false;
   }
 

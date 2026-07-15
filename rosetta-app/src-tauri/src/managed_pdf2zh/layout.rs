@@ -138,13 +138,16 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{Pdf2zhLayout, REQUIRED_BABELDOC_FONTS};
-    use crate::managed_pdf2zh::profile::{MACOS_ARM64_PDF2ZH, WINDOWS_AMD64_PDF2ZH};
+    use crate::managed_pdf2zh::profile::{
+        LINUX_X64_PDF2ZH, MACOS_ARM64_PDF2ZH, WINDOWS_AMD64_PDF2ZH,
+    };
 
     #[test]
     fn pdf_pack_python_path_matches_platform_layout() {
         let root = PathBuf::from("/tmp/rosetta-app-data");
         let mac_layout = Pdf2zhLayout::resolve(root.clone(), &MACOS_ARM64_PDF2ZH);
-        let windows_layout = Pdf2zhLayout::resolve(root, &WINDOWS_AMD64_PDF2ZH);
+        let windows_layout = Pdf2zhLayout::resolve(root.clone(), &WINDOWS_AMD64_PDF2ZH);
+        let linux_layout = Pdf2zhLayout::resolve(root, &LINUX_X64_PDF2ZH);
 
         assert!(mac_layout.python_path(&MACOS_ARM64_PDF2ZH).ends_with(
             PathBuf::from("macos-arm64")
@@ -156,6 +159,12 @@ mod tests {
             PathBuf::from("windows-amd64")
                 .join("python")
                 .join("python.exe")
+        ));
+        assert!(linux_layout.python_path(&LINUX_X64_PDF2ZH).ends_with(
+            PathBuf::from("linux-x64")
+                .join("python")
+                .join("bin")
+                .join("python")
         ));
     }
 

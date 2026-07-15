@@ -705,6 +705,7 @@ async fn install_runtime_pack(
     }
     extract_zip(archive_path, runtime_dir)
         .map_err(|error| format!("解压 Windows RWKV 运行包失败: {error}"))?;
+    ensure_runtime_executable_permissions(layout)?;
     validate_runtime_pack(layout, profile)?;
     validate_runtime_hardware_after_install(layout, profile)?;
     write_runtime_manifest(layout, profile, &source, expected_size, &expected_sha)?;
@@ -918,10 +919,12 @@ fn validate_runtime_pack(layout: &RuntimeLayout, profile: &RuntimeProfile) -> Re
             profile.tokenizer_filename
         ));
     }
-    if matches!(
-        profile.launch_kind,
-        super::profile::RuntimeLaunchKind::LlamaCppServer
-    ) && !runtime_dir.join("ggml-vulkan.dll").is_file()
+    if profile.platform_os == "windows"
+        && matches!(
+            profile.launch_kind,
+            super::profile::RuntimeLaunchKind::LlamaCppServer
+        )
+        && !runtime_dir.join("ggml-vulkan.dll").is_file()
     {
         return Err(
             "Windows llama.cpp Vulkan 运行包结构不正确，缺少 ggml-vulkan.dll。".to_string(),
@@ -930,6 +933,23 @@ fn validate_runtime_pack(layout: &RuntimeLayout, profile: &RuntimeProfile) -> Re
     if let Some(library_dir) = layout.runtime_library_dir.as_ref() {
         if !library_dir.is_dir() {
             return Err("Windows RWKV 运行包结构不正确，缺少 lib 目录。".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn ensure_runtime_executable_permissions(_layout: &RuntimeLayout) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        if let Some(executable) = _layout.runtime_executable.as_ref() {
+            let mut permissions = std::fs::metadata(executable)
+                .map_err(|error| format!("读取 RWKV 运行时权限失败: {error}"))?
+                .permissions();
+            permissions.set_mode(permissions.mode() | 0o755);
+            std::fs::set_permissions(executable, permissions)
+                .map_err(|error| format!("设置 RWKV 运行时执行权限失败: {error}"))?;
         }
     }
     Ok(())

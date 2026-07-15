@@ -1,6 +1,6 @@
 # PDF Pipeline
 
-Last updated: 2026-07-13
+Last updated: 2026-07-14
 
 This document describes the current PDF translation implementation. Older PDF
 plans are historical background only when they conflict with this file and
@@ -15,9 +15,10 @@ Rosetta's PDF path is a local visual PDF translation pipeline:
    typed translation units; it does not call RWKV, OpenAI-compatible shims, or
    Rosetta HTTP translation endpoints.
 4. Rust translates the returned units through the selected local provider.
-   Lightning keeps large unit batches inside the window. llama.cpp and other
-   non-Lightning providers use the same Rust `translate_pdf_units` contract
-   with strict chunking/retry and truncation rejection.
+   Lightning keeps large batches inside the window while splitting oversized
+   units at sentence and consecutive-reference boundaries. llama.cpp and
+   other non-Lightning providers use the same Rust `translate_pdf_units`
+   contract with stricter chunking/retry and truncation rejection.
 5. The Python worker renders the prepared window from `unitId -> translation`
    and emits formal `PageResult` records. Rust commits one page-level PDF
    artifact at a time only from those `PageResult` records.
@@ -135,6 +136,9 @@ Diagnostics:
 - `diagnostics/pdf-translation-profile-<runId>.json`: per-run aggregate profile
   for PDF translation. This remains the compact summary for one translation
   run; the timeline is the ordered event log used to reconstruct the chain.
+  Prepare profiles separate font assets, prepared-document construction,
+  layout inference, unit collection, cache reset, and render wall time. They
+  also report prepared-cache hits and render-call counts.
 
 The developer validation script `rosetta-app/scripts/check-pdf-translation-run.mjs`
 reads a profile, page state, timeline, and provider diagnostics for one run.
@@ -144,6 +148,15 @@ diagnostic inference.
 Diagnostic files are not job state. Repair, preview, export, and resume logic
 must continue to use `pdf_source.json`, `pdf_pages.<targetLang>.json`,
 `pdf_run.<targetLang>.json`, and page artifacts as the source of truth.
+
+Full provider I/O is available only for explicit local diagnosis by launching
+Rosetta with `ROSETTA_RWKV_IO_DEBUG=1`. The app log directory then receives
+`rwkv-io-debug.jsonl`, with one structured `requestBody`, response, and parsed
+input/output record per provider call. This file contains document text and
+must not be enabled for normal use or attached to general bug reports. Non-empty
+Lightning body passwords are replaced with `[redacted]`; authentication headers
+are not recorded. Disable the environment variable and remove the file after
+capturing the intended reproduction.
 
 ## Historical V1 Shim Notes
 
@@ -485,6 +498,21 @@ In PDF v2 the ready event also reports the PDF engine `contractVersion`,
 engine version, capabilities, and prewarm timings. Rosetta rejects an old PDF
 component pack when the worker cannot report contract version `2`.
 
+Opening an imported PDF also schedules document-specific background preparse
+after the page count and selected pages have remained stable for `750ms`.
+Changing the page selection or language direction schedules the new identity.
+The preparse command prepares only the first page window that the selected
+provider would translate: Lightning keeps selections up to 30 pages together
+and uses the first 10 pages for longer selections; other providers use their
+normal 10-page window. It does not call the translation provider, render pages,
+or modify page/run state.
+
+Background preparse is skipped while a PDF translation run is active. Success
+populates the worker's single process-local prepared cache, so the later
+translation starts with a cache reset instead of layout inference and unit
+collection. Failures remain content-free timeline diagnostics and do not make
+the imported job fail.
+
 ## Page State
 
 `pdf_pages.<targetLang>.json` stores only durable statuses:
@@ -591,7 +619,11 @@ Run states:
 4. Backend creates `PdfTranslationRun` and writes `pdf_run.<targetLang>.json`.
 5. Pages are processed in windows. Small PDFs can use a wide window up to 30
    pages. Runs above 30 pages use fixed 10-page windows.
-6. Rust sends `prepare_pdf_window` to the persistent worker. The worker calls
+6. When the PDF workspace has already background-preparsed the same source,
+   page window, language pair, and thread count, the active prepared cache is
+   ready before the user starts translation. Otherwise the following prepare
+   request performs the normal foreground work.
+7. Rust sends `prepare_pdf_window` to the persistent worker. The worker calls
    the fork-owned Rosetta engine `prepareRun` and `collectUnits`, then returns
    a typed `PreparedRun` plus ordered `TranslationUnit[]`.
    Large source PDFs are prepared as selected-page windows: `sourcePageCount`
@@ -606,22 +638,38 @@ Run states:
    avoids common overlap failures when a source PDF classifies ordinary prose
    as table/formula-like visual content or when translated CJK text needs more
    vertical leading than the original Latin text.
-7. Rust translates all required units in the window through
-   `translate_pdf_units`. Lightning uses large ordered unit batches to keep
-   RWKV fed. Non-Lightning providers use the same typed unit contract with
-   strict chunking, split retry, and truncation/empty-output rejection.
-8. Rust sends `render_pdf_window` with `unitId -> translation`. The worker
+   The worker retains at most one successful prepared window in memory. An
+   immediate retranslation reuses it only when source path, size, modification
+   time, page selection, language pair, and engine thread count all match. The
+   engine reopens pristine prepared-PDF bytes before the next render so prior
+   translated text cannot leak into the new run. A different key replaces and
+   disposes the previous entry.
+8. Rust translates all required units in the window through
+   `translate_pdf_units`. Lightning keeps large ordered batches but splits
+   oversized text to a target/hard prompt budget of `160/220` estimated tokens.
+   Consecutive numeric references (`[n]`, `[n+1]`) separated by an entry-sized
+   span are split at reference boundaries before the token budget is applied;
+   nearby inline citations remain intact. Pure symbols, pure numbers, and
+   fragments with at most two ASCII
+   letters are returned literally without a model request. Each translated or
+   literal part is reassembled into its original `unitId`, preserving the PDF
+   engine render contract. Non-Lightning providers use the same typed unit
+   contract with stricter chunking, split retry, and truncation/empty-output
+   rejection.
+9. Rust sends `render_pdf_window` with `unitId -> translation`. The worker
    calls the engine `renderPages`, which emits one formal `PageResult` per
    page in page order.
-9. Rust commits each `PageResult` immediately as it arrives. Translated pages
+10. Rust commits each `PageResult` immediately as it arrives. Translated pages
    are validated as readable one-page PDFs, moved to
    `translated-pages/<targetLang>/page-XXXX.pdf`, recorded with v2 metadata,
    and emitted to the UI. `no_text` pages are completed without pretending to
    have translated text or a translated artifact.
-10. Rust sends `dispose_pdf_window` after render or cancellation. If worker
-    state is not trustworthy, the worker is killed and the next run prewarms a
-    fresh worker.
-11. The run file is updated as pages complete, fail, pause, or finish. Job
+11. After a successful run, Rust leaves the single prepared window active for
+    a possible immediate retranslation. Failure or cancellation disposes it.
+    Worker restart also clears the cache; packs without the optional `resetRun`
+    method always perform a full prepare. If worker state is not trustworthy,
+    the worker is killed and the next run prewarms a fresh worker.
+12. The run file is updated as pages complete, fail, pause, or finish. Job
     summary and translation-file summary are synced from reconciled page state.
 
 The default continue path never overwrites translated pages. Explicit

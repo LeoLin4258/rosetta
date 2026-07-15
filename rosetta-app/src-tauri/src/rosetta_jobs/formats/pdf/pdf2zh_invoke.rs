@@ -16,7 +16,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::{
     managed_pdf2zh::{
         self,
-        worker::{PdfPageResult, PdfTranslationUnit},
+        worker::{PdfPageResult, PdfPrepareTimings, PdfTranslationUnit},
     },
     rosetta_jobs::formats::pdf::{
         errors::PdfError,
@@ -119,7 +119,109 @@ pub(crate) struct Pdf2zhInvokeOptions {
 pub(crate) struct Pdf2zhOutput {
     pub warmup_ms: u64,
     pub process_ms: u64,
+    pub prepare_cache_hit: bool,
+    pub prepare_timings_ms: PdfPrepareTimings,
+    pub render_ms: u64,
+    pub render_call_count: u32,
     pub rwkv_metrics: PdfUnitTranslationMetrics,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct Pdf2zhPreparseOutput {
+    pub warmup_ms: u64,
+    pub cache_hit: bool,
+    pub timings_ms: PdfPrepareTimings,
+    pub unit_count: usize,
+}
+
+#[derive(Debug, Default)]
+struct PdfRenderMetrics {
+    total_ms: u64,
+    call_count: u32,
+}
+
+fn pdf_prepare_cache_key(
+    source_path: &Path,
+    pages: Option<&[u32]>,
+    source_lang: &str,
+    target_lang: &str,
+) -> Result<String, PdfError> {
+    let metadata = std::fs::metadata(source_path)
+        .map_err(|error| PdfError::Read(format!("无法读取 PDF 源文件元数据: {error}")))?;
+    let modified_ns = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    Ok(serde_json::json!({
+        "sourcePath": source_path.to_string_lossy(),
+        "sourceBytes": metadata.len(),
+        "sourceModifiedNs": modified_ns,
+        "pages": pages,
+        "sourceLang": source_lang,
+        "targetLang": target_lang,
+        "thread": 1,
+    })
+    .to_string())
+}
+
+pub(crate) async fn preparse_pdf2zh(
+    app: &AppHandle,
+    source_path: &Path,
+    pages: Vec<u32>,
+    source_lang: &str,
+    target_lang: &str,
+    mut cancel_rx: oneshot::Receiver<()>,
+) -> Result<Pdf2zhPreparseOutput, PdfError> {
+    let status = managed_pdf2zh::build_static_status(app).map_err(PdfError::RuntimeMissing)?;
+    if !status.install_plan.ready {
+        return Err(PdfError::RuntimeMissing(status.install_plan.message));
+    }
+    if status.doclayout_model_path.is_none() {
+        return Err(PdfError::RuntimeMissing(
+            "PDF 版面处理组件缺少内置 ONNX 版面模型，请更新 PDF 组件。".to_string(),
+        ));
+    }
+
+    let scratch_dir = PdfEngineScratchDir::create(app)?;
+    let cache_key = pdf_prepare_cache_key(source_path, Some(&pages), source_lang, target_lang)?;
+    let mut stderr_lines = Vec::<String>::new();
+    let mut on_stderr = |line: &str| {
+        if stderr_lines.len() >= 30 {
+            stderr_lines.remove(0);
+        }
+        stderr_lines.push(line.trim().to_string());
+    };
+
+    let started = std::time::Instant::now();
+    let prepared = crate::managed_pdf2zh::worker::prepare_pdf_window(
+        app,
+        serde_json::json!({
+            "file": source_path.to_string_lossy(),
+            "outputDir": scratch_dir.path().to_string_lossy(),
+            "tmpDir": scratch_dir.path().to_string_lossy(),
+            "pages": pages,
+            "langIn": pdf2zh_lang(source_lang),
+            "langOut": pdf2zh_lang(target_lang),
+            "thread": 1,
+            "cacheKey": cache_key,
+            "options": {
+                "cleanupScratchDir": true,
+            },
+        }),
+        &mut on_stderr,
+        &mut cancel_rx,
+    )
+    .await
+    .map_err(worker_outcome_to_pdf_error)?;
+
+    Ok(Pdf2zhPreparseOutput {
+        warmup_ms: started.elapsed().as_millis() as u64,
+        cache_hit: prepared.cache_hit,
+        timings_ms: prepared.timings_ms,
+        unit_count: prepared.units.len(),
+    })
 }
 
 pub(crate) async fn invoke_pdf2zh(
@@ -166,6 +268,12 @@ pub(crate) async fn invoke_pdf2zh(
     };
 
     let warmup_started = std::time::Instant::now();
+    let prepare_cache_key = pdf_prepare_cache_key(
+        source_path,
+        options.pages.as_deref(),
+        &options.source_lang,
+        &options.target_lang,
+    )?;
     let prepared = crate::managed_pdf2zh::worker::prepare_pdf_window(
         app,
         serde_json::json!({
@@ -176,6 +284,7 @@ pub(crate) async fn invoke_pdf2zh(
             "langIn": pdf2zh_lang(&options.source_lang),
             "langOut": pdf2zh_lang(&options.target_lang),
             "thread": 1,
+            "cacheKey": prepare_cache_key,
             "options": {
                 "cleanupScratchDir": true,
             },
@@ -204,6 +313,7 @@ pub(crate) async fn invoke_pdf2zh(
     let unit_ids_by_page = unit_ids_by_page(&ordered_pages, &prepared.units);
     let mut translations_by_unit_id = BTreeMap::<String, String>::new();
     let mut rendered_pages = BTreeSet::<u32>::new();
+    let mut render_metrics = PdfRenderMetrics::default();
     let (unit_tx, mut unit_rx) = mpsc::unbounded_channel::<PdfUnitTranslation>();
     let provider_for_task = options.provider.clone();
     let source_lang_for_task = options.source_lang.clone();
@@ -240,6 +350,7 @@ pub(crate) async fn invoke_pdf2zh(
         &unit_ids_by_page,
         &translations_by_unit_id,
         &mut rendered_pages,
+        &mut render_metrics,
         &mut on_stderr,
         &mut local_on_page,
         &mut cancel_rx,
@@ -274,6 +385,7 @@ pub(crate) async fn invoke_pdf2zh(
                         &unit_ids_by_page,
                         &translations_by_unit_id,
                         &mut rendered_pages,
+                        &mut render_metrics,
                         &mut on_stderr,
                         &mut local_on_page,
                         &mut cancel_rx,
@@ -309,6 +421,7 @@ pub(crate) async fn invoke_pdf2zh(
                         &unit_ids_by_page,
                         &translations_by_unit_id,
                         &mut rendered_pages,
+                        &mut render_metrics,
                         &mut on_stderr,
                         &mut local_on_page,
                         &mut cancel_rx,
@@ -369,6 +482,7 @@ pub(crate) async fn invoke_pdf2zh(
         &unit_ids_by_page,
         &translations_by_unit_id,
         &mut rendered_pages,
+        &mut render_metrics,
         &mut on_stderr,
         &mut local_on_page,
         &mut cancel_rx,
@@ -405,9 +519,6 @@ pub(crate) async fn invoke_pdf2zh(
         )));
     }
 
-    crate::managed_pdf2zh::worker::dispose_pdf_window(app, &prepared.prepared_run.prepared_run_id)
-        .await;
-
     emit_progress(
         app,
         &options.job_id,
@@ -423,6 +534,10 @@ pub(crate) async fn invoke_pdf2zh(
     Ok(Pdf2zhOutput {
         warmup_ms,
         process_ms: process_ms.max(invoke_started.elapsed().as_millis() as u64),
+        prepare_cache_hit: prepared.cache_hit,
+        prepare_timings_ms: prepared.timings_ms,
+        render_ms: render_metrics.total_ms,
+        render_call_count: render_metrics.call_count,
         rwkv_metrics: translation_result.metrics,
     })
 }
@@ -450,6 +565,7 @@ async fn render_ready_pages(
     unit_ids_by_page: &BTreeMap<u32, Vec<String>>,
     translations_by_unit_id: &BTreeMap<String, String>,
     rendered_pages: &mut BTreeSet<u32>,
+    render_metrics: &mut PdfRenderMetrics,
     on_stderr: &mut (dyn FnMut(&str) + Send),
     on_page_result: &mut (dyn FnMut(PdfPageResult) + Send),
     cancel_rx: &mut oneshot::Receiver<()>,
@@ -482,15 +598,18 @@ async fn render_ready_pages(
             "translationsByUnitId": page_translations,
             "pages": [page_number],
         });
-        match crate::managed_pdf2zh::worker::render_pdf_window(
+        let render_started = std::time::Instant::now();
+        let outcome = crate::managed_pdf2zh::worker::render_pdf_window(
             app,
             render_payload,
             on_stderr,
             on_page_result,
             cancel_rx,
         )
-        .await
-        {
+        .await;
+        render_metrics.total_ms += render_started.elapsed().as_millis() as u64;
+        render_metrics.call_count += 1;
+        match outcome {
             crate::managed_pdf2zh::worker::WorkerTranslateOutcome::Completed => {
                 rendered_pages.insert(*page_number);
             }
@@ -633,7 +752,13 @@ fn emit_progress(
 mod tests {
     use std::path::PathBuf;
 
-    use super::{completed_page_progress_payload, PdfEngineScratchDir};
+    use super::{
+        completed_page_progress_payload, pdf_prepare_cache_key, Pdf2zhInvokeOptions,
+        PdfEngineScratchDir,
+    };
+    use crate::rosetta_jobs::formats::pdf::unit_translation::{
+        LlamaCppPdfApiConfig, PdfUnitProviderConfig,
+    };
 
     fn scratch_test_root() -> PathBuf {
         let nanos = std::time::SystemTime::now()
@@ -667,6 +792,63 @@ mod tests {
         drop(second);
         assert!(!second_path.exists());
         std::fs::remove_dir(&root).expect("remove scratch test root");
+    }
+
+    #[test]
+    fn prepare_cache_key_changes_with_pages_and_language() {
+        let root = scratch_test_root();
+        std::fs::create_dir_all(&root).expect("create cache key test root");
+        let source = root.join("source.pdf");
+        std::fs::write(&source, b"pdf-cache-key-fixture").expect("write cache key fixture");
+        let options = |pages, target_lang: &str| Pdf2zhInvokeOptions {
+            job_id: "job-1".to_string(),
+            provider: PdfUnitProviderConfig::LlamaCpp(LlamaCppPdfApiConfig {
+                base_url: "http://127.0.0.1:1".to_string(),
+                timeout_ms: 1,
+            }),
+            source_lang: "en".to_string(),
+            target_lang: target_lang.to_string(),
+            pages: Some(pages),
+            page_progress: None,
+        };
+
+        let first_options = options(vec![1, 2], "zh-CN");
+        let first = pdf_prepare_cache_key(
+            &source,
+            first_options.pages.as_deref(),
+            &first_options.source_lang,
+            &first_options.target_lang,
+        )
+        .expect("build first cache key");
+        let same_options = options(vec![1, 2], "zh-CN");
+        let same = pdf_prepare_cache_key(
+            &source,
+            same_options.pages.as_deref(),
+            &same_options.source_lang,
+            &same_options.target_lang,
+        )
+        .expect("build matching cache key");
+        let other_pages_options = options(vec![2], "zh-CN");
+        let other_pages = pdf_prepare_cache_key(
+            &source,
+            other_pages_options.pages.as_deref(),
+            &other_pages_options.source_lang,
+            &other_pages_options.target_lang,
+        )
+        .expect("build page-specific cache key");
+        let other_language_options = options(vec![1, 2], "ja");
+        let other_language = pdf_prepare_cache_key(
+            &source,
+            other_language_options.pages.as_deref(),
+            &other_language_options.source_lang,
+            &other_language_options.target_lang,
+        )
+        .expect("build language-specific cache key");
+
+        assert_eq!(first, same);
+        assert_ne!(first, other_pages);
+        assert_ne!(first, other_language);
+        std::fs::remove_dir_all(&root).expect("remove cache key test root");
     }
 
     #[test]

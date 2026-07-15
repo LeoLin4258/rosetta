@@ -1736,6 +1736,69 @@ def patch_simplified_chinese_font(root: Path) -> bool:
     return True
 
 
+def patch_rosetta_engine_prepared_cache(root: Path) -> bool:
+    target = root / "rosetta_engine.py"
+    if not target.is_file():
+        raise SystemExit(f"::error::could not find rosetta_engine.py in {root}")
+
+    text = target.read_text(encoding="utf-8")
+    marker = '_PRISTINE_PREPARED_PDFS: dict[str, bytes] = {}'
+    if marker in text:
+        return False
+    if "ENGINE_CONTRACT_VERSION = 2" not in text:
+        return False
+
+    prepared_runs_anchor = '_PREPARED_RUNS: dict[str, "_PreparedState"] = {}\n'
+    if prepared_runs_anchor not in text:
+        raise SystemExit(f"::error::could not find prepared-run registry in {target}")
+    text = text.replace(
+        prepared_runs_anchor,
+        prepared_runs_anchor + marker + "\n",
+        1,
+    )
+
+    register_anchor = "    _PREPARED_RUNS[prepared_run_id] = state\n"
+    if register_anchor not in text:
+        raise SystemExit(f"::error::could not find prepared-run registration in {target}")
+    text = text.replace(
+        register_anchor,
+        register_anchor
+        + "    _PRISTINE_PREPARED_PDFS[prepared_run_id] = prepared_pdf_path.read_bytes()\n",
+        1,
+    )
+
+    dispose_anchor = """def disposeRun(preparedRunId: str) -> None:
+    state = _PREPARED_RUNS.pop(preparedRunId, None)
+    if state is None:
+        return
+"""
+    if dispose_anchor not in text:
+        raise SystemExit(f"::error::could not find disposeRun in {target}")
+    reset_and_dispose = """def resetRun(preparedRunId: str) -> None:
+    state = prepared_state(preparedRunId)
+    pristine_pdf = _PRISTINE_PREPARED_PDFS[preparedRunId]
+    fresh_doc = pymupdf.open(stream=pristine_pdf, filetype="pdf")
+    old_doc = state.doc
+    state.doc = fresh_doc
+    try:
+        old_doc.close()
+    except Exception:
+        pass
+
+
+def disposeRun(preparedRunId: str) -> None:
+    state = _PREPARED_RUNS.pop(preparedRunId, None)
+    _PRISTINE_PREPARED_PDFS.pop(preparedRunId, None)
+    if state is None:
+        return
+"""
+    text = text.replace(dispose_anchor, reset_and_dispose, 1)
+
+    target.write_text(text, encoding="utf-8")
+    print(f"[pdf2zh-pack] enabled reusable pristine prepared runs in {target}")
+    return True
+
+
 def clear_pycache(root: Path) -> None:
     for cache_dir in root.rglob("__pycache__"):
         for child in cache_dir.iterdir():
@@ -1774,6 +1837,7 @@ if "def rosetta_pdf_is_bold_font(" in text and "rosetta_pdf_is_bold_font(child.f
     duplicate_layer_changed = patch_rosetta_engine_duplicate_text_layer_filter(root)
     render_matching_changed = patch_rosetta_engine_render_unit_matching(root)
     engine_structural_line_breaks_changed = patch_rosetta_engine_structural_line_breaks(root)
+    prepared_cache_changed = patch_rosetta_engine_prepared_cache(root)
     any_changed = (
         changed
         or bold_font_changed
@@ -1789,6 +1853,7 @@ if "def rosetta_pdf_is_bold_font(" in text and "rosetta_pdf_is_bold_font(child.f
         or duplicate_layer_changed
         or render_matching_changed
         or engine_structural_line_breaks_changed
+        or prepared_cache_changed
     )
     if any_changed:
         clear_pycache(root)
@@ -2120,4 +2185,5 @@ patch_rosetta_engine_selected_page_window(root)
 patch_rosetta_engine_duplicate_text_layer_filter(root)
 patch_rosetta_engine_render_unit_matching(root)
 patch_rosetta_engine_structural_line_breaks(root)
+patch_rosetta_engine_prepared_cache(root)
 clear_pycache(root)

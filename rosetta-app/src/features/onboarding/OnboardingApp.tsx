@@ -3,13 +3,14 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { completeOnboardingAndOpenMain, getOnboardingDecision } from "@/lib/onboarding";
+import { desktopPlatform, desktopPlatformClass } from "@/lib/desktopPlatform";
 import {
   isPdf2zhReady,
   useManagedPdf2zhRuntime,
 } from "@/lib/useManagedPdf2zhRuntime";
 import {
-  WINDOWS_LIGHTNING_PROFILE_ID,
-  WINDOWS_LLAMACPP_PROFILE_ID,
+  isLightningProfile,
+  isLlamaCppProfile,
   selectManagedRuntimeProfileStatus,
 } from "@/lib/managedRuntimeSelection";
 import {
@@ -24,7 +25,6 @@ import { cn } from "@/lib/utils";
 import type {
   ManagedRuntimeConnectivityDiagnostics,
   ManagedRuntimeLogsSummary,
-  ManagedRuntimeProfileStatus,
 } from "@/types/rosetta";
 
 import { DoneStep } from "./DoneStep";
@@ -188,14 +188,8 @@ export function OnboardingApp() {
   }, [isPrewarmingPdf]);
 
   const profileStatuses = runtime.status?.profileStatuses ?? [];
-  const lightningStatus = findProfileStatus(
-    profileStatuses,
-    WINDOWS_LIGHTNING_PROFILE_ID
-  );
-  const llamaCppStatus = findProfileStatus(
-    profileStatuses,
-    WINDOWS_LLAMACPP_PROFILE_ID
-  );
+  const lightningStatus = profileStatuses.find(isLightningProfile) ?? null;
+  const llamaCppStatus = profileStatuses.find(isLlamaCppProfile) ?? null;
   const selectedRuntimeStatus = selectManagedRuntimeProfileStatus(
     runtime.status,
     selectedRuntimeProfileId
@@ -210,7 +204,7 @@ export function OnboardingApp() {
     !!llamaCppStatus &&
     llamaCppStatus.state !== "unsupported";
   const selectedRuntimeIsLightning =
-    selectedRuntimeProfile?.id === WINDOWS_LIGHTNING_PROFILE_ID;
+    selectedRuntimeProfile?.providerId === "rwkv-lightning-contents";
 
   useEffect(() => {
     if (selectedRuntimeProfileId) {
@@ -383,11 +377,15 @@ export function OnboardingApp() {
   }, [installLocalRuntime, selectedRuntimeProfileId]);
 
   const handleUseLlamaCpp = useCallback(() => {
-    setSelectedRuntimeProfileId(WINDOWS_LLAMACPP_PROFILE_ID);
-    updateRwkvConfig({ managedRuntimeProfileId: WINDOWS_LLAMACPP_PROFILE_ID });
+    const fallbackProfileId = llamaCppStatus?.profile.id;
+    if (!fallbackProfileId) {
+      return;
+    }
+    setSelectedRuntimeProfileId(fallbackProfileId);
+    updateRwkvConfig({ managedRuntimeProfileId: fallbackProfileId });
     setErrorMessage(null);
-    void installLocalRuntime(WINDOWS_LLAMACPP_PROFILE_ID);
-  }, [installLocalRuntime, updateRwkvConfig]);
+    void installLocalRuntime(fallbackProfileId);
+  }, [installLocalRuntime, llamaCppStatus?.profile.id, updateRwkvConfig]);
 
   const handleBeginPdfInstall = useCallback(() => {
     void beginPdfSetup();
@@ -501,7 +499,9 @@ export function OnboardingApp() {
   return (
     <div
       className={cn(
-        "rosetta-onboarding flex h-screen flex-col select-none bg-transparent text-foreground",
+        "rosetta-onboarding flex h-screen flex-col select-none text-foreground",
+        desktopPlatform === "linux" ? "bg-background" : "bg-transparent",
+        desktopPlatformClass,
         systemPrefersDark && "dark"
       )}
     >
@@ -697,15 +697,6 @@ function toMessage(error: unknown): string {
     return error;
   }
   return JSON.stringify(error);
-}
-
-function findProfileStatus(
-  profileStatuses: ManagedRuntimeProfileStatus[],
-  profileId: string
-): ManagedRuntimeProfileStatus | null {
-  return (
-    profileStatuses.find((entry) => entry.profile.id === profileId) ?? null
-  );
 }
 
 function isoNow(): string {

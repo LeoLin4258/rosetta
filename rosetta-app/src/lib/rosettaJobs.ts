@@ -383,6 +383,33 @@ export function getRosettaPdfPageStatus(
   });
 }
 
+export type PdfPreparseResult = {
+  status: "prepared" | "cached" | "skipped";
+  reason?: string;
+  pages?: number[];
+  cacheHit?: boolean;
+  durationMs?: number;
+  unitCount?: number;
+};
+
+export function preparseRosettaPdfPages(
+  jobId: string,
+  options: {
+    pageSelection: string;
+    targetLang: string;
+    providerId?: string;
+    sourceLang?: string | null;
+  },
+) {
+  return invoke<PdfPreparseResult>("preparse_rosetta_pdf_pages", {
+    jobId,
+    pageSelection: options.pageSelection,
+    targetLang: options.targetLang,
+    providerId: options.providerId,
+    sourceLang: options.sourceLang,
+  });
+}
+
 export function translateRosettaPdfPages(
   jobId: string,
   options: {
