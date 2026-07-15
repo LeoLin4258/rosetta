@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Upload a signed Linux x64 AppImage release to Supabase and create an
-# unpublished release row. Publishing remains a separate deliberate action.
+# Upload a signed Linux x64 AppImage release to GitHub Releases and create an
+# unpublished Supabase release row. Publishing remains a separate action.
 
 set -euo pipefail
 
@@ -8,6 +8,8 @@ APP_NAME="${APP_NAME:-rosetta}"
 SUPABASE_PROJECT_URL="${SUPABASE_PROJECT_URL:-https://bdujdewqopcgwijhfbcz.supabase.co}"
 SUPABASE_BUCKET="${SUPABASE_BUCKET:-rosetta-releases}"
 PUBLISHER_USER_AGENT="${PUBLISHER_USER_AGENT:-Rosetta-Release-Publisher/1.0}"
+GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-LeoLin4258/rosetta}"
+GITHUB_RELEASE_TAG="${GITHUB_RELEASE_TAG:-}"
 TARGET="${TARGET:-linux}"
 ARCH="${ARCH:-x86_64}"
 NOTES_FILE="${NOTES_FILE:-}"
@@ -30,6 +32,12 @@ require_env() {
   if [[ -z "${!1:-}" ]]; then
     echo "::error::missing required environment variable: $1" >&2
     exit 2
+  fi
+}
+
+authorization_config_line() {
+  if [[ "$SUPABASE_SERVICE_ROLE_KEY" != sb_secret_* ]]; then
+    printf 'header = "Authorization: Bearer %s"\n' "$SUPABASE_SERVICE_ROLE_KEY"
   fi
 }
 
@@ -64,25 +72,8 @@ check_metadata() {
   fi
 }
 
-upload_artifact() {
-  local artifact="$1"
-  local storage_path="$2"
-
-  curl -s --fail-with-body \
-    --request POST \
-    --user-agent "$PUBLISHER_USER_AGENT" \
-    --header "Content-Type: application/octet-stream" \
-    --header "x-upsert: true" \
-    --data-binary "@$artifact" \
-    --config - \
-    "$SUPABASE_PROJECT_URL/storage/v1/object/$SUPABASE_BUCKET/$storage_path" >/dev/null <<CURL_CONFIG
-header = "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}"
-header = "apikey: ${SUPABASE_SERVICE_ROLE_KEY}"
-CURL_CONFIG
-}
-
 main() {
-  for command in awk cargo curl file grep node sha256sum stat tar; do
+  for command in awk cargo curl file gh git grep head mktemp node sha256sum stat tar; do
     require_command "$command"
   done
   require_env SUPABASE_SERVICE_ROLE_KEY
@@ -93,6 +84,10 @@ main() {
   fi
   if [[ "$PUBLISH" != "true" && "$PUBLISH" != "false" ]]; then
     echo "::error::PUBLISH must be true or false" >&2
+    exit 2
+  fi
+  if [[ "$GITHUB_REPOSITORY" != "LeoLin4258/rosetta" ]]; then
+    echo "::error::Linux application releases must use GITHUB_REPOSITORY=LeoLin4258/rosetta" >&2
     exit 2
   fi
 
@@ -136,7 +131,7 @@ main() {
   fi
 
   local appimage_sha appimage_size updater_size signature_text notes
-  local appimage_storage_path updater_storage_path
+  local release_tag release_commit updater_url installer_url release_json existing_commit
   appimage_sha="$(sha256sum "$appimage" | awk '{ print $1 }')"
   appimage_size="$(stat -c '%s' "$appimage")"
   updater_size="$(stat -c '%s' "$updater")"
@@ -146,29 +141,67 @@ main() {
     exit 2
   fi
 
-  appimage_storage_path="linux/x86_64/$package_version/$appimage_name"
-  updater_storage_path="linux/x86_64/$package_version/$updater_name"
+  release_tag="${GITHUB_RELEASE_TAG:-v$package_version}"
+  if [[ ! "$release_tag" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    echo "::error::invalid GitHub release tag: $release_tag" >&2
+    exit 2
+  fi
   if [[ -n "$NOTES_FILE" ]]; then
     notes="$(<"$NOTES_FILE")"
   else
     notes="Rosetta $package_version for Ubuntu 24.04 or newer, x86_64."
   fi
 
-  echo "[linux-publish] uploading updater artifact ($updater_size bytes)" >&2
-  upload_artifact "$updater" "$updater_storage_path"
-  echo "[linux-publish] uploading AppImage ($appimage_size bytes)" >&2
-  upload_artifact "$appimage" "$appimage_storage_path"
+  if [[ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=no)" ]]; then
+    echo "::error::GitHub release uploads require a clean tracked worktree" >&2
+    git -C "$REPO_ROOT" status --short --untracked-files=no >&2
+    exit 2
+  fi
+  release_commit="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+  if ! gh api "repos/$GITHUB_REPOSITORY/commits/$release_commit" >/dev/null; then
+    echo "::error::release commit is not available on GitHub: $release_commit" >&2
+    exit 2
+  fi
+
+  if release_json="$(gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease 2>/dev/null)"; then
+    if [[ "$(node -e 'const value=JSON.parse(process.argv[1]); process.stdout.write(String(!value.isDraft && value.isPrerelease))' "$release_json")" != "true" ]]; then
+      echo "::error::existing GitHub release must be a published prerelease: $release_tag" >&2
+      exit 2
+    fi
+    existing_commit="$(gh api "repos/$GITHUB_REPOSITORY/commits/$release_tag" --jq .sha)"
+    if [[ "$existing_commit" != "$release_commit" ]]; then
+      echo "::error::GitHub release $release_tag points to $existing_commit, expected $release_commit" >&2
+      exit 2
+    fi
+  else
+    echo "[linux-publish] creating GitHub prerelease $release_tag" >&2
+    gh release create "$release_tag" \
+      --repo "$GITHUB_REPOSITORY" \
+      --target "$release_commit" \
+      --title "Rosetta $package_version" \
+      --notes "$notes" \
+      --prerelease
+  fi
+
+  echo "[linux-publish] uploading GitHub release assets" >&2
+  gh release upload "$release_tag" \
+    "$appimage" "$appimage.sha256" "$appimage.size" \
+    "$updater" "$updater.sha256" "$signature" "$updater.size" \
+    --repo "$GITHUB_REPOSITORY"
+
+  updater_url="https://github.com/$GITHUB_REPOSITORY/releases/download/$release_tag/$updater_name"
+  installer_url="https://github.com/$GITHUB_REPOSITORY/releases/download/$release_tag/$appimage_name"
 
   local payload
   payload="$(
-    printf '{"app":%s,"version":%s,"target":%s,"arch":%s,"storage_bucket":%s,"storage_path":%s,"installer_storage_path":%s,"installer_sha256":%s,"installer_size_bytes":%s,"signature":%s,"notes":%s,"is_published":%s}' \
+    printf '{"app":%s,"version":%s,"target":%s,"arch":%s,"storage_bucket":%s,"storage_path":null,"updater_url":%s,"installer_storage_path":null,"installer_url":%s,"installer_sha256":%s,"installer_size_bytes":%s,"signature":%s,"notes":%s,"is_published":%s}' \
       "$(json_escape "$APP_NAME")" \
       "$(json_escape "$package_version")" \
       "$(json_escape "$TARGET")" \
       "$(json_escape "$ARCH")" \
       "$(json_escape "$SUPABASE_BUCKET")" \
-      "$(json_escape "$updater_storage_path")" \
-      "$(json_escape "$appimage_storage_path")" \
+      "$(json_escape "$updater_url")" \
+      "$(json_escape "$installer_url")" \
       "$(json_escape "$appimage_sha")" \
       "$appimage_size" \
       "$(json_escape "$signature_text")" \
@@ -176,20 +209,32 @@ main() {
       "$PUBLISH"
   )"
 
+  local response_file
+  response_file="$(mktemp)"
   echo "[linux-publish] writing release metadata (is_published=$PUBLISH)" >&2
-  curl -s --fail-with-body \
+  if ! curl -sS --fail-with-body \
     --request POST \
     --user-agent "$PUBLISHER_USER_AGENT" \
     --header "Content-Type: application/json" \
     --header "Prefer: resolution=merge-duplicates" \
     --data "$payload" \
+    --output "$response_file" \
     --config - \
-    "$SUPABASE_PROJECT_URL/rest/v1/app_releases?on_conflict=app,version,target,arch" >/dev/null <<CURL_CONFIG
-header = "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}"
+    "$SUPABASE_PROJECT_URL/rest/v1/app_releases?on_conflict=app,version,target,arch" <<CURL_CONFIG
+$(authorization_config_line)
 header = "apikey: ${SUPABASE_SERVICE_ROLE_KEY}"
 CURL_CONFIG
+  then
+    echo "::error::failed to write Linux release metadata" >&2
+    head -c 4096 "$response_file" >&2
+    echo >&2
+    rm -f "$response_file"
+    return 1
+  fi
+  rm -f "$response_file"
 
   echo "[linux-publish] upload complete: $TARGET-$ARCH $package_version, published=$PUBLISH" >&2
+  echo "[linux-publish] GitHub release: https://github.com/$GITHUB_REPOSITORY/releases/tag/$release_tag" >&2
   if [[ "$PUBLISH" != "true" ]]; then
     cat <<EOF
 

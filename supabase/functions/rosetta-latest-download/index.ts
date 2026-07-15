@@ -7,7 +7,8 @@ type ReleaseRow = {
   target: string;
   arch: string;
   storage_bucket: string;
-  installer_storage_path: string;
+  installer_storage_path: string | null;
+  installer_url: string | null;
   installer_sha256: string | null;
   installer_size_bytes: number | null;
   pub_date: string;
@@ -67,24 +68,37 @@ Deno.serve(async (request) => {
   const { data, error } = await supabase
     .from("app_releases")
     .select(
-      "version, target, arch, storage_bucket, installer_storage_path, installer_sha256, installer_size_bytes, pub_date",
+      "version, target, arch, storage_bucket, installer_storage_path, installer_url, installer_sha256, installer_size_bytes, pub_date",
     )
     .eq("app", "rosetta")
     .eq("target", target)
     .eq("arch", arch)
-    .eq("is_published", true)
-    .not("installer_storage_path", "is", null);
+    .eq("is_published", true);
 
   if (error) {
     return jsonResponse({ error: "Could not load release metadata" }, 500);
   }
 
-  const release = newestByVersion((data ?? []) as ReleaseRow[]);
+  const release = newestByVersion(
+    ((data ?? []) as ReleaseRow[]).filter(
+      (candidate) =>
+        candidate.installer_url || candidate.installer_storage_path,
+    ),
+  );
   if (!release) {
     return jsonResponse({ error: "No release available" }, 404);
   }
 
   if (url.searchParams.get("download") === "1") {
+    if (release.installer_url) {
+      return Response.redirect(release.installer_url, 302);
+    }
+    if (!release.installer_storage_path) {
+      return jsonResponse(
+        { error: "Download artifact is not configured" },
+        500,
+      );
+    }
     const { data: signedUrl, error: signedUrlError } = await supabase.storage
       .from(release.storage_bucket)
       .createSignedUrl(release.installer_storage_path, 60 * 10);
@@ -96,8 +110,10 @@ Deno.serve(async (request) => {
     return Response.redirect(signedUrl.signedUrl, 302);
   }
 
-  const filename =
-    release.installer_storage_path.split("/").at(-1) ?? "Rosetta-installer";
+  const filename = release.installer_url
+    ? new URL(release.installer_url).pathname.split("/").at(-1) ??
+      "Rosetta-installer"
+    : release.installer_storage_path?.split("/").at(-1) ?? "Rosetta-installer";
   const downloadUrl = new URL(
     "/functions/v1/rosetta-latest-download",
     supabaseUrl,

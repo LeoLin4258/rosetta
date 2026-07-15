@@ -4,8 +4,9 @@ Rosetta's first Linux release format is AppImage on Ubuntu 24.04 or newer,
 x86_64. The AppImage is the manual download artifact and is also the source for
 the signed Tauri updater archive.
 
-The AppImage and signed updater archive are published through the same private
-Supabase release channel as the Windows and macOS artifacts.
+The AppImage and signed updater archive are hosted on the public Rosetta
+GitHub Release. Supabase stores their versioned URLs, signature, hashes, sizes,
+and publication state for the updater and website APIs.
 
 ## Release Contract
 
@@ -27,7 +28,7 @@ are for Tauri's in-app updater. Do not point the updater at the plain AppImage.
 ## Prerequisites
 
 - Ubuntu 24.04 x64 release host.
-- Node.js, pnpm, Rust, Tauri Linux build dependencies, `file`, `tar`, and
+- Node.js, pnpm, Rust, Tauri Linux build dependencies, `file`, `tar`, `gh`, and
   `sha256sum`.
 - Staged Linux x64 PDFium under
   `rosetta-app/src-tauri/resources/pdf-sidecar/pdfium/linux-x64/`.
@@ -90,12 +91,14 @@ On a clean Ubuntu 24.04 x64 user session:
 
 ## Upload As Unpublished
 
-Apply `202607150001_linux_app_releases.sql` and deploy the updated
+Apply `202607150001_linux_app_releases.sql` and
+`202607150002_github_release_urls.sql`, then deploy the updated
 `rosetta-update` and `rosetta-latest-download` Edge Functions before the first
 Linux upload.
 
-Set the release credential only in the local shell, then upload both the
-AppImage and signed updater archive:
+Authenticate `gh` as a maintainer of `LeoLin4258/rosetta`. Set the Supabase
+release credential only in the local shell, then create the versioned GitHub
+prerelease, upload the artifacts, and write the unpublished metadata row:
 
 ```bash
 export SUPABASE_SERVICE_ROLE_KEY="<local release credential>"
@@ -103,9 +106,9 @@ bash rosetta-app/src-tauri/scripts/publish-linux-updater.sh
 ```
 
 The script validates the exact filenames, versions, architecture, archive
-contents, signatures, hashes, and sizes. It stores the updater archive under
-`storage_path`, the AppImage under `installer_storage_path`, and creates an
-unpublished `linux/x86_64` row.
+contents, signatures, hashes, sizes, clean commit, and GitHub target. It stores
+the updater URL under `updater_url`, the AppImage URL under `installer_url`,
+and creates an unpublished `linux/x86_64` row.
 
 After testing the unpublished artifacts, run the `PATCH` command printed by
 the script. Rollback uses the same command with `is_published=false`.

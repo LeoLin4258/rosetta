@@ -5,7 +5,8 @@ import { compareSemver, newestByVersion } from "../_shared/semver.ts";
 type ReleaseRow = {
   version: string;
   storage_bucket: string;
-  storage_path: string;
+  storage_path: string | null;
+  updater_url: string | null;
   signature: string;
   notes: string;
   pub_date: string;
@@ -14,7 +15,8 @@ type ReleaseRow = {
 const corsHeaders = {
   "access-control-allow-origin": "*",
   "access-control-allow-methods": "GET, OPTIONS",
-  "access-control-allow-headers": "authorization, x-client-info, apikey, content-type",
+  "access-control-allow-headers":
+    "authorization, x-client-info, apikey, content-type",
 };
 
 function noContent(): Response {
@@ -80,7 +82,9 @@ Deno.serve(async (request) => {
 
   const { data, error } = await supabase
     .from("app_releases")
-    .select("version, storage_bucket, storage_path, signature, notes, pub_date")
+    .select(
+      "version, storage_bucket, storage_path, updater_url, signature, notes, pub_date",
+    )
     .eq("app", "rosetta")
     .eq("target", target)
     .eq("arch", arch)
@@ -100,18 +104,28 @@ Deno.serve(async (request) => {
     return noContent();
   }
 
-  const { data: signedUrl, error: signedUrlError } = await supabase.storage
-    .from(release.storage_bucket)
-    .createSignedUrl(release.storage_path, 60 * 30);
+  let updateUrl = release.updater_url;
+  if (!updateUrl) {
+    if (!release.storage_path) {
+      return jsonResponse({ error: "Update artifact is not configured" }, 500);
+    }
+    const { data: signedUrl, error: signedUrlError } = await supabase.storage
+      .from(release.storage_bucket)
+      .createSignedUrl(release.storage_path, 60 * 30);
 
-  if (signedUrlError || !signedUrl?.signedUrl) {
-    return jsonResponse({ error: "Could not create update download URL" }, 500);
+    if (signedUrlError || !signedUrl?.signedUrl) {
+      return jsonResponse(
+        { error: "Could not create update download URL" },
+        500,
+      );
+    }
+    updateUrl = signedUrl.signedUrl;
   }
 
   return jsonResponse({
     version: release.version,
     pub_date: release.pub_date,
-    url: signedUrl.signedUrl,
+    url: updateUrl,
     signature: release.signature,
     notes: release.notes,
   });

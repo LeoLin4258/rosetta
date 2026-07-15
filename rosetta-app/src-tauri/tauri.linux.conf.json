@@ -35,7 +35,7 @@
     ],
     "createUpdaterArtifacts": false,
     "resources": [
-      "resources/pdf-sidecar/pdfium/*/*"
+      "resources/pdf-sidecar/pdfium/linux-x64/*"
     ]
   }
 }

@@ -3,11 +3,10 @@
 Rosetta releases Windows x64, macOS Apple Silicon, and Linux x64 from the same
 `main` commit and version.
 
-Supabase Storage and `app_releases` are the only distribution channel for
-Rosetta application installers, updater artifacts, signatures, hashes, and
-release metadata. Do not upload application release assets to GitHub Releases.
-GitHub may optionally carry a source tag, but a tag is not required for
-installer distribution or App-internal updates.
+`app_releases` and the Supabase Edge Functions are the authoritative release
+metadata, routing, and publication channel. Windows and macOS artifacts remain
+in private Supabase Storage. Linux AppImage artifacts use the public Rosetta
+GitHub Release because they exceed the Supabase Free plan object limit.
 
 Platform packages are always produced natively:
 
@@ -62,9 +61,9 @@ Upload both platform releases as unpublished rows first.
 5. Smoke test the unpublished Linux artifacts, then publish only its row.
 6. Test the Linux in-app update and website download.
 7. Verify updater requests for the current version return `204 No Content`.
-8. After all platform rows are published and verified, optionally create a
-   source-code git tag. Do not create a GitHub Release or upload application
-   installers to GitHub.
+8. Confirm the Linux GitHub prerelease tag targets the same release commit.
+9. After all platform rows are published and verified, keep the GitHub release
+   marked as a prerelease while the application version is a beta.
 
 If one platform fails, set only that release row to unpublished. The other
 platform remains available.
