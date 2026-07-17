@@ -368,6 +368,41 @@ PDF v3 的 `PageGraph` 是独立于当前 PDF v2 page-state 的 native 页面 IR
 - 正式持久化 PageGraph 前必须再确定压缩格式、source/engine/schema identity、
   原子写入和可删除重建规则。
 
+## PDF v3 TranslationPatch
+
+PDF v3 的 `TranslationPatch` 是页级译文的持久化权威数据，不是 PDF 文件，也不同于
+renderer 内部瞬时使用的 `ContentOperandRangePatch`。当前逻辑 schema 为 `1`；它仍在
+隔离 native 模块中，尚未接入正式 job store，因此不迁移 v1/v2 PDF 派生 artifact。
+
+约定：
+
+- patch 必须绑定 1-based page number、`sourcePageHash`、目标语言、正数
+  `translationRevision`、provider/model identity 和 renderer version。
+- `entryId` 由 source page hash 与按 PageGraph 顺序排列的 atom ID 确定；`patchId` 是
+  清空自身 ID 字段后完整 canonical patch 的 SHA-256。translation metadata 和 renderer
+  decision 都属于 patch identity。
+- 每个 entry 必须保存 ordered atom ID 及完整 source `PageAtom` 的 SHA-256，但不得重复
+  保存普通 source text。一个 atom 在一份 page patch 中最多属于一个 entry；
+  `preserved-unmapped` atom 不得进入译文 entry。
+- 一个 entry 当前必须解析到唯一非空 `styleId`。mixed-style translation 要先拆成可验证
+  entry，不能在持久化后靠字符串启发式恢复样式。
+- protected span 必须用固定宽度 `u32` 保存 span ID/kind/exact value 之外的 translated
+  UTF-8 byte start/length，不能把平台相关的 `usize` 写进持久化 schema。
+  entry 必须完整覆盖 span 的所有 atom，placement bytes 必须逐字节等于 exact value，且
+  多个 placement 不得重叠。
+- PageGraph protected span 本身必须由唯一、存在、严格 source-order 的 atom 组成，且
+  atom source text 拼接结果必须等于 `exactText`。引用、URL、数字等区域需要在 PageGraph
+  中拆为明确 atom，不能在 renderer 中用 substring 猜测。
+- renderer decision 只能是 `pending`、带显式 fit strategy 和有限 `0..=1` scale 的
+  `fitted`，或带稳定 reason code 的 `preserved`。renderer 写回 decision 后必须重算
+  `patchId`。
+- decode 必须针对当前 PageGraph 重建 canonical patch，拒绝 page/hash/schema、atom hash、
+  entry order/content、protected placement 或 patch identity 不一致的内容。
+- 初始 encoding 为 compact JSON。build、encode 和 decode 都执行 16 MiB page-patch
+  上限；单 entry translated text 上限为 8 MiB，单 patch entry count 上限为 100,000。
+- 原子 revisioned 文件写入、manifest、压缩容器、render-cache quota 和 streaming export
+  属于后续 Phase 4，不由 schema v1 假装已经完成。
+
 ## PDF v3 Content Operand Patch
 
 PDF v3 的 `ContentOperandRangePatch` 是隔离 native renderer 的瞬时低层写入模型，

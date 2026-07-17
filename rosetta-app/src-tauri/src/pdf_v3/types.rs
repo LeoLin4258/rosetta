@@ -213,21 +213,70 @@ pub(crate) enum ProtectedSpanKind {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TranslationPatch {
     pub schema_version: u32,
+    pub patch_id: String,
     pub page_number: u32,
     pub source_page_hash: String,
     pub target_language: String,
+    pub translation_revision: u64,
+    pub provider: TranslationPatchProvider,
     pub entries: Vec<TranslationPatchEntry>,
     pub renderer_version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TranslationPatchProvider {
+    pub provider_id: String,
+    pub model_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TranslationPatchEntry {
-    pub atom_ids: Vec<String>,
+    pub entry_id: String,
+    pub atoms: Vec<TranslationPatchAtomRef>,
     pub translated_text: String,
-    pub protected_span_ids: Vec<String>,
-    pub style_id: Option<String>,
-    pub fit_scale: Option<f32>,
+    pub protected_spans: Vec<TranslationPatchProtectedSpan>,
+    pub style_id: String,
+    pub renderer_decision: TranslationPatchRendererDecision,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TranslationPatchAtomRef {
+    pub atom_id: String,
+    pub source_atom_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TranslationPatchProtectedSpan {
+    pub span_id: String,
+    pub kind: ProtectedSpanKind,
+    pub exact_text: String,
+    pub translated_start: u32,
+    pub translated_len: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub(crate) enum TranslationPatchRendererDecision {
+    Pending,
+    Fitted {
+        strategy: TranslationPatchFitStrategy,
+        fit_scale: f32,
+    },
+    Preserved {
+        reason_code: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum TranslationPatchFitStrategy {
+    SingleShowScale,
+    AnchoredTransaction,
+    ParagraphReflow,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

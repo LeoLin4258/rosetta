@@ -111,6 +111,16 @@ Current progress:
 - A Source Han same-stream probe replaced two text objects in about 4 ms and
   produced a searchable 16,488-byte PDF from a 13,473-byte source. Poppler
   changes were confined to the two original text rows.
+- Phase 4 patch-first persistence has started with a durable
+  `TranslationPatch` schema v1. Canonical page/atom identity, translation
+  revision and provider/model metadata, exact protected-span byte placement,
+  typed renderer decisions, deterministic IDs and compact JSON validation are
+  implemented with a 16 MiB page-patch limit.
+- Patch fixtures round-trip without copying ordinary source text and reject
+  stale pages/atoms, duplicate atom ownership, partial or reordered protected
+  spans, invalid fit state and modified patch identity. Atomic revisioned file
+  storage, compression, render-cache ownership and streaming export remain
+  pending.
 
 ## Purpose
 
@@ -406,13 +416,23 @@ face and merge all copy-on-write paths into one atomic page commit. Each target
 remains one stream/path and one `BT`/`ET`, while distinct text-object targets in
 the same stream/path share one physical staged stream. Unanchored consecutive
 shows, one-show mixed styles, paragraph layout, arbitrary-angle geometry and
-the durable translation pipeline remain disconnected.
+the durable patch-to-renderer pipeline remain disconnected.
 
 ### Phase 4 — Patch-first persistence
 
 - Persist compact page patches and page revisions.
 - Add bounded render cache and garbage collection.
 - Add streaming export with shared resources and fonts.
+
+Current Phase 4 boundary: the canonical `TranslationPatch` schema v1, builder,
+compact JSON encoding and PageGraph-aware validation are implemented. The
+contract records deterministic patch/entry identity, source page/atom hashes,
+translation revision and provider/model identity, exact protected-span UTF-8
+byte ranges and typed pending/fitted/preserved renderer decisions. Ordinary
+source text is not duplicated into patches, and all persistent encode/decode
+paths enforce a 16 MiB page-patch limit. Atomic revisioned disk storage,
+manifest recovery, compression, bounded render-cache GC, renderer integration
+and streaming document export remain pending.
 
 ### Phase 5 — Translation and protected spans
 

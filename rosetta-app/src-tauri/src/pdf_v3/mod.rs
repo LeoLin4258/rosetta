@@ -13,4 +13,5 @@ pub(crate) mod reconcile;
 pub(crate) mod replacement;
 pub(crate) mod source_cmap;
 pub(crate) mod style;
+pub(crate) mod translation_patch;
 pub(crate) mod types;
