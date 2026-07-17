@@ -400,8 +400,41 @@ renderer 内部瞬时使用的 `ContentOperandRangePatch`。当前逻辑 schema 
   entry order/content、protected placement 或 patch identity 不一致的内容。
 - 初始 encoding 为 compact JSON。build、encode 和 decode 都执行 16 MiB page-patch
   上限；单 entry translated text 上限为 8 MiB，单 patch entry count 上限为 100,000。
-- 原子 revisioned 文件写入、manifest、压缩容器、render-cache quota 和 streaming export
-  属于后续 Phase 4，不由 schema v1 假装已经完成。
+- compact JSON patch 本身不负责文件所有权；原子 revisioned 文件与索引由下述
+  TranslationPatch Store 管理。压缩容器、render-cache quota 和 streaming export 仍属于
+  后续 Phase 4。
+
+## PDF v3 TranslationPatch Store
+
+PDF v3 patch store 是 source document + target language 隔离的页级译文磁盘权威。它不
+复用 v1/v2 PDF page state，也不保存完整译文页 PDF。
+
+约定：
+
+- target-language 目录使用 exact language identity 的 SHA-256，不允许用户输入直接成为
+  相对路径；store root 必须是 native orchestrator 提供的绝对路径。
+- 根 `manifest.json` 只保存 schema、source fingerprint、exact target language、固定
+  `pagesPerShard = 64` 和 deterministic manifest ID，不随每一页提交增长。
+- 页索引使用 `shard-XXXXXXXX.json`。每个 shard 最多覆盖 64 个连续页号，并保存独立
+  generation、deterministic shard ID 和 source-ordered page entries。
+- 64 页是内部 index bound，不是 PageSet、translation batch、scheduler window 或 UI chunk。
+  任意页仍可独立读取、提交和重试。
+- page entry 必须保存 page/source hash、positive translation revision、patch ID、immutable
+  patch filename 和 byte count。filename 必须由 page/revision/patch ID 确定，不能接受
+  manifest 中的任意相对路径。
+- patch file 先通过 unique temp + `sync_all` + rename 提交；owning shard 再通过
+  temp + backup + rename 原子替换。新 shard durable 后才能删除被替换的旧 revision。
+- 同 revision + 同 patch ID 是幂等写；同 revision + 不同内容是 conflict；低 revision
+  必须拒绝。source page hash 在同一 store/page 内变化也必须拒绝。
+- 每个进程/store 首次访问执行完整 repair。canonical/temp/backup shard 选择最高有效
+  generation，generation 相同优先 canonical。普通后续提交只读取 owning shard，不得
+  重新读取所有历史 page patch。
+- missing/corrupt patch 只移除对应 page entry；其他页必须保持可读。结构损坏或 filename /
+  internal shard index 不一致的 shard 作为可重建派生状态丢弃。
+- repair 必须删除 incomplete patch temp、unreferenced patch、superseded revision 和失效
+  index sidecar。正常提交也应立即删除本页已替换 revision，避免长任务磁盘持续增长。
+- 同一 absolute language directory 的进程内写入由共享 coordinator 串行化。当前不允许
+  多 Rosetta 进程并发拥有同一个 job store。
 
 ## PDF v3 Content Operand Patch
 

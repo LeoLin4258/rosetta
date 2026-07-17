@@ -118,9 +118,18 @@ Current progress:
   implemented with a 16 MiB page-patch limit.
 - Patch fixtures round-trip without copying ordinary source text and reject
   stale pages/atoms, duplicate atom ownership, partial or reordered protected
-  spans, invalid fit state and modified patch identity. Atomic revisioned file
-  storage, compression, render-cache ownership and streaming export remain
-  pending.
+  spans, invalid fit state and modified patch identity. The following store
+  slice builds atomic revisioned ownership on that contract.
+- Phase 4 now has an atomic sharded patch store. Immutable revision-addressed
+  page patches are indexed by deterministic 64-page shards; the shard width is
+  internal and does not constrain PageSet, scheduling or user-visible ranges.
+  Windows-compatible temp/backup replacement, stale revision rejection,
+  parallel commit serialization, interrupted-write recovery and orphan cleanup
+  are implemented.
+- Two 1,000-page Windows AMD debug probes completed independently synced page
+  commits in 15.54-16.40 seconds. The final run used 16 shards, 323,244 logical
+  index bytes and 615,572 patch payload bytes. A rejected whole-manifest design
+  took 51.54 seconds, so it was removed before becoming a persistent contract.
 
 ## Purpose
 
@@ -430,9 +439,11 @@ contract records deterministic patch/entry identity, source page/atom hashes,
 translation revision and provider/model identity, exact protected-span UTF-8
 byte ranges and typed pending/fitted/preserved renderer decisions. Ordinary
 source text is not duplicated into patches, and all persistent encode/decode
-paths enforce a 16 MiB page-patch limit. Atomic revisioned disk storage,
-manifest recovery, compression, bounded render-cache GC, renderer integration
-and streaming document export remain pending.
+paths enforce a 16 MiB page-patch limit. Atomic revisioned disk storage is now
+implemented with a stable language manifest, bounded 64-page index shards,
+page-local recovery and superseded/orphan cleanup. Patch compression, bounded
+render-cache GC, renderer integration and streaming document export remain
+pending.
 
 ### Phase 5 — Translation and protected spans
 

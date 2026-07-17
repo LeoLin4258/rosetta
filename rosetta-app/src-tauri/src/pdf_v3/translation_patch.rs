@@ -338,6 +338,14 @@ pub(crate) fn decode_and_validate_translation_patch(
     page: &PageGraph,
     bytes: &[u8],
 ) -> Result<TranslationPatch, TranslationPatchError> {
+    let patch = decode_and_validate_translation_patch_identity(bytes)?;
+    validate_translation_patch(page, &patch)?;
+    Ok(patch)
+}
+
+pub(crate) fn decode_and_validate_translation_patch_identity(
+    bytes: &[u8],
+) -> Result<TranslationPatch, TranslationPatchError> {
     if bytes.len() > MAX_PATCH_BYTES {
         return Err(TranslationPatchError::PatchTooLarge {
             bytes: bytes.len(),
@@ -347,7 +355,37 @@ pub(crate) fn decode_and_validate_translation_patch(
     let patch = serde_json::from_slice::<TranslationPatch>(bytes).map_err(|error| {
         TranslationPatchError::Serialization(format!("failed to decode TranslationPatch: {error}"))
     })?;
-    validate_translation_patch(page, &patch)?;
+    if patch.schema_version != TRANSLATION_PATCH_SCHEMA_VERSION {
+        return Err(TranslationPatchError::UnsupportedPatchSchema {
+            expected: TRANSLATION_PATCH_SCHEMA_VERSION,
+            actual: patch.schema_version,
+        });
+    }
+    if patch.page_number == 0 {
+        return Err(TranslationPatchError::InvalidMetadata("pageNumber"));
+    }
+    if patch.source_page_hash.is_empty() {
+        return Err(TranslationPatchError::InvalidMetadata("sourcePageHash"));
+    }
+    validate_patch_metadata(&patch)?;
+    if patch.entries.len() > MAX_PATCH_ENTRIES {
+        return Err(TranslationPatchError::TooManyEntries {
+            count: patch.entries.len(),
+            maximum: MAX_PATCH_ENTRIES,
+        });
+    }
+    for entry in &patch.entries {
+        if entry.translated_text.len() > MAX_TRANSLATED_TEXT_BYTES {
+            return Err(TranslationPatchError::TranslationTooLarge {
+                bytes: entry.translated_text.len(),
+                maximum: MAX_TRANSLATED_TEXT_BYTES,
+            });
+        }
+        validate_renderer_decision(&entry.entry_id, &entry.renderer_decision)?;
+    }
+    if patch_id(&patch)? != patch.patch_id {
+        return Err(TranslationPatchError::PatchIdMismatch);
+    }
     Ok(patch)
 }
 
@@ -430,6 +468,12 @@ fn validate_page_schema(page: &PageGraph) -> Result<(), TranslationPatchError> {
             actual: page.schema_version,
         });
     }
+    if page.page_number == 0 {
+        return Err(TranslationPatchError::InvalidMetadata("pageNumber"));
+    }
+    if page.source_page_hash.is_empty() {
+        return Err(TranslationPatchError::InvalidMetadata("sourcePageHash"));
+    }
     Ok(())
 }
 
@@ -489,6 +533,19 @@ fn validate_metadata(draft: &TranslationPatchDraft) -> Result<(), TranslationPat
     validate_identifier(&draft.provider_id, "providerId")?;
     validate_identifier(&draft.model_id, "modelId")?;
     validate_identifier(&draft.renderer_version, "rendererVersion")?;
+    Ok(())
+}
+
+fn validate_patch_metadata(patch: &TranslationPatch) -> Result<(), TranslationPatchError> {
+    if patch.translation_revision == 0 {
+        return Err(TranslationPatchError::InvalidMetadata(
+            "translationRevision",
+        ));
+    }
+    validate_identifier(&patch.target_language, "targetLanguage")?;
+    validate_identifier(&patch.provider.provider_id, "providerId")?;
+    validate_identifier(&patch.provider.model_id, "modelId")?;
+    validate_identifier(&patch.renderer_version, "rendererVersion")?;
     Ok(())
 }
 
@@ -788,6 +845,41 @@ mod tests {
         assert!(matches!(
             error,
             TranslationPatchError::InvalidSourceProtectedSpan(_)
+        ));
+    }
+
+    #[test]
+    fn page_identity_must_be_one_based_and_nonempty() {
+        let mut page = page_graph();
+        page.page_number = 0;
+        let error = build_translation_patch(
+            &page,
+            patch_draft(vec![
+                "atom-body",
+                "atom-citation-open",
+                "atom-citation-close",
+            ]),
+        )
+        .expect_err("page number zero must be rejected");
+        assert!(matches!(
+            error,
+            TranslationPatchError::InvalidMetadata("pageNumber")
+        ));
+
+        let mut page = page_graph();
+        page.source_page_hash.clear();
+        let error = build_translation_patch(
+            &page,
+            patch_draft(vec![
+                "atom-body",
+                "atom-citation-open",
+                "atom-citation-close",
+            ]),
+        )
+        .expect_err("empty source page hash must be rejected");
+        assert!(matches!(
+            error,
+            TranslationPatchError::InvalidMetadata("sourcePageHash")
         ));
     }
 

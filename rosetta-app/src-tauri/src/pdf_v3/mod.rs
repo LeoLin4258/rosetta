@@ -9,6 +9,7 @@ pub(crate) mod layout;
 pub(crate) mod mapping;
 pub(crate) mod page_set;
 pub(crate) mod patch;
+pub(crate) mod patch_store;
 pub(crate) mod reconcile;
 pub(crate) mod replacement;
 pub(crate) mod source_cmap;
