@@ -164,6 +164,16 @@ Current progress:
   was 104,857 bytes. Independent Poppler changed 2,718 pixels (0.1249%) only in
   the target footer row; page geometry, 26 annotations and the external link
   remained intact, and `pypdf` extracted the replacement text.
+- Resolved single-page artifacts now feed an isolated PDFium preview rasterizer.
+  Exact 200..=1,800 pixel widths produce deterministic PNGs whose cache keys
+  bind both the patch renderer and preview-rasterizer contracts. The artifact
+  owns its cache identity, width variants cannot collide, and corrupt cached
+  PNG bodies become rebuildable misses.
+- The Windows AMD real-paper probe produced a complete 1,200x1,697 PDFium PNG
+  in 1,054,528 bytes. Visual inspection showed the full page without clipping,
+  blank regions or layout movement outside the translated footer. Independent
+  Poppler rendered the same single-page PDF at 1,200x1,698, the expected
+  one-pixel height rounding difference between raster engines.
 
 ## Purpose
 
@@ -485,8 +495,10 @@ and local repair. Pending translation drafts now resolve entirely in memory;
 only fitted/preserved patches can enter the store, avoiding same-revision
 identity conflicts. Resolved patches now deterministically regenerate pruned
 single-page PDF artifacts and use source/patch/revision/current-renderer cache
-identity for bounded insertion and lease-validated reads. Preview PNG cache
-population, patch compression and streaming document export remain pending.
+identity for bounded insertion and lease-validated reads. Those page artifacts
+now rasterize on demand to exact-width PDFium PNGs with a separately versioned
+preview contract, bounded insertion and lease-validated reads. Patch
+compression and streaming document export remain pending.
 
 ### Phase 5 — Translation and protected spans
 

@@ -58,9 +58,23 @@ pub(crate) struct TranslationPatchRenderResult {
 
 #[derive(Debug, Clone)]
 pub(crate) struct TranslationPatchPagePdf {
-    pub source_fingerprint: String,
-    pub render: TranslationPatchRenderResult,
-    pub pdf_bytes: Vec<u8>,
+    source_fingerprint: String,
+    render: TranslationPatchRenderResult,
+    pdf_bytes: Vec<u8>,
+}
+
+impl TranslationPatchPagePdf {
+    pub(crate) fn source_fingerprint(&self) -> &str {
+        &self.source_fingerprint
+    }
+
+    pub(crate) fn render(&self) -> &TranslationPatchRenderResult {
+        &self.render
+    }
+
+    pub(crate) fn pdf_bytes(&self) -> &[u8] {
+        &self.pdf_bytes
+    }
 }
 
 #[derive(Debug)]
@@ -632,6 +646,12 @@ mod tests {
                 UnifiedTranslationFontPlan,
             },
             identity::{compare_images, render_page},
+            preview::{
+                insert_translation_patch_preview_png_cache,
+                open_translation_patch_preview_png_cache, render_translation_patch_preview_png,
+                translation_patch_preview_png_cache_key, TranslationPatchPreviewError,
+                TRANSLATION_PATCH_PREVIEW_RASTERIZER_VERSION,
+            },
             reconcile::build_reconciled_page_graph,
             render_cache::{RenderCache, RenderCacheConfig, RenderCacheInsertKind},
             replacement::{preflight_text_show_replacement_transaction, TextShowReplacementError},
@@ -937,6 +957,72 @@ mod tests {
         )
         .expect("cache miss rebuild");
         assert_eq!(replay.pdf_bytes, artifact.pdf_bytes);
+
+        let preview_width = 1_200;
+        assert!(open_translation_patch_preview_png_cache(
+            &cache,
+            source_fingerprint,
+            &artifact.render.resolved_patch,
+            preview_width,
+        )
+        .expect("preview cache miss")
+        .is_none());
+        let preview =
+            render_translation_patch_preview_png(shared_pdfium(), &artifact, preview_width)
+                .expect("translated preview PNG");
+        assert_eq!(preview.pixel_width(), preview_width);
+        assert!(preview.pixel_height() > preview.pixel_width());
+        assert!(preview.png_bytes().starts_with(b"\x89PNG\r\n\x1a\n"));
+        let decoded =
+            image::load_from_memory_with_format(preview.png_bytes(), image::ImageFormat::Png)
+                .expect("decode preview PNG");
+        assert_eq!(decoded.width(), preview.pixel_width());
+        assert_eq!(decoded.height(), preview.pixel_height());
+
+        let preview_key = translation_patch_preview_png_cache_key(
+            source_fingerprint,
+            &artifact.render.resolved_patch,
+            preview_width,
+        )
+        .expect("preview cache key");
+        assert_eq!(
+            preview_key.renderer_version,
+            format!(
+                "{TRANSLATION_PATCH_RENDERER_VERSION}+{TRANSLATION_PATCH_PREVIEW_RASTERIZER_VERSION}"
+            )
+        );
+        assert_ne!(
+            preview_key,
+            translation_patch_preview_png_cache_key(
+                source_fingerprint,
+                &artifact.render.resolved_patch,
+                900,
+            )
+            .expect("width-specific preview key")
+        );
+
+        let inserted = insert_translation_patch_preview_png_cache(&cache, &preview)
+            .expect("preview cache insert");
+        assert_eq!(inserted.kind, RenderCacheInsertKind::Written);
+        assert_eq!(cache.snapshot().expect("cache snapshot").entry_count, 2);
+        let cached = open_translation_patch_preview_png_cache(
+            &cache,
+            source_fingerprint,
+            &artifact.render.resolved_patch,
+            preview_width,
+        )
+        .expect("preview cache hit")
+        .expect("cached preview bytes");
+        assert_eq!(cached, preview.into_png_bytes());
+        assert!(matches!(
+            translation_patch_preview_png_cache_key(
+                source_fingerprint,
+                &artifact.render.resolved_patch,
+                1,
+            )
+            .expect_err("preview width below bound"),
+            TranslationPatchPreviewError::InvalidPixelWidth { requested: 1 }
+        ));
     }
 
     #[cfg(target_os = "windows")]
@@ -1179,7 +1265,7 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
-    #[ignore = "manual Windows TranslationPatch cache bridge Poppler probe"]
+    #[ignore = "manual Windows TranslationPatch cache and preview probe"]
     fn manual_windows_translation_patch_cache_probe() {
         let _guard = pdfium_test_lock();
         let replacement = "Bounded cached page";
@@ -1199,6 +1285,8 @@ mod tests {
             TranslationPatchRenderPolicy::default(),
         )
         .expect("render page artifact");
+        let preview = render_translation_patch_preview_png(shared_pdfium(), &artifact, 1_200)
+            .expect("render preview PNG");
 
         let output_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tmp/pdfs");
         fs::create_dir_all(&output_dir).expect("create PDF probe directory");
@@ -1210,11 +1298,22 @@ mod tests {
         )
         .expect("write probe output");
         fs::write(
+            output_dir.join("pdf-v3-cache-bridge-preview.png"),
+            preview.png_bytes(),
+        )
+        .expect("write preview PNG");
+        fs::write(
             output_dir.join("pdf-v3-cache-bridge-resolved.json"),
             serde_json::to_vec_pretty(&artifact.render.resolved_patch)
                 .expect("resolved patch JSON"),
         )
         .expect("write resolved patch");
+        println!(
+            "pdf-v3 translated preview width={} height={} bytes={}",
+            preview.pixel_width(),
+            preview.pixel_height(),
+            preview.png_bytes().len(),
+        );
     }
 
     #[cfg(target_os = "windows")]

@@ -480,6 +480,17 @@ cache miss。它不复用 v1/v2 PDF page cache。
   corruption 在 bridge 层表现为 miss，调用方从 source + resolved patch 重建。
 - page artifact 在 render 输入时绑定 source fingerprint；cache insert 只能使用 artifact 自带
   identity，不得再次接受一个可能不一致的 source fingerprint。
+- `previewPng` bridge 只接受已 resolved 的 current-renderer patch 与已验证的 exactly-one-page
+  artifact。当前 width contract 为 200..=1,800 pixels；请求不得静默 clamp，因为 cache key
+  中的 width 必须等于实际 raster width。
+- preview key 的 renderer identity 必须同时绑定 translation patch renderer 与 preview
+  rasterizer contract。当前组合为
+  `rosetta-pdf-v3-translation-patch-renderer/1+rosetta-pdf-v3-preview-rasterizer/1`；PDFium
+  render config、PNG encoding 或 bundled raster engine 发生影响输出的变化时必须升级 preview
+  contract，不能复用旧 PNG。
+- preview artifact 在 render 时封装完整 cache key，insert 不接受第二套 source / patch / width
+  identity。PNG 必须验证 signature、非零高度与 exact requested width；checksum/signature
+  corruption 在 bridge 层表现为 miss。
 - renderer 返回 resolved patch/page bytes 与 cache insert 是两个独立步骤。cache quota、I/O
   或 lease failure 不得丢弃 resolved patch，也不得阻止 patch store 成为 durable authority。
 - 同一 absolute cache directory 的进程内操作由共享 coordinator 串行化，并要求一致
