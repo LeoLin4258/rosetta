@@ -320,3 +320,179 @@ PDF cleanup task:
 - 旧任务是否还能读取
 - 是否需要迁移脚本
 - 导出结果是否受影响
+
+## PDF v3 PageGraph
+
+PDF v3 的 `PageGraph` 是独立于当前 PDF v2 page-state 的 native 页面 IR。
+它目前仍处于隔离开发阶段，尚未写入正式 job cache，也不需要迁移 v1/v2
+派生 artifact。
+
+约定：
+
+- `PageGraph.schemaVersion` 当前为 `4`。
+- 一个 `PageAtom` 只在 reconciliation 全部对象级检查通过后，才能从
+  `pdfium-unverified` 变为 `pdfium-verified` 或 `to-unicode-corrected`。
+- atom 的低层来源使用稳定的 mapping ID、text-show ID、operand ID、operand
+  index、可选 `TJ` array index、encoded byte range 和 source-unit character
+  index 表达；不把原始 encoded bytes 复制进 PageGraph。
+- 一个源编码单元可以对应多个 Unicode atom，例如 ligature。相关 atom 共享
+  encoded byte range，并使用 `sourceUnitCharIndex` / `sourceUnitCharCount`
+  区分单元内字符。
+- PDFium 根据几何生成但不属于 encoded operand 的空白标记为
+  `pdfium-synthetic-whitespace`，不得伪造 operand provenance，也不得进入翻译。
+  `isGenerated` 空白即使能关联到 PDFium 文本对象，也仍按 synthetic 处理，除非
+  后续 source reconciliation 证明它对应真实 encoded unit。
+- ToUnicode 中存在但 PDFium 没有几何 atom 的空白只计入
+  `unrepresentedSourceWhitespaceCount`；原操作数字节保持不变。
+- 映射失败的文本对象必须整对象保持 `preserved-unmapped`，不能留下部分 atom
+  已修正、部分 atom 未修正的状态。
+- 页面 reconciliation 状态只能是 `unreconciled`、`complete`、`partial` 或
+  `preserved`。字体不匹配、atom 覆盖缺失或 decoder 缺失必须让页面保持
+  `partial` / `preserved` 并记录 typed fallback reason。
+- Form XObject 按 `Do` 操作顺序递归；Form 自有资源优先，缺失资源从调用上下文
+  回退。text-show ID 包含稳定 invocation path，operand ID 仍指向底层唯一 stream
+  字节位置。
+- schema v3 的 `formInvocationPath` 必须是结构化 `FormInvocationStep[]`，每一跳包含
+  parent stream object/generation、`Do` operation index 和 child Form stream
+  object/generation。renderer 不得从 text-show ID hash 或展示字符串反解析调用路径。
+- schema v4 的 atom source provenance 还必须包含 stream object/generation、operation
+  index、unqualified source font resource、source `Tf` size 和 source `Tz` horizontal
+  scaling。renderer 必须重新解析 operation 前的文本状态并逐项校验，不能只信持久化值。
+- 同一 Form stream 的多次视觉调用不能伪装成独立 operand。`SharedContentStream`
+  只有在 decode、font identity 和 atom coverage 等基础 gate 全部通过后才可作为
+  可映射能力标记，不能覆盖更具体的 typed fallback。reconciliation 可以保留完整
+  invocation provenance；renderer 必须通过 invocation-local copy-on-write 隔离实际
+  视觉调用。直接 Form stream、引用环、超过 32 层和 PDFium/source 调用数不一致仍
+  必须产生 typed fallback。
+- `PageGraph` source text 是本地派生数据，不能进入遥测或普通诊断日志。
+- 正式持久化 PageGraph 前必须再确定压缩格式、source/engine/schema identity、
+  原子写入和可删除重建规则。
+
+## PDF v3 Content Operand Patch
+
+PDF v3 的 `ContentOperandRangePatch` 是隔离 native renderer 的瞬时低层写入模型，
+不是持久化 `TranslationPatch`，也尚未进入 job cache 或前端协议。
+
+约定：
+
+- patch 必须包含 1-based page、stream object/generation、operation index、operand
+  index、可选 `TJ` array index、encoded byte start/length、完整源 operand byte
+  count、完整源 operand SHA-256、replacement bytes 和结构化 Form invocation path。
+- 同一批 patch 必须属于同一页，目标 stream 必须能从选中页到达；执行时不得按
+  Unicode 文本搜索或猜测源位置。
+- 写入前必须校验完整 operand 长度和 hash。针对同一 operand 的多个 patch 必须
+  对源 identity 达成一致、全部在边界内且互不重叠。
+- replacement 按 byte offset 倒序应用。所有受影响 stream 必须先在 clone 上完成
+  decode、patch、encode 和 compress，只有全部成功后才能一次提交到 document；
+  任一失败不得留下部分 stream 已修改。
+- 被多个页面直接引用的 page content stream 不得原地修改。Form 在选中页有多个
+  实际 invocation，或从多个页面 `/Resources/XObject` 图可达时，也不得原地修改。
+  当前 executor 可对同一 selected page 的多个 logical target 执行 invocation-local
+  copy-on-write：以 root page stream 和结构化 invocation path 前缀构建 clone tree，
+  共同祖先只克隆一次，多个 root `/Contents` 引用一次性重定向。进入同一 COW root 的
+  其他 staged target 必须合并进 clone tree，不能再原地修改 source stream。
+- multi-target clone tree 必须先验证全部 invocation path、operand identity、resource
+  binding 和 stream encoding，再按 leaf-to-root 的确定性顺序分配对象并一次 commit。
+  任一 target 失败不得留下已克隆的 sibling target 或改变 `max_id`。
+- 跨页 Form 判断允许保守拒绝未实际执行的资源声明，但不得为追求精确而解压解析
+  所有未选中页面内容流。直接 Form、引用环和超过 32 层的资源图必须返回 typed
+  ownership failure。
+- replacement bytes 和 source operand bytes 不得进入普通诊断、日志或序列化结果；
+  结果只报告 count、stream ID、hash/identity 错误和耗时。
+
+## PDF v3 Unified Translation Font
+
+PDF v3 译文不要求复用或匹配源 PDF 字体家族。源字体只负责 extraction/style
+provenance；译文编码使用 Rosetta 管理的统一字体家族。
+
+约定：
+
+- 简体中文默认 `SourceHanSansCN-Regular.ttf`；只有存在已验证 bold style span 时才
+  加载 `SourceHanSansCN-Bold.ttf`。其他语言的广覆盖候选为
+  `GoNotoKurrent-Regular.ttf`。
+- font asset、cache key 和 prepared subset 必须携带显式 `regular` / `bold` face
+  intent。renderer 只能使用 PageGraph style plan 选定的 face；weight 不匹配必须在
+  document mutation 前 typed 拒绝。
+- bold intent 不能只依赖 PDFium 数值。当前分类为 weight >= 600，或去掉 subset
+  prefix 后 font name 含受控 bold marker；未知/缺失 weight 必须 preserve，不能猜测。
+- 生产 renderer 不得从 Windows/macOS/Linux 系统字体目录动态解析字体。字体必须是
+  component manifest 管理的离线资产，并带 version、SHA-256、size 和 license 元数据。
+- 字体文件必须在进程资产缓存中只读取/解析一次；page task 不得重复读取 10-15 MB
+  font file。
+- 每个 document/face 先收集完整 Unicode scalar set，再按 codepoint 排序生成一个
+  deterministic subset。相同 font fingerprint + face index + glyph set 必须得到相同
+  subset name、CID assignment 和 subset bytes。
+- subset 前必须验证 outline embedding permission、subsetting permission、当前支持的
+  TrueType `glyf` outline 和完整 glyph coverage。缺字不得静默调用系统 fallback；该
+  region 必须进入 typed preservation/fallback。
+- PDF 字体使用共享 Type0/CIDFontType2、Identity-H、显式 CID-to-GID、widths 和
+  ToUnicode。CID 与 subset GID 分离，保证 translated text 可搜索、复制和重新提取。
+- 同一 font subset object 可以挂到任意页资源字典；不得按页重复嵌入 font bytes。
+- 当前 direct-cmap 写入只证明简体中文与 Latin。Arabic、Indic 等复杂脚本即使字体有
+  glyph coverage，也必须等待 shaping engine，不能逐 Unicode scalar 直接写入。
+- 普通诊断只记录 asset ID、font fingerprint、glyph/subset byte count、coverage 状态和
+  耗时，不记录 translated text 或完整 codepoint 列表。
+
+## PDF v3 Text-Show Replacement Transactions and Batches
+
+当前 PDF v3 回填开放同一 selected page、底层 stream、结构化 invocation path 和
+`BT/ET` 内的保守事务路径；single text-show 是一项事务的包装。
+
+约定：
+
+- request 必须引用选中页可达的 page/Form content stream、完整结构化 invocation path、
+  operation index、expected operator、完整 text operand hash、source font
+  resource/size/scaling、translated text、reconciled PageGraph 和 minimum fit scale。
+- 选中页重复引用同一 top-level content stream、目标 path 不可验证、目标不在
+  `BT/ET`、font state 不一致，或 source hash/operator 变化时必须 typed 拒绝。被其他
+  页引用的 top-level stream 通过 selected-page copy-on-write 隔离，不得原地修改。
+- renderer 在原 operation 位置临时切换统一 font `Tf` 与 fitted `Tz`，写入 translated
+  CID show，然后恢复 source `Tf/Tz`。不得修改共享上游 `Tf`，不得使用背景矩形遮盖。
+- `TJ` 的 source kerning 数字不得用于不同语言译文；当前转换为单个 `Tj`。
+- 若目标后同一 text object 仍有 show，下一 show 前必须存在可验证的 position anchor：
+  finite 且 operand shape 正确的 `Tm/Td/TD/T*`，或合法 quote show。无 anchor 的连续
+  `Tj/TJ` 必须 preserve，不能假定译文 advance 与 source 相同。
+- 一个 transaction 必须属于同一 page、底层 stream、完整 invocation path 和同一
+  `BT/ET`，且 operation index 不重复。每个 entry 只能使用其 PageGraph style 选定的
+  prepared Regular/Bold face；缺失或重复 face weight 必须 typed 拒绝。所有 entry
+  必须基于未修改的 source content 完成校验，再按 operation index 倒序 splice，最后
+  一次 commit。
+- page-level batch 可以包含多个 transaction target，但所有 target 必须属于同一
+  selected page，且 `stream + invocation path` 不得重复。所有 target 必须基于未修改的
+  source document 完成 hash/style/fit/encoding/path 校验，再统一 staging 和 commit。
+- batch 需要的 Regular/Bold face 必须先取并集，每个 weight 只能生成一套 document-level
+  subset。任一 target 需要 copy-on-write 时，整批 target 都必须进入同一 clone forest；
+  包括本可原地更新的 unique top-level root，避免同一原子批次同时修改 source 与 staged
+  page。多个 `/Contents` root 必须通过一个 page dictionary 一次重连。
+- fit scale 低于 readability floor 时必须 preservation/overflow，不得无限压缩。
+- 多个 face 的 staged font objects 必须按确定性 weight 顺序连续预留不重叠 object ID；
+  clone object 必须从字体预留区间之后继续分配。unique top-level target 将字体挂到
+  selected page resources；Form target 必须物化 leaf 的有效继承资源后挂载字体，并始终
+  执行 invocation-local copy-on-write；跨页共享 top-level target 只克隆 stream 并重连
+  selected page。字体、rewritten/cloned streams 和 page dictionary 只有全部校验成功后
+  才能一起 commit；失败不得改变 `max_id` 或任何 document object。
+- single text-show request 不得接受上层猜测的 max advance。renderer 必须通过
+  text-show ID、stream/operation 和 source `Tf`/`Tz` provenance，从同一 source
+  object 的 PageGraph origin、loose bounds 和 character transform 确定性计算
+  page-space advance，再按 baseline matrix scale 转为 text-space fit bounds。
+- 当前 PDFium 只提供 axis-aligned character bounds，因此 geometry fit 只开放页面轴
+  对齐 baseline，包括正反向水平/垂直和缩放。任意角度 baseline 必须 typed preserve，
+  不能投影 AABB 后高估可用宽度。
+- 同一 source object 的 atom 必须解析到唯一 PageStyle。当前只允许非 italic、
+  `FilledUnstroked`、有效 fill color/opacity 和可分类 weight；单个 show 内存在 mixed
+  style、stroked、clipping 或缺失状态必须 preserve。不同 show 的已验证 Regular/Bold
+  style 可以在同一 transaction 原子回填。
+- renderer 必须从 content stream 起点重放目标前的 `q/Q`、`Tf/Tz`、`Tr` 和
+  DeviceGray/DeviceRGB/DeviceCMYK paint state，并与 PageGraph style 核对。
+  `cs/CS/sc/SC/scn/SCN/gs` 在完整 interpreter 实现前必须 typed preserve。
+- per-show diagnostic schema 当前为 `rosetta-pdf-v3-text-show-replacement/6`，transaction
+  schema 为 `rosetta-pdf-v3-text-show-replacement-transaction/3`。transaction 必须报告
+  确定性排序的 `translationFontWeights`、`formInvocationDepth`、`clonedStreamCount` 和
+  `pageContentRewired`，不能压缩成单一 weight。只允许报告 page/stream、count、style
+  ID、weight/face、normalized color/opacity、render mode、geometry/fit、staged/cloned
+  object count 和 timing，不得包含 source/translated text。
+- page batch diagnostic schema 当前为
+  `rosetta-pdf-v3-text-show-replacement-batch/1`，target schema 为
+  `rosetta-pdf-v3-text-show-replacement-batch-target/1`。batch 负责全局 target/replacement、
+  font object、clone、page rewiring 和 timing 计数；target 只记录自身 stream/path depth、
+  replacement count、weights 与 per-show diagnostics，不得记录文本 payload。

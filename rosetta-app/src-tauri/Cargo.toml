@@ -35,6 +35,8 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 lopdf = "0.34"
 once_cell = "1"
 lru = "0.12"
+subsetter = { version = "0.2.6", default-features = false }
+ttf-parser = { version = "0.25.1", default-features = false, features = ["std"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -3,6 +3,7 @@ mod local_data_reset;
 mod managed_pdf2zh;
 mod managed_rwkv;
 mod onboarding;
+pub(crate) mod pdf_v3;
 mod rosetta_jobs;
 mod rwkv_api;
 mod rwkv_io_debug;
