@@ -204,8 +204,9 @@ impl fmt::Display for TextShowReplacementError {
             Self::BatchPageMismatch => {
                 formatter.write_str("text-show replacement batch must target one page")
             }
-            Self::DuplicateBatchTarget => formatter
-                .write_str("text-show replacement batch contains a duplicate stream/path target"),
+            Self::DuplicateBatchTarget => formatter.write_str(
+                "text-show replacement batch contains a duplicate stream/path/text-object target",
+            ),
             Self::EmptyTransaction => {
                 formatter.write_str("text-show replacement transaction is empty")
             }
@@ -392,12 +393,16 @@ pub(crate) fn apply_text_show_replacement_batch(
         if target.page_number != page_number {
             return Err(TextShowReplacementError::BatchPageMismatch);
         }
-        if !target_keys.insert(target.key.clone()) {
+        if !target_keys.insert((target.key.clone(), target.text_object_bounds)) {
             return Err(TextShowReplacementError::DuplicateBatchTarget);
         }
         planned_targets.push(target);
     }
-    planned_targets.sort_by(|left, right| left.key.cmp(&right.key));
+    planned_targets.sort_by(|left, right| {
+        left.key
+            .cmp(&right.key)
+            .then_with(|| left.text_object_bounds.cmp(&right.text_object_bounds))
+    });
 
     let translation_font_weights = planned_targets
         .iter()
@@ -433,12 +438,13 @@ pub(crate) fn apply_text_show_replacement_batch(
             object_id: font.type0_font_id,
         })
         .collect::<Vec<_>>();
-    let requires_copy_on_write = planned_targets
+    let mut staged_targets = stage_replacement_streams(document, &planned_targets)?;
+    let requires_copy_on_write = staged_targets
         .iter()
         .any(|target| target.requires_copy_on_write);
     let (staged_streams, staged_page, cloned_stream_count, page_content_rewired) =
         if requires_copy_on_write {
-            let targets = planned_targets
+            let targets = staged_targets
                 .iter_mut()
                 .map(|target| {
                     Ok(InvocationLocalCopyOnWriteTarget {
@@ -465,7 +471,7 @@ pub(crate) fn apply_text_show_replacement_batch(
             (stage.streams, stage.page, cloned_stream_count, true)
         } else {
             let mut staged_streams = BTreeMap::new();
-            for target in &mut planned_targets {
+            for target in &mut staged_targets {
                 let staged_stream = target.staged_stream.take().ok_or(
                     TextShowReplacementError::SourceIdentityMismatch(
                         "replacement target stream was already consumed".to_string(),
@@ -572,10 +578,16 @@ struct ReplacementTargetKey {
 
 struct PlannedReplacementTarget {
     key: ReplacementTargetKey,
+    text_object_bounds: (usize, usize),
     page_number: u32,
     requires_copy_on_write: bool,
-    staged_stream: Option<lopdf::Stream>,
     planned: Vec<PlannedTextShowReplacement>,
+}
+
+struct StagedReplacementTarget {
+    key: ReplacementTargetKey,
+    requires_copy_on_write: bool,
+    staged_stream: Option<lopdf::Stream>,
 }
 
 fn plan_replacement_target(
@@ -637,7 +649,7 @@ fn plan_replacement_target(
     let source_content = source_stream
         .get_plain_content()
         .map_err(|error| TextShowReplacementError::StreamRead(error.to_string()))?;
-    let mut content = Content::decode(&source_content)
+    let content = Content::decode(&source_content)
         .map_err(|error| TextShowReplacementError::ContentDecode(error.to_string()))?;
     let mut text_object_bounds = None;
     let mut planned = Vec::with_capacity(requests.len());
@@ -658,31 +670,72 @@ fn plan_replacement_target(
         )?);
     }
     planned.sort_by_key(|replacement| replacement.operation_index);
-    for replacement in planned.iter().rev() {
-        content.operations.splice(
-            replacement.operation_index..=replacement.operation_index,
-            replacement.operations.clone(),
-        );
-    }
-    let rewritten_content = content
-        .encode()
-        .map_err(|error| TextShowReplacementError::ContentEncode(error.to_string()))?;
-    let mut staged_stream = source_stream.clone();
-    staged_stream.set_plain_content(rewritten_content);
-    staged_stream
-        .compress()
-        .map_err(|error| TextShowReplacementError::StreamWrite(error.to_string()))?;
 
     Ok(PlannedReplacementTarget {
         key: ReplacementTargetKey {
             stream_id,
             form_invocation_path: form_invocation_path.clone(),
         },
+        text_object_bounds: text_object_bounds.ok_or(TextShowReplacementError::EmptyTransaction)?,
         page_number: first_request.geometry.page_number,
         requires_copy_on_write: is_form_target || top_level_requires_copy_on_write,
-        staged_stream: Some(staged_stream),
         planned,
     })
+}
+
+fn stage_replacement_streams(
+    document: &Document,
+    planned_targets: &[PlannedReplacementTarget],
+) -> Result<Vec<StagedReplacementTarget>, TextShowReplacementError> {
+    let mut grouped = BTreeMap::<ReplacementTargetKey, Vec<&PlannedReplacementTarget>>::new();
+    for target in planned_targets {
+        grouped.entry(target.key.clone()).or_default().push(target);
+    }
+
+    let mut staged_targets = Vec::with_capacity(grouped.len());
+    for (key, targets) in grouped {
+        let source_stream = document
+            .get_object(key.stream_id)
+            .and_then(Object::as_stream)
+            .map_err(|error| TextShowReplacementError::StreamRead(error.to_string()))?;
+        let source_content = source_stream
+            .get_plain_content()
+            .map_err(|error| TextShowReplacementError::StreamRead(error.to_string()))?;
+        let mut content = Content::decode(&source_content)
+            .map_err(|error| TextShowReplacementError::ContentDecode(error.to_string()))?;
+        let mut operation_indices = BTreeSet::new();
+        let mut replacements = targets
+            .iter()
+            .flat_map(|target| target.planned.iter())
+            .collect::<Vec<_>>();
+        for replacement in &replacements {
+            if !operation_indices.insert(replacement.operation_index) {
+                return Err(TextShowReplacementError::DuplicateTransactionOperation);
+            }
+        }
+        replacements.sort_by_key(|replacement| replacement.operation_index);
+        for replacement in replacements.into_iter().rev() {
+            content.operations.splice(
+                replacement.operation_index..=replacement.operation_index,
+                replacement.operations.clone(),
+            );
+        }
+        let rewritten_content = content
+            .encode()
+            .map_err(|error| TextShowReplacementError::ContentEncode(error.to_string()))?;
+        let mut staged_stream = source_stream.clone();
+        staged_stream.set_plain_content(rewritten_content);
+        staged_stream
+            .compress()
+            .map_err(|error| TextShowReplacementError::StreamWrite(error.to_string()))?;
+
+        staged_targets.push(StagedReplacementTarget {
+            key,
+            requires_copy_on_write: targets.iter().any(|target| target.requires_copy_on_write),
+            staged_stream: Some(staged_stream),
+        });
+    }
+    Ok(staged_targets)
 }
 
 #[derive(Clone)]
@@ -1202,6 +1255,7 @@ fn is_text_show_operator(operator: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::BTreeSet,
         env, fs,
         path::PathBuf,
         time::{SystemTime, UNIX_EPOCH},
@@ -1482,6 +1536,127 @@ mod tests {
             root_stream_id,
             form_stream_id,
             top_level_stream_id,
+        )
+    }
+
+    fn repeated_top_level_text_objects_document() -> (Document, Vec<u8>, ObjectId, ObjectId) {
+        let (mut document, _, page_id, _, form_stream_id) = repeated_decodable_form_document();
+        let form_stream = document
+            .get_object(form_stream_id)
+            .and_then(Object::as_stream)
+            .expect("source Form stream");
+        let form_operations = Content::decode(
+            &form_stream
+                .get_plain_content()
+                .expect("source Form content"),
+        )
+        .expect("decoded source Form content")
+        .operations;
+        let mut operations = vec![Operation::new("q", Vec::new())];
+        operations.extend(form_operations.clone());
+        operations.extend([
+            Operation::new("Q", Vec::new()),
+            Operation::new("q", Vec::new()),
+            Operation::new(
+                "cm",
+                vec![
+                    Object::Integer(1),
+                    Object::Integer(0),
+                    Object::Integer(0),
+                    Object::Integer(1),
+                    Object::Integer(0),
+                    Object::Integer(-40),
+                ],
+            ),
+        ]);
+        operations.extend(form_operations);
+        operations.push(Operation::new("Q", Vec::new()));
+        let content = Content { operations }
+            .encode()
+            .expect("encoded repeated top-level content");
+        let mut stream = Stream::new(Dictionary::new(), content);
+        stream
+            .compress()
+            .expect("compressed repeated top-level content");
+        let stream_id = document.add_object(stream);
+        document
+            .get_object_mut(page_id)
+            .and_then(Object::as_dict_mut)
+            .expect("page dictionary")
+            .set("Contents", Object::Reference(stream_id));
+
+        let mut baseline_document = document.clone();
+        let mut baseline = Vec::new();
+        baseline_document
+            .save_to(&mut baseline)
+            .expect("save repeated top-level baseline");
+        (document, baseline, page_id, stream_id)
+    }
+
+    fn repeated_text_objects_form_document() -> (Document, Vec<u8>, ObjectId, ObjectId, ObjectId) {
+        let (mut document, _, page_id, root_stream_id, form_stream_id) =
+            repeated_decodable_form_document();
+        let source_form = document
+            .get_object(form_stream_id)
+            .and_then(Object::as_stream)
+            .expect("source Form stream");
+        let form_operations = Content::decode(
+            &source_form
+                .get_plain_content()
+                .expect("source Form content"),
+        )
+        .expect("decoded source Form content")
+        .operations;
+        let mut operations = vec![Operation::new("q", Vec::new())];
+        operations.extend(form_operations.clone());
+        operations.extend([
+            Operation::new("Q", Vec::new()),
+            Operation::new("q", Vec::new()),
+            Operation::new(
+                "cm",
+                vec![
+                    Object::Integer(1),
+                    Object::Integer(0),
+                    Object::Integer(0),
+                    Object::Integer(1),
+                    Object::Integer(0),
+                    Object::Integer(-20),
+                ],
+            ),
+        ]);
+        operations.extend(form_operations);
+        operations.push(Operation::new("Q", Vec::new()));
+        let mut repeated_form = source_form.clone();
+        repeated_form.set_plain_content(
+            Content { operations }
+                .encode()
+                .expect("encoded repeated Form content"),
+        );
+        repeated_form
+            .compress()
+            .expect("compressed repeated Form content");
+        let repeated_form_id = document.add_object(repeated_form);
+        document
+            .get_object_mut(page_id)
+            .and_then(Object::as_dict_mut)
+            .and_then(|page| page.get_mut(b"Resources"))
+            .and_then(Object::as_dict_mut)
+            .and_then(|resources| resources.get_mut(b"XObject"))
+            .and_then(Object::as_dict_mut)
+            .expect("page XObject resources")
+            .set("SharedForm", Object::Reference(repeated_form_id));
+
+        let mut baseline_document = document.clone();
+        let mut baseline = Vec::new();
+        baseline_document
+            .save_to(&mut baseline)
+            .expect("save repeated text-object Form baseline");
+        (
+            document,
+            baseline,
+            page_id,
+            root_stream_id,
+            repeated_form_id,
         )
     }
 
@@ -2758,6 +2933,435 @@ mod tests {
         assert!(output_text.contains("FORMX"));
         assert!(output_text.contains("TOPX"));
         assert!(output_text.contains(&preserved_form_text));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn multiple_text_objects_in_one_stream_share_one_atomic_staging() {
+        let _guard = pdfium_test_lock();
+        let (mut document, baseline, page_id, stream_id) =
+            repeated_top_level_text_objects_document();
+        let baseline_pdf = TemporaryPdf::write(&baseline);
+        let mapping = map_page_atoms_to_content_operands(shared_pdfium(), baseline_pdf.path(), 1)
+            .expect("repeated top-level mapping");
+        let page_graph = build_reconciled_page_graph(shared_pdfium(), baseline_pdf.path(), 1)
+            .expect("repeated top-level PageGraph");
+        let source_stream = document
+            .get_object(stream_id)
+            .and_then(Object::as_stream)
+            .expect("source top-level stream");
+        let content = Content::decode(
+            &source_stream
+                .get_plain_content()
+                .expect("source top-level content"),
+        )
+        .expect("decoded top-level content");
+        let production_font_probe =
+            env::var_os("ROSETTA_PDF_V3_MULTI_TEXT_OBJECT_SOURCE_HAN").is_some();
+        let translated = if production_font_probe {
+            ["\u{7532}OBJECT", "\u{4e59}OBJECT"]
+        } else {
+            ["FIRSTX", "SECONDX"]
+        };
+        let mut text_object_bounds = BTreeSet::new();
+        let mut target_requests = Vec::new();
+        for target in mapping.mappings.iter().filter(|target| {
+            target.stream_object_number == stream_id.0
+                && target.stream_generation == stream_id.1
+                && target.form_invocation_path.is_empty()
+                && target.source_font_resource.is_some()
+                && target.source_font_size.is_some()
+        }) {
+            let Ok(bounds) = find_text_object_bounds(&content, target.operation_index) else {
+                continue;
+            };
+            if text_object_bounds.contains(&bounds) {
+                continue;
+            }
+            let geometry = TextShowGeometryKey {
+                page_number: 1,
+                text_show_id: target.text_show_id.clone(),
+                form_invocation_path: target.form_invocation_path.clone(),
+                stream_object_number: target.stream_object_number,
+                stream_generation: target.stream_generation,
+                operation_index: target.operation_index,
+                source_font_resource: target
+                    .source_font_resource
+                    .clone()
+                    .expect("source font resource"),
+                source_font_size: target.source_font_size.expect("source font size"),
+                source_horizontal_scaling: target.source_horizontal_scaling,
+            };
+            let Ok(fit_bounds) = derive_text_show_fit_bounds(&page_graph, &geometry) else {
+                continue;
+            };
+            let Ok(style_plan) =
+                crate::pdf_v3::style::plan_text_show_style(&page_graph, &fit_bounds.style_id)
+            else {
+                continue;
+            };
+            if style_plan.translation_font_weight != TranslationFontWeight::Regular
+                || validate_text_position_boundary(&content, target.operation_index).is_err()
+            {
+                continue;
+            }
+            let Ok(source_state) = state_before_operation(&content, target.operation_index) else {
+                continue;
+            };
+            if validate_source_style(&style_plan, &source_state).is_err() {
+                continue;
+            }
+            let text_show = mapping
+                .text_shows
+                .iter()
+                .find(|show| show.text_show_id == target.text_show_id)
+                .expect("target text show");
+            let replacement = translated[target_requests.len()];
+            target_requests.push(TextShowReplacementTargetRequest {
+                replacements: vec![TextShowReplacementRequest {
+                    geometry,
+                    expected_operator: text_show.operator.clone(),
+                    expected_operand_hash: text_show.encoded_byte_hash.clone(),
+                    translated_text: replacement.to_string(),
+                    minimum_fit_scale: 0.5,
+                }],
+            });
+            text_object_bounds.insert(bounds);
+            if target_requests.len() == translated.len() {
+                break;
+            }
+        }
+        assert_eq!(target_requests.len(), 2);
+        assert_eq!(text_object_bounds.len(), 2);
+
+        let mut font_plan = UnifiedTranslationFontPlan::default();
+        for replacement in translated {
+            font_plan.add_text(replacement);
+        }
+        let font_path = if production_font_probe {
+            env::var("ROSETTA_PDF_V3_FONT_PATH")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from(r"C:\Users\Leo\AppData\Local\com.rosetta.desktop\pdf2zh-sidecar\pack\windows-amd64\assets\babeldoc\fonts\SourceHanSansCN-Regular.ttf"))
+        } else {
+            PathBuf::from(r"C:\Windows\Fonts\arial.ttf")
+        };
+        let prepared = TranslationFontAsset::open_weighted(
+            if production_font_probe {
+                "SourceHanSansCNRegular"
+            } else {
+                "ArialRegular"
+            },
+            TranslationFontWeight::Regular,
+            &font_path,
+            0,
+        )
+        .expect("Regular font")
+        .prepare(&font_plan)
+        .expect("prepared Regular font");
+
+        let mut duplicate_document = document.clone();
+        let before_duplicate = duplicate_document.clone();
+        let duplicate_targets = vec![target_requests[0].clone(), target_requests[0].clone()];
+        let error = apply_text_show_replacement_batch(
+            &mut duplicate_document,
+            &page_graph,
+            &duplicate_targets,
+            &[&prepared],
+        )
+        .expect_err("duplicate text-object target must reject the batch");
+        assert!(matches!(
+            error,
+            TextShowReplacementError::DuplicateBatchTarget
+        ));
+        assert_eq!(duplicate_document.max_id, before_duplicate.max_id);
+        assert_eq!(duplicate_document.objects, before_duplicate.objects);
+
+        let mut invalid_document = document.clone();
+        let before_invalid = invalid_document.clone();
+        let mut invalid_targets = target_requests.clone();
+        invalid_targets[1].replacements[0].expected_operand_hash = "invalid".to_string();
+        apply_text_show_replacement_batch(
+            &mut invalid_document,
+            &page_graph,
+            &invalid_targets,
+            &[&prepared],
+        )
+        .expect_err("invalid second text object must reject the complete batch");
+        assert_eq!(invalid_document.max_id, before_invalid.max_id);
+        assert_eq!(invalid_document.objects, before_invalid.objects);
+
+        let before_max_id = document.max_id;
+        let before_stream = document
+            .get_object(stream_id)
+            .cloned()
+            .expect("source top-level object");
+        let result = apply_text_show_replacement_batch(
+            &mut document,
+            &page_graph,
+            &target_requests,
+            &[&prepared],
+        )
+        .expect("multi-text-object replacement");
+        assert_eq!(result.target_count, 2);
+        assert_eq!(result.replacement_count, 2);
+        assert_eq!(result.staged_font_object_count, 6);
+        assert_eq!(result.cloned_stream_count, 0);
+        assert!(!result.page_content_rewired);
+        assert_eq!(document.max_id, before_max_id + 6);
+        assert_eq!(document.get_page_contents(page_id), vec![stream_id]);
+        assert_ne!(
+            document
+                .get_object(stream_id)
+                .expect("rewritten top-level stream"),
+            &before_stream
+        );
+        assert!(result.targets.iter().all(|target| {
+            target.stream_id == format!("{}-{}", stream_id.0, stream_id.1)
+                && target.form_invocation_depth == 0
+                && target.replacement_count == 1
+        }));
+        let diagnostics = serde_json::to_string(&result).expect("serialized diagnostics");
+        for replacement in translated {
+            assert!(!diagnostics.contains(replacement));
+        }
+
+        let mut output = Vec::new();
+        document
+            .save_to(&mut output)
+            .expect("save multi-text-object output");
+        if let Ok(path) = env::var("ROSETTA_PDF_V3_MULTI_TEXT_OBJECT_BASELINE_OUTPUT") {
+            fs::write(path, &baseline).expect("write multi-text-object baseline");
+        }
+        if let Ok(path) = env::var("ROSETTA_PDF_V3_MULTI_TEXT_OBJECT_OUTPUT") {
+            fs::write(path, &output).expect("write multi-text-object output");
+        }
+        if production_font_probe {
+            println!(
+                "pdf-v3 multi-text-object replacement targets={} clones={} elapsed={}ms output={}",
+                result.target_count,
+                result.cloned_stream_count,
+                result.elapsed_ms,
+                output.len()
+            );
+        }
+        let output_document = shared_pdfium()
+            .load_pdf_from_byte_slice(&output, None)
+            .expect("PDFium multi-text-object output");
+        let output_text = output_document
+            .pages()
+            .get(0)
+            .expect("output page")
+            .text()
+            .expect("output text")
+            .all();
+        for replacement in translated {
+            assert!(output_text.contains(replacement));
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn multiple_text_objects_in_one_form_invocation_share_one_leaf_clone() {
+        let _guard = pdfium_test_lock();
+        let (mut document, baseline, page_id, root_stream_id, form_stream_id) =
+            repeated_text_objects_form_document();
+        let baseline_pdf = TemporaryPdf::write(&baseline);
+        let mapping = map_page_atoms_to_content_operands(shared_pdfium(), baseline_pdf.path(), 1)
+            .expect("repeated Form text-object mapping");
+        let page_graph = build_reconciled_page_graph(shared_pdfium(), baseline_pdf.path(), 1)
+            .expect("repeated Form text-object PageGraph");
+        let form_stream = document
+            .get_object(form_stream_id)
+            .and_then(Object::as_stream)
+            .expect("source repeated Form stream");
+        let content = Content::decode(
+            &form_stream
+                .get_plain_content()
+                .expect("source repeated Form content"),
+        )
+        .expect("decoded repeated Form content");
+        let translated = ["FORMONE", "FORMTWO"];
+        let mut text_object_bounds = BTreeSet::new();
+        let mut target_requests = Vec::new();
+        let mut preserved_text = None;
+        for target in mapping.mappings.iter().filter(|target| {
+            target.stream_object_number == form_stream_id.0
+                && target.stream_generation == form_stream_id.1
+                && target.form_invocation_path.len() == 1
+                && target.form_invocation_path[0].operation_index == 1
+                && target.source_font_resource.is_some()
+                && target.source_font_size.is_some()
+        }) {
+            let Ok(bounds) = find_text_object_bounds(&content, target.operation_index) else {
+                continue;
+            };
+            if text_object_bounds.contains(&bounds) {
+                continue;
+            }
+            let geometry = TextShowGeometryKey {
+                page_number: 1,
+                text_show_id: target.text_show_id.clone(),
+                form_invocation_path: target.form_invocation_path.clone(),
+                stream_object_number: target.stream_object_number,
+                stream_generation: target.stream_generation,
+                operation_index: target.operation_index,
+                source_font_resource: target
+                    .source_font_resource
+                    .clone()
+                    .expect("source font resource"),
+                source_font_size: target.source_font_size.expect("source font size"),
+                source_horizontal_scaling: target.source_horizontal_scaling,
+            };
+            let Ok(fit_bounds) = derive_text_show_fit_bounds(&page_graph, &geometry) else {
+                continue;
+            };
+            let Ok(style_plan) =
+                crate::pdf_v3::style::plan_text_show_style(&page_graph, &fit_bounds.style_id)
+            else {
+                continue;
+            };
+            if style_plan.translation_font_weight != TranslationFontWeight::Regular
+                || validate_text_position_boundary(&content, target.operation_index).is_err()
+            {
+                continue;
+            }
+            let Ok(source_state) = state_before_operation(&content, target.operation_index) else {
+                continue;
+            };
+            if validate_source_style(&style_plan, &source_state).is_err() {
+                continue;
+            }
+            let text_show = mapping
+                .text_shows
+                .iter()
+                .find(|show| show.text_show_id == target.text_show_id)
+                .expect("target text show");
+            if preserved_text.is_none() {
+                preserved_text = Some(
+                    target
+                        .decoded_units
+                        .iter()
+                        .map(|unit| unit.text.as_str())
+                        .collect::<String>(),
+                );
+            }
+            let replacement = translated[target_requests.len()];
+            target_requests.push(TextShowReplacementTargetRequest {
+                replacements: vec![TextShowReplacementRequest {
+                    geometry,
+                    expected_operator: text_show.operator.clone(),
+                    expected_operand_hash: text_show.encoded_byte_hash.clone(),
+                    translated_text: replacement.to_string(),
+                    minimum_fit_scale: 0.5,
+                }],
+            });
+            text_object_bounds.insert(bounds);
+            if target_requests.len() == translated.len() {
+                break;
+            }
+        }
+        assert_eq!(target_requests.len(), 2);
+        let preserved_text = preserved_text.expect("preserved sibling source text");
+        assert!(!preserved_text.is_empty());
+
+        let mut font_plan = UnifiedTranslationFontPlan::default();
+        for replacement in translated {
+            font_plan.add_text(replacement);
+        }
+        let prepared = TranslationFontAsset::open_weighted(
+            "ArialRegular",
+            TranslationFontWeight::Regular,
+            &PathBuf::from(r"C:\Windows\Fonts\arial.ttf"),
+            0,
+        )
+        .expect("Arial Regular font")
+        .prepare(&font_plan)
+        .expect("prepared Regular font");
+
+        let mut invalid_document = document.clone();
+        let before_invalid = invalid_document.clone();
+        let mut invalid_targets = target_requests.clone();
+        invalid_targets[1].replacements[0].expected_operand_hash = "invalid".to_string();
+        apply_text_show_replacement_batch(
+            &mut invalid_document,
+            &page_graph,
+            &invalid_targets,
+            &[&prepared],
+        )
+        .expect_err("invalid second Form text object must reject the complete batch");
+        assert_eq!(invalid_document.max_id, before_invalid.max_id);
+        assert_eq!(invalid_document.objects, before_invalid.objects);
+
+        let before_max_id = document.max_id;
+        let source_root = document
+            .get_object(root_stream_id)
+            .cloned()
+            .expect("source root object");
+        let source_form = document
+            .get_object(form_stream_id)
+            .cloned()
+            .expect("source repeated Form object");
+        let result = apply_text_show_replacement_batch(
+            &mut document,
+            &page_graph,
+            &target_requests,
+            &[&prepared],
+        )
+        .expect("multi-text-object Form replacement");
+        assert_eq!(result.target_count, 2);
+        assert_eq!(result.replacement_count, 2);
+        assert_eq!(result.staged_font_object_count, 6);
+        assert_eq!(result.cloned_stream_count, 2);
+        assert!(result.page_content_rewired);
+        assert_eq!(document.max_id, before_max_id + 8);
+        assert_eq!(
+            document.get_object(root_stream_id).expect("source root"),
+            &source_root
+        );
+        assert_eq!(
+            document.get_object(form_stream_id).expect("source Form"),
+            &source_form
+        );
+        assert_ne!(document.get_page_contents(page_id), vec![root_stream_id]);
+        assert!(result.targets.iter().all(|target| {
+            target.stream_id == format!("{}-{}", form_stream_id.0, form_stream_id.1)
+                && target.form_invocation_depth == 1
+                && target.replacement_count == 1
+        }));
+        let cloned_form_count = document
+            .objects
+            .iter()
+            .filter(|(object_id, object)| {
+                object_id.0 > before_max_id
+                    && object.as_stream().is_ok_and(|stream| {
+                        stream
+                            .dict
+                            .get(b"Subtype")
+                            .and_then(Object::as_name)
+                            .is_ok_and(|subtype| subtype == b"Form")
+                    })
+            })
+            .count();
+        assert_eq!(cloned_form_count, 1);
+
+        let mut output = Vec::new();
+        document
+            .save_to(&mut output)
+            .expect("save multi-text-object Form output");
+        let output_document = shared_pdfium()
+            .load_pdf_from_byte_slice(&output, None)
+            .expect("PDFium multi-text-object Form output");
+        let output_text = output_document
+            .pages()
+            .get(0)
+            .expect("output page")
+            .text()
+            .expect("output text")
+            .all();
+        for replacement in translated {
+            assert!(output_text.contains(replacement));
+        }
+        assert!(output_text.contains(&preserved_text));
     }
 
     #[cfg(target_os = "windows")]

@@ -6,6 +6,9 @@ Status: Accepted
 
 Amends ADR 0027, ADR 0028, ADR 0029 and ADR 0030.
 
+ADR 0032 permits multiple logical text-object targets to share one physical
+stream and invocation path while retaining one `BT`/`ET` per target.
+
 ## Context
 
 The translated replacement planner previously accepted one logical target: one
@@ -27,15 +30,17 @@ logical target transactions.
 
 Each target retains the existing transaction gates: all of its shows must use
 the same page, stream, complete `FormInvocationStep[]` path and `BT`/`ET` text
-object, with unique operation indices. A batch must target one selected page
-and may contain each `stream + invocation path` key only once.
+object, with unique operation indices. A batch must target one selected page.
+Each `stream + invocation path + source BT/ET bounds` key may occur only once;
+ADR 0032 groups distinct text objects that share a physical stream/path into
+one staged stream.
 
 The planner validates every replacement target against the unchanged source
 document before object ID reservation. This includes operand identity, content
 state, PageGraph geometry and style, fit policy and font-face coverage. Targets
-are sorted deterministically by stream and structured path. The clone stage
-then validates every invocation path against that same unchanged document
-before any object mutation.
+are sorted deterministically by stream, structured path and source text-object
+bounds. The clone stage then validates every invocation path against that same
+unchanged document before any object mutation.
 
 Required translation faces are unioned across the full batch. Exactly one
 document-level subset is staged per weight in deterministic order, regardless
@@ -106,9 +111,8 @@ overlap or unrelated page changes.
 ### Costs
 
 - A batch still targets one page.
-- Separate targets with the same stream and invocation path are rejected. Shows
-  in one `BT`/`ET` must use one target transaction; multiple text objects in the
-  same stream/path need a future grouping model.
+- Shows in one `BT`/`ET` must use one target transaction. ADR 0032 permits
+  multiple distinct text-object targets in the same stream/path.
 - Unanchored consecutive shows, paragraph reflow, protected spans, durable
   `TranslationPatch` persistence and bounded-memory export remain pending.
 - The current implementation still stages an in-memory `lopdf::Document`.

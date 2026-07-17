@@ -458,8 +458,15 @@ provenance；译文编码使用 Rosetta 管理的统一字体家族。
   必须基于未修改的 source content 完成校验，再按 operation index 倒序 splice，最后
   一次 commit。
 - page-level batch 可以包含多个 transaction target，但所有 target 必须属于同一
-  selected page，且 `stream + invocation path` 不得重复。所有 target 必须基于未修改的
-  source document 完成 hash/style/fit/encoding/path 校验，再统一 staging 和 commit。
+  selected page。logical target identity 是 stream、invocation path 与 source `BT/ET`
+  bounds 的组合，同一 identity 不得重复；同一 physical stream/path 可以包含多个不同
+  文本对象。
+  所有 target 必须基于未修改的 source document 完成 hash/style/fit/encoding/path 校验，
+  再统一 staging 和 commit。
+- logical target 校验完成后，renderer 必须按 `stream + invocation path` 聚合 physical
+  target。同一 physical target 的 replacement operation 必须按 source operation index
+  倒序合并，只允许一次 decode/encode/compress 和一次 ownership commit。unique top-level
+  stream 只重写一次；同一 Form invocation 只生成一个 leaf clone。
 - batch 需要的 Regular/Bold face 必须先取并集，每个 weight 只能生成一套 document-level
   subset。任一 target 需要 copy-on-write 时，整批 target 都必须进入同一 clone forest；
   包括本可原地更新的 unique top-level root，避免同一原子批次同时修改 source 与 staged

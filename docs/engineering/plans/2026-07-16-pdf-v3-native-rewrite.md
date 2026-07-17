@@ -103,6 +103,14 @@ Current progress:
   searchable 17,044-byte PDF from a 13,129-byte source. A mixed Form/top-level
   test rewired both `/Contents` roots in one commit and preserved every source
   stream.
+- Logical targets in distinct `BT`/`ET` objects can now share one physical
+  stream/path. They validate independently against the unchanged source, then
+  merge into one descending splice, encode and ownership commit. Top-level and
+  Form COW tests prove one physical rewrite/leaf regardless of logical target
+  count.
+- A Source Han same-stream probe replaced two text objects in about 4 ms and
+  produced a searchable 16,488-byte PDF from a 13,473-byte source. Poppler
+  changes were confined to the two original text rows.
 
 ## Purpose
 
@@ -395,10 +403,10 @@ text-space fit bounds, validated device-color state and independently selected
 Regular/Bold translation faces. Page-level translated batches now span multiple
 Form invocation paths and top-level content roots, reuse one font subset per
 face and merge all copy-on-write paths into one atomic page commit. Each target
-remains one stream/path and one `BT`/`ET`. Unanchored consecutive shows,
-multiple text objects in the same stream/path, one-show mixed styles, paragraph
-layout, arbitrary-angle geometry and the durable translation pipeline remain
-disconnected.
+remains one stream/path and one `BT`/`ET`, while distinct text-object targets in
+the same stream/path share one physical staged stream. Unanchored consecutive
+shows, one-show mixed styles, paragraph layout, arbitrary-angle geometry and
+the durable translation pipeline remain disconnected.
 
 ### Phase 4 — Patch-first persistence
 
