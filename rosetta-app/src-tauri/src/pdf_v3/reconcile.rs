@@ -309,6 +309,8 @@ fn plan_object_updates(
                 stream_object_number: mapping.stream_object_number,
                 stream_generation: mapping.stream_generation,
                 operation_index: mapping.operation_index,
+                text_show_operator: mapping.text_show_operator.clone(),
+                text_show_operand_hash: mapping.text_show_operand_hash.clone(),
                 source_font_resource: mapping.source_font_resource.clone(),
                 source_font_size: mapping.source_font_size,
                 source_horizontal_scaling: mapping.source_horizontal_scaling,

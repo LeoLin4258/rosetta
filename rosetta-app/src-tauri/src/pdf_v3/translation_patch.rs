@@ -63,6 +63,10 @@ pub(crate) enum TranslationPatchError {
     EntryMismatch(String),
     PatchIdMismatch,
     InvalidRendererDecision(String),
+    RendererDecisionPending(String),
+    RendererDecisionAlreadyResolved(String),
+    MissingRendererDecision(String),
+    UnknownRendererDecision(String),
     Serialization(String),
 }
 
@@ -147,6 +151,22 @@ impl fmt::Display for TranslationPatchError {
             Self::InvalidRendererDecision(entry_id) => write!(
                 formatter,
                 "TranslationPatch entry {entry_id} has an invalid renderer decision"
+            ),
+            Self::RendererDecisionPending(entry_id) => write!(
+                formatter,
+                "TranslationPatch entry {entry_id} renderer decision is still pending"
+            ),
+            Self::RendererDecisionAlreadyResolved(entry_id) => write!(
+                formatter,
+                "TranslationPatch entry {entry_id} renderer decision is already resolved"
+            ),
+            Self::MissingRendererDecision(entry_id) => write!(
+                formatter,
+                "TranslationPatch entry {entry_id} is missing a renderer decision"
+            ),
+            Self::UnknownRendererDecision(entry_id) => write!(
+                formatter,
+                "TranslationPatch renderer decision references unknown entry {entry_id}"
             ),
             Self::Serialization(message) => formatter.write_str(message),
         }
@@ -461,6 +481,69 @@ pub(crate) fn validate_translation_patch(
     Ok(())
 }
 
+pub(crate) fn resolve_translation_patch_renderer_decisions(
+    page: &PageGraph,
+    patch: &TranslationPatch,
+    decisions: &BTreeMap<String, TranslationPatchRendererDecision>,
+) -> Result<TranslationPatch, TranslationPatchError> {
+    validate_translation_patch(page, patch)?;
+    let entry_ids = patch
+        .entries
+        .iter()
+        .map(|entry| entry.entry_id.as_str())
+        .collect::<BTreeSet<_>>();
+    if let Some(unknown) = decisions
+        .keys()
+        .find(|entry_id| !entry_ids.contains(entry_id.as_str()))
+    {
+        return Err(TranslationPatchError::UnknownRendererDecision(
+            unknown.clone(),
+        ));
+    }
+
+    let mut resolved = patch.clone();
+    for entry in &mut resolved.entries {
+        if !matches!(
+            entry.renderer_decision,
+            TranslationPatchRendererDecision::Pending
+        ) {
+            return Err(TranslationPatchError::RendererDecisionAlreadyResolved(
+                entry.entry_id.clone(),
+            ));
+        }
+        let decision = decisions.get(&entry.entry_id).cloned().ok_or_else(|| {
+            TranslationPatchError::MissingRendererDecision(entry.entry_id.clone())
+        })?;
+        if matches!(decision, TranslationPatchRendererDecision::Pending) {
+            return Err(TranslationPatchError::InvalidRendererDecision(
+                entry.entry_id.clone(),
+            ));
+        }
+        validate_renderer_decision(&entry.entry_id, &decision)?;
+        entry.renderer_decision = decision;
+    }
+    resolved.patch_id = patch_id(&resolved)?;
+    validate_translation_patch(page, &resolved)?;
+    encode_translation_patch(&resolved)?;
+    Ok(resolved)
+}
+
+pub(crate) fn ensure_translation_patch_renderer_resolved(
+    patch: &TranslationPatch,
+) -> Result<(), TranslationPatchError> {
+    if let Some(entry) = patch.entries.iter().find(|entry| {
+        matches!(
+            entry.renderer_decision,
+            TranslationPatchRendererDecision::Pending
+        )
+    }) {
+        return Err(TranslationPatchError::RendererDecisionPending(
+            entry.entry_id.clone(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_page_schema(page: &PageGraph) -> Result<(), TranslationPatchError> {
     if page.schema_version != PAGE_GRAPH_SCHEMA_VERSION {
         return Err(TranslationPatchError::UnsupportedPageGraphSchema {
@@ -707,10 +790,13 @@ fn hex_digest(bytes: impl AsRef<[u8]>) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::{
         build_translation_patch, decode_and_validate_translation_patch, encode_translation_patch,
-        patch_id, validate_translation_patch, TranslationPatchDraft, TranslationPatchEntryDraft,
-        TranslationPatchError, TranslationPatchProtectedSpanPlacement, MAX_PATCH_BYTES,
+        patch_id, resolve_translation_patch_renderer_decisions, validate_translation_patch,
+        TranslationPatchDraft, TranslationPatchEntryDraft, TranslationPatchError,
+        TranslationPatchProtectedSpanPlacement, MAX_PATCH_BYTES,
     };
     use crate::pdf_v3::types::{
         PageAtom, PageAtomKind, PageAtomSourceKind, PageGraph, PageReconciliationSummary,
@@ -911,6 +997,60 @@ mod tests {
         assert!(matches!(
             error,
             TranslationPatchError::InvalidRendererDecision(_)
+        ));
+    }
+
+    #[test]
+    fn resolves_all_pending_decisions_before_rebuilding_patch_identity() {
+        let page = page_graph();
+        let patch = build_translation_patch(
+            &page,
+            patch_draft(vec![
+                "atom-body",
+                "atom-citation-open",
+                "atom-citation-close",
+            ]),
+        )
+        .expect("translation patch");
+        let original_id = patch.patch_id.clone();
+        let decisions = BTreeMap::from([(
+            patch.entries[0].entry_id.clone(),
+            TranslationPatchRendererDecision::Fitted {
+                strategy: TranslationPatchFitStrategy::SingleShowScale,
+                fit_scale: 0.95,
+            },
+        )]);
+
+        let resolved = resolve_translation_patch_renderer_decisions(&page, &patch, &decisions)
+            .expect("resolved patch");
+        assert_ne!(resolved.patch_id, original_id);
+        assert!(matches!(
+            resolved.entries[0].renderer_decision,
+            TranslationPatchRendererDecision::Fitted { fit_scale, .. }
+                if (fit_scale - 0.95).abs() < 0.0001
+        ));
+        assert!(matches!(
+            resolve_translation_patch_renderer_decisions(&page, &resolved, &decisions)
+                .expect_err("resolved patch cannot be resolved twice"),
+            TranslationPatchError::RendererDecisionAlreadyResolved(_)
+        ));
+
+        let missing = BTreeMap::new();
+        assert!(matches!(
+            resolve_translation_patch_renderer_decisions(&page, &patch, &missing)
+                .expect_err("every entry needs a decision"),
+            TranslationPatchError::MissingRendererDecision(_)
+        ));
+        let unknown = BTreeMap::from([(
+            "entry-unknown".to_string(),
+            TranslationPatchRendererDecision::Preserved {
+                reason_code: "unsupported".to_string(),
+            },
+        )]);
+        assert!(matches!(
+            resolve_translation_patch_renderer_decisions(&page, &patch, &unknown)
+                .expect_err("unknown entry decision"),
+            TranslationPatchError::UnknownRendererDecision(_)
         ));
     }
 

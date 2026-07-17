@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 pub(crate) const PDF_V3_CONTRACT_VERSION: u32 = 1;
-pub(crate) const PAGE_GRAPH_SCHEMA_VERSION: u32 = 4;
+pub(crate) const PAGE_GRAPH_SCHEMA_VERSION: u32 = 5;
 pub(crate) const TRANSLATION_PATCH_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -92,6 +92,8 @@ pub(crate) struct PageAtomSourceProvenance {
     pub stream_object_number: u32,
     pub stream_generation: u16,
     pub operation_index: usize,
+    pub text_show_operator: String,
+    pub text_show_operand_hash: String,
     pub source_font_resource: Option<String>,
     pub source_font_size: Option<f32>,
     pub source_horizontal_scaling: f32,
@@ -344,6 +346,8 @@ mod tests {
                     stream_object_number: 42,
                     stream_generation: 0,
                     operation_index: 1,
+                    text_show_operator: "Tj".to_string(),
+                    text_show_operand_hash: "sha256:operand".to_string(),
                     source_font_resource: Some("F1".to_string()),
                     source_font_size: Some(12.0),
                     source_horizontal_scaling: 100.0,

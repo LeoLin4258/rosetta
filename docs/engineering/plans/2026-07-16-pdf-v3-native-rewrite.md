@@ -137,6 +137,21 @@ Current progress:
 - A 1,000-page Windows AMD test retained only the configured 128 entries,
   stayed below its 128 KiB artifact quota and kept logical index bytes below
   1 MiB. The cache remains disconnected from rendering and legacy PDF state.
+- PageGraph schema v5 now carries the exact text-show operator and operand
+  SHA-256 needed to construct replacement requests without searching source
+  text. A new `TranslationPatch` renderer validates complete source-object
+  coverage, groups entries by stream/Form path/`BT`/`ET`, preflights every
+  target against the unchanged document, resolves all entry decisions and
+  applies safe targets through one existing atomic page batch.
+- Unsupported or incomplete entries now receive stable preservation reasons
+  while safe sibling entries still render. Stale operator/operand identity is
+  fatal and leaves all PDF objects and `max_id` unchanged. The patch store now
+  accepts only fully resolved patches; pending patches are ephemeral renderer
+  drafts and never become disk authority.
+- A Windows AMD manual probe replaced one LibreOffice row with `Unified patch
+  renderer`. Independent Poppler rendering confined all 6,846 changed pixels
+  to the original first-row band (0.3145% of a 1241x1754 page), and independent
+  `pypdf` extraction found the replacement text in the output.
 
 ## Purpose
 
@@ -431,9 +446,10 @@ Regular/Bold translation faces. Page-level translated batches now span multiple
 Form invocation paths and top-level content roots, reuse one font subset per
 face and merge all copy-on-write paths into one atomic page commit. Each target
 remains one stream/path and one `BT`/`ET`, while distinct text-object targets in
-the same stream/path share one physical staged stream. Unanchored consecutive
-shows, one-show mixed styles, paragraph layout, arbitrary-angle geometry and
-the durable patch-to-renderer pipeline remain disconnected.
+the same stream/path share one physical staged stream. The durable patch
+contract is now connected through a conservative page renderer for complete
+single-object entries. Unanchored consecutive shows, one-show mixed styles,
+paragraph layout and arbitrary-angle geometry remain preserved.
 
 ### Phase 4 — Patch-first persistence
 
@@ -453,7 +469,9 @@ page-local recovery and superseded/orphan cleanup. The isolated render cache is
 also implemented with source/patch/renderer-addressed keys, a configurable
 384 MiB default hard artifact quota, 4,096-entry default limit, 64 bounded hash
 index shards, deterministic LRU, active leases, atomic writes, integrity checks
-and local repair. Patch compression, renderer/cache integration and streaming
+and local repair. Pending translation drafts now resolve entirely in memory;
+only fitted/preserved patches can enter the store, avoiding same-revision
+identity conflicts. Patch compression, render-cache population and streaming
 document export remain pending.
 
 ### Phase 5 — Translation and protected spans

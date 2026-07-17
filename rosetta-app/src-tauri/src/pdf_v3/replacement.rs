@@ -19,7 +19,7 @@ use super::{
         InvocationLocalCopyOnWriteTarget, ResourceReferenceBinding,
     },
     style::{plan_text_show_style, TextShowStyleError, TextShowStylePlan},
-    types::PageGraph,
+    types::{FormInvocationStep, PageGraph},
 };
 
 #[derive(Debug, Clone)]
@@ -45,6 +45,22 @@ pub(crate) struct TextShowReplacementTargetRequest {
     pub replacements: Vec<TextShowReplacementRequest>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct TextShowReplacementTargetIdentity {
+    pub stream_object_number: u32,
+    pub stream_generation: u16,
+    pub form_invocation_path: Vec<FormInvocationStep>,
+    pub text_object_start: usize,
+    pub text_object_end: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct TextShowReplacementPreflight {
+    pub text_show_id: String,
+    pub operation_index: usize,
+    pub fit_scale: f32,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TextShowReplacementResult {
@@ -52,6 +68,7 @@ pub(crate) struct TextShowReplacementResult {
     pub page_number: u32,
     pub stream_id: String,
     pub operation_index: usize,
+    pub text_show_id: String,
     pub form_invocation_depth: usize,
     pub fit_scale: f32,
     pub max_advance: f32,
@@ -315,6 +332,70 @@ pub(crate) fn apply_single_text_show_replacement(
         .ok_or(TextShowReplacementError::EmptyTransaction)
 }
 
+pub(crate) fn text_show_replacement_target_identity(
+    document: &Document,
+    request: &TextShowReplacementRequest,
+) -> Result<TextShowReplacementTargetIdentity, TextShowReplacementError> {
+    let stream_id = request.stream_id();
+    let stream = document
+        .get_object(stream_id)
+        .and_then(Object::as_stream)
+        .map_err(|error| TextShowReplacementError::StreamRead(error.to_string()))?;
+    let content = Content::decode(
+        &stream
+            .get_plain_content()
+            .map_err(|error| TextShowReplacementError::StreamRead(error.to_string()))?,
+    )
+    .map_err(|error| TextShowReplacementError::ContentDecode(error.to_string()))?;
+    let (text_object_start, text_object_end) =
+        find_text_object_bounds(&content, request.geometry.operation_index)?;
+    Ok(TextShowReplacementTargetIdentity {
+        stream_object_number: request.geometry.stream_object_number,
+        stream_generation: request.geometry.stream_generation,
+        form_invocation_path: request.geometry.form_invocation_path.clone(),
+        text_object_start,
+        text_object_end,
+    })
+}
+
+pub(crate) fn preflight_text_show_replacement_transaction(
+    document: &Document,
+    page_graph: &PageGraph,
+    requests: &[TextShowReplacementRequest],
+    fonts: &[&PreparedTranslationFont],
+) -> Result<Vec<TextShowReplacementPreflight>, TextShowReplacementError> {
+    let first = requests
+        .first()
+        .ok_or(TextShowReplacementError::EmptyTransaction)?;
+    let pages = document.get_pages();
+    let page_count = pages.len() as u32;
+    let page_id = pages.get(&first.geometry.page_number).copied().ok_or(
+        TextShowReplacementError::PageOutOfBounds {
+            page: first.geometry.page_number,
+            page_count,
+        },
+    )?;
+    let mut fonts_by_weight = BTreeMap::new();
+    for font in fonts {
+        if fonts_by_weight.insert(font.weight(), *font).is_some() {
+            return Err(TextShowReplacementError::DuplicateTranslationFontFace(
+                font.weight(),
+            ));
+        }
+    }
+    let planned =
+        plan_replacement_target(document, page_id, page_graph, requests, &fonts_by_weight)?;
+    Ok(planned
+        .planned
+        .into_iter()
+        .map(|replacement| TextShowReplacementPreflight {
+            text_show_id: replacement.text_show_id,
+            operation_index: replacement.operation_index,
+            fit_scale: replacement.fit_scale,
+        })
+        .collect())
+}
+
 pub(crate) fn apply_text_show_replacement_transaction(
     document: &mut Document,
     page_graph: &PageGraph,
@@ -522,10 +603,11 @@ pub(crate) fn apply_text_show_replacement_batch(
                 .planned
                 .into_iter()
                 .map(|replacement| TextShowReplacementResult {
-                    schema: "rosetta-pdf-v3-text-show-replacement/6",
+                    schema: "rosetta-pdf-v3-text-show-replacement/7",
                     page_number,
                     stream_id: stream_id.clone(),
                     operation_index: replacement.operation_index,
+                    text_show_id: replacement.text_show_id,
                     form_invocation_depth,
                     fit_scale: replacement.fit_scale,
                     max_advance: replacement.max_advance,
@@ -740,6 +822,7 @@ fn stage_replacement_streams(
 
 #[derive(Clone)]
 struct PlannedTextShowReplacement {
+    text_show_id: String,
     operation_index: usize,
     operations: Vec<lopdf::content::Operation>,
     fit_scale: f32,
@@ -839,6 +922,7 @@ fn plan_text_show_replacement(
     ];
 
     Ok(PlannedTextShowReplacement {
+        text_show_id: request.geometry.text_show_id.clone(),
         operation_index: request.geometry.operation_index,
         operations,
         fit_scale,

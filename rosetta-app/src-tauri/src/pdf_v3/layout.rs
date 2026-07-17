@@ -498,6 +498,8 @@ mod tests {
                 stream_object_number: 4,
                 stream_generation: 0,
                 operation_index: 7,
+                text_show_operator: "Tj".to_string(),
+                text_show_operand_hash: "sha256:operand".to_string(),
                 source_font_resource: Some("F1".to_string()),
                 source_font_size: Some(10.0),
                 source_horizontal_scaling: 100.0,

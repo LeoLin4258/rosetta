@@ -17,7 +17,8 @@ use sha2::{Digest, Sha256};
 use super::{
     translation_patch::{
         decode_and_validate_translation_patch, decode_and_validate_translation_patch_identity,
-        encode_translation_patch, validate_translation_patch, TranslationPatchError,
+        encode_translation_patch, ensure_translation_patch_renderer_resolved,
+        validate_translation_patch, TranslationPatchError,
     },
     types::{PageGraph, TranslationPatch},
 };
@@ -283,6 +284,7 @@ impl TranslationPatchStore {
             return Err(TranslationPatchStoreError::TargetLanguageMismatch);
         }
         validate_translation_patch(page, patch)?;
+        ensure_translation_patch_renderer_resolved(patch)?;
         let patch_bytes = encode_translation_patch(patch)?;
         let patch_byte_count = u64::try_from(patch_bytes.len()).map_err(|_| {
             TranslationPatchStoreError::PatchFileMismatch {
@@ -776,6 +778,7 @@ impl TranslationPatchStore {
             });
         }
         let patch = decode_and_validate_translation_patch(page, &bytes)?;
+        ensure_translation_patch_renderer_resolved(&patch)?;
         if !entry_matches_patch(entry, &patch, &self.target_language) {
             return Err(TranslationPatchStoreError::PatchFileMismatch {
                 page_number: entry.page_number,
@@ -793,6 +796,10 @@ impl TranslationPatchStore {
             return false;
         }
         decode_and_validate_translation_patch_identity(&bytes)
+            .and_then(|patch| {
+                ensure_translation_patch_renderer_resolved(&patch)?;
+                Ok(patch)
+            })
             .map(|patch| entry_matches_patch(entry, &patch, &self.target_language))
             .unwrap_or(false)
     }
@@ -1205,6 +1212,7 @@ fn sha256(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::BTreeMap,
         fs,
         path::{Path, PathBuf},
         sync::{Arc, Barrier},
@@ -1218,11 +1226,13 @@ mod tests {
     };
     use crate::pdf_v3::{
         translation_patch::{
-            build_translation_patch, TranslationPatchDraft, TranslationPatchEntryDraft,
+            build_translation_patch, resolve_translation_patch_renderer_decisions,
+            TranslationPatchDraft, TranslationPatchEntryDraft,
         },
         types::{
             PageAtom, PageAtomKind, PageAtomSourceKind, PageGraph, PageReconciliationSummary,
-            PageStyle, TranslationPatch, PAGE_GRAPH_SCHEMA_VERSION,
+            PageStyle, TranslationPatch, TranslationPatchRendererDecision,
+            PAGE_GRAPH_SCHEMA_VERSION,
         },
     };
 
@@ -1262,6 +1272,22 @@ mod tests {
                 assert!(!contents.contains("secret source page one"));
             }
         }
+    }
+
+    #[test]
+    fn rejects_pending_renderer_drafts() {
+        let temp = TestDirectory::new("pending-draft");
+        let store = patch_store(temp.path());
+        let page = page_graph(1, "source");
+        let patch = pending_patch(&page, 1, "译文");
+
+        assert!(matches!(
+            store.commit(&page, &patch).expect_err("pending patch"),
+            TranslationPatchStoreError::Patch(
+                crate::pdf_v3::translation_patch::TranslationPatchError::RendererDecisionPending(_)
+            )
+        ));
+        assert!(store.snapshot().expect("snapshot").pages.is_empty());
     }
 
     #[test]
@@ -1577,6 +1603,24 @@ mod tests {
     }
 
     fn patch(page: &PageGraph, revision: u64, translated_text: &str) -> TranslationPatch {
+        let pending = pending_patch(page, revision, translated_text);
+        let decisions = pending
+            .entries
+            .iter()
+            .map(|entry| {
+                (
+                    entry.entry_id.clone(),
+                    TranslationPatchRendererDecision::Preserved {
+                        reason_code: "store-test-resolved".to_string(),
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        resolve_translation_patch_renderer_decisions(page, &pending, &decisions)
+            .expect("resolved translation patch")
+    }
+
+    fn pending_patch(page: &PageGraph, revision: u64, translated_text: &str) -> TranslationPatch {
         build_translation_patch(
             page,
             TranslationPatchDraft {
@@ -1596,7 +1640,7 @@ mod tests {
     }
 
     fn rebuild_patch_id(page: &PageGraph, patch: &mut TranslationPatch) {
-        *patch = build_translation_patch(
+        let pending = build_translation_patch(
             page,
             TranslationPatchDraft {
                 target_language: patch.target_language.clone(),
@@ -1616,6 +1660,20 @@ mod tests {
             },
         )
         .expect("rebuilt patch");
+        let decisions = pending
+            .entries
+            .iter()
+            .map(|entry| {
+                (
+                    entry.entry_id.clone(),
+                    TranslationPatchRendererDecision::Preserved {
+                        reason_code: "store-test-resolved".to_string(),
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        *patch = resolve_translation_patch_renderer_decisions(page, &pending, &decisions)
+            .expect("resolved rebuilt patch");
     }
 
     fn patch_files(directory: &Path) -> Vec<PathBuf> {

@@ -329,7 +329,7 @@ PDF v3 的 `PageGraph` 是独立于当前 PDF v2 page-state 的 native 页面 IR
 
 约定：
 
-- `PageGraph.schemaVersion` 当前为 `4`。
+- `PageGraph.schemaVersion` 当前为 `5`。
 - 一个 `PageAtom` 只在 reconciliation 全部对象级检查通过后，才能从
   `pdfium-unverified` 变为 `pdfium-verified` 或 `to-unicode-corrected`。
 - atom 的低层来源使用稳定的 mapping ID、text-show ID、operand ID、operand
@@ -358,6 +358,9 @@ PDF v3 的 `PageGraph` 是独立于当前 PDF v2 page-state 的 native 页面 IR
 - schema v4 的 atom source provenance 还必须包含 stream object/generation、operation
   index、unqualified source font resource、source `Tf` size 和 source `Tz` horizontal
   scaling。renderer 必须重新解析 operation 前的文本状态并逐项校验，不能只信持久化值。
+- schema v5 的 atom source provenance 还必须保存 exact text-show operator 和完整 text
+  operand SHA-256。`TranslationPatch` renderer 只能从这份已 reconciliation 的 provenance
+  构造低层 request，不得重新按 Unicode 文本搜索 content stream。
 - 同一 Form stream 的多次视觉调用不能伪装成独立 operand。`SharedContentStream`
   只有在 decode、font identity 和 atom coverage 等基础 gate 全部通过后才可作为
   可映射能力标记，不能覆盖更具体的 typed fallback。reconciliation 可以保留完整
@@ -396,6 +399,10 @@ renderer 内部瞬时使用的 `ContentOperandRangePatch`。当前逻辑 schema 
 - renderer decision 只能是 `pending`、带显式 fit strategy 和有限 `0..=1` scale 的
   `fitted`，或带稳定 reason code 的 `preserved`。renderer 写回 decision 后必须重算
   `patchId`。
+- `pending` patch 只是 translation planner 与 renderer 之间的进程内草稿。renderer 必须
+  一次为每个 entry 生成唯一非 pending decision 并重算 `patchId`；只有完整 resolved patch
+  才能进入 TranslationPatch Store。App 崩溃在 store commit 前时，该页 revision 重新规划和
+  渲染，不能恢复或猜测一个半完成的 pending draft。
 - decode 必须针对当前 PageGraph 重建 canonical patch，拒绝 page/hash/schema、atom hash、
   entry order/content、protected placement 或 patch identity 不一致的内容。
 - 初始 encoding 为 compact JSON。build、encode 和 decode 都执行 16 MiB page-patch
@@ -426,6 +433,8 @@ PDF v3 patch store 是 source document + target language 隔离的页级译文�
   temp + backup + rename 原子替换。新 shard durable 后才能删除被替换的旧 revision。
 - 同 revision + 同 patch ID 是幂等写；同 revision + 不同内容是 conflict；低 revision
   必须拒绝。source page hash 在同一 store/page 内变化也必须拒绝。
+- commit、load 和 repair 都必须拒绝含 `pending` entry 的 patch。store 不提供同 revision
+  pending-to-resolved 更新，也不保存第二套 draft authority。
 - 每个进程/store 首次访问执行完整 repair。canonical/temp/backup shard 选择最高有效
   generation，generation 相同优先 canonical。普通后续提交只读取 owning shard，不得
   重新读取所有历史 page patch。
@@ -471,6 +480,31 @@ cache miss。它不复用 v1/v2 PDF page cache。
   sidecar 必须清理。quota/config 缩小时按 persisted LRU 淘汰到两个上限以内。
 - explicit repair 在 active lease 存在时必须拒绝。删除整个 render cache 不得影响 patch
   store、source PDF 或已导出的文件。
+
+## PDF v3 TranslationPatch Renderer
+
+`TranslationPatch` renderer 是 durable page translation 与低层 content-stream renderer
+之间的唯一桥接层。它接收 unchanged source document、reconciled PageGraph、全 pending
+patch、prepared unified font faces 和显式 fit policy。
+
+约定：
+
+- 一个 entry 当前必须完整覆盖一个 source text object，并由 PageGraph v5 provenance 解析到
+  唯一 stream、Form invocation path、operation、operator、operand hash 和 `BT/ET` target。
+  不完整、跨 object 或 provenance 不足的 entry 使用稳定 reason code 保留原文。
+- entry 先按 physical stream/path 和 logical `BT/ET` target 聚合。全部 target 必须针对同一
+  unchanged source document 完成 identity、style、font、anchor、geometry、fit 和 encoding
+  preflight；preflight 不得修改 document。
+- renderer 必须先为 patch 中每个 entry 生成 fitted/preserved decision 并计算 resolved
+  `patchId`，再调用一次现有 page-level atomic batch。batch 失败时不得返回可持久化 patch，
+  也不得改变 document objects 或 `max_id`。
+- source operator、operand hash、operation 或 paint/style identity 变化属于 stale source，
+  是整次 render 的 typed fatal error。无法验证的 text-object boundary、anchor、fit、font face
+  或支持范围属于 entry/group preservation，不得让安全 entry 一并退回原文。
+- 默认 readability floor 为 `0.9`。低于 floor 的译文保留原文并记录
+  `translation-overflow`；不得无限水平压缩。
+- render 成功返回 resolved patch 与可选 batch diagnostic。全 preserved 页不修改 PDF，
+  batch 可以为空，但 resolved patch 仍是该 revision 的完整 durable authority。
 
 ## PDF v3 Content Operand Patch
 
@@ -596,12 +630,12 @@ provenance；译文编码使用 Rosetta 管理的统一字体家族。
 - renderer 必须从 content stream 起点重放目标前的 `q/Q`、`Tf/Tz`、`Tr` 和
   DeviceGray/DeviceRGB/DeviceCMYK paint state，并与 PageGraph style 核对。
   `cs/CS/sc/SC/scn/SCN/gs` 在完整 interpreter 实现前必须 typed preserve。
-- per-show diagnostic schema 当前为 `rosetta-pdf-v3-text-show-replacement/6`，transaction
+- per-show diagnostic schema 当前为 `rosetta-pdf-v3-text-show-replacement/7`，transaction
   schema 为 `rosetta-pdf-v3-text-show-replacement-transaction/3`。transaction 必须报告
   确定性排序的 `translationFontWeights`、`formInvocationDepth`、`clonedStreamCount` 和
   `pageContentRewired`，不能压缩成单一 weight。只允许报告 page/stream、count、style
   ID、weight/face、normalized color/opacity、render mode、geometry/fit、staged/cloned
-  object count 和 timing，不得包含 source/translated text。
+  object count、stable text-show ID 和 timing，不得包含 source/translated text。
 - page batch diagnostic schema 当前为
   `rosetta-pdf-v3-text-show-replacement-batch/1`，target schema 为
   `rosetta-pdf-v3-text-show-replacement-batch-target/1`。batch 负责全局 target/replacement、
