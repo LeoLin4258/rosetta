@@ -130,6 +130,13 @@ Current progress:
   commits in 15.54-16.40 seconds. The final run used 16 shards, 323,244 logical
   index bytes and 615,572 patch payload bytes. A rejected whole-manifest design
   took 51.54 seconds, so it was removed before becoming a persistent contract.
+- Phase 4 now also has an isolated bounded render cache. Cache keys bind source,
+  page, patch/revision, renderer and output options; content-addressed PNG/PDF
+  artifacts use a 384 MiB / 4,096-entry default policy, deterministic LRU,
+  active leases, atomic writes and page-local repair across 64 hash shards.
+- A 1,000-page Windows AMD test retained only the configured 128 entries,
+  stayed below its 128 KiB artifact quota and kept logical index bytes below
+  1 MiB. The cache remains disconnected from rendering and legacy PDF state.
 
 ## Purpose
 
@@ -342,6 +349,7 @@ Initial targets, to be confirmed by the native engine spike:
 - first visible page should be renderable independently of the rest of the document;
 - long runs must keep active extraction/render memory bounded;
 - render cache must have a configurable hard byte limit, with a conservative default in the 256–512 MB range;
+- the selected render-cache default is 384 MiB plus bounded index metadata, with a 4,096-entry default limit;
 - translation storage must be patch-based and scale with text, not with one full PDF per page;
 - final PDF should embed shared font/resource sets rather than page-local copies.
 
@@ -441,9 +449,12 @@ byte ranges and typed pending/fitted/preserved renderer decisions. Ordinary
 source text is not duplicated into patches, and all persistent encode/decode
 paths enforce a 16 MiB page-patch limit. Atomic revisioned disk storage is now
 implemented with a stable language manifest, bounded 64-page index shards,
-page-local recovery and superseded/orphan cleanup. Patch compression, bounded
-render-cache GC, renderer integration and streaming document export remain
-pending.
+page-local recovery and superseded/orphan cleanup. The isolated render cache is
+also implemented with source/patch/renderer-addressed keys, a configurable
+384 MiB default hard artifact quota, 4,096-entry default limit, 64 bounded hash
+index shards, deterministic LRU, active leases, atomic writes, integrity checks
+and local repair. Patch compression, renderer/cache integration and streaming
+document export remain pending.
 
 ### Phase 5 — Translation and protected spans
 

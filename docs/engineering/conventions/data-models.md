@@ -436,6 +436,42 @@ PDF v3 patch store 是 source document + target language 隔离的页级译文�
 - 同一 absolute language directory 的进程内写入由共享 coordinator 串行化。当前不允许
   多 Rosetta 进程并发拥有同一个 job store。
 
+## PDF v3 Render Cache
+
+PDF v3 render cache 保存按需生成的 preview PNG 或 complete translated page PDF。它是
+可删除派生数据，不是翻译权威；source PDF + 当前 `TranslationPatch` 必须足以重建全部
+cache miss。它不复用 v1/v2 PDF page cache。
+
+约定：
+
+- cache 位于 native orchestrator 提供的 absolute `render-cache/v1` 目录。root 下只允许
+  canonical manifest/index 和 SHA-256 addressed artifact 使用固定文件名；source、language、
+  patch 或 renderer 字符串不得直接成为路径组件。
+- key 必须绑定 source fingerprint、1-based page number、patch ID、positive translation
+  revision、renderer version、output kind，以及 preview 的 pixel width / fixed-point scale。
+  任一维度变化都必须 cache miss。
+- output kind 当前只允许 `previewPng` 与 `translatedPagePdf`。preview 必须至少指定 width
+  或 scale；完整 page PDF 不接受 raster size 参数。
+- default artifact quota 为 384 MiB，default entry limit 为 4,096；创建 cache 时可以缩小或
+  调整。单 artifact 大于完整 quota 必须在写盘前拒绝。实现绝对上限为 16 GiB / 16,384
+  entries，避免异常配置解除 metadata bound。
+- artifact payload 总和必须始终不超过 quota。manifest 与固定 64 个最多 1 MiB 的 hash
+  index shard 是额外但有界的 metadata overhead。64 shard 不是页范围、PageSet、scheduler
+  window 或 UI chunk。
+- entry 保存 canonical key、key SHA-256、artifact filename/bytes/content SHA-256 和 logical
+  last access。LRU 只读取 bounded metadata，不得为淘汰加载 PNG/PDF body。
+- artifact 通过 unique temp + `sync_all` + rename 写入；index shard 通过 temp + backup +
+  rename 原子替换。content-addressed artifact 不得原地覆盖。
+- open 必须返回 active lease。leased key 不得替换或淘汰；消费 bytes 时必须验证 exact
+  length、content SHA-256 和 output signature。失败只删除该 entry。
+- 同一 absolute cache directory 的进程内操作由共享 coordinator 串行化，并要求一致
+  config。当前不允许多 Rosetta 进程同时写同一个 cache。
+- 首次访问 repair 只读取 index 和 artifact metadata，不读取 artifact body。missing artifact
+  只删除自己的 entry，invalid shard 只丢弃该 shard；orphan artifact、artifact temp 和 index
+  sidecar 必须清理。quota/config 缩小时按 persisted LRU 淘汰到两个上限以内。
+- explicit repair 在 active lease 存在时必须拒绝。删除整个 render cache 不得影响 patch
+  store、source PDF 或已导出的文件。
+
 ## PDF v3 Content Operand Patch
 
 PDF v3 的 `ContentOperandRangePatch` 是隔离 native renderer 的瞬时低层写入模型，
