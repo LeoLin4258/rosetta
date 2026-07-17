@@ -136,7 +136,7 @@ Current progress:
   active leases, atomic writes and page-local repair across 64 hash shards.
 - A 1,000-page Windows AMD test retained only the configured 128 entries,
   stayed below its 128 KiB artifact quota and kept logical index bytes below
-  1 MiB. The cache remains disconnected from rendering and legacy PDF state.
+  1 MiB. The cache remains isolated from legacy PDF state.
 - PageGraph schema v5 now carries the exact text-show operator and operand
   SHA-256 needed to construct replacement requests without searching source
   text. A new `TranslationPatch` renderer validates complete source-object
@@ -152,6 +152,18 @@ Current progress:
   renderer`. Independent Poppler rendering confined all 6,846 changed pixels
   to the original first-row band (0.3145% of a 1241x1754 page), and independent
   `pypdf` extraction found the replacement text in the output.
+- The patch renderer is now connected to the bounded render cache through a
+  resolved-patch-only bridge. Fully resolved patches can be deterministically
+  re-preflighted and rerendered after a cache miss; a stored decision drift or
+  renderer contract-version mismatch fails before document mutation.
+- `translatedPagePdf` generation consumes one working document, removes every
+  unselected page plus document navigation, prunes unreachable objects,
+  renumbers/compresses and validates an exactly-one-page artifact before cache
+  insertion. Cache insert remains separate from resolved patch ownership.
+- On the 30-page / 1,590,242-byte real-paper fixture, the cached page artifact
+  was 104,857 bytes. Independent Poppler changed 2,718 pixels (0.1249%) only in
+  the target footer row; page geometry, 26 annotations and the external link
+  remained intact, and `pypdf` extracted the replacement text.
 
 ## Purpose
 
@@ -471,8 +483,10 @@ also implemented with source/patch/renderer-addressed keys, a configurable
 index shards, deterministic LRU, active leases, atomic writes, integrity checks
 and local repair. Pending translation drafts now resolve entirely in memory;
 only fitted/preserved patches can enter the store, avoiding same-revision
-identity conflicts. Patch compression, render-cache population and streaming
-document export remain pending.
+identity conflicts. Resolved patches now deterministically regenerate pruned
+single-page PDF artifacts and use source/patch/revision/current-renderer cache
+identity for bounded insertion and lease-validated reads. Preview PNG cache
+population, patch compression and streaming document export remain pending.
 
 ### Phase 5 — Translation and protected spans
 

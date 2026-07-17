@@ -3,11 +3,15 @@ use std::{
     fmt,
 };
 
-use lopdf::Document;
+use lopdf::{Document, Object};
 
 use super::{
     font::PreparedTranslationFont,
     layout::TextShowGeometryKey,
+    render_cache::{
+        RenderCache, RenderCacheError, RenderCacheInsertOutcome, RenderCacheKey,
+        RenderCacheOptions, RenderCacheOutputKind,
+    },
     replacement::{
         apply_text_show_replacement_batch, preflight_text_show_replacement_transaction,
         text_show_replacement_target_identity, TextShowReplacementBatchResult,
@@ -15,8 +19,8 @@ use super::{
         TextShowReplacementTargetRequest,
     },
     translation_patch::{
-        resolve_translation_patch_renderer_decisions, validate_translation_patch,
-        TranslationPatchError,
+        ensure_translation_patch_renderer_resolved, resolve_translation_patch_renderer_decisions,
+        validate_translation_patch, TranslationPatchError,
     },
     types::{
         PageAtomSourceProvenance, PageGraph, TranslationPatch, TranslationPatchEntry,
@@ -28,6 +32,8 @@ use super::{
 use super::types::{PageAtom, PageAtomSourceKind};
 
 pub(crate) const DEFAULT_MINIMUM_FIT_SCALE: f32 = 0.9;
+pub(crate) const TRANSLATION_PATCH_RENDERER_VERSION: &str =
+    "rosetta-pdf-v3-translation-patch-renderer/1";
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct TranslationPatchRenderPolicy {
@@ -50,19 +56,52 @@ pub(crate) struct TranslationPatchRenderResult {
     pub preserved_entry_count: usize,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct TranslationPatchPagePdf {
+    pub source_fingerprint: String,
+    pub render: TranslationPatchRenderResult,
+    pub pdf_bytes: Vec<u8>,
+}
+
 #[derive(Debug)]
 pub(crate) enum TranslationPatchRenderError {
     InvalidPolicy,
+    RendererVersionMismatch { actual: String },
+    MixedRendererDecisionState,
+    ResolvedRendererDecisionMismatch(String),
+    PageOutOfBounds { page: u32, page_count: u32 },
+    PagePdfSerialization(String),
+    InvalidPagePdf(&'static str),
     Patch(TranslationPatchError),
     Replacement(TextShowReplacementError),
+    Cache(RenderCacheError),
 }
 
 impl fmt::Display for TranslationPatchRenderError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidPolicy => formatter.write_str("TranslationPatch render policy is invalid"),
+            Self::RendererVersionMismatch { actual } => write!(
+                formatter,
+                "TranslationPatch renderer version mismatch: expected {TRANSLATION_PATCH_RENDERER_VERSION}, found {actual}"
+            ),
+            Self::MixedRendererDecisionState => formatter.write_str(
+                "TranslationPatch renderer decisions must be either all pending or all resolved",
+            ),
+            Self::ResolvedRendererDecisionMismatch(entry_id) => write!(
+                formatter,
+                "TranslationPatch entry {entry_id} resolved renderer decision is not reproducible"
+            ),
+            Self::PageOutOfBounds { page, page_count } => {
+                write!(formatter, "PDF page {page} is outside 1..={page_count}")
+            }
+            Self::PagePdfSerialization(message) => formatter.write_str(message),
+            Self::InvalidPagePdf(reason) => {
+                write!(formatter, "rendered single-page PDF is invalid: {reason}")
+            }
             Self::Patch(error) => error.fmt(formatter),
             Self::Replacement(error) => error.fmt(formatter),
+            Self::Cache(error) => error.fmt(formatter),
         }
     }
 }
@@ -78,6 +117,12 @@ impl From<TranslationPatchError> for TranslationPatchRenderError {
 impl From<TextShowReplacementError> for TranslationPatchRenderError {
     fn from(value: TextShowReplacementError) -> Self {
         Self::Replacement(value)
+    }
+}
+
+impl From<RenderCacheError> for TranslationPatchRenderError {
+    fn from(value: RenderCacheError) -> Self {
+        Self::Cache(value)
     }
 }
 
@@ -98,6 +143,20 @@ pub(crate) fn render_translation_patch(
         return Err(TranslationPatchRenderError::InvalidPolicy);
     }
     validate_translation_patch(page, patch)?;
+    validate_renderer_version(patch)?;
+    let pending_entry_count = patch
+        .entries
+        .iter()
+        .filter(|entry| {
+            matches!(
+                entry.renderer_decision,
+                TranslationPatchRendererDecision::Pending
+            )
+        })
+        .count();
+    if pending_entry_count != 0 && pending_entry_count != patch.entries.len() {
+        return Err(TranslationPatchRenderError::MixedRendererDecisionState);
+    }
 
     let mut decisions = BTreeMap::<String, TranslationPatchRendererDecision>::new();
     let mut grouped = BTreeMap::<TextShowReplacementTargetIdentity, Vec<RenderableEntry>>::new();
@@ -197,7 +256,21 @@ pub(crate) fn render_translation_patch(
         });
     }
 
-    let resolved_patch = resolve_translation_patch_renderer_decisions(page, patch, &decisions)?;
+    let resolved_patch = if pending_entry_count == patch.entries.len() {
+        resolve_translation_patch_renderer_decisions(page, patch, &decisions)?
+    } else {
+        ensure_translation_patch_renderer_resolved(patch)?;
+        for entry in &patch.entries {
+            if decisions.get(&entry.entry_id) != Some(&entry.renderer_decision) {
+                return Err(
+                    TranslationPatchRenderError::ResolvedRendererDecisionMismatch(
+                        entry.entry_id.clone(),
+                    ),
+                );
+            }
+        }
+        patch.clone()
+    };
     let batch = if targets.is_empty() {
         None
     } else {
@@ -222,6 +295,146 @@ pub(crate) fn render_translation_patch(
         fitted_entry_count,
         preserved_entry_count,
     })
+}
+
+pub(crate) fn render_translation_patch_page_pdf(
+    mut document: Document,
+    source_fingerprint: &str,
+    page: &PageGraph,
+    patch: &TranslationPatch,
+    fonts: &[&PreparedTranslationFont],
+    policy: TranslationPatchRenderPolicy,
+) -> Result<TranslationPatchPagePdf, TranslationPatchRenderError> {
+    let render = render_translation_patch(&mut document, page, patch, fonts, policy)?;
+    let pdf_bytes = serialize_single_page_pdf(document, page.page_number)?;
+    Ok(TranslationPatchPagePdf {
+        source_fingerprint: source_fingerprint.to_string(),
+        render,
+        pdf_bytes,
+    })
+}
+
+pub(crate) fn translation_patch_page_pdf_cache_key(
+    source_fingerprint: &str,
+    patch: &TranslationPatch,
+) -> Result<RenderCacheKey, TranslationPatchRenderError> {
+    ensure_translation_patch_renderer_resolved(patch)?;
+    validate_renderer_version(patch)?;
+    Ok(RenderCacheKey {
+        source_fingerprint: source_fingerprint.to_string(),
+        page_number: patch.page_number,
+        patch_id: patch.patch_id.clone(),
+        translation_revision: patch.translation_revision,
+        renderer_version: patch.renderer_version.clone(),
+        options: RenderCacheOptions {
+            output_kind: RenderCacheOutputKind::TranslatedPagePdf,
+            pixel_width: None,
+            scale_milli: None,
+        },
+    })
+}
+
+fn validate_renderer_version(patch: &TranslationPatch) -> Result<(), TranslationPatchRenderError> {
+    if patch.renderer_version != TRANSLATION_PATCH_RENDERER_VERSION {
+        return Err(TranslationPatchRenderError::RendererVersionMismatch {
+            actual: patch.renderer_version.clone(),
+        });
+    }
+    Ok(())
+}
+
+pub(crate) fn insert_translation_patch_page_pdf_cache(
+    cache: &RenderCache,
+    artifact: &TranslationPatchPagePdf,
+) -> Result<RenderCacheInsertOutcome, TranslationPatchRenderError> {
+    let key = translation_patch_page_pdf_cache_key(
+        &artifact.source_fingerprint,
+        &artifact.render.resolved_patch,
+    )?;
+    Ok(cache.insert(&key, &artifact.pdf_bytes)?)
+}
+
+pub(crate) fn open_translation_patch_page_pdf_cache(
+    cache: &RenderCache,
+    source_fingerprint: &str,
+    patch: &TranslationPatch,
+) -> Result<Option<Vec<u8>>, TranslationPatchRenderError> {
+    let key = translation_patch_page_pdf_cache_key(source_fingerprint, patch)?;
+    let Some(lease) = cache.open(&key)? else {
+        return Ok(None);
+    };
+    match lease.read_bytes() {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(RenderCacheError::CorruptArtifact { .. }) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn serialize_single_page_pdf(
+    mut document: Document,
+    page_number: u32,
+) -> Result<Vec<u8>, TranslationPatchRenderError> {
+    let pages = document.get_pages();
+    let page_count = u32::try_from(pages.len()).unwrap_or(u32::MAX);
+    if !pages.contains_key(&page_number) {
+        return Err(TranslationPatchRenderError::PageOutOfBounds {
+            page: page_number,
+            page_count,
+        });
+    }
+    let delete_pages = pages
+        .keys()
+        .copied()
+        .filter(|candidate| *candidate != page_number)
+        .collect::<Vec<_>>();
+    document.delete_pages(&delete_pages);
+    strip_single_page_navigation(&mut document);
+    document.prune_objects();
+    document.renumber_objects();
+    document.compress();
+
+    let mut bytes = Vec::new();
+    document.save_to(&mut bytes).map_err(|error| {
+        TranslationPatchRenderError::PagePdfSerialization(format!(
+            "failed to serialize rendered single-page PDF: {error}"
+        ))
+    })?;
+    if !bytes.starts_with(b"%PDF-") {
+        return Err(TranslationPatchRenderError::InvalidPagePdf("signature"));
+    }
+    let validated = Document::load_mem(&bytes).map_err(|error| {
+        TranslationPatchRenderError::PagePdfSerialization(format!(
+            "failed to validate rendered single-page PDF: {error}"
+        ))
+    })?;
+    if validated.get_pages().len() != 1 {
+        return Err(TranslationPatchRenderError::InvalidPagePdf(
+            "page count is not one",
+        ));
+    }
+    Ok(bytes)
+}
+
+fn strip_single_page_navigation(document: &mut Document) {
+    let Ok(root_id) = document.trailer.get(b"Root").and_then(Object::as_reference) else {
+        return;
+    };
+    let Ok(catalog) = document
+        .get_object_mut(root_id)
+        .and_then(Object::as_dict_mut)
+    else {
+        return;
+    };
+    for key in [
+        b"Outlines".as_slice(),
+        b"PageMode".as_slice(),
+        b"OpenAction".as_slice(),
+        b"PageLabels".as_slice(),
+        b"Names".as_slice(),
+        b"StructTreeRoot".as_slice(),
+    ] {
+        catalog.remove(key);
+    }
 }
 
 fn request_for_entry(
@@ -397,13 +610,20 @@ fn source_object_atoms<'a>(page: &'a PageGraph, atom: &PageAtom) -> Vec<&'a Page
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeSet, fs, path::PathBuf};
+    use std::{
+        collections::{BTreeMap, BTreeSet},
+        fs,
+        path::{Path, PathBuf},
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     use lopdf::Document;
 
     use super::{
-        render_translation_patch, request_for_entry, source_object_atoms,
-        TranslationPatchRenderError, TranslationPatchRenderPolicy,
+        insert_translation_patch_page_pdf_cache, open_translation_patch_page_pdf_cache,
+        render_translation_patch, render_translation_patch_page_pdf, request_for_entry,
+        source_object_atoms, translation_patch_page_pdf_cache_key, TranslationPatchRenderError,
+        TranslationPatchRenderPolicy, TRANSLATION_PATCH_RENDERER_VERSION,
     };
     use crate::{
         pdf_v3::{
@@ -413,11 +633,16 @@ mod tests {
             },
             identity::{compare_images, render_page},
             reconcile::build_reconciled_page_graph,
+            render_cache::{RenderCache, RenderCacheConfig, RenderCacheInsertKind},
             replacement::{preflight_text_show_replacement_transaction, TextShowReplacementError},
             translation_patch::{
-                build_translation_patch, TranslationPatchDraft, TranslationPatchEntryDraft,
+                build_translation_patch, resolve_translation_patch_renderer_decisions,
+                TranslationPatchDraft, TranslationPatchEntryDraft,
             },
-            types::{PageGraph, TranslationPatch, TranslationPatchRendererDecision},
+            types::{
+                PageGraph, TranslationPatch, TranslationPatchFitStrategy,
+                TranslationPatchRendererDecision,
+            },
         },
         rosetta_jobs::formats::pdf::test_helpers::{fixture_path, pdfium_test_lock, shared_pdfium},
     };
@@ -485,6 +710,233 @@ mod tests {
         let difference = compare_images(&source_image, &output_image).expect("image difference");
         assert!(difference.changed_pixel_count > 0);
         assert!(difference.changed_pixel_ratio < 0.05);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn resolved_patch_rerenders_with_the_same_identity_and_page_bytes() {
+        let _guard = pdfium_test_lock();
+        let replacement = "Resolved patch replay";
+        let prepared = prepared_arial(&[replacement]);
+        let source_path = fixture_path("002-trivial-libre-office-writer.pdf");
+        let page =
+            build_reconciled_page_graph(shared_pdfium(), &source_path, 1).expect("reconciled page");
+        let source = fs::read(&source_path).expect("source PDF");
+        let source_document = Document::load_mem(&source).expect("source document");
+        let pending = first_renderable_patch(&source_document, &page, &prepared, replacement);
+
+        let first = render_translation_patch_page_pdf(
+            source_document,
+            "sha256:resolved-replay-source",
+            &page,
+            &pending,
+            &[&prepared],
+            TranslationPatchRenderPolicy::default(),
+        )
+        .expect("initial page render");
+        let replay = render_translation_patch_page_pdf(
+            Document::load_mem(&source).expect("replay document"),
+            "sha256:resolved-replay-source",
+            &page,
+            &first.render.resolved_patch,
+            &[&prepared],
+            TranslationPatchRenderPolicy::default(),
+        )
+        .expect("resolved page replay");
+
+        assert_eq!(replay.render.resolved_patch, first.render.resolved_patch);
+        assert_eq!(replay.pdf_bytes, first.pdf_bytes);
+        assert_eq!(
+            Document::load_mem(&replay.pdf_bytes)
+                .expect("replayed page PDF")
+                .get_pages()
+                .len(),
+            1
+        );
+        let output = shared_pdfium()
+            .load_pdf_from_byte_slice(&replay.pdf_bytes, None)
+            .expect("PDFium replay output");
+        assert!(output
+            .pages()
+            .get(0)
+            .expect("output page")
+            .text()
+            .expect("output text")
+            .all()
+            .contains(replacement));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn resolved_decision_drift_is_rejected_before_document_mutation() {
+        let _guard = pdfium_test_lock();
+        let replacement = "Decision drift";
+        let prepared = prepared_arial(&[replacement]);
+        let source_path = fixture_path("002-trivial-libre-office-writer.pdf");
+        let page =
+            build_reconciled_page_graph(shared_pdfium(), &source_path, 1).expect("reconciled page");
+        let source = fs::read(&source_path).expect("source PDF");
+        let mut document = Document::load_mem(&source).expect("source document");
+        let pending = first_renderable_patch(&document, &page, &prepared, replacement);
+        let decisions = BTreeMap::from([(
+            pending.entries[0].entry_id.clone(),
+            TranslationPatchRendererDecision::Fitted {
+                strategy: TranslationPatchFitStrategy::SingleShowScale,
+                fit_scale: 0.5,
+            },
+        )]);
+        let drifted = resolve_translation_patch_renderer_decisions(&page, &pending, &decisions)
+            .expect("valid but drifted resolved patch");
+        let before = document.clone();
+
+        assert!(matches!(
+            render_translation_patch(
+                &mut document,
+                &page,
+                &drifted,
+                &[&prepared],
+                TranslationPatchRenderPolicy::default(),
+            )
+            .expect_err("resolved fit decision must be reproducible"),
+            TranslationPatchRenderError::ResolvedRendererDecisionMismatch(_)
+        ));
+        assert_eq!(document.objects, before.objects);
+        assert_eq!(document.max_id, before.max_id);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn renderer_version_mismatch_cannot_render_or_address_current_cache() {
+        let _guard = pdfium_test_lock();
+        let replacement = "Old renderer patch";
+        let prepared = prepared_arial(&[replacement]);
+        let source_path = fixture_path("002-trivial-libre-office-writer.pdf");
+        let page =
+            build_reconciled_page_graph(shared_pdfium(), &source_path, 1).expect("reconciled page");
+        let source = fs::read(&source_path).expect("source PDF");
+        let mut document = Document::load_mem(&source).expect("source document");
+        let current = first_renderable_patch(&document, &page, &prepared, replacement);
+        let atom_ids = current.entries[0]
+            .atoms
+            .iter()
+            .map(|atom| atom.atom_id.clone())
+            .collect::<Vec<_>>();
+        let mut old_draft = patch_draft(vec![(atom_ids, replacement)]);
+        old_draft.renderer_version = "rosetta-pdf-v3-translation-patch-renderer/0".to_string();
+        let old_pending = build_translation_patch(&page, old_draft).expect("old pending patch");
+        let before = document.clone();
+
+        assert!(matches!(
+            render_translation_patch(
+                &mut document,
+                &page,
+                &old_pending,
+                &[&prepared],
+                TranslationPatchRenderPolicy::default(),
+            )
+            .expect_err("old renderer version"),
+            TranslationPatchRenderError::RendererVersionMismatch { .. }
+        ));
+        assert_eq!(document.objects, before.objects);
+        assert_eq!(document.max_id, before.max_id);
+
+        let old_resolved = resolve_translation_patch_renderer_decisions(
+            &page,
+            &old_pending,
+            &BTreeMap::from([(
+                old_pending.entries[0].entry_id.clone(),
+                TranslationPatchRendererDecision::Preserved {
+                    reason_code: "version-test".to_string(),
+                },
+            )]),
+        )
+        .expect("old resolved patch");
+        assert!(matches!(
+            translation_patch_page_pdf_cache_key("sha256:source", &old_resolved)
+                .expect_err("old cache namespace"),
+            TranslationPatchRenderError::RendererVersionMismatch { .. }
+        ));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn translated_single_page_pdf_round_trips_through_bounded_cache() {
+        let _guard = pdfium_test_lock();
+        let replacement = "Bounded cached page";
+        let prepared = prepared_arial(&[replacement]);
+        let source_path = fixture_path("2305.13048v2.pdf");
+        let page =
+            build_reconciled_page_graph(shared_pdfium(), &source_path, 1).expect("reconciled page");
+        let source = fs::read(&source_path).expect("source PDF");
+        let source_document = Document::load_mem(&source).expect("source document");
+        assert!(source_document.get_pages().len() > 1);
+        let pending = first_renderable_patch(&source_document, &page, &prepared, replacement);
+        let source_fingerprint = "sha256:cache-bridge-source";
+        let artifact = render_translation_patch_page_pdf(
+            source_document,
+            source_fingerprint,
+            &page,
+            &pending,
+            &[&prepared],
+            TranslationPatchRenderPolicy::default(),
+        )
+        .expect("rendered page artifact");
+        assert_eq!(
+            Document::load_mem(&artifact.pdf_bytes)
+                .expect("page artifact")
+                .get_pages()
+                .len(),
+            1
+        );
+        assert!(artifact.pdf_bytes.len() < source.len());
+
+        let temp = TestDirectory::new("cache-bridge");
+        let cache = RenderCache::new(
+            temp.path(),
+            RenderCacheConfig {
+                max_bytes: 8 * 1024 * 1024,
+                max_entries: 8,
+            },
+        )
+        .expect("render cache");
+        assert!(open_translation_patch_page_pdf_cache(
+            &cache,
+            source_fingerprint,
+            &artifact.render.resolved_patch,
+        )
+        .expect("cache miss")
+        .is_none());
+        assert!(matches!(
+            translation_patch_page_pdf_cache_key(source_fingerprint, &pending)
+                .expect_err("pending patch has no cache identity"),
+            TranslationPatchRenderError::Patch(
+                crate::pdf_v3::translation_patch::TranslationPatchError::RendererDecisionPending(_)
+            )
+        ));
+
+        let inserted =
+            insert_translation_patch_page_pdf_cache(&cache, &artifact).expect("cache insert");
+        assert_eq!(inserted.kind, RenderCacheInsertKind::Written);
+        assert_eq!(cache.snapshot().expect("cache snapshot").entry_count, 1);
+        let cached = open_translation_patch_page_pdf_cache(
+            &cache,
+            source_fingerprint,
+            &artifact.render.resolved_patch,
+        )
+        .expect("cache hit")
+        .expect("cached bytes");
+        assert_eq!(cached, artifact.pdf_bytes);
+
+        let replay = render_translation_patch_page_pdf(
+            Document::load_mem(&source).expect("replay source"),
+            source_fingerprint,
+            &page,
+            &artifact.render.resolved_patch,
+            &[&prepared],
+            TranslationPatchRenderPolicy::default(),
+        )
+        .expect("cache miss rebuild");
+        assert_eq!(replay.pdf_bytes, artifact.pdf_bytes);
     }
 
     #[cfg(target_os = "windows")]
@@ -726,6 +1178,46 @@ mod tests {
     }
 
     #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "manual Windows TranslationPatch cache bridge Poppler probe"]
+    fn manual_windows_translation_patch_cache_probe() {
+        let _guard = pdfium_test_lock();
+        let replacement = "Bounded cached page";
+        let prepared = prepared_arial(&[replacement]);
+        let source_path = fixture_path("2305.13048v2.pdf");
+        let page =
+            build_reconciled_page_graph(shared_pdfium(), &source_path, 1).expect("reconciled page");
+        let source = fs::read(&source_path).expect("source PDF");
+        let document = Document::load_mem(&source).expect("source document");
+        let patch = first_renderable_patch(&document, &page, &prepared, replacement);
+        let artifact = render_translation_patch_page_pdf(
+            document,
+            "sha256:manual-cache-bridge-source",
+            &page,
+            &patch,
+            &[&prepared],
+            TranslationPatchRenderPolicy::default(),
+        )
+        .expect("render page artifact");
+
+        let output_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tmp/pdfs");
+        fs::create_dir_all(&output_dir).expect("create PDF probe directory");
+        fs::write(output_dir.join("pdf-v3-cache-bridge-source.pdf"), &source)
+            .expect("write probe source");
+        fs::write(
+            output_dir.join("pdf-v3-cache-bridge-output.pdf"),
+            &artifact.pdf_bytes,
+        )
+        .expect("write probe output");
+        fs::write(
+            output_dir.join("pdf-v3-cache-bridge-resolved.json"),
+            serde_json::to_vec_pretty(&artifact.render.resolved_patch)
+                .expect("resolved patch JSON"),
+        )
+        .expect("write resolved patch");
+    }
+
+    #[cfg(target_os = "windows")]
     fn first_renderable_patch(
         document: &Document,
         page: &PageGraph,
@@ -783,7 +1275,7 @@ mod tests {
             translation_revision: 1,
             provider_id: "rwkv-local".to_string(),
             model_id: "rwkv-test".to_string(),
-            renderer_version: "pdf-v3-patch-renderer-test".to_string(),
+            renderer_version: TRANSLATION_PATCH_RENDERER_VERSION.to_string(),
             entries: entries
                 .into_iter()
                 .map(|(atom_ids, translated_text)| TranslationPatchEntryDraft {
@@ -792,6 +1284,33 @@ mod tests {
                     protected_spans: Vec::new(),
                 })
                 .collect(),
+        }
+    }
+
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn new(label: &str) -> Self {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "rosetta-pdf-v3-patch-renderer-{label}-{}-{nanos}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&path).expect("test directory");
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
         }
     }
 }

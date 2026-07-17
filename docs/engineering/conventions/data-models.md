@@ -460,7 +460,9 @@ cache miss。它不复用 v1/v2 PDF page cache。
   revision、renderer version、output kind，以及 preview 的 pixel width / fixed-point scale。
   任一维度变化都必须 cache miss。
 - output kind 当前只允许 `previewPng` 与 `translatedPagePdf`。preview 必须至少指定 width
-  或 scale；完整 page PDF 不接受 raster size 参数。
+  或 scale；完整 page PDF 不接受 raster size 参数。`translatedPagePdf` 必须只包含目标页，
+  删除其他 page tree entries、document-level navigation 和不可达对象后重新编号、压缩并
+  验证为 exactly one page；不得把完整源文档复制到每个 page artifact。
 - default artifact quota 为 384 MiB，default entry limit 为 4,096；创建 cache 时可以缩小或
   调整。单 artifact 大于完整 quota 必须在写盘前拒绝。实现绝对上限为 16 GiB / 16,384
   entries，避免异常配置解除 metadata bound。
@@ -473,6 +475,13 @@ cache miss。它不复用 v1/v2 PDF page cache。
   rename 原子替换。content-addressed artifact 不得原地覆盖。
 - open 必须返回 active lease。leased key 不得替换或淘汰；消费 bytes 时必须验证 exact
   length、content SHA-256 和 output signature。失败只删除该 entry。
+- cache bridge 只接受 resolved patch，并从 exact source fingerprint、resolved patch ID /
+  revision 和当前 renderer contract version 构造 `translatedPagePdf` key。checksum/signature
+  corruption 在 bridge 层表现为 miss，调用方从 source + resolved patch 重建。
+- page artifact 在 render 输入时绑定 source fingerprint；cache insert 只能使用 artifact 自带
+  identity，不得再次接受一个可能不一致的 source fingerprint。
+- renderer 返回 resolved patch/page bytes 与 cache insert 是两个独立步骤。cache quota、I/O
+  或 lease failure 不得丢弃 resolved patch，也不得阻止 patch store 成为 durable authority。
 - 同一 absolute cache directory 的进程内操作由共享 coordinator 串行化，并要求一致
   config。当前不允许多 Rosetta 进程同时写同一个 cache。
 - 首次访问 repair 只读取 index 和 artifact metadata，不读取 artifact body。missing artifact
@@ -485,7 +494,8 @@ cache miss。它不复用 v1/v2 PDF page cache。
 
 `TranslationPatch` renderer 是 durable page translation 与低层 content-stream renderer
 之间的唯一桥接层。它接收 unchanged source document、reconciled PageGraph、全 pending
-patch、prepared unified font faces 和显式 fit policy。
+或全 resolved patch、prepared unified font faces 和显式 fit policy；mixed lifecycle state
+必须在 document mutation 前拒绝。
 
 约定：
 
@@ -498,6 +508,12 @@ patch、prepared unified font faces 和显式 fit policy。
 - renderer 必须先为 patch 中每个 entry 生成 fitted/preserved decision 并计算 resolved
   `patchId`，再调用一次现有 page-level atomic batch。batch 失败时不得返回可持久化 patch，
   也不得改变 document objects 或 `max_id`。
+- 首次 render 接受全 pending patch 并产生 resolved identity。cache miss/restart 重建接受全
+  resolved patch，但必须重新执行相同 preflight，逐 entry 精确匹配 stored decision；任何
+  fit strategy、scale 或 preservation reason 漂移都 typed 拒绝且零修改。
+- 当前 renderer contract version 为
+  `rosetta-pdf-v3-translation-patch-renderer/1`。render 与 cache address 都必须验证 patch
+  版本完全一致；旧版本 patch 不允许由新实现静默重放或进入当前 cache namespace。
 - source operator、operand hash、operation 或 paint/style identity 变化属于 stale source，
   是整次 render 的 typed fatal error。无法验证的 text-object boundary、anchor、fit、font face
   或支持范围属于 entry/group preservation，不得让安全 entry 一并退回原文。
@@ -505,6 +521,9 @@ patch、prepared unified font faces 和显式 fit policy。
   `translation-overflow`；不得无限水平压缩。
 - render 成功返回 resolved patch 与可选 batch diagnostic。全 preserved 页不修改 PDF，
   batch 可以为空，但 resolved patch 仍是该 revision 的完整 durable authority。
+- page PDF serializer 消费一个显式 working document ownership，完成 replacement 后只保留
+  selected page 并 prune/renumber/compress。API 不得为了方便而隐式 clone 整个长 PDF；
+  future scheduler/working-document strategy 可以替换输入来源而不改变 artifact/cache contract。
 
 ## PDF v3 Content Operand Patch
 
