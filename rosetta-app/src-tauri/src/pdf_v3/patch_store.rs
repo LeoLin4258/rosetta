@@ -270,6 +270,14 @@ impl TranslationPatchStore {
         })
     }
 
+    pub(crate) fn source_fingerprint(&self) -> &str {
+        &self.source_fingerprint
+    }
+
+    pub(crate) fn target_language(&self) -> &str {
+        &self.target_language
+    }
+
     #[cfg(test)]
     fn language_dir(&self) -> &Path {
         &self.language_dir
@@ -330,18 +338,22 @@ impl TranslationPatchStore {
                             revision: patch.translation_revision,
                         });
                     }
-                    if self.load_entry(page, current).is_ok() {
-                        return Ok(TranslationPatchCommitOutcome {
-                            kind: TranslationPatchCommitKind::Unchanged,
-                            page_number: patch.page_number,
-                            translation_revision: patch.translation_revision,
-                            shard_generation: shard
-                                .as_ref()
-                                .map(|shard| shard.generation)
-                                .unwrap_or(0),
-                            patch_bytes: current.patch_bytes,
-                            cleanup,
-                        });
+                    match self.load_entry(page, current) {
+                        Ok(_) => {
+                            return Ok(TranslationPatchCommitOutcome {
+                                kind: TranslationPatchCommitKind::Unchanged,
+                                page_number: patch.page_number,
+                                translation_revision: patch.translation_revision,
+                                shard_generation: shard
+                                    .as_ref()
+                                    .map(|shard| shard.generation)
+                                    .unwrap_or(0),
+                                patch_bytes: current.patch_bytes,
+                                cleanup,
+                            });
+                        }
+                        Err(error @ TranslationPatchStoreError::Io { .. }) => return Err(error),
+                        Err(_) => {}
                     }
                     repair_idempotent_patch = true;
                 }
@@ -416,6 +428,7 @@ impl TranslationPatchStore {
                 self.read_canonical_shard(shard_index(page.page_number))?,
             ) {
                 Ok(stored) => Ok(stored),
+                Err(error @ TranslationPatchStoreError::Io { .. }) => Err(error),
                 Err(_) => {
                     state.repaired = false;
                     self.repair_locked()?;
@@ -527,8 +540,10 @@ impl TranslationPatchStore {
         let candidates = self.manifest_candidate_paths()?;
         let mut valid = Vec::new();
         for path in &candidates {
-            if let Ok(manifest) = self.read_manifest_candidate(path) {
-                valid.push((path.clone(), manifest));
+            match self.read_manifest_candidate(path) {
+                Ok(manifest) => valid.push((path.clone(), manifest)),
+                Err(error @ TranslationPatchStoreError::Io { .. }) => return Err(error),
+                Err(_) => {}
             }
         }
         let expected = self.expected_manifest()?;
@@ -560,8 +575,10 @@ impl TranslationPatchStore {
         let target = self.language_dir.join(shard_filename(index));
         let mut valid = Vec::new();
         for path in candidates {
-            if let Ok(shard) = self.read_shard_candidate(path, index) {
-                valid.push((path.clone(), shard));
+            match self.read_shard_candidate(path, index) {
+                Ok(shard) => valid.push((path.clone(), shard)),
+                Err(error @ TranslationPatchStoreError::Io { .. }) => return Err(error),
+                Err(_) => {}
             }
         }
         let Some((candidate, mut shard)) = valid.into_iter().max_by(|left, right| {
@@ -579,11 +596,13 @@ impl TranslationPatchStore {
         };
 
         let original_count = shard.pages.len();
-        shard.pages = shard
-            .pages
-            .into_iter()
-            .filter(|entry| self.patch_entry_file_is_valid(entry))
-            .collect();
+        let mut valid_pages = Vec::with_capacity(original_count);
+        for entry in shard.pages {
+            if self.patch_entry_file_is_valid(&entry)? {
+                valid_pages.push(entry);
+            }
+        }
+        shard.pages = valid_pages;
         let dropped = original_count.saturating_sub(shard.pages.len());
         report.dropped_invalid_pages += u64::try_from(dropped).unwrap_or(u64::MAX);
         if shard.pages.is_empty() {
@@ -669,7 +688,7 @@ impl TranslationPatchStore {
         index: u32,
     ) -> Result<Option<TranslationPatchManifestShard>, TranslationPatchStoreError> {
         let path = self.language_dir.join(shard_filename(index));
-        if !path.exists() {
+        if !try_exists(&path)? {
             return Ok(None);
         }
         self.read_shard_candidate(&path, index).map(Some)
@@ -771,6 +790,11 @@ impl TranslationPatchStore {
         entry: &TranslationPatchManifestPage,
     ) -> Result<TranslationPatch, TranslationPatchStoreError> {
         let path = self.language_dir.join(&entry.patch_file);
+        if !try_exists(&path)? {
+            return Err(TranslationPatchStoreError::PatchFileMismatch {
+                page_number: entry.page_number,
+            });
+        }
         let bytes = read_limited(&path, MAX_PATCH_BYTES)?;
         if u64::try_from(bytes.len()).ok() != Some(entry.patch_bytes) {
             return Err(TranslationPatchStoreError::PatchFileMismatch {
@@ -787,21 +811,29 @@ impl TranslationPatchStore {
         Ok(patch)
     }
 
-    fn patch_entry_file_is_valid(&self, entry: &TranslationPatchManifestPage) -> bool {
+    fn patch_entry_file_is_valid(
+        &self,
+        entry: &TranslationPatchManifestPage,
+    ) -> Result<bool, TranslationPatchStoreError> {
         let path = self.language_dir.join(&entry.patch_file);
-        let Ok(bytes) = read_limited(&path, MAX_PATCH_BYTES) else {
-            return false;
+        if !try_exists(&path)? {
+            return Ok(false);
+        }
+        let bytes = match read_limited(&path, MAX_PATCH_BYTES) {
+            Ok(bytes) => bytes,
+            Err(error @ TranslationPatchStoreError::Io { .. }) => return Err(error),
+            Err(_) => return Ok(false),
         };
         if u64::try_from(bytes.len()).ok() != Some(entry.patch_bytes) {
-            return false;
+            return Ok(false);
         }
-        decode_and_validate_translation_patch_identity(&bytes)
+        Ok(decode_and_validate_translation_patch_identity(&bytes)
             .and_then(|patch| {
                 ensure_translation_patch_renderer_resolved(&patch)?;
                 Ok(patch)
             })
             .map(|patch| entry_matches_patch(entry, &patch, &self.target_language))
-            .unwrap_or(false)
+            .unwrap_or(false))
     }
 
     fn write_immutable_patch(
@@ -811,7 +843,7 @@ impl TranslationPatchStore {
         page_number: u32,
     ) -> Result<(), TranslationPatchStoreError> {
         let target = self.language_dir.join(filename);
-        if target.exists() {
+        if try_exists(&target)? {
             let existing = read_limited(&target, MAX_PATCH_BYTES)?;
             if existing == bytes {
                 return Ok(());
@@ -825,16 +857,16 @@ impl TranslationPatchStore {
                 sync_parent_directory(&self.language_dir)?;
                 Ok(())
             }
-            Err(_) if target.exists() => {
-                let _ = fs::remove_file(&temp);
-                let existing = read_limited(&target, MAX_PATCH_BYTES)?;
-                if existing == bytes {
-                    Ok(())
-                } else {
-                    Err(TranslationPatchStoreError::PatchFileMismatch { page_number })
-                }
-            }
             Err(error) => {
+                if try_exists(&target)? {
+                    let _ = fs::remove_file(&temp);
+                    let existing = read_limited(&target, MAX_PATCH_BYTES)?;
+                    return if existing == bytes {
+                        Ok(())
+                    } else {
+                        Err(TranslationPatchStoreError::PatchFileMismatch { page_number })
+                    };
+                }
                 let _ = fs::remove_file(&temp);
                 Err(io_error("commit", &target, error))
             }
@@ -1070,7 +1102,7 @@ fn write_index_atomic(target: &Path, bytes: &[u8]) -> Result<(), TranslationPatc
     let temp = unique_sidecar_path(target, "tmp");
     let backup = unique_sidecar_path(target, "bak");
     write_new_synced_file(&temp, bytes)?;
-    let had_target = target.exists();
+    let had_target = try_exists(target)?;
     if had_target {
         if let Err(error) = fs::rename(target, &backup) {
             let _ = fs::remove_file(&temp);
@@ -1118,6 +1150,11 @@ fn read_limited(path: &Path, maximum: u64) -> Result<Vec<u8>, TranslationPatchSt
         });
     }
     Ok(bytes)
+}
+
+fn try_exists(path: &Path) -> Result<bool, TranslationPatchStoreError> {
+    path.try_exists()
+        .map_err(|error| io_error("inspect", path, error))
 }
 
 fn write_new_synced_file(path: &Path, bytes: &[u8]) -> Result<(), TranslationPatchStoreError> {
@@ -1345,6 +1382,24 @@ mod tests {
             store.load(&page).expect("load").expect("patch").patch,
             patch
         );
+    }
+
+    #[test]
+    fn idempotent_commit_propagates_patch_io_failure() {
+        let temp = TestDirectory::new("recommit-io");
+        let store = patch_store(temp.path());
+        let page = page_graph(1, "source");
+        let patch = patch(&page, 1, "译文");
+        store.commit(&page, &patch).expect("initial commit");
+        let snapshot = store.snapshot().expect("snapshot");
+        let patch_path = store.language_dir().join(&snapshot.pages[0].patch_file);
+        fs::remove_file(&patch_path).expect("remove patch");
+        fs::create_dir(&patch_path).expect("replace patch with directory");
+
+        assert!(matches!(
+            store.commit(&page, &patch),
+            Err(TranslationPatchStoreError::Io { .. })
+        ));
     }
 
     #[test]

@@ -51,6 +51,19 @@ pub(crate) struct PdfV3ExtractionBinding {
     pub page_graph_schema_version: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PdfV3TranslationBinding {
+    pub source_fingerprint: String,
+    pub source_page_count: u32,
+    pub requested_pages: PageSet,
+    pub source_language: String,
+    pub target_language: String,
+    pub engine_version: String,
+    pub page_graph_schema_version: u32,
+    pub translation_patch_schema_version: u32,
+    pub renderer_version: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PdfV3SchedulerCapacity {
@@ -562,6 +575,24 @@ impl DurablePdfV3Scheduler {
             requested_pages: requested_pages(&manifest)?,
             engine_version: manifest.engine_version.clone(),
             page_graph_schema_version: manifest.page_graph_schema_version,
+        })
+    }
+
+    pub(crate) fn translation_binding(
+        &self,
+    ) -> Result<PdfV3TranslationBinding, PdfV3SchedulerError> {
+        let _guard = self.lock()?;
+        let manifest = self.read_manifest()?;
+        Ok(PdfV3TranslationBinding {
+            source_fingerprint: manifest.source_fingerprint.clone(),
+            source_page_count: manifest.source_page_count,
+            requested_pages: requested_pages(&manifest)?,
+            source_language: manifest.source_language.clone(),
+            target_language: manifest.target_language.clone(),
+            engine_version: manifest.engine_version.clone(),
+            page_graph_schema_version: manifest.page_graph_schema_version,
+            translation_patch_schema_version: manifest.translation_patch_schema_version,
+            renderer_version: manifest.renderer_version.clone(),
         })
     }
 

@@ -783,6 +783,39 @@ Store 和 Render Cache。beta 阶段不迁移旧 PDF extraction artifacts。
 - deterministic reconciliation failure 进入 non-retryable extraction failure；store/I/O
   failure 进入 retryable failure。reason code 不得包含 source text、translated text 或路径。
 
+## PDF v3 Translation Worker and Recovery Inventory
+
+PDF v3 translation orchestration connects independently durable PageGraph,
+TranslationPatch and scheduler state. It remains isolated from legacy PDF page
+artifacts and ordinary Rosetta text segments.
+
+约定：
+
+- scheduler translation binding 必须固定 source fingerprint/page count、exact
+  PageSet、source/target language、engine、PageGraph/TranslationPatch schema 和
+  renderer version。worker 在 claim 前必须验证两个 store 与该 binding 一致。
+- sequential worker 每次只能 claim 一个 translation lease，并只保留该页一个
+  PageGraph。provider 跨页 batching 不得改变 page ownership 或让已完成 PageGraph
+  常驻内存。
+- page processor 只返回 fully resolved `TranslationPatch`、带稳定 reason code 的
+  explicit preservation，或带明确 retryability 的稳定失败。pending renderer draft
+  不得越过 worker/store 边界。
+- worker 必须逐项验证 claim extraction authority、PageGraph artifact authority、
+  patch source/page/atom identity、target language、schema 和 renderer version。
+- resolved patch 必须先 durable commit 到 TranslationPatch Store，之后才能提交
+  scheduler completed authority。两次提交之间崩溃时 recovery inventory 必须提升
+  已验证 patch，不能重复翻译。
+- preserved 页面不创建空白译文 PDF 或伪 patch；scheduler 持久化 extraction authority
+  与稳定 preservation reason，导出时保留源页面。
+- PageGraph authority 不可用和瞬时 patch-store I/O/lock failure 是 retryable；invalid
+  patch 与 revision/content conflict 是 non-retryable。失败 reason 不得包含 source text、
+  translated text、provider response 或本地路径。
+- complete recovery inventory 必须先验证 scheduler/store binding，再逐页验证
+  PageGraph artifact 与对应 patch。只能纳入 scheduler exact PageSet，且不得同时保留
+  多页 PageGraph/patch body。
+- missing/corrupt patch 是 page-local invalid authority，可以 repair/drop；真实 filesystem
+  I/O failure 必须上抛，不能作为坏 patch 静默删除。
+
 ## PDF v3 Durable Scheduler
 
 PDF v3 长文档调度状态独立于 legacy `PdfTranslationRun`、TranslationPatch Store 和
