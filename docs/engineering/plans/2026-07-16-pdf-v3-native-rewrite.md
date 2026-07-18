@@ -184,6 +184,22 @@ Current progress:
   versus the 1,590,242-byte source. Poppler changes stayed within the two target
   footer rows and page 3 remained pixel-exact; page count, annotations and
   metadata were retained.
+- Final document export now appends an explicit `PdfObjectDelta` to the
+  immutable source instead of serializing a complete replacement document or
+  comparing complete source/rendered object graphs.
+- A bounded `PdfSourceObjectStore` now memory-maps the source, resolves xref
+  tables/streams and object streams on demand, and exposes a 16 MiB / 512-entry
+  object LRU plus an immutable delta overlay.
+- Document-wide font allocation and registry identity validation are the first
+  renderer operations migrated from `&lopdf::Document` to `PdfObjectView`.
+  The real two-page export stages its six font objects directly against the
+  lazy source and validates them through the overlay without loading a source
+  object.
+- The current incremental two-page proof remains 1,617,258 bytes from a
+  1,590,242-byte source: 27,016 appended bytes and 10 delta objects. Page 1 and
+  2 changes remain confined to their translated footer rows and page 3 is
+  pixel-exact. Page/resource/content traversal is still the next lazy-view
+  migration boundary.
 
 ## Purpose
 
@@ -514,21 +530,21 @@ incremental delta writer now copies the immutable source with a fixed 64 KiB
 buffer, appends only changed objects and a new xref/trailer, supports
 cancellation before commit, and atomically replaces the destination after file
 sync. The writer no longer owns source bytes or the previous object graph. The
-current renderer still mutates a complete `lopdf::Document`, however; a lazy
-object reader, scheduler recovery and stress validation remain pending before
-export is genuinely end-to-end bounded-memory and streaming. Font registry and
-page renderer mutation are now explicitly staged as merge-checked
+current page renderer still applies its staged delta to a complete
+`lopdf::Document`, however; scheduler recovery and stress validation remain
+pending before export is genuinely end-to-end bounded-memory and streaming.
+Font registry and page renderer mutation are now explicitly staged as merge-checked
 `PdfObjectDelta` values, and the incremental writer consumes that delta directly;
 whole-object-graph comparison is no longer part of the export path.
 
 The lazy source-object foundation now opens the immutable source through a
 read-only memory map, resolves classic/xref-stream and object-stream entries on
 demand, converts only requested objects into the existing renderer object type,
-and bounds its LRU by bytes and entries. Incremental export base construction
-already uses its raw trailer/xref identity. The next slice must migrate
-page-tree, resource and content traversal from `&Document` to the lazy
-`PdfObjectView` plus `PdfObjectOverlay`; until then renderer memory remains
-unbounded by source object count.
+and bounds its LRU by bytes and entries. Incremental export base construction,
+document-wide font allocation and registry identity validation already use the
+lazy view. The next slice must migrate page-tree, resource and content traversal
+from `&Document` to `PdfObjectView` plus `PdfObjectOverlay`; until then renderer
+memory remains unbounded by source object count.
 
 ### Phase 5 — Translation and protected spans
 

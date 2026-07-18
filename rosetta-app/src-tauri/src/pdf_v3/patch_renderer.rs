@@ -1100,6 +1100,8 @@ mod tests {
         let translations = ["Registry page one", "Registry page two"];
         let prepared = prepared_arial(&translations);
         let source_path = fixture_path("2305.13048v2.pdf");
+        let source_objects =
+            PdfSourceObjectStore::open(&source_path).expect("lazy source object store");
         let first_page =
             build_reconciled_page_graph(shared_pdfium(), &source_path, 1).expect("first page");
         let second_page =
@@ -1114,7 +1116,7 @@ mod tests {
         let StagedDocumentTranslationFonts {
             registry,
             object_delta: mut export_delta,
-        } = stage_document_translation_font_registry(&document, &[&prepared])
+        } = stage_document_translation_font_registry(&source_objects, &[&prepared])
             .expect("staged document font registry");
         assert_eq!(export_delta.object_count(), 6);
         export_delta.apply_to(&mut document);
@@ -1186,8 +1188,6 @@ mod tests {
         assert_eq!(matching_type0_fonts, 1);
 
         assert_eq!(export_delta.object_count(), 10);
-        let source_objects =
-            PdfSourceObjectStore::open(&source_path).expect("lazy source object store");
         let base =
             IncrementalExportBase::from_source_object_store(fingerprint(&source), &source_objects)
                 .expect("lazy incremental export base");

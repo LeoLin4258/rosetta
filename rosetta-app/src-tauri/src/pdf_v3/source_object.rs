@@ -283,6 +283,18 @@ impl PdfObjectView for PdfSourceObjectStore {
     }
 }
 
+impl PdfObjectView for lopdf::Document {
+    fn maximum_object_number(&self) -> u32 {
+        self.max_id
+    }
+
+    fn object(&self, object_id: ObjectId) -> Result<Object, PdfSourceObjectError> {
+        lopdf::Document::get_object(self, object_id)
+            .cloned()
+            .map_err(|error| PdfSourceObjectError::Parse(error.to_string()))
+    }
+}
+
 pub(crate) struct PdfObjectOverlay<'a> {
     source: &'a dyn PdfObjectView,
     delta: &'a PdfObjectDelta,

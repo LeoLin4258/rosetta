@@ -11,7 +11,10 @@ use sha2::{Digest, Sha256};
 use subsetter::{subset, GlyphRemapper};
 use ttf_parser::{Face, GlyphId, Permissions};
 
-use super::object_delta::{PdfObjectDelta, PdfObjectDeltaError};
+use super::{
+    object_delta::{PdfObjectDelta, PdfObjectDeltaError},
+    source_object::{PdfObjectView, PdfSourceObjectError},
+};
 
 pub(crate) const SOURCE_HAN_SANS_CN_REGULAR: &str = "SourceHanSansCN-Regular.ttf";
 pub(crate) const SOURCE_HAN_SANS_CN_BOLD: &str = "SourceHanSansCN-Bold.ttf";
@@ -77,6 +80,7 @@ pub(crate) enum TranslationFontError {
     PageResources(String),
     Content(String),
     ObjectDelta(PdfObjectDeltaError),
+    SourceObject(PdfSourceObjectError),
 }
 
 impl fmt::Display for TranslationFontError {
@@ -88,6 +92,7 @@ impl fmt::Display for TranslationFontError {
             | Self::PageResources(message)
             | Self::Content(message) => formatter.write_str(message),
             Self::ObjectDelta(error) => error.fmt(formatter),
+            Self::SourceObject(error) => error.fmt(formatter),
             Self::EmbeddingRestricted => {
                 formatter.write_str("translation font does not permit outline embedding")
             }
@@ -138,6 +143,12 @@ impl std::error::Error for TranslationFontError {}
 impl From<PdfObjectDeltaError> for TranslationFontError {
     fn from(value: PdfObjectDeltaError) -> Self {
         Self::ObjectDelta(value)
+    }
+}
+
+impl From<PdfSourceObjectError> for TranslationFontError {
+    fn from(value: PdfSourceObjectError) -> Self {
+        Self::SourceObject(value)
     }
 }
 
@@ -416,7 +427,7 @@ impl DocumentTranslationFontRegistry {
 
     pub(crate) fn binding_for(
         &self,
-        document: &Document,
+        objects: &dyn PdfObjectView,
         font: &PreparedTranslationFont,
     ) -> Result<(&[u8], ObjectId), TranslationFontError> {
         let resource = self
@@ -431,19 +442,17 @@ impl DocumentTranslationFontRegistry {
                 font.weight,
             ));
         }
-        let valid_type0 = document
-            .get_object(resource.type0_font_id)
-            .and_then(Object::as_dict)
-            .is_ok_and(|dictionary| {
-                dictionary
-                    .get(b"Subtype")
+        let type0 = objects.object(resource.type0_font_id)?;
+        let valid_type0 = type0.as_dict().is_ok_and(|dictionary| {
+            dictionary
+                .get(b"Subtype")
+                .and_then(Object::as_name)
+                .is_ok_and(|name| name == b"Type0")
+                && dictionary
+                    .get(b"BaseFont")
                     .and_then(Object::as_name)
-                    .is_ok_and(|name| name == b"Type0")
-                    && dictionary
-                        .get(b"BaseFont")
-                        .and_then(Object::as_name)
-                        .is_ok_and(|name| name == resource.subset_name.as_bytes())
-            });
+                    .is_ok_and(|name| name == resource.subset_name.as_bytes())
+        });
         if !valid_type0 {
             return Err(TranslationFontError::DocumentFontObjectInvalid(font.weight));
         }
@@ -461,7 +470,7 @@ pub(crate) fn stage_document_translation_fonts(
 }
 
 pub(crate) fn stage_document_translation_font_registry(
-    document: &Document,
+    objects: &dyn PdfObjectView,
     fonts: &[&PreparedTranslationFont],
 ) -> Result<StagedDocumentTranslationFonts, TranslationFontError> {
     let mut fonts_by_weight = BTreeMap::new();
@@ -471,12 +480,12 @@ pub(crate) fn stage_document_translation_font_registry(
         }
     }
 
-    let mut reserved_through = document.max_id;
+    let mut reserved_through = objects.maximum_object_number();
     let mut staged_fonts = Vec::with_capacity(fonts_by_weight.len());
     let mut registry = DocumentTranslationFontRegistry::default();
     for (weight, font) in fonts_by_weight {
         let staged = font.stage_after(
-            document,
+            objects,
             translation_font_resource_name(weight).to_vec(),
             reserved_through,
         )?;
@@ -554,23 +563,27 @@ impl PreparedTranslationFont {
 
     pub(crate) fn stage(
         &self,
-        document: &Document,
+        source_objects: &dyn PdfObjectView,
         resource_name: impl Into<Vec<u8>>,
     ) -> Result<StagedTranslationFont, TranslationFontError> {
-        self.stage_after(document, resource_name, document.max_id)
+        self.stage_after(
+            source_objects,
+            resource_name,
+            source_objects.maximum_object_number(),
+        )
     }
 
     pub(crate) fn stage_after(
         &self,
-        document: &Document,
+        source_objects: &dyn PdfObjectView,
         resource_name: impl Into<Vec<u8>>,
         reserved_through: u32,
     ) -> Result<StagedTranslationFont, TranslationFontError> {
         let resource_name = resource_name.into();
-        let mut next_object_number = document.max_id.max(reserved_through);
+        let mut next_object_number = source_objects.maximum_object_number().max(reserved_through);
         let mut objects = BTreeMap::new();
 
-        let font_file_id = allocate_object_id(document, &objects, &mut next_object_number)?;
+        let font_file_id = allocate_object_id(&objects, &mut next_object_number)?;
         let mut font_file = Stream::new(Dictionary::new(), self.subset_bytes.clone());
         font_file
             .dict
@@ -580,14 +593,14 @@ impl PreparedTranslationFont {
             .map_err(|error| TranslationFontError::Subset(error.to_string()))?;
         objects.insert(font_file_id, Object::Stream(font_file));
 
-        let cid_to_gid_id = allocate_object_id(document, &objects, &mut next_object_number)?;
+        let cid_to_gid_id = allocate_object_id(&objects, &mut next_object_number)?;
         let mut cid_to_gid = Stream::new(Dictionary::new(), self.cid_to_gid_map());
         cid_to_gid
             .compress()
             .map_err(|error| TranslationFontError::Subset(error.to_string()))?;
         objects.insert(cid_to_gid_id, Object::Stream(cid_to_gid));
 
-        let descriptor_id = allocate_object_id(document, &objects, &mut next_object_number)?;
+        let descriptor_id = allocate_object_id(&objects, &mut next_object_number)?;
         let mut descriptor = Dictionary::new();
         descriptor.set("Type", Object::Name(b"FontDescriptor".to_vec()));
         descriptor.set(
@@ -614,7 +627,7 @@ impl PreparedTranslationFont {
         descriptor.set("FontFile2", Object::Reference(font_file_id));
         objects.insert(descriptor_id, Object::Dictionary(descriptor));
 
-        let descendant_id = allocate_object_id(document, &objects, &mut next_object_number)?;
+        let descendant_id = allocate_object_id(&objects, &mut next_object_number)?;
         let mut cid_system_info = Dictionary::new();
         cid_system_info.set(
             "Registry",
@@ -646,14 +659,14 @@ impl PreparedTranslationFont {
         descendant.set("CIDToGIDMap", Object::Reference(cid_to_gid_id));
         objects.insert(descendant_id, Object::Dictionary(descendant));
 
-        let to_unicode_id = allocate_object_id(document, &objects, &mut next_object_number)?;
+        let to_unicode_id = allocate_object_id(&objects, &mut next_object_number)?;
         let mut to_unicode = Stream::new(Dictionary::new(), self.to_unicode_cmap());
         to_unicode
             .compress()
             .map_err(|error| TranslationFontError::Subset(error.to_string()))?;
         objects.insert(to_unicode_id, Object::Stream(to_unicode));
 
-        let type0_id = allocate_object_id(document, &objects, &mut next_object_number)?;
+        let type0_id = allocate_object_id(&objects, &mut next_object_number)?;
         let mut type0 = Dictionary::new();
         type0.set("Type", Object::Name(b"Font".to_vec()));
         type0.set("Subtype", Object::Name(b"Type0".to_vec()));
@@ -832,7 +845,6 @@ pub(crate) fn append_translation_text(
 }
 
 fn allocate_object_id(
-    document: &Document,
     staged: &BTreeMap<ObjectId, Object>,
     next_object_number: &mut u32,
 ) -> Result<ObjectId, TranslationFontError> {
@@ -841,7 +853,7 @@ fn allocate_object_id(
             .checked_add(1)
             .ok_or(TranslationFontError::ObjectIdOverflow)?;
         let object_id = (*next_object_number, 0);
-        if !document.objects.contains_key(&object_id) && !staged.contains_key(&object_id) {
+        if !staged.contains_key(&object_id) {
             return Ok(object_id);
         }
     }
@@ -959,11 +971,12 @@ mod tests {
 
     use super::{
         append_translation_text, attach_translation_font_to_page,
-        recommended_translation_font_family, stage_document_translation_fonts,
-        TranslationFontAsset, TranslationFontAssetCache, TranslationFontError,
-        TranslationFontWeight, UnifiedTranslationFontPlan, GO_NOTO_KURRENT_REGULAR,
-        SOURCE_HAN_SANS_CN_BOLD, SOURCE_HAN_SANS_CN_REGULAR,
+        recommended_translation_font_family, stage_document_translation_font_registry,
+        stage_document_translation_fonts, TranslationFontAsset, TranslationFontAssetCache,
+        TranslationFontError, TranslationFontWeight, UnifiedTranslationFontPlan,
+        GO_NOTO_KURRENT_REGULAR, SOURCE_HAN_SANS_CN_BOLD, SOURCE_HAN_SANS_CN_REGULAR,
     };
+    use crate::pdf_v3::source_object::{PdfObjectOverlay, PdfObjectView, PdfSourceObjectStore};
     use crate::rosetta_jobs::formats::pdf::test_helpers::{
         fixture_path, pdfium_test_lock, shared_pdfium,
     };
@@ -1153,6 +1166,59 @@ mod tests {
         assert!(matches!(
             registry
                 .binding_for(&document, &second)
+                .expect_err("different subset identity"),
+            TranslationFontError::DocumentFontIdentityMismatch(TranslationFontWeight::Regular)
+        ));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn document_font_registry_stages_against_lazy_source_and_validates_overlay() {
+        let asset = TranslationFontAsset::open(
+            "ArialRegular",
+            PathBuf::from(r"C:\Windows\Fonts\arial.ttf").as_path(),
+            0,
+        )
+        .expect("Windows Arial font");
+        let mut first_plan = UnifiedTranslationFontPlan::default();
+        first_plan.add_text("Lazy registry identity one");
+        let first = asset.prepare(&first_plan).expect("first prepared subset");
+        let mut second_plan = UnifiedTranslationFontPlan::default();
+        second_plan.add_text("Lazy registry identity two");
+        let second = asset.prepare(&second_plan).expect("second prepared subset");
+        let source = PdfSourceObjectStore::open(fixture_path("2305.13048v2.pdf"))
+            .expect("lazy source object store");
+        let source_maximum = source.maximum_object_number();
+
+        let staged = stage_document_translation_font_registry(&source, &[&first])
+            .expect("lazy document font registry");
+        assert_eq!(staged.object_delta.object_count(), 6);
+        assert_eq!(source.maximum_object_number(), source_maximum);
+        assert_eq!(
+            staged.object_delta.maximum_object_number(),
+            source_maximum + 6
+        );
+        assert_eq!(
+            source
+                .cache_stats()
+                .expect("source cache stats")
+                .source_loads,
+            0
+        );
+
+        let overlay = PdfObjectOverlay::new(&source, &staged.object_delta);
+        assert!(staged.registry.binding_for(&overlay, &first).is_ok());
+        assert_eq!(
+            source
+                .cache_stats()
+                .expect("source cache stats")
+                .source_loads,
+            0
+        );
+        assert!(matches!(
+            staged
+                .registry
+                .binding_for(&overlay, &second)
                 .expect_err("different subset identity"),
             TranslationFontError::DocumentFontIdentityMismatch(TranslationFontWeight::Regular)
         ));
