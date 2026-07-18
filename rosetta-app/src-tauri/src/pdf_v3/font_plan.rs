@@ -25,6 +25,7 @@ pub(crate) struct TranslationFontCharacterPlan {
 
 #[derive(Debug)]
 pub(crate) enum TranslationFontPlanError {
+    Cancelled,
     SourceIdentityMismatch,
     PageOutOfBounds {
         page_number: u32,
@@ -38,6 +39,11 @@ pub(crate) enum TranslationFontPlanError {
         count: usize,
         maximum: usize,
     },
+    MissingFontAsset(TranslationFontWeight),
+    FontAssetWeightMismatch {
+        expected: TranslationFontWeight,
+        actual: TranslationFontWeight,
+    },
     Patch(TranslationPatchError),
     Style(TextShowStyleError),
     PageGraphStore(PageGraphStoreError),
@@ -48,6 +54,7 @@ pub(crate) enum TranslationFontPlanError {
 impl fmt::Display for TranslationFontPlanError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Cancelled => formatter.write_str("PDF v3 font planning was cancelled"),
             Self::SourceIdentityMismatch => formatter
                 .write_str("PDF v3 font planning stores do not share one source fingerprint"),
             Self::PageOutOfBounds {
@@ -78,6 +85,16 @@ impl fmt::Display for TranslationFontPlanError {
             } => write!(
                 formatter,
                 "PDF v3 {weight:?} font plan has {count} characters, above maximum {maximum}"
+            ),
+            Self::MissingFontAsset(weight) => {
+                write!(
+                    formatter,
+                    "PDF v3 font planning is missing the {weight:?} asset"
+                )
+            }
+            Self::FontAssetWeightMismatch { expected, actual } => write!(
+                formatter,
+                "PDF v3 font asset has weight {actual:?}; expected {expected:?}"
             ),
             Self::Patch(error) => error.fmt(formatter),
             Self::Style(error) => error.fmt(formatter),
@@ -166,6 +183,22 @@ impl TranslationFontCharacterPlan {
         Ok(())
     }
 
+    pub(crate) fn for_resolved_replay(
+        page: &PageGraph,
+        patch: &TranslationPatch,
+    ) -> Result<Self, TranslationFontPlanError> {
+        validate_translation_patch(page, patch)?;
+        ensure_translation_patch_renderer_resolved(patch)?;
+        let mut plan = Self::default();
+        for entry in &patch.entries {
+            let Ok(style) = plan_text_show_style(page, &entry.style_id) else {
+                continue;
+            };
+            plan.try_add_text(style.translation_font_weight, &entry.translated_text)?;
+        }
+        Ok(plan)
+    }
+
     pub(crate) fn plan_for(
         &self,
         weight: TranslationFontWeight,
@@ -194,6 +227,33 @@ impl TranslationFontCharacterPlan {
         Ok(prepared)
     }
 
+    pub(crate) fn prepare_document_fonts(
+        &self,
+        regular: &TranslationFontAsset,
+        bold: Option<&TranslationFontAsset>,
+    ) -> Result<Vec<PreparedTranslationFont>, TranslationFontPlanError> {
+        if regular.weight() != TranslationFontWeight::Regular {
+            return Err(TranslationFontPlanError::FontAssetWeightMismatch {
+                expected: TranslationFontWeight::Regular,
+                actual: regular.weight(),
+            });
+        }
+        if let Some(asset) = bold {
+            if asset.weight() != TranslationFontWeight::Bold {
+                return Err(TranslationFontPlanError::FontAssetWeightMismatch {
+                    expected: TranslationFontWeight::Bold,
+                    actual: asset.weight(),
+                });
+            }
+        }
+        if self.plan_for(TranslationFontWeight::Bold).is_some() && bold.is_none() {
+            return Err(TranslationFontPlanError::MissingFontAsset(
+                TranslationFontWeight::Bold,
+            ));
+        }
+        self.prepare_available_fonts(regular, bold)
+    }
+
     fn try_add_text(
         &mut self,
         weight: TranslationFontWeight,
@@ -216,12 +276,24 @@ pub(crate) fn plan_document_translation_fonts(
     patch_store: &TranslationPatchStore,
     pages: &PageSet,
 ) -> Result<TranslationFontCharacterPlan, TranslationFontPlanError> {
+    plan_document_translation_fonts_with_cancel(page_graph_store, patch_store, pages, || false)
+}
+
+pub(crate) fn plan_document_translation_fonts_with_cancel(
+    page_graph_store: &PageGraphStore,
+    patch_store: &TranslationPatchStore,
+    pages: &PageSet,
+    is_cancelled: impl Fn() -> bool,
+) -> Result<TranslationFontCharacterPlan, TranslationFontPlanError> {
     if page_graph_store.source_fingerprint() != patch_store.source_fingerprint() {
         return Err(TranslationFontPlanError::SourceIdentityMismatch);
     }
     let page_count = page_graph_store.source_page_count();
     let mut plan = TranslationFontCharacterPlan::default();
     for &page_number in pages.pages() {
+        if is_cancelled() {
+            return Err(TranslationFontPlanError::Cancelled);
+        }
         if page_number == 0 || page_number > page_count {
             return Err(TranslationFontPlanError::PageOutOfBounds {
                 page_number,
@@ -236,6 +308,9 @@ pub(crate) fn plan_document_translation_fonts(
         )?;
         plan.absorb_resolved_patch(&stored_page.page, &stored_patch.patch)?;
     }
+    if is_cancelled() {
+        return Err(TranslationFontPlanError::Cancelled);
+    }
     Ok(plan)
 }
 
@@ -249,7 +324,8 @@ mod tests {
     };
 
     use super::{
-        plan_document_translation_fonts, TranslationFontCharacterPlan, TranslationFontPlanError,
+        plan_document_translation_fonts, plan_document_translation_fonts_with_cancel,
+        TranslationFontCharacterPlan, TranslationFontPlanError,
         MAX_TRANSLATION_FONT_CHARACTERS_PER_WEIGHT,
     };
     use crate::pdf_v3::{
@@ -423,6 +499,10 @@ mod tests {
             plan.character_count(TranslationFontWeight::Bold),
             unique_character_count("Bold 乙")
         );
+        assert!(matches!(
+            plan_document_translation_fonts_with_cancel(&page_store, &patch_store, &pages, || true),
+            Err(TranslationFontPlanError::Cancelled)
+        ));
     }
 
     fn unique_character_count(text: &str) -> usize {

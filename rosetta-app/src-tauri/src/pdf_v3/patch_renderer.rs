@@ -173,6 +173,7 @@ pub(crate) fn render_translation_patch(
         page,
         patch,
         fonts,
+        fonts,
         policy,
         None,
     )?;
@@ -196,6 +197,7 @@ pub(crate) fn render_translation_patch_with_font_registry(
         None,
         page,
         patch,
+        fonts,
         fonts,
         policy,
         Some(font_registry),
@@ -223,6 +225,34 @@ pub(crate) fn stage_translation_patch_with_font_registry(
         page,
         patch,
         fonts,
+        fonts,
+        policy,
+        Some(font_registry),
+    )
+}
+
+pub(crate) fn stage_resolved_translation_patch_with_font_registry(
+    source_objects: &dyn PdfObjectView,
+    accumulated_objects: &dyn PdfObjectView,
+    page_index: &PdfPageIndex,
+    ownership_index: &PdfStreamOwnershipIndex,
+    page: &PageGraph,
+    patch: &TranslationPatch,
+    decision_fonts: &[&PreparedTranslationFont],
+    output_fonts: &[&PreparedTranslationFont],
+    policy: TranslationPatchRenderPolicy,
+    font_registry: &DocumentTranslationFontRegistry,
+) -> Result<StagedTranslationPatchRender, TranslationPatchRenderError> {
+    ensure_translation_patch_renderer_resolved(patch)?;
+    stage_translation_patch_internal(
+        source_objects,
+        accumulated_objects,
+        page_index,
+        Some(ownership_index),
+        page,
+        patch,
+        decision_fonts,
+        output_fonts,
         policy,
         Some(font_registry),
     )
@@ -235,7 +265,8 @@ fn stage_translation_patch_internal(
     ownership_index: Option<&PdfStreamOwnershipIndex>,
     page: &PageGraph,
     patch: &TranslationPatch,
-    fonts: &[&PreparedTranslationFont],
+    decision_fonts: &[&PreparedTranslationFont],
+    output_fonts: &[&PreparedTranslationFont],
     policy: TranslationPatchRenderPolicy,
     font_registry: Option<&DocumentTranslationFontRegistry>,
 ) -> Result<StagedTranslationPatchRender, TranslationPatchRenderError> {
@@ -314,7 +345,7 @@ fn stage_translation_patch_internal(
             page_index,
             page,
             &requests,
-            fonts,
+            decision_fonts,
         ) {
             Ok(preflight) => preflight,
             Err(error) => {
@@ -412,7 +443,7 @@ fn stage_translation_patch_internal(
                 ownership_index,
                 page,
                 &targets,
-                fonts,
+                output_fonts,
                 registry,
             )?
         } else {
@@ -423,7 +454,7 @@ fn stage_translation_patch_internal(
                 ownership_index,
                 page,
                 &targets,
-                fonts,
+                output_fonts,
             )?
         };
         (Some(staged.result), staged.object_delta)

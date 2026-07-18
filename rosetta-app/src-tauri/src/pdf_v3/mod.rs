@@ -27,6 +27,7 @@ pub(crate) mod scheduler;
 pub(crate) mod source_cmap;
 pub(crate) mod source_object;
 pub(crate) mod style;
+pub(crate) mod translation_export;
 pub(crate) mod translation_patch;
 pub(crate) mod translation_plan;
 pub(crate) mod types;

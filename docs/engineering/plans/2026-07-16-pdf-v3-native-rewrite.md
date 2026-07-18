@@ -707,9 +707,14 @@ concrete processor owns runtime identity validation, provider execution,
 page-local renderer staging and a reusable ownership index without retaining
 cross-page font or replacement objects. A bounded export font planner streams
 one durable PageGraph and resolved patch at a time, includes only fitted entry
-characters, and produces deterministic per-weight document character sets.
-Final multi-page patch replay, runtime-manifest asset binding, Tauri/UI control
-and a real complex 500/1,000-page end-to-end translation/export remain pending.
+characters, and produces deterministic per-weight document character sets. A
+final export coordinator now prepares one shared subset per required weight,
+replays each durable resolved patch through the renderer against the
+merge-checked lazy overlay, and commits the accumulated delta through the
+source-verified atomic incremental writer. All-preserved exports use a
+SHA-256-verified byte-exact atomic source copy rather than an empty incremental
+section. Runtime-manifest asset binding, Tauri/UI control and a real complex
+500/1,000-page end-to-end translation/export remain pending.
 
 ### Phase 7 — Component control plane
 

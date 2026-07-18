@@ -72,8 +72,8 @@ page-sized subset and a larger document-sized subset.
   per document for export.
 - Final export requires a complete first pass over durable page and patch
   authorities before object staging begins.
-- The current export helper builds the bounded character plan; multi-page
-  resolved-patch replay still has to be connected to the incremental writer.
+- The final export coordinator performs multi-page resolved-patch replay and
+  incremental commit; runtime/job lifecycle integration remains above it.
 - Complex-script shaping remains outside this decision.
 
 ## Rejected Alternatives

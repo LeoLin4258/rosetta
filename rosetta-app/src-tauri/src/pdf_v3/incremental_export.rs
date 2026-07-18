@@ -118,9 +118,18 @@ impl IncrementalExportCancellation {
         self.cancelled.store(true, Ordering::Release);
     }
 
-    fn is_cancelled(&self) -> bool {
+    pub(crate) fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
     }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SourceCopyExportResult {
+    pub schema: &'static str,
+    pub source_bytes: u64,
+    pub output_bytes: u64,
+    pub source_copy_buffer_bytes: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -330,6 +339,68 @@ pub(crate) fn export_incremental_pdf_atomic(
         delta_object_count: delta.object_count(),
         previous_xref_offset: base.previous_xref_offset,
         output_xref_offset,
+        source_copy_buffer_bytes: SOURCE_COPY_BUFFER_BYTES,
+    })
+}
+
+pub(crate) fn export_source_pdf_atomic(
+    source_path: impl AsRef<Path>,
+    destination_path: impl AsRef<Path>,
+    base: &IncrementalExportBase,
+    cancellation: &IncrementalExportCancellation,
+) -> Result<SourceCopyExportResult, IncrementalExportError> {
+    let source_path = source_path.as_ref();
+    let destination_path = destination_path.as_ref();
+    validate_paths(source_path, destination_path)?;
+    check_cancelled(cancellation)?;
+
+    let destination_parent = path_parent(destination_path);
+    let temp_path = unique_sidecar_path(destination_path, "tmp");
+    let mut temp_guard = TempFileGuard::new(temp_path.clone());
+    let mut source =
+        File::open(source_path).map_err(|error| io_error("open source for", source_path, error))?;
+    let temp = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp_path)
+        .map_err(|error| io_error("create temporary", &temp_path, error))?;
+    let mut writer = BufWriter::with_capacity(SOURCE_COPY_BUFFER_BYTES, temp);
+    let (copied_bytes, source_fingerprint, _) = copy_source(
+        &mut source,
+        &mut writer,
+        source_path,
+        &temp_path,
+        cancellation,
+    )?;
+    if copied_bytes != base.source_bytes {
+        return Err(IncrementalExportError::SourceLengthMismatch {
+            expected: base.source_bytes,
+            actual: copied_bytes,
+        });
+    }
+    if source_fingerprint != base.source_fingerprint {
+        return Err(IncrementalExportError::SourceFingerprintMismatch);
+    }
+    writer
+        .flush()
+        .map_err(|error| io_error("flush temporary", &temp_path, error))?;
+    let file = writer
+        .into_inner()
+        .map_err(|error| io_error("finish temporary", &temp_path, error.into_error()))?;
+    file.sync_all()
+        .map_err(|error| io_error("sync temporary", &temp_path, error))?;
+
+    check_cancelled(cancellation)?;
+    replace_file_atomic(&temp_path, destination_path)
+        .map_err(|error| io_error("commit", destination_path, error))?;
+    temp_guard.disarm();
+    sync_parent_directory(destination_parent)
+        .map_err(|error| io_error("sync destination parent for", destination_path, error))?;
+
+    Ok(SourceCopyExportResult {
+        schema: "rosetta-pdf-v3-source-copy-export/1",
+        source_bytes: copied_bytes,
+        output_bytes: copied_bytes,
         source_copy_buffer_bytes: SOURCE_COPY_BUFFER_BYTES,
     })
 }
@@ -732,8 +803,8 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     use super::{
-        export_incremental_pdf_atomic, IncrementalExportBase, IncrementalExportCancellation,
-        IncrementalExportError, SOURCE_COPY_BUFFER_BYTES,
+        export_incremental_pdf_atomic, export_source_pdf_atomic, IncrementalExportBase,
+        IncrementalExportCancellation, IncrementalExportError, SOURCE_COPY_BUFFER_BYTES,
     };
     use crate::pdf_v3::{object_delta::PdfObjectDelta, source_object::PdfSourceObjectStore};
     use crate::rosetta_jobs::formats::pdf::test_helpers::fixture_path;
@@ -860,6 +931,34 @@ mod tests {
         .expect_err("cancelled export");
         assert!(matches!(error, IncrementalExportError::Cancelled));
         assert_eq!(fs::read(&destination).expect("destination"), previous);
+        assert!(!directory.has_sidecar("tmp"));
+    }
+
+    #[test]
+    fn verified_source_copy_atomically_replaces_destination_without_appended_bytes() {
+        let directory = TestDirectory::new("source-copy");
+        let source_path = fixture_path("simple-one-page.pdf");
+        let source = fs::read(&source_path).expect("source bytes");
+        let source_objects =
+            PdfSourceObjectStore::open(&source_path).expect("lazy source object store");
+        let base =
+            IncrementalExportBase::from_source_object_store(fingerprint(&source), &source_objects)
+                .expect("source copy base");
+        let destination = directory.path().join("preserved.pdf");
+        fs::write(&destination, b"previous complete export").expect("previous destination");
+
+        let result = export_source_pdf_atomic(
+            &source_path,
+            &destination,
+            &base,
+            &IncrementalExportCancellation::default(),
+        )
+        .expect("verified source copy");
+
+        assert_eq!(fs::read(&destination).expect("copied PDF"), source);
+        assert_eq!(result.source_bytes, source.len() as u64);
+        assert_eq!(result.output_bytes, source.len() as u64);
+        assert_eq!(result.source_copy_buffer_bytes, SOURCE_COPY_BUFFER_BYTES);
         assert!(!directory.has_sidecar("tmp"));
     }
 
