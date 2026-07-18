@@ -596,6 +596,26 @@ source PDF + resolved `TranslationPatch` 仍是可重建依据。
 - 当前多页 proof 仍把 delta apply 到完整 `lopdf::Document`，为下一页提供 overlay view。
   下一阶段必须以 lazy source object reader + bounded overlay 替代完整 document ownership。
 
+PDF v3 source object working set 使用独立的 transient `PdfSourceObjectStore`，不进入 durable
+job schema。
+
+- source PDF 通过 read-only memory map 打开；xref table、xref stream、object stream 和 trailer
+  由窄化的 `pdf-rs` reader 解析，不复制完整 source bytes 到 Rust heap。
+- reader 只按 exact object/generation 解析请求对象，并立即转换为 renderer 内部使用的
+  `lopdf::Object`。`pdf-rs` primitive 不允许越过 source-object module 边界。
+- 默认 object LRU 上限为 16 MiB / 512 项，单对象最多缓存 4 MiB。超过单对象上限的 stream
+  可以作为当前操作的 transient owned object 返回，但不得进入常驻 cache。
+- `PdfObjectOverlay` 先读取显式 `PdfObjectDelta`，未命中时才读取 immutable source store；
+  maximum object number 取 source/delta 最大值。overlay 不修改 mmap、source file 或 delta。
+- cache diagnostics 只允许 source load/hit、resident entry/byte count，不记录 object value、
+  stream bytes、原文或译文。
+- source store 保存原始 trailer、latest xref offset、page count 和 maximum object number，供
+  incremental export base 使用。最终 writer 在 commit 前仍须重新核对 source length 与
+  SHA-256，memory map 不是 source identity authority。
+- 当前 production renderer 尚未消费 `PdfObjectView`；迁移期间完整 `lopdf::Document` 路径
+  仍存在。只有 renderer 的 page/resource/content traversal 全部改为 lazy view 后，才可声明
+  export 端到端 bounded-memory。
+
 ## PDF v3 Content Operand Patch
 
 PDF v3 的 `ContentOperandRangePatch` 是隔离 native renderer 的瞬时低层写入模型，

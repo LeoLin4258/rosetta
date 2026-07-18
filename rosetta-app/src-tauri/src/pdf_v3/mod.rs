@@ -18,6 +18,7 @@ pub(crate) mod reconcile;
 pub(crate) mod render_cache;
 pub(crate) mod replacement;
 pub(crate) mod source_cmap;
+pub(crate) mod source_object;
 pub(crate) mod style;
 pub(crate) mod translation_patch;
 pub(crate) mod types;

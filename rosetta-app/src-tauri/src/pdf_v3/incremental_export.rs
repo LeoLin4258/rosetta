@@ -14,7 +14,10 @@ use lopdf::{Dictionary, Document, Object, ObjectId, StringFormat};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use super::object_delta::PdfObjectDelta;
+use super::{
+    object_delta::PdfObjectDelta,
+    source_object::{PdfObjectView, PdfSourceObjectStore},
+};
 
 const SOURCE_COPY_BUFFER_BYTES: usize = 64 * 1024;
 const MAX_CLASSIC_XREF_OFFSET: u64 = u32::MAX as u64;
@@ -65,6 +68,42 @@ impl IncrementalExportBase {
                 .map_err(|_| IncrementalExportError::InvalidPreviousXrefOffset)?,
             maximum_object_number: document.max_id,
             trailer: document.trailer.clone(),
+        })
+    }
+
+    pub(crate) fn from_source_object_store(
+        source_fingerprint: impl Into<String>,
+        source: &PdfSourceObjectStore,
+    ) -> Result<Self, IncrementalExportError> {
+        let source_fingerprint = source_fingerprint.into();
+        if !is_sha256_fingerprint(&source_fingerprint) {
+            return Err(IncrementalExportError::InvalidSourceFingerprint);
+        }
+        if source.source_bytes() == 0 {
+            return Err(IncrementalExportError::InvalidSourceLength);
+        }
+        if source.previous_xref_offset() == 0
+            || source.previous_xref_offset() >= source.source_bytes()
+        {
+            return Err(IncrementalExportError::InvalidPreviousXrefOffset);
+        }
+        if source
+            .trailer()
+            .get(b"Root")
+            .and_then(Object::as_reference)
+            .is_err()
+        {
+            return Err(IncrementalExportError::MissingCatalog);
+        }
+        if source.trailer().has(b"Encrypt") {
+            return Err(IncrementalExportError::EncryptedDocument);
+        }
+        Ok(Self {
+            source_fingerprint,
+            source_bytes: source.source_bytes(),
+            previous_xref_offset: source.previous_xref_offset(),
+            maximum_object_number: source.maximum_object_number(),
+            trailer: source.trailer().clone(),
         })
     }
 }
@@ -696,7 +735,7 @@ mod tests {
         export_incremental_pdf_atomic, IncrementalExportBase, IncrementalExportCancellation,
         IncrementalExportError, SOURCE_COPY_BUFFER_BYTES,
     };
-    use crate::pdf_v3::object_delta::PdfObjectDelta;
+    use crate::pdf_v3::{object_delta::PdfObjectDelta, source_object::PdfSourceObjectStore};
     use crate::rosetta_jobs::formats::pdf::test_helpers::fixture_path;
 
     #[test]
@@ -705,12 +744,11 @@ mod tests {
         let source_path = fixture_path("simple-one-page.pdf");
         let source = fs::read(&source_path).expect("source bytes");
         let source_document = Document::load_mem(&source).expect("source document");
-        let base = IncrementalExportBase::from_document(
-            fingerprint(&source),
-            source.len() as u64,
-            &source_document,
-        )
-        .expect("export base");
+        let source_objects =
+            PdfSourceObjectStore::open(&source_path).expect("lazy source object store");
+        let base =
+            IncrementalExportBase::from_source_object_store(fingerprint(&source), &source_objects)
+                .expect("lazy export base");
         let info_id = source_document
             .trailer
             .get(b"Info")

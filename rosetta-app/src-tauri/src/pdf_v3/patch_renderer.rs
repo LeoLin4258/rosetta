@@ -722,6 +722,7 @@ mod tests {
             reconcile::build_reconciled_page_graph,
             render_cache::{RenderCache, RenderCacheConfig, RenderCacheInsertKind},
             replacement::{preflight_text_show_replacement_transaction, TextShowReplacementError},
+            source_object::PdfSourceObjectStore,
             translation_patch::{
                 build_translation_patch, resolve_translation_patch_renderer_decisions,
                 TranslationPatchDraft, TranslationPatchEntryDraft,
@@ -1185,12 +1186,11 @@ mod tests {
         assert_eq!(matching_type0_fonts, 1);
 
         assert_eq!(export_delta.object_count(), 10);
-        let base = IncrementalExportBase::from_document(
-            fingerprint(&source),
-            source.len() as u64,
-            &source_document,
-        )
-        .expect("incremental export base");
+        let source_objects =
+            PdfSourceObjectStore::open(&source_path).expect("lazy source object store");
+        let base =
+            IncrementalExportBase::from_source_object_store(fingerprint(&source), &source_objects)
+                .expect("lazy incremental export base");
         let temp = TestDirectory::new("incremental-document-export");
         let output_path = temp.path().join("translated.pdf");
         let export = export_incremental_pdf_atomic(

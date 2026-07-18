@@ -521,6 +521,15 @@ page renderer mutation are now explicitly staged as merge-checked
 `PdfObjectDelta` values, and the incremental writer consumes that delta directly;
 whole-object-graph comparison is no longer part of the export path.
 
+The lazy source-object foundation now opens the immutable source through a
+read-only memory map, resolves classic/xref-stream and object-stream entries on
+demand, converts only requested objects into the existing renderer object type,
+and bounds its LRU by bytes and entries. Incremental export base construction
+already uses its raw trailer/xref identity. The next slice must migrate
+page-tree, resource and content traversal from `&Document` to the lazy
+`PdfObjectView` plus `PdfObjectOverlay`; until then renderer memory remains
+unbounded by source object count.
+
 ### Phase 5 — Translation and protected spans
 
 - Add citation, URL, formula, number and style span protection.

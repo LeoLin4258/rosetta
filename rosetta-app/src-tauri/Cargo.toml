@@ -33,6 +33,8 @@ axum = "0.7"
 pdfium-render = { version = "0.9", features = ["thread_safe", "image_latest"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 lopdf = "0.34"
+pdf = { version = "0.10", default-features = false, features = ["sync", "mmap"] }
+memmap2 = "0.9"
 once_cell = "1"
 lru = "0.12"
 subsetter = { version = "0.2.6", default-features = false }
