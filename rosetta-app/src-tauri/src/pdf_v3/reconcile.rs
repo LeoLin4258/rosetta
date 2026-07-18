@@ -10,8 +10,10 @@ use super::{
     document::{DocumentHandle, DocumentHandleError},
     extract::{extract_pdfium_page_snapshot, PdfV3ExtractionError},
     mapping::{
-        map_page_atoms_to_content_operands_from_snapshot, DecodedTextUnit, OperandMappingStatus,
-        PageOperandMappingError, PageOperandMappingResult, TextObjectOperandMapping,
+        map_page_atoms_to_content_operands_from_snapshot,
+        map_page_atoms_to_content_operands_from_snapshot_with_index, DecodedTextUnit,
+        OperandMappingStatus, PageOperandMappingError, PageOperandMappingIndex,
+        PageOperandMappingResult, TextObjectOperandMapping,
     },
     types::{
         PageAtomSourceKind, PageAtomSourceProvenance, PageGraph, PageReconciliationStatus,
@@ -99,6 +101,17 @@ pub(crate) fn build_reconciled_page_graph_from_handle(
 ) -> Result<PageGraph, PageGraphReconciliationError> {
     let snapshot = extract_pdfium_page_snapshot(handle, page_number)?;
     let mapping = map_page_atoms_to_content_operands_from_snapshot(handle, &snapshot)?;
+    Ok(reconcile_page_graph(snapshot.page_graph, mapping))
+}
+
+pub(crate) fn build_reconciled_page_graph_from_handle_with_index(
+    handle: &DocumentHandle<'_>,
+    index: &PageOperandMappingIndex,
+    page_number: u32,
+) -> Result<PageGraph, PageGraphReconciliationError> {
+    let snapshot = extract_pdfium_page_snapshot(handle, page_number)?;
+    let mapping =
+        map_page_atoms_to_content_operands_from_snapshot_with_index(handle, &snapshot, index)?;
     Ok(reconcile_page_graph(snapshot.page_graph, mapping))
 }
 
@@ -372,21 +385,264 @@ fn count_atoms(page: &PageGraph, source_kind: PageAtomSourceKind) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Instant;
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        sync::atomic::{AtomicU64, Ordering},
+        time::{Duration, Instant},
+    };
+
+    use lopdf::{Dictionary, Document, Object, Stream};
+
+    #[cfg(target_os = "windows")]
+    use windows_sys::Win32::System::{
+        ProcessStatus::{
+            K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX,
+        },
+        Threading::GetCurrentProcess,
+    };
 
     use super::{
-        build_reconciled_page_graph, build_reconciled_page_graph_from_handle, reconcile_page_graph,
+        build_reconciled_page_graph, build_reconciled_page_graph_from_handle,
+        build_reconciled_page_graph_from_handle_with_index, reconcile_page_graph,
     };
     use crate::{
         pdf_v3::{
             content_stream::probe_content_stream_save_only,
             document::DocumentHandle,
             extract::extract_pdfium_page_snapshot,
-            mapping::map_page_atoms_to_content_operands_from_snapshot,
+            mapping::{
+                map_page_atoms_to_content_operands_from_snapshot,
+                map_page_atoms_to_content_operands_from_snapshot_with_index,
+                PageOperandMappingError, PageOperandMappingIndex,
+            },
+            page_set::PageSet,
             types::{PageAtomSourceKind, PageReconciliationStatus},
         },
         rosetta_jobs::formats::pdf::test_helpers::{fixture_path, pdfium_test_lock, shared_pdfium},
     };
+
+    static LONG_DOCUMENT_FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    struct LongDocumentFixture {
+        directory: PathBuf,
+        path: PathBuf,
+    }
+
+    impl LongDocumentFixture {
+        fn create(page_count: u32) -> Self {
+            let sequence = LONG_DOCUMENT_FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let directory = std::env::temp_dir().join(format!(
+                "rosetta-pdf-v3-long-document-{}-{sequence}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&directory).expect("create long-document fixture directory");
+            let path = directory.join(format!("{page_count}-pages.pdf"));
+            write_long_document_fixture(&path, page_count);
+            Self { directory, path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for LongDocumentFixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.directory);
+        }
+    }
+
+    fn write_long_document_fixture(path: &Path, page_count: u32) {
+        assert!(page_count > 0);
+        let mut document = Document::with_version("1.7");
+        let catalog_id = (1, 0);
+        let pages_id = (2, 0);
+        let font_id = (3, 0);
+        let resources_id = (4, 0);
+
+        let mut font = Dictionary::new();
+        font.set("Type", Object::Name(b"Font".to_vec()));
+        font.set("Subtype", Object::Name(b"Type1".to_vec()));
+        font.set("BaseFont", Object::Name(b"Helvetica".to_vec()));
+        font.set("Encoding", Object::Name(b"WinAnsiEncoding".to_vec()));
+        document.objects.insert(font_id, Object::Dictionary(font));
+
+        let mut fonts = Dictionary::new();
+        fonts.set("F1", Object::Reference(font_id));
+        let mut resources = Dictionary::new();
+        resources.set("Font", Object::Dictionary(fonts));
+        resources.set(
+            "ProcSet",
+            Object::Array(vec![
+                Object::Name(b"PDF".to_vec()),
+                Object::Name(b"Text".to_vec()),
+            ]),
+        );
+        document
+            .objects
+            .insert(resources_id, Object::Dictionary(resources));
+
+        let mut page_ids = Vec::with_capacity(page_count as usize);
+        for page_index in 0..page_count {
+            let page_number = page_index + 1;
+            let page_id = (5 + page_index * 2, 0);
+            let content_id = (6 + page_index * 2, 0);
+            page_ids.push(Object::Reference(page_id));
+
+            let content = format!(
+                "BT /F1 12 Tf 72 720 Td (Rosetta long document page {page_number:06}) Tj ET"
+            );
+            let mut stream = Stream::new(Dictionary::new(), content.into_bytes());
+            stream
+                .compress()
+                .expect("compress long-document content stream");
+            document.objects.insert(content_id, Object::Stream(stream));
+
+            let mut page = Dictionary::new();
+            page.set("Type", Object::Name(b"Page".to_vec()));
+            page.set("Parent", Object::Reference(pages_id));
+            page.set(
+                "MediaBox",
+                Object::Array(vec![0.into(), 0.into(), 612.into(), 792.into()]),
+            );
+            page.set("Resources", Object::Reference(resources_id));
+            page.set("Contents", Object::Reference(content_id));
+            document.objects.insert(page_id, Object::Dictionary(page));
+        }
+
+        let mut pages = Dictionary::new();
+        pages.set("Type", Object::Name(b"Pages".to_vec()));
+        pages.set("Count", Object::Integer(i64::from(page_count)));
+        pages.set("Kids", Object::Array(page_ids));
+        document.objects.insert(pages_id, Object::Dictionary(pages));
+
+        let mut catalog = Dictionary::new();
+        catalog.set("Type", Object::Name(b"Catalog".to_vec()));
+        catalog.set("Pages", Object::Reference(pages_id));
+        document
+            .objects
+            .insert(catalog_id, Object::Dictionary(catalog));
+        document.trailer.set("Root", Object::Reference(catalog_id));
+        document.max_id = 4 + page_count * 2;
+        document.save(path).expect("save long-document fixture");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[derive(Debug, Clone, Copy)]
+    struct ProcessMemorySample {
+        working_set_bytes: usize,
+        peak_working_set_bytes: usize,
+        private_bytes: usize,
+    }
+
+    #[cfg(target_os = "windows")]
+    fn process_memory_sample() -> ProcessMemorySample {
+        let mut counters = unsafe { std::mem::zeroed::<PROCESS_MEMORY_COUNTERS_EX>() };
+        counters.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32;
+        let result = unsafe {
+            K32GetProcessMemoryInfo(
+                GetCurrentProcess(),
+                (&mut counters as *mut PROCESS_MEMORY_COUNTERS_EX)
+                    .cast::<PROCESS_MEMORY_COUNTERS>(),
+                counters.cb,
+            )
+        };
+        assert_ne!(result, 0, "read Windows process memory counters");
+        ProcessMemorySample {
+            working_set_bytes: counters.WorkingSetSize,
+            peak_working_set_bytes: counters.PeakWorkingSetSize,
+            private_bytes: counters.PrivateUsage,
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn run_long_document_probe(page_count: u32) {
+        let fixture_started = Instant::now();
+        let fixture = LongDocumentFixture::create(page_count);
+        let fixture_ms = fixture_started.elapsed().as_millis();
+        let pdfium = shared_pdfium();
+        let baseline_memory = process_memory_sample();
+
+        let open_started = Instant::now();
+        let handle = DocumentHandle::open(pdfium, fixture.path()).expect("long document handle");
+        let open_ms = open_started.elapsed().as_millis();
+        assert_eq!(handle.page_count(), page_count);
+
+        let selected_pages = PageSet::all(page_count).expect("all long-document pages");
+        let index_started = Instant::now();
+        let index = PageOperandMappingIndex::resolve(&handle, &selected_pages)
+            .expect("long-document mapping index");
+        let index_ms = index_started.elapsed().as_millis();
+        assert_eq!(index.selected_page_count(), page_count as usize);
+
+        let run_started = Instant::now();
+        let mut extraction_elapsed = Duration::ZERO;
+        let mut mapping_elapsed = Duration::ZERO;
+        let mut reconciliation_elapsed = Duration::ZERO;
+        let mut atom_count = 0usize;
+        let mut max_working_set_bytes = baseline_memory.working_set_bytes;
+        let mut max_private_bytes = baseline_memory.private_bytes;
+        let mut final_status = None;
+        for page_number in 1..=page_count {
+            let extraction_started = Instant::now();
+            let snapshot = extract_pdfium_page_snapshot(&handle, page_number)
+                .unwrap_or_else(|error| panic!("page {page_number} extraction: {error}"));
+            extraction_elapsed += extraction_started.elapsed();
+
+            let mapping_started = Instant::now();
+            let mapping = map_page_atoms_to_content_operands_from_snapshot_with_index(
+                &handle, &snapshot, &index,
+            )
+            .unwrap_or_else(|error| panic!("page {page_number} mapping: {error}"));
+            mapping_elapsed += mapping_started.elapsed();
+            assert!(mapping.ordinal_alignment_valid);
+            assert_eq!(mapping.paired_mapping_count, 1);
+            assert_eq!(mapping.exact_mapping_count, 1);
+
+            let reconciliation_started = Instant::now();
+            let page = reconcile_page_graph(snapshot.page_graph, mapping);
+            reconciliation_elapsed += reconciliation_started.elapsed();
+            assert_eq!(
+                page.reconciliation.status,
+                PageReconciliationStatus::Complete
+            );
+            atom_count += page.atoms.len();
+            final_status = Some(page.reconciliation.status);
+
+            let memory = process_memory_sample();
+            max_working_set_bytes = max_working_set_bytes.max(memory.working_set_bytes);
+            max_private_bytes = max_private_bytes.max(memory.private_bytes);
+        }
+        let run_ms = run_started.elapsed().as_millis();
+        let final_memory = process_memory_sample();
+        let source_cache = handle
+            .source_objects()
+            .cache_stats()
+            .expect("long-document source cache stats");
+        assert!(source_cache.resident_entries <= 512);
+        assert!(source_cache.resident_bytes <= 16 * 1024 * 1024);
+        assert_eq!(final_status, Some(PageReconciliationStatus::Complete));
+
+        println!(
+            "pdf-v3 long-document pages={page_count} sourceBytes={} fixtureMs={fixture_ms} openMs={open_ms} indexMs={index_ms} runMs={run_ms} extractionUs={} mappingUs={} reconciliationUs={} atoms={atom_count} sourceLoads={} sourceCacheHits={} sourceResidentEntries={} sourceResidentBytes={} baselineWorkingSet={} maxWorkingSet={} finalWorkingSet={} processPeakWorkingSet={} baselinePrivate={} maxPrivate={} finalPrivate={}",
+            handle.source_bytes(),
+            extraction_elapsed.as_micros(),
+            mapping_elapsed.as_micros(),
+            reconciliation_elapsed.as_micros(),
+            source_cache.source_loads,
+            source_cache.cache_hits,
+            source_cache.resident_entries,
+            source_cache.resident_bytes,
+            baseline_memory.working_set_bytes,
+            max_working_set_bytes,
+            final_memory.working_set_bytes,
+            final_memory.peak_working_set_bytes,
+            baseline_memory.private_bytes,
+            max_private_bytes,
+            final_memory.private_bytes,
+        );
+    }
 
     #[test]
     fn one_document_handle_reconciles_sparse_pages() {
@@ -402,6 +658,129 @@ mod tests {
         assert!(!first.atoms.is_empty());
         assert!(!third.atoms.is_empty());
         assert_ne!(first.source_page_hash, third.source_page_hash);
+    }
+
+    #[test]
+    fn explicit_page_set_index_reconciles_multiple_pages_without_rewalking_the_tree() {
+        let _guard = pdfium_test_lock();
+        let fixture = LongDocumentFixture::create(25);
+        let handle =
+            DocumentHandle::open(shared_pdfium(), fixture.path()).expect("document handle");
+        let selected = PageSet::from_pages([1, 13, 25]).expect("sparse page set");
+        let index =
+            PageOperandMappingIndex::resolve(&handle, &selected).expect("mapping page index");
+
+        for page_number in selected.pages().iter().copied() {
+            let page =
+                build_reconciled_page_graph_from_handle_with_index(&handle, &index, page_number)
+                    .unwrap_or_else(|error| panic!("page {page_number}: {error}"));
+            assert_eq!(page.page_number, page_number);
+            assert_eq!(
+                page.reconciliation.status,
+                PageReconciliationStatus::Complete
+            );
+        }
+        assert_eq!(index.selected_page_count(), 3);
+    }
+
+    #[test]
+    fn explicit_page_set_index_rejects_a_different_source_document() {
+        let _guard = pdfium_test_lock();
+        let indexed_fixture = LongDocumentFixture::create(1);
+        let other_fixture = LongDocumentFixture::create(2);
+        let indexed_handle = DocumentHandle::open(shared_pdfium(), indexed_fixture.path())
+            .expect("indexed document handle");
+        let other_handle =
+            DocumentHandle::open(shared_pdfium(), other_fixture.path()).expect("other handle");
+        let selected = PageSet::from_pages([1]).expect("single-page set");
+        let index = PageOperandMappingIndex::resolve(&indexed_handle, &selected)
+            .expect("mapping page index");
+        let snapshot =
+            extract_pdfium_page_snapshot(&other_handle, 1).expect("other document snapshot");
+
+        let error = map_page_atoms_to_content_operands_from_snapshot_with_index(
+            &other_handle,
+            &snapshot,
+            &index,
+        )
+        .expect_err("cross-source index must be rejected");
+
+        assert!(matches!(
+            error,
+            PageOperandMappingError::IndexSourceMismatch
+        ));
+
+        let indexed_snapshot =
+            extract_pdfium_page_snapshot(&indexed_handle, 1).expect("indexed document snapshot");
+        let other_index = PageOperandMappingIndex::resolve(&other_handle, &selected)
+            .expect("other mapping page index");
+        let error = map_page_atoms_to_content_operands_from_snapshot_with_index(
+            &other_handle,
+            &indexed_snapshot,
+            &other_index,
+        )
+        .expect_err("cross-source snapshot must be rejected");
+
+        assert!(matches!(
+            error,
+            PageOperandMappingError::SnapshotSourceMismatch
+        ));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "manual Windows 100-page extraction/mapping memory probe"]
+    fn manual_windows_hundred_page_long_document_probe() {
+        let _guard = pdfium_test_lock();
+        run_long_document_probe(100);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "manual Windows 500-page extraction/mapping memory probe"]
+    fn manual_windows_five_hundred_page_long_document_probe() {
+        let _guard = pdfium_test_lock();
+        run_long_document_probe(500);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "manual Windows 1000-page extraction/mapping memory probe"]
+    fn manual_windows_thousand_page_long_document_probe() {
+        let _guard = pdfium_test_lock();
+        run_long_document_probe(1_000);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "manual Windows reusable PageSet index comparison"]
+    fn manual_windows_reusable_page_set_index_comparison() {
+        const PAGE_COUNT: u32 = 500;
+
+        let _guard = pdfium_test_lock();
+        let fixture = LongDocumentFixture::create(PAGE_COUNT);
+        let handle =
+            DocumentHandle::open(shared_pdfium(), fixture.path()).expect("document handle");
+        let selected = PageSet::all(PAGE_COUNT).expect("all pages");
+
+        let reusable_started = Instant::now();
+        let reusable =
+            PageOperandMappingIndex::resolve(&handle, &selected).expect("reusable PageSet index");
+        let reusable_us = reusable_started.elapsed().as_micros();
+        assert_eq!(reusable.selected_page_count(), PAGE_COUNT as usize);
+
+        let repeated_started = Instant::now();
+        for page_number in 1..=PAGE_COUNT {
+            let single = PageOperandMappingIndex::resolve_page(&handle, page_number)
+                .unwrap_or_else(|error| panic!("page {page_number} index: {error}"));
+            assert_eq!(single.selected_page_count(), 1);
+        }
+        let repeated_us = repeated_started.elapsed().as_micros();
+
+        println!(
+            "pdf-v3 page-index-comparison pages={PAGE_COUNT} reusableUs={reusable_us} repeatedSinglePageUs={repeated_us} ratio={:.2}",
+            repeated_us as f64 / reusable_us.max(1) as f64,
+        );
     }
 
     #[test]

@@ -107,3 +107,44 @@ is 416 ms versus 400 ms. The selected page-tree lookup cost is now visible but
 small, and the complete source object graph is no longer retained. The measured
 working set is well below the fixed 512-object / 16 MiB LRU limits; active
 decompressed stream allocations remain outside this retained-cache figure.
+
+## Follow-Up: Reusable PageSet Index and Long Documents
+
+The one-page compatibility path above would repeatedly traverse page-tree
+prefixes during a sequential long-document run. Multi-page work now resolves
+one source-bound mapping index for the caller's explicit `PageSet` and reuses it
+while page snapshots, parsed streams and PageGraphs remain page-local.
+
+A valid generated fixture deliberately uses a flat `/Pages/Kids` array, one
+independent compressed stream per page and one exact text show. Each probe ran
+in a separate test process:
+
+```powershell
+cargo test --locked manual_windows_hundred_page_long_document_probe --lib -- --ignored --nocapture
+cargo test --locked manual_windows_five_hundred_page_long_document_probe --lib -- --ignored --nocapture
+cargo test --locked manual_windows_thousand_page_long_document_probe --lib -- --ignored --nocapture
+```
+
+| Pages | Source | Open | Index | Main loop | Extraction | Mapping | Reconciliation | Atoms |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 100 | 23,807 B | 7 ms | 3 ms | 51 ms | 18,119 us | 27,541 us | 5,041 us | 3,300 |
+| 500 | 118,221 B | 10 ms | 16 ms | 286 ms | 81,560 us | 172,404 us | 26,194 us | 16,500 |
+| 1,000 | 238,223 B | 16 ms | 34 ms | 681 ms | 181,747 us | 425,263 us | 60,096 us | 33,000 |
+
+| Pages | Peak working set | Final private bytes | Source loads / hits | Final source cache |
+| ---: | ---: | ---: | ---: | ---: |
+| 100 | 20,086,784 B | 4,206,592 B | 204 / 499 | 204 entries / 171,334 B |
+| 500 | 22,069,248 B | 5,812,224 B | 1,494 / 2,009 | 512 entries / 461,630 B |
+| 1,000 | 23,728,128 B | 7,733,248 B | 3,005 / 3,998 | 512 entries / 521,630 B |
+
+Every page reconciled as `Complete` with one exact mapped text show. The source
+cache reached its 512-entry ceiling and remained far below its 16 MiB byte
+ceiling.
+
+A separate 500-page comparison resolved one all-page index in 16,914 us, then
+resolved 500 individual one-page indexes in 756,893 us with a warm source
+cache. Repeated construction was 44.75 times slower on this worst-case tree.
+
+These results close the synthetic retained-memory and structural-complexity
+gate for native extraction/mapping. They do not cover translation, persistence,
+final export, UI work or complex real-world long-document corpus behavior.

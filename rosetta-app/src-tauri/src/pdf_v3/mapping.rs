@@ -14,10 +14,13 @@ use sha2::{Digest, Sha256};
 use super::{
     content_stream::{operand_id, text_show_id},
     document::{DocumentHandle, DocumentHandleError},
-    extract::{extract_pdfium_page_snapshot, PdfV3ExtractionError, PdfiumPageSnapshot},
+    extract::{
+        extract_pdfium_page_snapshot, page_source_hash, PdfV3ExtractionError, PdfiumPageSnapshot,
+    },
     identity::text_hash,
     page_context::{PdfPageContextError, PdfPageObjectContext, PdfResourceContext},
     page_index::{PdfPageIndex, PdfPageIndexError},
+    page_set::PageSet,
     source_cmap::{ToUnicodeDecodedUnit, ToUnicodeMap},
     source_object::{PdfObjectView, PdfSourceObjectError},
     types::FormInvocationStep,
@@ -225,6 +228,36 @@ pub(crate) struct PageOperandMappingTiming {
     pub stream_decode_cache_hits: usize,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct PageOperandMappingIndex {
+    source_fingerprint: String,
+    pages: PdfPageIndex,
+}
+
+impl PageOperandMappingIndex {
+    pub(crate) fn resolve(
+        handle: &DocumentHandle<'_>,
+        page_set: &PageSet,
+    ) -> Result<Self, PageOperandMappingError> {
+        Ok(Self {
+            source_fingerprint: handle.source_fingerprint().to_string(),
+            pages: PdfPageIndex::resolve(handle.source_objects(), page_set)?,
+        })
+    }
+
+    pub(crate) fn resolve_page(
+        handle: &DocumentHandle<'_>,
+        page_number: u32,
+    ) -> Result<Self, PageOperandMappingError> {
+        let page_set = PageSet::from_pages([page_number]).map_err(PdfPageIndexError::from)?;
+        Self::resolve(handle, &page_set)
+    }
+
+    pub(crate) fn selected_page_count(&self) -> usize {
+        self.pages.selected_page_count()
+    }
+}
+
 #[derive(Debug)]
 pub(crate) enum PageOperandMappingError {
     Open(DocumentHandleError),
@@ -232,6 +265,8 @@ pub(crate) enum PageOperandMappingError {
     PageIndex(PdfPageIndexError),
     PageContext(PdfPageContextError),
     SourceObject(PdfSourceObjectError),
+    IndexSourceMismatch,
+    SnapshotSourceMismatch,
     PageOutOfBounds {
         page: u32,
         page_count: u32,
@@ -257,6 +292,11 @@ impl fmt::Display for PageOperandMappingError {
             Self::PageIndex(error) => error.fmt(formatter),
             Self::PageContext(error) => error.fmt(formatter),
             Self::SourceObject(error) => error.fmt(formatter),
+            Self::IndexSourceMismatch => formatter
+                .write_str("PDF operand mapping index belongs to a different source document"),
+            Self::SnapshotSourceMismatch => {
+                formatter.write_str("PDFium page snapshot belongs to a different source document")
+            }
             Self::FontRead(message) => formatter.write_str(message),
             Self::PageOutOfBounds { page, page_count } => {
                 write!(formatter, "PDF page {page} is outside 1..={page_count}")
@@ -488,16 +528,54 @@ pub(crate) fn map_page_atoms_to_content_operands_from_snapshot(
     handle: &DocumentHandle<'_>,
     snapshot: &PdfiumPageSnapshot,
 ) -> Result<PageOperandMappingResult, PageOperandMappingError> {
+    let page_lookup_started = Instant::now();
+    let index = PageOperandMappingIndex::resolve_page(handle, snapshot.page_graph.page_number)?;
+    let prior_page_lookup_elapsed = page_lookup_started.elapsed();
+    map_page_atoms_to_content_operands_from_snapshot_with_index_and_lookup(
+        handle,
+        snapshot,
+        &index,
+        prior_page_lookup_elapsed,
+    )
+}
+
+pub(crate) fn map_page_atoms_to_content_operands_from_snapshot_with_index(
+    handle: &DocumentHandle<'_>,
+    snapshot: &PdfiumPageSnapshot,
+    index: &PageOperandMappingIndex,
+) -> Result<PageOperandMappingResult, PageOperandMappingError> {
+    map_page_atoms_to_content_operands_from_snapshot_with_index_and_lookup(
+        handle,
+        snapshot,
+        index,
+        Duration::ZERO,
+    )
+}
+
+fn map_page_atoms_to_content_operands_from_snapshot_with_index_and_lookup(
+    handle: &DocumentHandle<'_>,
+    snapshot: &PdfiumPageSnapshot,
+    index: &PageOperandMappingIndex,
+    prior_page_lookup_elapsed: Duration,
+) -> Result<PageOperandMappingResult, PageOperandMappingError> {
     let started = Instant::now();
     let source_objects = handle.source_objects();
     let page_number = snapshot.page_graph.page_number;
 
     let page_lookup_started = Instant::now();
     let source_page_count = handle.page_count();
-    let page_index = PdfPageIndex::resolve_page(source_objects, page_number)?;
-    let indexed_page = page_index.page(page_number)?;
+    if index.source_fingerprint != handle.source_fingerprint() {
+        return Err(PageOperandMappingError::IndexSourceMismatch);
+    }
+    if snapshot.page_graph.source_page_hash
+        != page_source_hash(handle.source_fingerprint(), page_number)
+    {
+        return Err(PageOperandMappingError::SnapshotSourceMismatch);
+    }
+    let indexed_page = index.pages.page(page_number)?;
     let page_context = PdfPageObjectContext::resolve(source_objects, indexed_page)?;
-    let page_lookup_us = elapsed_us(page_lookup_started.elapsed());
+    let page_lookup_us =
+        elapsed_us(prior_page_lookup_elapsed.saturating_add(page_lookup_started.elapsed()));
     let collect_text_shows_started = Instant::now();
     let collected_text_shows = collect_text_shows(
         source_objects,

@@ -6,6 +6,8 @@ Status: Accepted
 
 Refines ADR 0016, ADR 0042, ADR 0045, ADR 0046 and ADR 0051.
 
+Multi-page page-tree index reuse is refined by ADR 0053.
+
 ## Context
 
 PDFium extraction was selected-page addressable, and production replacement
@@ -92,11 +94,12 @@ range while removing source-object retention proportional to document size.
 
 ### Costs
 
-- Exact page mapping walks the selected page-tree path instead of indexing an
-  all-page vector; this added about 0.5 ms per page on the measured fixture.
+- The compatibility single-page mapping API walks the selected page-tree path;
+  multi-page callers use the explicit reusable `PageSet` index from ADR 0053.
 - Active large streams can still create transient allocations while they are
   decompressed and parsed; the cache ceiling does not cap one active operation.
-- Real 100/500/1,000-page process-memory and throughput runs are still required.
+- ADR 0053 records synthetic 100/500/1,000-page process-memory and throughput
+  runs; complex real-world corpus validation remains required.
 - `pdf-rs` compatibility remains an adapter risk and must stay covered by the
   fixture corpus and typed failures.
 

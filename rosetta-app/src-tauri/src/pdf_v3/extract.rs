@@ -520,7 +520,7 @@ fn rect_to_array(rect: PdfRect) -> [f32; 4] {
     ]
 }
 
-fn page_source_hash(source_fingerprint: &str, page_number: u32) -> String {
+pub(crate) fn page_source_hash(source_fingerprint: &str, page_number: u32) -> String {
     let mut hasher = Sha256::new();
     hasher.update(source_fingerprint.as_bytes());
     hasher.update(page_number.to_le_bytes());

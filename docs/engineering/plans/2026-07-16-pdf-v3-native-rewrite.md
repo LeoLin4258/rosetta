@@ -54,6 +54,13 @@ Current progress:
   404-434 ms mapping. The final cache held 167 objects / 524,541 estimated bytes
   under the fixed 512-object / 16 MiB ceilings. Complete PDF v3 regression is
   147 passed / 14 ignored.
+- Multi-page mapping now resolves one source-bound index for the caller's exact
+  `PageSet`, avoiding repeated page-tree prefix scans. On a 500-page flat tree,
+  one reusable index took 16.9 ms versus 756.9 ms for 500 single-page indexes.
+- Synthetic Windows AMD runs extracted, mapped and reconciled 100, 500 and
+  1,000 pages in 51 ms, 286 ms and 681 ms respectively. The 1,000-page run
+  peaked at about 23.7 MB working set and ended with 512 cached source objects /
+  521,630 estimated bytes; page snapshots and PageGraphs were not retained.
 - PDFium and source mapping now recursively traverse Form XObjects in invocation order. Form resource dictionaries take priority with parent-context fallback, text-show IDs include the invocation path, and validated shared Form operands retain structured provenance for invocation-local copy-on-write.
 - On the real paper page, recursive traversal aligns 258 / 258 text objects/shows across 27 Form invocations and 5 unique Form streams. The original 242 top-level objects remain mapped; 16 Type3 Form objects are explicitly preserved because no safe source decoder exists.
 - The identity renderer now performs a read-only recursive Form discovery pass and rewrites every unique page/Form content stream exactly once. Shared Form invocation paths are reported separately from underlying stream ownership.
@@ -526,8 +533,11 @@ renderer to choose invocation-local copy-on-write. PDFium character-to-object
 ownership is now exact and single-pass through the narrow vendored adapter.
 Exact pages, resources, content streams and fonts now resolve through the
 bounded lazy source view, while parsed content reuse remains bounded to one
-active page. Type3 decoding remains pending; complete lopdf source ownership is
-no longer part of extraction or mapping.
+active page. Multi-page callers can reuse one source-bound index for their
+explicit `PageSet`; basic 100/500/1,000-page synthetic processing is now
+measured with bounded retained state. Type3 decoding and complex real-world
+long-document corpus validation remain pending; complete lopdf source ownership
+is no longer part of extraction or mapping.
 
 ### Phase 3 — Identity renderer
 
@@ -648,8 +658,10 @@ rebuilds the manifest summary from shards. Recovery consumes validated
 PageGraph and TranslationPatch inventories, so artifacts committed before a
 crash are promoted and invalid completion state is not trusted. A 1,000-page
 Windows AMD test uses 16 shards, keeps each shard at or below 64 records and
-proves claim limits without ten-page scheduling semantics. Worker/Tauri/UI
-integration and a real 500/1,000-page end-to-end translation remain pending.
+proves claim limits without ten-page scheduling semantics. The isolated native
+pipeline also extracts, maps and reconciles a synthetic 1,000-page text PDF in
+681 ms with about 23.7 MB peak working set. Worker/Tauri/UI integration and a
+real complex 500/1,000-page end-to-end translation/export remain pending.
 
 ### Phase 7 — Component control plane
 
