@@ -545,8 +545,38 @@ cache miss。它不复用 v1/v2 PDF page cache。
   `stagedFontObjectCount` 必须为 0。单页 cache artifact 路径继续独立 staging，以保持既有
   page-PDF byte contract；两种路径不得隐式共享可变 registry。
 - registry 只解决 document-wide font reuse 和输出体积。当前 `lopdf::Document` 仍加载完整
-  source object graph；在 lazy object reader / incremental delta writer 完成前，不得把多页
-  registry render 宣称为 bounded-memory streaming export。
+  source object graph；增量提交器虽已不再加载源字节，但在 lazy object reader 和 renderer
+  delta staging 完成前，不得把多页 registry render 宣称为 bounded-memory streaming export。
+
+## PDF v3 Incremental Export Delta
+
+PDF v3 最终导出的写出边界由 immutable source PDF、`IncrementalExportBase` 和本次
+delta objects 组成。它是一次 export session 的进程内模型，不是新的持久化翻译权威；
+source PDF + resolved `TranslationPatch` 仍是可重建依据。
+
+约定：
+
+- `IncrementalExportBase` 只保存 source SHA-256、source byte count、latest xref offset、
+  maximum object number 和 trailer dictionary。writer 不得要求 source `Vec<u8>` 或完整
+  previous object graph。
+- delta 只包含本次新增或覆盖的 indirect objects，以 exact object/generation 排序；object 0、
+  generation 65535、同一 object number 的多个 generation 和空 delta 必须拒绝。
+- writer 以固定 64 KiB buffer 从原始 source PDF 流式复制，同时重新计算 byte count 和
+  SHA-256。任一 identity 不匹配时不得替换已有目标文件。
+- incremental xref 的 `/Prev` 必须指向 source latest xref；trailer 保留 `/Root`、`/Info`、
+  `/ID` 等 source identity，并移除只属于 xref stream 的字段。当前 writer 使用 classic xref
+  delta，并显式拒绝超过 `u32` offset 的文件。
+- stream object 写出时必须根据实际 serialized content 重算 direct `/Length`。对象值必须走
+  结构化 PDF serializer，不能用字符串搜索或替换生成 indirect object。
+- 文件提交必须在 destination 同目录创建唯一 temp，完成 `flush` 和 `sync_all` 后再原子
+  replace。Windows 使用 `MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)`；失败或取消必须
+  删除 temp 并保留旧 destination。
+- cancellation 至少在 source copy chunk、delta object 和 commit 前检查。commit 成功后结果
+  才可报告完成。
+- export 必须始终从 immutable job source 生成，不能把旧译文 export 当作新 source 继续追加，
+  以免 revision 次数导致文件持续膨胀。
+- 当前 renderer 仍在完整 `lopdf::Document` 中取对象并通过测试期 object diff 构造 delta。
+  production scheduler 接入前必须改为 lazy source-object working set + explicit staged delta。
 
 ## PDF v3 Content Operand Patch
 

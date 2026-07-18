@@ -5,6 +5,7 @@ pub(crate) mod document;
 pub(crate) mod extract;
 pub(crate) mod font;
 pub(crate) mod identity;
+pub(crate) mod incremental_export;
 pub(crate) mod layout;
 pub(crate) mod mapping;
 pub(crate) mod page_set;

@@ -509,10 +509,15 @@ identity for bounded insertion and lease-validated reads. Those page artifacts
 now rasterize on demand to exact-width PDFium PNGs with a separately versioned
 preview contract, bounded insertion and lease-validated reads. Patch
 compression remains pending. Document-wide font resource reuse is implemented
-and proven across consecutive page renders, but the current `lopdf` working
-document still owns the complete source object graph. A lazy object reader plus
-incremental delta writer, final atomic file commit and export recovery remain
-pending before export is genuinely bounded-memory and streaming.
+and proven across consecutive page renders. A source-identity-checked
+incremental delta writer now copies the immutable source with a fixed 64 KiB
+buffer, appends only changed objects and a new xref/trailer, supports
+cancellation before commit, and atomically replaces the destination after file
+sync. The writer no longer owns source bytes or the previous object graph. The
+current renderer still mutates a complete `lopdf::Document`, however; a lazy
+object reader, explicit renderer delta staging, scheduler recovery and stress
+validation remain pending before export is genuinely end-to-end bounded-memory
+and streaming.
 
 ### Phase 5 — Translation and protected spans
 

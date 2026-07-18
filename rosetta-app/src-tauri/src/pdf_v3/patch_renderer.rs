@@ -658,6 +658,7 @@ mod tests {
     };
 
     use lopdf::{Document, Object};
+    use sha2::{Digest, Sha256};
 
     use super::{
         insert_translation_patch_page_pdf_cache, open_translation_patch_page_pdf_cache,
@@ -673,6 +674,9 @@ mod tests {
                 TranslationFontWeight, UnifiedTranslationFontPlan,
             },
             identity::{compare_images, render_page},
+            incremental_export::{
+                export_incremental_pdf_atomic, IncrementalExportBase, IncrementalExportCancellation,
+            },
             preview::{
                 insert_translation_patch_preview_png_cache,
                 open_translation_patch_preview_png_cache, render_translation_patch_preview_png,
@@ -1064,7 +1068,8 @@ mod tests {
         let second_page =
             build_reconciled_page_graph(shared_pdfium(), &source_path, 2).expect("second page");
         let source = fs::read(&source_path).expect("source PDF");
-        let mut document = Document::load_mem(&source).expect("source document");
+        let source_document = Document::load_mem(&source).expect("source document");
+        let mut document = source_document.clone();
         let first_patch =
             first_renderable_patch(&document, &first_page, &prepared, translations[0]);
         let second_patch =
@@ -1123,22 +1128,77 @@ mod tests {
             .count();
         assert_eq!(matching_type0_fonts, 1);
 
-        let mut output = Vec::new();
-        document
-            .save_to(&mut output)
-            .expect("save multi-page output");
+        let delta = document
+            .objects
+            .iter()
+            .filter(|(object_id, object)| source_document.objects.get(object_id) != Some(*object))
+            .map(|(object_id, object)| (*object_id, object.clone()))
+            .collect::<BTreeMap<_, _>>();
+        assert!(!delta.is_empty());
+        let base = IncrementalExportBase::from_document(
+            fingerprint(&source),
+            source.len() as u64,
+            &source_document,
+        )
+        .expect("incremental export base");
+        let temp = TestDirectory::new("incremental-document-export");
+        let output_path = temp.path().join("translated.pdf");
+        let export = export_incremental_pdf_atomic(
+            &source_path,
+            &output_path,
+            &base,
+            &delta,
+            &IncrementalExportCancellation::default(),
+        )
+        .expect("incremental document export");
+        let output = fs::read(&output_path).expect("incremental output");
         println!(
-            "pdf-v3 document font registry sourceBytes={} outputBytes={} subsetBytes={} pages=2",
+            "pdf-v3 incremental document font registry sourceBytes={} outputBytes={} appendedBytes={} deltaObjects={} subsetBytes={} pages=2",
             source.len(),
             output.len(),
+            export.appended_bytes,
+            export.delta_object_count,
             prepared.subset_bytes.len(),
         );
         if let Some(path) = env::var_os("ROSETTA_PDF_V3_FONT_REGISTRY_PROBE_OUTPUT") {
             fs::write(path, &output).expect("write document font registry probe");
         }
+        assert!(output.starts_with(&source));
+        assert_eq!(export.output_bytes, output.len() as u64);
+        assert!(export.appended_bytes < source.len() as u64 / 4);
+        let incremental_document = Document::load_mem(&output).expect("incremental lopdf output");
+        assert_eq!(incremental_document.get_pages().len(), 30);
+        assert_eq!(
+            incremental_document
+                .trailer
+                .get(b"Info")
+                .expect("incremental Info reference"),
+            source_document
+                .trailer
+                .get(b"Info")
+                .expect("source Info reference")
+        );
+        let incremental_type0_fonts = incremental_document
+            .objects
+            .values()
+            .filter(|object| {
+                object.as_dict().is_ok_and(|dictionary| {
+                    dictionary
+                        .get(b"Subtype")
+                        .and_then(Object::as_name)
+                        .is_ok_and(|name| name == b"Type0")
+                        && dictionary
+                            .get(b"BaseFont")
+                            .and_then(Object::as_name)
+                            .is_ok_and(|name| name == prepared.subset_name.as_bytes())
+                })
+            })
+            .count();
+        assert_eq!(incremental_type0_fonts, 1);
         let output = shared_pdfium()
             .load_pdf_from_byte_slice(&output, None)
             .expect("PDFium output");
+        assert_eq!(output.pages().len(), 30);
         for (page_index, translation) in translations.iter().enumerate() {
             let text = output
                 .pages()
@@ -1492,6 +1552,20 @@ mod tests {
             plan.add_text(translation);
         }
         asset.prepare(&plan).expect("prepared Arial subset")
+    }
+
+    #[cfg(target_os = "windows")]
+    fn fingerprint(bytes: &[u8]) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(bytes);
+        format!(
+            "sha256:{}",
+            hasher
+                .finalize()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        )
     }
 
     fn patch_draft(entries: Vec<(Vec<String>, &str)>) -> TranslationPatchDraft {
