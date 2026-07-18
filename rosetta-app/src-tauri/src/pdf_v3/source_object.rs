@@ -116,6 +116,8 @@ impl std::error::Error for PdfSourceObjectError {}
 pub(crate) trait PdfObjectView {
     fn maximum_object_number(&self) -> u32;
 
+    fn trailer(&self) -> &Dictionary;
+
     fn object(&self, object_id: ObjectId) -> Result<Object, PdfSourceObjectError>;
 }
 
@@ -278,6 +280,10 @@ impl PdfObjectView for PdfSourceObjectStore {
         self.maximum_object_number
     }
 
+    fn trailer(&self) -> &Dictionary {
+        &self.trailer
+    }
+
     fn object(&self, object_id: ObjectId) -> Result<Object, PdfSourceObjectError> {
         self.load_object(object_id)
     }
@@ -286,6 +292,10 @@ impl PdfObjectView for PdfSourceObjectStore {
 impl PdfObjectView for lopdf::Document {
     fn maximum_object_number(&self) -> u32 {
         self.max_id
+    }
+
+    fn trailer(&self) -> &Dictionary {
+        &self.trailer
     }
 
     fn object(&self, object_id: ObjectId) -> Result<Object, PdfSourceObjectError> {
@@ -311,6 +321,10 @@ impl PdfObjectView for PdfObjectOverlay<'_> {
         self.source
             .maximum_object_number()
             .max(self.delta.maximum_object_number())
+    }
+
+    fn trailer(&self) -> &Dictionary {
+        self.source.trailer()
     }
 
     fn object(&self, object_id: ObjectId) -> Result<Object, PdfSourceObjectError> {

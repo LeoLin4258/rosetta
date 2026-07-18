@@ -16,6 +16,7 @@ use super::font::{
 use super::{
     layout::{derive_text_show_fit_bounds, TextShowFitBoundsError, TextShowGeometryKey},
     object_delta::{PdfObjectDelta, PdfObjectDeltaError},
+    page_index::{PdfIndexedPage, PdfPageIndex, PdfPageIndexError},
     patch::{
         stage_invocation_local_copy_on_write_batch, ContentPatchError,
         InvocationLocalCopyOnWriteTarget, ResourceReferenceBinding,
@@ -145,6 +146,7 @@ pub(crate) enum TextShowReplacementError {
     Patch(ContentPatchError),
     Style(TextShowStyleError),
     ObjectDelta(PdfObjectDeltaError),
+    PageIndex(PdfPageIndexError),
     MissingTranslationFontFace(TranslationFontWeight),
     DuplicateTranslationFontFace(TranslationFontWeight),
     PageOutOfBounds {
@@ -188,6 +190,7 @@ impl fmt::Display for TextShowReplacementError {
             Self::Patch(error) => error.fmt(formatter),
             Self::Style(error) => error.fmt(formatter),
             Self::ObjectDelta(error) => error.fmt(formatter),
+            Self::PageIndex(error) => error.fmt(formatter),
             Self::MissingTranslationFontFace(weight) => {
                 write!(
                     formatter,
@@ -290,6 +293,12 @@ impl From<PdfObjectDeltaError> for TextShowReplacementError {
     }
 }
 
+impl From<PdfPageIndexError> for TextShowReplacementError {
+    fn from(value: PdfPageIndexError) -> Self {
+        Self::PageIndex(value)
+    }
+}
+
 #[derive(Clone)]
 struct SavedTextState {
     font_resource: Option<Vec<u8>>,
@@ -384,14 +393,27 @@ pub(crate) fn preflight_text_show_replacement_transaction(
     let first = requests
         .first()
         .ok_or(TextShowReplacementError::EmptyTransaction)?;
-    let pages = document.get_pages();
-    let page_count = pages.len() as u32;
-    let page_id = pages.get(&first.geometry.page_number).copied().ok_or(
-        TextShowReplacementError::PageOutOfBounds {
-            page: first.geometry.page_number,
-            page_count,
-        },
-    )?;
+    let page_index = PdfPageIndex::resolve_page(document, first.geometry.page_number)?;
+    preflight_text_show_replacement_transaction_with_page_index(
+        document,
+        &page_index,
+        page_graph,
+        requests,
+        fonts,
+    )
+}
+
+pub(crate) fn preflight_text_show_replacement_transaction_with_page_index(
+    document: &Document,
+    page_index: &PdfPageIndex,
+    page_graph: &PageGraph,
+    requests: &[TextShowReplacementRequest],
+    fonts: &[&PreparedTranslationFont],
+) -> Result<Vec<TextShowReplacementPreflight>, TextShowReplacementError> {
+    let first = requests
+        .first()
+        .ok_or(TextShowReplacementError::EmptyTransaction)?;
+    let indexed_page = page_index.page(first.geometry.page_number)?;
     let mut fonts_by_weight = BTreeMap::new();
     for font in fonts {
         if fonts_by_weight.insert(font.weight(), *font).is_some() {
@@ -400,8 +422,13 @@ pub(crate) fn preflight_text_show_replacement_transaction(
             ));
         }
     }
-    let planned =
-        plan_replacement_target(document, page_id, page_graph, requests, &fonts_by_weight)?;
+    let planned = plan_replacement_target(
+        document,
+        indexed_page,
+        page_graph,
+        requests,
+        &fonts_by_weight,
+    )?;
     Ok(planned
         .planned
         .into_iter()
@@ -453,9 +480,11 @@ pub(crate) fn apply_text_show_replacement_batch(
     target_requests: &[TextShowReplacementTargetRequest],
     fonts: &[&PreparedTranslationFont],
 ) -> Result<TextShowReplacementBatchResult, TextShowReplacementError> {
+    let page_index = page_index_for_batch(document, target_requests)?;
     let staged = stage_text_show_replacement_batch_internal(
         document,
         document,
+        &page_index,
         page_graph,
         target_requests,
         fonts,
@@ -472,9 +501,11 @@ pub(crate) fn apply_text_show_replacement_batch_with_font_registry(
     fonts: &[&PreparedTranslationFont],
     font_registry: &DocumentTranslationFontRegistry,
 ) -> Result<TextShowReplacementBatchResult, TextShowReplacementError> {
+    let page_index = page_index_for_batch(document, target_requests)?;
     let staged = stage_text_show_replacement_batch_internal(
         document,
         document,
+        &page_index,
         page_graph,
         target_requests,
         fonts,
@@ -487,6 +518,7 @@ pub(crate) fn apply_text_show_replacement_batch_with_font_registry(
 pub(crate) fn stage_text_show_replacement_batch_with_font_registry(
     document: &Document,
     accumulated_objects: &dyn PdfObjectView,
+    page_index: &PdfPageIndex,
     page_graph: &PageGraph,
     target_requests: &[TextShowReplacementTargetRequest],
     fonts: &[&PreparedTranslationFont],
@@ -495,6 +527,7 @@ pub(crate) fn stage_text_show_replacement_batch_with_font_registry(
     stage_text_show_replacement_batch_internal(
         document,
         accumulated_objects,
+        page_index,
         page_graph,
         target_requests,
         fonts,
@@ -508,9 +541,27 @@ pub(crate) fn stage_text_show_replacement_batch(
     target_requests: &[TextShowReplacementTargetRequest],
     fonts: &[&PreparedTranslationFont],
 ) -> Result<StagedTextShowReplacementBatch, TextShowReplacementError> {
+    let page_index = page_index_for_batch(document, target_requests)?;
+    stage_text_show_replacement_batch_with_page_index(
+        document,
+        &page_index,
+        page_graph,
+        target_requests,
+        fonts,
+    )
+}
+
+pub(crate) fn stage_text_show_replacement_batch_with_page_index(
+    document: &Document,
+    page_index: &PdfPageIndex,
+    page_graph: &PageGraph,
+    target_requests: &[TextShowReplacementTargetRequest],
+    fonts: &[&PreparedTranslationFont],
+) -> Result<StagedTextShowReplacementBatch, TextShowReplacementError> {
     stage_text_show_replacement_batch_internal(
         document,
         document,
+        page_index,
         page_graph,
         target_requests,
         fonts,
@@ -518,9 +569,23 @@ pub(crate) fn stage_text_show_replacement_batch(
     )
 }
 
+fn page_index_for_batch(
+    document: &Document,
+    target_requests: &[TextShowReplacementTargetRequest],
+) -> Result<PdfPageIndex, TextShowReplacementError> {
+    let page_number = target_requests
+        .first()
+        .and_then(|target| target.replacements.first())
+        .ok_or(TextShowReplacementError::EmptyBatch)?
+        .geometry
+        .page_number;
+    Ok(PdfPageIndex::resolve_page(document, page_number)?)
+}
+
 fn stage_text_show_replacement_batch_internal(
     document: &Document,
     accumulated_objects: &dyn PdfObjectView,
+    page_index: &PdfPageIndex,
     page_graph: &PageGraph,
     target_requests: &[TextShowReplacementTargetRequest],
     fonts: &[&PreparedTranslationFont],
@@ -541,22 +606,21 @@ fn stage_text_show_replacement_batch_internal(
         }
     }
 
-    let pages = document.get_pages();
-    let page_count = pages.len() as u32;
-    let page_id =
-        pages
-            .get(&page_number)
-            .copied()
-            .ok_or(TextShowReplacementError::PageOutOfBounds {
-                page: page_number,
-                page_count,
-            })?;
+    let indexed_page = page_index.page(page_number)?;
+    let page_id = indexed_page.page_id();
     let mut target_keys = BTreeSet::new();
     let mut planned_targets = Vec::with_capacity(target_requests.len());
     for target_request in target_requests {
+        if target_request
+            .replacements
+            .first()
+            .is_some_and(|request| request.geometry.page_number != page_number)
+        {
+            return Err(TextShowReplacementError::BatchPageMismatch);
+        }
         let target = plan_replacement_target(
             document,
-            page_id,
+            indexed_page,
             page_graph,
             &target_request.replacements,
             &fonts_by_weight,
@@ -794,7 +858,7 @@ struct StagedReplacementTarget {
 
 fn plan_replacement_target(
     document: &Document,
-    page_id: ObjectId,
+    indexed_page: &PdfIndexedPage,
     page_graph: &PageGraph,
     requests: &[TextShowReplacementRequest],
     fonts_by_weight: &BTreeMap<TranslationFontWeight, &PreparedTranslationFont>,
@@ -830,9 +894,10 @@ fn plan_replacement_target(
     let top_level_requires_copy_on_write = if is_form_target {
         false
     } else {
-        let selected_references = document
-            .get_page_contents(page_id)
-            .into_iter()
+        let selected_references = indexed_page
+            .content_stream_ids()
+            .iter()
+            .copied()
             .filter(|candidate| *candidate == stream_id)
             .count();
         if selected_references == 0 {
@@ -1478,6 +1543,7 @@ mod tests {
             },
             layout::{derive_text_show_fit_bounds, TextShowGeometryKey},
             mapping::map_page_atoms_to_content_operands,
+            page_index::PdfPageIndex,
             reconcile::build_reconciled_page_graph,
             source_object::PdfObjectOverlay,
         },
@@ -2782,9 +2848,12 @@ mod tests {
         let staged_fonts = stage_document_translation_font_registry(&document, &[&prepared])
             .expect("staged document font registry");
         let font_overlay = PdfObjectOverlay::new(&document, &staged_fonts.object_delta);
+        let page_index = PdfPageIndex::resolve_page(&document, page_graph.page_number)
+            .expect("selected page index");
         let staged_batch = stage_text_show_replacement_batch_with_font_registry(
             &document,
             &font_overlay,
+            &page_index,
             &page_graph,
             &target_requests,
             &[&prepared],

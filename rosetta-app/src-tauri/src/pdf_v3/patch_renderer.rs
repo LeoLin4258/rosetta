@@ -9,16 +9,17 @@ use super::{
     font::{DocumentTranslationFontRegistry, PreparedTranslationFont},
     layout::TextShowGeometryKey,
     object_delta::PdfObjectDelta,
+    page_index::PdfPageIndex,
     render_cache::{
         RenderCache, RenderCacheError, RenderCacheInsertOutcome, RenderCacheKey,
         RenderCacheOptions, RenderCacheOutputKind,
     },
     replacement::{
-        preflight_text_show_replacement_transaction, stage_text_show_replacement_batch,
+        preflight_text_show_replacement_transaction_with_page_index,
         stage_text_show_replacement_batch_with_font_registry,
-        text_show_replacement_target_identity, TextShowReplacementBatchResult,
-        TextShowReplacementError, TextShowReplacementRequest, TextShowReplacementTargetIdentity,
-        TextShowReplacementTargetRequest,
+        stage_text_show_replacement_batch_with_page_index, text_show_replacement_target_identity,
+        TextShowReplacementBatchResult, TextShowReplacementError, TextShowReplacementRequest,
+        TextShowReplacementTargetIdentity, TextShowReplacementTargetRequest,
     },
     source_object::PdfObjectView,
     translation_patch::{
@@ -162,8 +163,17 @@ pub(crate) fn render_translation_patch(
     fonts: &[&PreparedTranslationFont],
     policy: TranslationPatchRenderPolicy,
 ) -> Result<TranslationPatchRenderResult, TranslationPatchRenderError> {
-    let staged =
-        stage_translation_patch_internal(document, document, page, patch, fonts, policy, None)?;
+    let page_index = patch_page_index(document, page)?;
+    let staged = stage_translation_patch_internal(
+        document,
+        document,
+        &page_index,
+        page,
+        patch,
+        fonts,
+        policy,
+        None,
+    )?;
     staged.object_delta.apply_to(document);
     Ok(staged.render)
 }
@@ -176,9 +186,11 @@ pub(crate) fn render_translation_patch_with_font_registry(
     policy: TranslationPatchRenderPolicy,
     font_registry: &DocumentTranslationFontRegistry,
 ) -> Result<TranslationPatchRenderResult, TranslationPatchRenderError> {
+    let page_index = patch_page_index(document, page)?;
     let staged = stage_translation_patch_internal(
         document,
         document,
+        &page_index,
         page,
         patch,
         fonts,
@@ -192,6 +204,7 @@ pub(crate) fn render_translation_patch_with_font_registry(
 pub(crate) fn stage_translation_patch_with_font_registry(
     document: &Document,
     accumulated_objects: &dyn PdfObjectView,
+    page_index: &PdfPageIndex,
     page: &PageGraph,
     patch: &TranslationPatch,
     fonts: &[&PreparedTranslationFont],
@@ -201,6 +214,7 @@ pub(crate) fn stage_translation_patch_with_font_registry(
     stage_translation_patch_internal(
         document,
         accumulated_objects,
+        page_index,
         page,
         patch,
         fonts,
@@ -212,6 +226,7 @@ pub(crate) fn stage_translation_patch_with_font_registry(
 fn stage_translation_patch_internal(
     document: &Document,
     accumulated_objects: &dyn PdfObjectView,
+    page_index: &PdfPageIndex,
     page: &PageGraph,
     patch: &TranslationPatch,
     fonts: &[&PreparedTranslationFont],
@@ -287,17 +302,18 @@ fn stage_translation_patch_internal(
             .iter()
             .map(|entry| entry.request.clone())
             .collect::<Vec<_>>();
-        let preflight =
-            match preflight_text_show_replacement_transaction(document, page, &requests, fonts) {
-                Ok(preflight) => preflight,
-                Err(error) => {
-                    if let Some(reason_code) = preservation_reason(&error) {
-                        preserve_entries(&mut decisions, &entries, reason_code);
-                        continue;
-                    }
-                    return Err(error.into());
+        let preflight = match preflight_text_show_replacement_transaction_with_page_index(
+            document, page_index, page, &requests, fonts,
+        ) {
+            Ok(preflight) => preflight,
+            Err(error) => {
+                if let Some(reason_code) = preservation_reason(&error) {
+                    preserve_entries(&mut decisions, &entries, reason_code);
+                    continue;
                 }
-            };
+                return Err(error.into());
+            }
+        };
         if preflight.len() != entries.len() {
             return Err(TextShowReplacementError::SourceIdentityMismatch(
                 "replacement preflight result count changed".to_string(),
@@ -360,13 +376,16 @@ fn stage_translation_patch_internal(
             stage_text_show_replacement_batch_with_font_registry(
                 document,
                 accumulated_objects,
+                page_index,
                 page,
                 &targets,
                 fonts,
                 registry,
             )?
         } else {
-            stage_text_show_replacement_batch(document, page, &targets, fonts)?
+            stage_text_show_replacement_batch_with_page_index(
+                document, page_index, page, &targets, fonts,
+            )?
         };
         (Some(staged.result), staged.object_delta)
     };
@@ -390,6 +409,15 @@ fn stage_translation_patch_internal(
         },
         object_delta,
     })
+}
+
+fn patch_page_index(
+    document: &Document,
+    page: &PageGraph,
+) -> Result<PdfPageIndex, TranslationPatchRenderError> {
+    PdfPageIndex::resolve_page(document, page.page_number)
+        .map_err(TextShowReplacementError::from)
+        .map_err(TranslationPatchRenderError::from)
 }
 
 pub(crate) fn render_translation_patch_page_pdf(
@@ -734,6 +762,8 @@ mod tests {
             incremental_export::{
                 export_incremental_pdf_atomic, IncrementalExportBase, IncrementalExportCancellation,
             },
+            page_index::PdfPageIndex,
+            page_set::PageSet,
             preview::{
                 insert_translation_patch_preview_png_cache,
                 open_translation_patch_preview_png_cache, render_translation_patch_preview_png,
@@ -1123,6 +1153,9 @@ mod tests {
         let source_path = fixture_path("2305.13048v2.pdf");
         let source_objects =
             PdfSourceObjectStore::open(&source_path).expect("lazy source object store");
+        let selected_pages = PageSet::from_pages([1, 2]).expect("selected pages");
+        let page_index =
+            PdfPageIndex::resolve(&source_objects, &selected_pages).expect("lazy page index");
         let first_page =
             build_reconciled_page_graph(shared_pdfium(), &source_path, 1).expect("first page");
         let second_page =
@@ -1150,6 +1183,7 @@ mod tests {
         } = stage_translation_patch_with_font_registry(
             &source_document,
             &first_overlay,
+            &page_index,
             &first_page,
             &first_patch,
             &[&prepared],
@@ -1168,6 +1202,7 @@ mod tests {
         } = stage_translation_patch_with_font_registry(
             &source_document,
             &second_overlay,
+            &page_index,
             &second_page,
             &second_patch,
             &[&prepared],
@@ -1470,9 +1505,12 @@ mod tests {
         let staged_fonts = stage_document_translation_font_registry(&document, &[&prepared])
             .expect("staged document font registry");
         let accumulated = PdfObjectOverlay::new(&document, &staged_fonts.object_delta);
+        let page_index =
+            PdfPageIndex::resolve_page(&document, page.page_number).expect("selected page index");
         let staged = stage_translation_patch_with_font_registry(
             &document,
             &accumulated,
+            &page_index,
             &page,
             &patch,
             &[&prepared],

@@ -201,11 +201,15 @@ Current progress:
   complete accumulated maximum without applying earlier deltas to the source
   document. The real multi-page proof also removed its complete working-document
   clone, leaving one read-only source object graph plus the bounded delta.
+- Selected-page identity now comes from a reusable `PdfPageIndex` over the lazy
+  source view. It records only the explicit `PageSet`, skips unrelated page-tree
+  subtrees by `/Count`, and supplies page/content-root IDs to replacement
+  preflight and staging without `Document::get_pages()`.
 - The current incremental two-page proof remains 1,617,258 bytes from a
   1,590,242-byte source: 27,016 appended bytes and 10 delta objects. Page 1 and
   2 changes remain confined to their translated footer rows and page 3 is
-  pixel-exact. Page/resource/content traversal is still the next lazy-view
-  migration boundary.
+  pixel-exact. Inherited resources, content decode and cross-page ownership
+  discovery are still the next lazy-view migration boundary.
 
 ## Purpose
 
@@ -550,10 +554,15 @@ read-only memory map, resolves classic/xref-stream and object-stream entries on
 demand, converts only requested objects into the existing renderer object type,
 and bounds its LRU by bytes and entries. Incremental export base construction,
 document-wide font allocation, registry identity validation and page-level
-object allocation already use the accumulated lazy overlay. The next slice must
-migrate page-tree, resource and content traversal from `&Document` to
-`PdfObjectView` plus a page index; until then renderer memory remains unbounded
-by source object count.
+object allocation already use the accumulated lazy overlay. A selected-page
+`PdfPageIndex` now resolves page count, page object identity, page-tree ancestry
+and direct content-stream references through `PdfObjectView`, skips unselected
+subtrees by `/Count`, and is reused across the real multi-page staging proof.
+Replacement preflight and page staging no longer call `Document::get_pages()`
+or enumerate selected-page `/Contents`. Inherited resources, stream decoding and
+global cross-page ownership discovery still use the complete immutable
+`Document`; until those migrate to bounded lazy traversal, renderer memory
+remains unbounded by source object count.
 
 ### Phase 5 — Translation and protected spans
 
