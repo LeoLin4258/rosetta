@@ -588,8 +588,7 @@ decompression, follows Form-local resource declarations conservatively, and is
 reused across page stages. A 1,000-page synthetic scan retains two requested
 target states; the real 30-page proof stays within a 12-entry object cache.
 Production replacement and TranslationPatch staging no longer accept
-`lopdf::Document`. The next major boundary is Phase 6 scheduler backpressure,
-leases, recovery and 500/1,000-page end-to-end stress.
+`lopdf::Document`.
 
 ### Phase 5 — Translation and protected spans
 
@@ -601,6 +600,20 @@ leases, recovery and 500/1,000-page end-to-end stress.
 
 - Add bounded queues, backpressure, durable leases, cancellation and crash recovery.
 - Validate 500/1000-page runs without user-visible chunk semantics.
+
+Current Phase 6 boundary: an independent durable scheduler core now stores a
+small versioned run manifest plus authoritative 64-page state shards. Typed
+page states and extraction/translation leases support bounded claims, commit,
+failure/retry, pause, cancellation and stale-owner recovery. Independent hard
+limits cover extracting pages, extracted pages waiting for translation and
+translating pages; status reads are capped at 256 records. Opening a run
+recovers synced temp/backup candidates, verifies exact PageSet coverage and
+rebuilds the manifest summary from shards. Recovery consumes validated
+PageGraph and TranslationPatch inventories, so artifacts committed before a
+crash are promoted and invalid completion state is not trusted. A 1,000-page
+Windows AMD test uses 16 shards, keeps each shard at or below 64 records and
+proves claim limits without ten-page scheduling semantics. Worker/Tauri/UI
+integration and a real 500/1,000-page end-to-end translation remain pending.
 
 ### Phase 7 — Component control plane
 

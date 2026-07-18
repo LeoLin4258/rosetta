@@ -20,6 +20,7 @@ pub(crate) mod preview;
 pub(crate) mod reconcile;
 pub(crate) mod render_cache;
 pub(crate) mod replacement;
+pub(crate) mod scheduler;
 pub(crate) mod source_cmap;
 pub(crate) mod source_object;
 pub(crate) mod style;

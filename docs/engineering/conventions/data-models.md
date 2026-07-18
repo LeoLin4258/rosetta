@@ -749,6 +749,48 @@ provenance；译文编码使用 Rosetta 管理的统一字体家族。
 - 普通诊断只记录 asset ID、font fingerprint、glyph/subset byte count、coverage 状态和
   耗时，不记录 translated text 或完整 codepoint 列表。
 
+## PDF v3 Durable Scheduler
+
+PDF v3 长文档调度状态独立于 legacy `PdfTranslationRun`、TranslationPatch Store 和
+Render Cache。beta 阶段不迁移 v1/v2 PDF 派生状态。
+
+约定：
+
+- 一个 run directory 只包含一个 versioned `manifest.json` 和按 page number 分配的
+  `shard-XXXXXXXX.json`。每个 shard 最多 64 个 requested page record；64 只是磁盘
+  metadata bound，不是 batch、queue window、PageSet 或 UI chunk。
+- manifest 固定绑定 run/source fingerprint、source page count、canonical requested
+  PageSet、source/target language、engine、PageGraph schema、TranslationPatch schema 和
+  renderer version。容量、typed run/cancellation state、owner session lease、claim cursor
+  和 rebuildable summary 也保存在 manifest。
+- page shard 是状态权威。`open` 必须按 requested PageSet 推导全部 expected shard，验证
+  page coverage 恰好相等且无重复，再流式重建 summary 和 completed state。不得信任可能
+  落后于 shard commit 的 manifest summary。
+- durable page state 只能是 `pending`、带 exact extraction artifact/source-page identity
+  的 `extracted`、再带 exact patch ID/revision 的 `completed`、带 stable reason code 的
+  `preserved`，或带 stage/retryability/resume authority 的 `failed`。
+- rendered PNG/page PDF 不得作为完成权威。`completed` 必须引用已经由 TranslationPatch
+  Store 原子提交并重新验证的 patch authority；`extracted` 必须引用已经由 PageGraph/IR
+  store 验证的 extraction authority。
+- page lease 必须保存 unique lease ID、owner session、`extraction` / `translation` stage
+  和 lease timestamp。只有 pending 可以 claim extraction，只有 extracted 可以 claim
+  translation；commit/fail 必须同时匹配 page、owner、lease ID 和 stage。
+- owner heartbeat 是 run-level lease。不同 session 只有在旧 owner 明确 stale 后才能接管。
+  stale-owner recovery 必须接收完整、已验证的 extraction/patch inventory：可以提升在
+  scheduler update 前已经落盘的 authority；completed patch 无效时退回有效 extracted，
+  extraction 也无效时退回 pending。不得仅凭旧 scheduler state 猜测 artifact 有效。
+- backpressure 分别限制 extracting、extracted waiting 和 translating page count。claim
+  结果不得超过调用者 limit 或剩余容量；不得把固定 10 页写入持久化或公开调度语义。
+- pause/cancelling 阻止新 claim，但允许已租赁工作显式 commit/fail。取消只有在 active
+  page lease 清零后才能进入 `cancelled`。failed page 只有 `retryable=true` 才能恢复。
+- status API 默认使用 page-number ordered window，单次最多 256 records；不得默认返回
+  整个长文档页状态数组。
+- manifest 和 shard 使用 unique temp、file `sync_all`、backup/rename 替换和支持平台上的
+  parent-directory sync。读取必须验证 canonical/temp/backup 候选，提升最高有效 generation
+  并清理 sidecar。首次创建必须在 unique sibling staging directory 完整写入所有 shard 和
+  manifest，再通过一次 directory rename 暴露 canonical run。一个进程内同 run handles
+  必须共享 coordinator lock。
+
 ## PDF v3 Text-Show Replacement Transactions and Batches
 
 当前 PDF v3 回填开放同一 selected page、底层 stream、结构化 invocation path 和
