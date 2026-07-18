@@ -194,6 +194,20 @@ pub(crate) struct PdfV3SchedulerSummary {
     pub failed_pages: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PdfV3SchedulerStatusSnapshot {
+    pub run_id: String,
+    pub run_state: PdfV3RunState,
+    pub source_page_count: u32,
+    pub requested_pages: PageSet,
+    pub source_language: String,
+    pub target_language: String,
+    pub owner_session_id: String,
+    pub owner_lease_updated_at_ms: u64,
+    pub cancellation: Option<PdfV3Cancellation>,
+    pub summary: PdfV3SchedulerSummary,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct PdfV3RecoveryInventory {
     pub extractions: BTreeMap<u32, PdfV3ExtractionAuthority>,
@@ -564,6 +578,25 @@ impl DurablePdfV3Scheduler {
         let _guard = self.lock()?;
         let manifest = self.read_manifest()?;
         Ok((manifest.run_state, manifest.summary))
+    }
+
+    pub(crate) fn status_snapshot(
+        &self,
+    ) -> Result<PdfV3SchedulerStatusSnapshot, PdfV3SchedulerError> {
+        let _guard = self.lock()?;
+        let manifest = self.read_manifest()?;
+        Ok(PdfV3SchedulerStatusSnapshot {
+            run_id: manifest.run_id.clone(),
+            run_state: manifest.run_state,
+            source_page_count: manifest.source_page_count,
+            requested_pages: requested_pages(&manifest)?,
+            source_language: manifest.source_language.clone(),
+            target_language: manifest.target_language.clone(),
+            owner_session_id: manifest.owner_session_id.clone(),
+            owner_lease_updated_at_ms: manifest.owner_lease_updated_at_ms,
+            cancellation: manifest.cancellation.clone(),
+            summary: manifest.summary,
+        })
     }
 
     pub(crate) fn extraction_binding(&self) -> Result<PdfV3ExtractionBinding, PdfV3SchedulerError> {

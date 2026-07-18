@@ -720,9 +720,12 @@ section. An immutable 64 KiB-bounded runtime manifest now binds the run's exact
 source/PageSet/schema/revision/render policy to component build, provider/model
 and Regular/optional Bold font byte identities without persisting credentials,
 paths or text. The local page processor can only derive production
-configuration from a live provider/font binding that matches this manifest.
-Tauri/UI control, verified component launch/model health and a real complex
-500/1,000-page end-to-end translation/export remain pending.
+configuration from a live provider/font binding that matches this manifest. A
+typed Tauri run-control surface now exposes bounded paginated status plus
+owner-gated pause, resume and cancellation without exposing paths, owner IDs,
+credentials or document text. Frontend control integration, verified component
+launch/model health and a real complex 500/1,000-page end-to-end
+translation/export remain pending.
 
 ### Phase 7 — Component control plane
 

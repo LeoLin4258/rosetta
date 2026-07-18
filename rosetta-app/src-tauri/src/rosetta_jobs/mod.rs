@@ -230,6 +230,98 @@ pub fn cancel_rosetta_translated_pdf(cancel_state: State<'_, PdfTranslationCance
 }
 
 #[tauri::command]
+pub fn get_rosetta_pdf_v3_run_status(
+    app: AppHandle,
+    cancel_state: State<'_, PdfTranslationCancelState>,
+    job_id: String,
+    run_id: String,
+    start_after: Option<u32>,
+    limit: Option<usize>,
+) -> Result<formats::pdf::v3_control::PdfV3RunControlStatus, String> {
+    let root = path::jobs_root(&app)?;
+    let dir = path::checked_job_dir(&root, &job_id)?;
+    formats::pdf::v3_control::pdf_v3_run_status(
+        &dir,
+        &run_id,
+        cancel_state.session_id(),
+        start_after,
+        limit.unwrap_or(formats::pdf::v3_control::DEFAULT_PDF_V3_STATUS_WINDOW),
+    )
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn pause_rosetta_pdf_v3_run(
+    app: AppHandle,
+    cancel_state: State<'_, PdfTranslationCancelState>,
+    job_id: String,
+    run_id: String,
+) -> Result<formats::pdf::v3_control::PdfV3RunControlStatus, String> {
+    control_rosetta_pdf_v3_run(
+        &app,
+        &cancel_state,
+        &job_id,
+        &run_id,
+        formats::pdf::v3_control::pause_pdf_v3_run,
+    )
+}
+
+#[tauri::command]
+pub fn resume_rosetta_pdf_v3_run(
+    app: AppHandle,
+    cancel_state: State<'_, PdfTranslationCancelState>,
+    job_id: String,
+    run_id: String,
+) -> Result<formats::pdf::v3_control::PdfV3RunControlStatus, String> {
+    control_rosetta_pdf_v3_run(
+        &app,
+        &cancel_state,
+        &job_id,
+        &run_id,
+        formats::pdf::v3_control::resume_pdf_v3_run,
+    )
+}
+
+#[tauri::command]
+pub fn cancel_rosetta_pdf_v3_run(
+    app: AppHandle,
+    cancel_state: State<'_, PdfTranslationCancelState>,
+    job_id: String,
+    run_id: String,
+) -> Result<formats::pdf::v3_control::PdfV3RunControlStatus, String> {
+    control_rosetta_pdf_v3_run(
+        &app,
+        &cancel_state,
+        &job_id,
+        &run_id,
+        formats::pdf::v3_control::cancel_pdf_v3_run,
+    )
+}
+
+fn control_rosetta_pdf_v3_run(
+    app: &AppHandle,
+    cancel_state: &PdfTranslationCancelState,
+    job_id: &str,
+    run_id: &str,
+    control: fn(
+        &Path,
+        &str,
+        &str,
+        u64,
+    ) -> Result<
+        formats::pdf::v3_control::PdfV3RunControlStatus,
+        formats::pdf::v3_control::PdfV3RunControlError,
+    >,
+) -> Result<formats::pdf::v3_control::PdfV3RunControlStatus, String> {
+    let root = path::jobs_root(app)?;
+    let dir = path::checked_job_dir(&root, job_id)?;
+    let now_ms = path::timestamp_ms_string()
+        .parse::<u64>()
+        .map_err(|_| "无法读取当前时间。".to_string())?;
+    control(&dir, run_id, cancel_state.session_id(), now_ms).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub fn pause_rosetta_pdf_run(
     app: AppHandle,
     cancel_state: State<'_, PdfTranslationCancelState>,

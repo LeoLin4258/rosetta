@@ -896,6 +896,28 @@ Render Cache。beta 阶段不迁移 v1/v2 PDF 派生状态。
   manifest，再通过一次 directory rename 暴露 canonical run。一个进程内同 run handles
   必须共享 coordinator lock。
 
+## PDF v3 Typed Run Control Plane
+
+PDF v3 run control 是 durable scheduler 和 Tauri/UI 之间的窄接口，不是第二份任务状态。
+
+约定：
+
+- 公开命令只接受 `jobId`、safe `runId` 和分页参数。job directory 必须从 Tauri app data
+  内部解析，前端不得传入任意 filesystem path 或 owner session ID。
+- run owner 使用 native process session identity。状态只返回当前 session 是否为 owner，
+  不返回可被前端重放的 owner session ID。page lease 同样只投影 stage、timestamp 和
+  `ownedByCurrentSession`，不得返回内部 lease ID 或 owner session ID。
+- 状态固定返回 exact canonical PageSet、run/cancellation state、rebuildable summary、
+  immutable runtime/component/provider/model/font identity 和 page-number ordered records。
+- page records 默认最多 64 条，调用者可请求的硬上限为 256 条；`nextStartAfter` 和
+  `hasMore` 是唯一分页游标语义。不得为长文档返回默认全量页数组。
+- 状态不得返回原文、译文、provider raw response、endpoint、credential 或 font path。
+- pause/resume/cancel 必须由 scheduler owner gate 执行。取消先进入 `cancelling`，只有
+  extraction/translation active leases 都清零后才能进入 `cancelled`。cancel command
+  必须幂等，允许 active lease settle 后重试并完成状态收敛。
+- runtime status 必须先验证 `runtime-manifest.json` 与 scheduler translation binding；
+  identity drift 或缺失 manifest 是硬错误，不能降级成未知字符串或继续运行。
+
 ## PDF v3 Translation Runtime Manifest
 
 PDF v3 translation runtime manifest 是每个 scheduler run 的不可变 runtime/component
