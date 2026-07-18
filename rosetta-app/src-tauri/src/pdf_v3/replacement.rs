@@ -16,6 +16,7 @@ use super::font::{
 use super::{
     layout::{derive_text_show_fit_bounds, TextShowFitBoundsError, TextShowGeometryKey},
     object_delta::{PdfObjectDelta, PdfObjectDeltaError},
+    ownership::{PdfStreamOwnership, PdfStreamOwnershipError, PdfStreamOwnershipIndex},
     page_context::{PdfPageContextError, PdfPageObjectContext},
     page_index::{PdfIndexedPage, PdfPageIndex, PdfPageIndexError},
     patch::{
@@ -150,6 +151,7 @@ pub(crate) enum TextShowReplacementError {
     SourceObject(PdfSourceObjectError),
     PageContext(PdfPageContextError),
     PageIndex(PdfPageIndexError),
+    Ownership(PdfStreamOwnershipError),
     MissingTranslationFontFace(TranslationFontWeight),
     DuplicateTranslationFontFace(TranslationFontWeight),
     PageOutOfBounds {
@@ -196,6 +198,7 @@ impl fmt::Display for TextShowReplacementError {
             Self::SourceObject(error) => error.fmt(formatter),
             Self::PageContext(error) => error.fmt(formatter),
             Self::PageIndex(error) => error.fmt(formatter),
+            Self::Ownership(error) => error.fmt(formatter),
             Self::MissingTranslationFontFace(weight) => {
                 write!(
                     formatter,
@@ -316,6 +319,12 @@ impl From<PdfPageIndexError> for TextShowReplacementError {
     }
 }
 
+impl From<PdfStreamOwnershipError> for TextShowReplacementError {
+    fn from(value: PdfStreamOwnershipError) -> Self {
+        Self::Ownership(value)
+    }
+}
+
 #[derive(Clone)]
 struct SavedTextState {
     font_resource: Option<Vec<u8>>,
@@ -410,7 +419,6 @@ pub(crate) fn preflight_text_show_replacement_transaction(
     let page_index = PdfPageIndex::resolve_page(document, first.geometry.page_number)?;
     preflight_text_show_replacement_transaction_with_page_index(
         document,
-        document,
         &page_index,
         page_graph,
         requests,
@@ -419,7 +427,6 @@ pub(crate) fn preflight_text_show_replacement_transaction(
 }
 
 pub(crate) fn preflight_text_show_replacement_transaction_with_page_index(
-    document: &Document,
     source_objects: &dyn PdfObjectView,
     page_index: &PdfPageIndex,
     page_graph: &PageGraph,
@@ -439,9 +446,9 @@ pub(crate) fn preflight_text_show_replacement_transaction_with_page_index(
         }
     }
     let planned = plan_replacement_target(
-        document,
         source_objects,
         indexed_page,
+        None,
         page_graph,
         requests,
         &fonts_by_weight,
@@ -501,8 +508,8 @@ pub(crate) fn apply_text_show_replacement_batch(
     let staged = stage_text_show_replacement_batch_internal(
         document,
         document,
-        document,
         &page_index,
+        None,
         page_graph,
         target_requests,
         fonts,
@@ -523,8 +530,8 @@ pub(crate) fn apply_text_show_replacement_batch_with_font_registry(
     let staged = stage_text_show_replacement_batch_internal(
         document,
         document,
-        document,
         &page_index,
+        None,
         page_graph,
         target_requests,
         fonts,
@@ -535,20 +542,20 @@ pub(crate) fn apply_text_show_replacement_batch_with_font_registry(
 }
 
 pub(crate) fn stage_text_show_replacement_batch_with_font_registry(
-    document: &Document,
     source_objects: &dyn PdfObjectView,
     accumulated_objects: &dyn PdfObjectView,
     page_index: &PdfPageIndex,
+    ownership_index: &PdfStreamOwnershipIndex,
     page_graph: &PageGraph,
     target_requests: &[TextShowReplacementTargetRequest],
     fonts: &[&PreparedTranslationFont],
     font_registry: &DocumentTranslationFontRegistry,
 ) -> Result<StagedTextShowReplacementBatch, TextShowReplacementError> {
     stage_text_show_replacement_batch_internal(
-        document,
         source_objects,
         accumulated_objects,
         page_index,
+        Some(ownership_index),
         page_graph,
         target_requests,
         fonts,
@@ -563,29 +570,32 @@ pub(crate) fn stage_text_show_replacement_batch(
     fonts: &[&PreparedTranslationFont],
 ) -> Result<StagedTextShowReplacementBatch, TextShowReplacementError> {
     let page_index = page_index_for_batch(document, target_requests)?;
-    stage_text_show_replacement_batch_with_page_index(
+    stage_text_show_replacement_batch_internal(
         document,
         document,
         &page_index,
+        None,
         page_graph,
         target_requests,
         fonts,
+        None,
     )
 }
 
 pub(crate) fn stage_text_show_replacement_batch_with_page_index(
-    document: &Document,
     source_objects: &dyn PdfObjectView,
+    accumulated_objects: &dyn PdfObjectView,
     page_index: &PdfPageIndex,
+    ownership_index: &PdfStreamOwnershipIndex,
     page_graph: &PageGraph,
     target_requests: &[TextShowReplacementTargetRequest],
     fonts: &[&PreparedTranslationFont],
 ) -> Result<StagedTextShowReplacementBatch, TextShowReplacementError> {
     stage_text_show_replacement_batch_internal(
-        document,
         source_objects,
-        document,
+        accumulated_objects,
         page_index,
+        Some(ownership_index),
         page_graph,
         target_requests,
         fonts,
@@ -607,10 +617,10 @@ fn page_index_for_batch(
 }
 
 fn stage_text_show_replacement_batch_internal(
-    document: &Document,
     source_objects: &dyn PdfObjectView,
     accumulated_objects: &dyn PdfObjectView,
     page_index: &PdfPageIndex,
+    ownership_index: Option<&PdfStreamOwnershipIndex>,
     page_graph: &PageGraph,
     target_requests: &[TextShowReplacementTargetRequest],
     fonts: &[&PreparedTranslationFont],
@@ -633,6 +643,21 @@ fn stage_text_show_replacement_batch_internal(
 
     let indexed_page = page_index.page(page_number)?;
     let page_id = indexed_page.page_id();
+    let ownership_targets = target_requests
+        .iter()
+        .filter_map(|target| target.replacements.first())
+        .filter(|request| request.geometry.form_invocation_path.is_empty())
+        .map(TextShowReplacementRequest::stream_id)
+        .collect::<BTreeSet<_>>();
+    let discovered_ownership;
+    let ownership_index = match ownership_index {
+        Some(ownership_index) => ownership_index,
+        None => {
+            discovered_ownership =
+                PdfStreamOwnershipIndex::resolve(source_objects, &ownership_targets)?;
+            &discovered_ownership
+        }
+    };
     let mut target_keys = BTreeSet::new();
     let mut planned_targets = Vec::with_capacity(target_requests.len());
     for target_request in target_requests {
@@ -644,9 +669,9 @@ fn stage_text_show_replacement_batch_internal(
             return Err(TextShowReplacementError::BatchPageMismatch);
         }
         let target = plan_replacement_target(
-            document,
             source_objects,
             indexed_page,
+            Some(ownership_index),
             page_graph,
             &target_request.replacements,
             &fonts_by_weight,
@@ -896,9 +921,9 @@ fn source_stream(
 }
 
 fn plan_replacement_target(
-    document: &Document,
     source_objects: &dyn PdfObjectView,
     indexed_page: &PdfIndexedPage,
+    ownership_index: Option<&PdfStreamOwnershipIndex>,
     page_graph: &PageGraph,
     requests: &[TextShowReplacementRequest],
     fonts_by_weight: &BTreeMap<TranslationFontWeight, &PreparedTranslationFont>,
@@ -946,7 +971,13 @@ fn plan_replacement_target(
         if selected_references != 1 {
             return Err(TextShowReplacementError::RepeatedPageStream);
         }
-        content_stream_referencing_pages(document, stream_id).len() != 1
+        match ownership_index {
+            Some(ownership_index) => !matches!(
+                ownership_index.ownership(stream_id)?,
+                PdfStreamOwnership::UniqueToPage(owner) if owner == indexed_page.page_number()
+            ),
+            None => false,
+        }
     };
 
     let source_stream = source_stream(source_objects, stream_id)?;
@@ -1503,19 +1534,6 @@ fn text_operand_hash(operation: &lopdf::content::Operation) -> String {
         .collect()
 }
 
-fn content_stream_referencing_pages(document: &Document, target: ObjectId) -> BTreeSet<u32> {
-    document
-        .get_pages()
-        .into_iter()
-        .filter_map(|(page_number, page_id)| {
-            document
-                .get_page_contents(page_id)
-                .contains(&target)
-                .then_some(page_number)
-        })
-        .collect()
-}
-
 fn numeric_operand_f32(object: &Object) -> Option<f32> {
     match object {
         Object::Integer(value) => Some(*value as f32),
@@ -1577,6 +1595,7 @@ mod tests {
             },
             layout::{derive_text_show_fit_bounds, TextShowGeometryKey},
             mapping::map_page_atoms_to_content_operands,
+            ownership::PdfStreamOwnershipIndex,
             page_index::PdfPageIndex,
             reconcile::build_reconciled_page_graph,
             source_object::PdfObjectOverlay,
@@ -2884,11 +2903,14 @@ mod tests {
         let font_overlay = PdfObjectOverlay::new(&document, &staged_fonts.object_delta);
         let page_index = PdfPageIndex::resolve_page(&document, page_graph.page_number)
             .expect("selected page index");
+        let ownership_index =
+            PdfStreamOwnershipIndex::resolve(&document, &page_index.selected_content_stream_ids())
+                .expect("stream ownership index");
         let staged_batch = stage_text_show_replacement_batch_with_font_registry(
-            &document,
             &document,
             &font_overlay,
             &page_index,
+            &ownership_index,
             &page_graph,
             &target_requests,
             &[&prepared],

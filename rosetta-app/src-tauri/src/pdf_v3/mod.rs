@@ -9,6 +9,7 @@ pub(crate) mod incremental_export;
 pub(crate) mod layout;
 pub(crate) mod mapping;
 pub(crate) mod object_delta;
+pub(crate) mod ownership;
 pub(crate) mod page_context;
 pub(crate) mod page_index;
 pub(crate) mod page_set;

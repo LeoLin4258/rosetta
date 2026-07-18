@@ -33,7 +33,18 @@ impl PdfPageObjectContext {
         objects: &dyn PdfObjectView,
         indexed_page: &PdfIndexedPage,
     ) -> Result<Self, PdfPageContextError> {
-        let page_id = indexed_page.page_id();
+        Self::resolve_page_tree_entry(
+            objects,
+            indexed_page.page_id(),
+            indexed_page.ancestor_page_tree_ids(),
+        )
+    }
+
+    pub(crate) fn resolve_page_tree_entry(
+        objects: &dyn PdfObjectView,
+        page_id: ObjectId,
+        ancestor_page_tree_ids: &[ObjectId],
+    ) -> Result<Self, PdfPageContextError> {
         let page_dictionary = object_dictionary(objects, page_id)?;
         if !page_dictionary
             .get(b"Type")
@@ -50,7 +61,7 @@ impl PdfPageObjectContext {
             &page_dictionary,
             &mut resource_dictionaries,
         )?;
-        for ancestor_id in indexed_page.ancestor_page_tree_ids().iter().rev() {
+        for ancestor_id in ancestor_page_tree_ids.iter().rev() {
             let dictionary = object_dictionary(objects, *ancestor_id)?;
             collect_resources(
                 objects,
@@ -136,6 +147,30 @@ impl PdfResourceContext {
             return Ok(None);
         };
         resolve_xobject_stream(objects, value)
+    }
+
+    pub(crate) fn xobject_names(
+        &self,
+        objects: &dyn PdfObjectView,
+    ) -> Result<Vec<Vec<u8>>, PdfPageContextError> {
+        xobject_names(objects, self.owner_id, &self.resources)
+    }
+
+    pub(crate) fn invoked_form_xobject_names(
+        objects: &dyn PdfObjectView,
+        form_stream_id: ObjectId,
+        form_stream: &Stream,
+    ) -> Result<Vec<Vec<u8>>, PdfPageContextError> {
+        let Ok(value) = form_stream.dict.get(b"Resources") else {
+            return Ok(Vec::new());
+        };
+        if matches!(value, Object::Null) {
+            return Ok(Vec::new());
+        }
+        let Some(resources) = resolve_dictionary(objects, value)? else {
+            return Err(PdfPageContextError::ResourcesInvalid(form_stream_id));
+        };
+        xobject_names(objects, form_stream_id, &resources)
     }
 }
 
@@ -340,6 +375,23 @@ fn resolve_xobject_stream(
         }
         _ => Ok(None),
     }
+}
+
+fn xobject_names(
+    objects: &dyn PdfObjectView,
+    owner_id: ObjectId,
+    resources: &Dictionary,
+) -> Result<Vec<Vec<u8>>, PdfPageContextError> {
+    let Ok(value) = resources.get(b"XObject") else {
+        return Ok(Vec::new());
+    };
+    let Some(xobjects) = resolve_dictionary(objects, value)? else {
+        return Err(PdfPageContextError::ResourceCategoryInvalid {
+            object_id: owner_id,
+            category: b"XObject".to_vec(),
+        });
+    };
+    Ok(xobjects.iter().map(|(name, _)| name.clone()).collect())
 }
 
 #[cfg(test)]

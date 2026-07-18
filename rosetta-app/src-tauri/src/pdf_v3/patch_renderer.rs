@@ -9,6 +9,7 @@ use super::{
     font::{DocumentTranslationFontRegistry, PreparedTranslationFont},
     layout::TextShowGeometryKey,
     object_delta::PdfObjectDelta,
+    ownership::PdfStreamOwnershipIndex,
     page_index::PdfPageIndex,
     render_cache::{
         RenderCache, RenderCacheError, RenderCacheInsertOutcome, RenderCacheKey,
@@ -167,8 +168,8 @@ pub(crate) fn render_translation_patch(
     let staged = stage_translation_patch_internal(
         document,
         document,
-        document,
         &page_index,
+        None,
         page,
         patch,
         fonts,
@@ -191,8 +192,8 @@ pub(crate) fn render_translation_patch_with_font_registry(
     let staged = stage_translation_patch_internal(
         document,
         document,
-        document,
         &page_index,
+        None,
         page,
         patch,
         fonts,
@@ -204,10 +205,10 @@ pub(crate) fn render_translation_patch_with_font_registry(
 }
 
 pub(crate) fn stage_translation_patch_with_font_registry(
-    document: &Document,
     source_objects: &dyn PdfObjectView,
     accumulated_objects: &dyn PdfObjectView,
     page_index: &PdfPageIndex,
+    ownership_index: &PdfStreamOwnershipIndex,
     page: &PageGraph,
     patch: &TranslationPatch,
     fonts: &[&PreparedTranslationFont],
@@ -215,10 +216,10 @@ pub(crate) fn stage_translation_patch_with_font_registry(
     font_registry: &DocumentTranslationFontRegistry,
 ) -> Result<StagedTranslationPatchRender, TranslationPatchRenderError> {
     stage_translation_patch_internal(
-        document,
         source_objects,
         accumulated_objects,
         page_index,
+        Some(ownership_index),
         page,
         patch,
         fonts,
@@ -228,10 +229,10 @@ pub(crate) fn stage_translation_patch_with_font_registry(
 }
 
 fn stage_translation_patch_internal(
-    document: &Document,
     source_objects: &dyn PdfObjectView,
     accumulated_objects: &dyn PdfObjectView,
     page_index: &PdfPageIndex,
+    ownership_index: Option<&PdfStreamOwnershipIndex>,
     page: &PageGraph,
     patch: &TranslationPatch,
     fonts: &[&PreparedTranslationFont],
@@ -309,7 +310,6 @@ fn stage_translation_patch_internal(
             .map(|entry| entry.request.clone())
             .collect::<Vec<_>>();
         let preflight = match preflight_text_show_replacement_transaction_with_page_index(
-            document,
             source_objects,
             page_index,
             page,
@@ -383,12 +383,33 @@ fn stage_translation_patch_internal(
             PdfObjectDelta::empty(accumulated_objects.maximum_object_number()),
         )
     } else {
+        let ownership_targets = targets
+            .iter()
+            .filter_map(|target| target.replacements.first())
+            .filter(|request| request.geometry.form_invocation_path.is_empty())
+            .map(|request| {
+                (
+                    request.geometry.stream_object_number,
+                    request.geometry.stream_generation,
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        let discovered_ownership;
+        let ownership_index = match ownership_index {
+            Some(ownership_index) => ownership_index,
+            None => {
+                discovered_ownership =
+                    PdfStreamOwnershipIndex::resolve(source_objects, &ownership_targets)
+                        .map_err(TextShowReplacementError::from)?;
+                &discovered_ownership
+            }
+        };
         let staged = if let Some(registry) = font_registry {
             stage_text_show_replacement_batch_with_font_registry(
-                document,
                 source_objects,
                 accumulated_objects,
                 page_index,
+                ownership_index,
                 page,
                 &targets,
                 fonts,
@@ -396,9 +417,10 @@ fn stage_translation_patch_internal(
             )?
         } else {
             stage_text_show_replacement_batch_with_page_index(
-                document,
                 source_objects,
+                accumulated_objects,
                 page_index,
+                ownership_index,
                 page,
                 &targets,
                 fonts,
@@ -779,6 +801,7 @@ mod tests {
             incremental_export::{
                 export_incremental_pdf_atomic, IncrementalExportBase, IncrementalExportCancellation,
             },
+            ownership::PdfStreamOwnershipIndex,
             page_index::PdfPageIndex,
             page_set::PageSet,
             preview::{
@@ -790,7 +813,7 @@ mod tests {
             reconcile::build_reconciled_page_graph,
             render_cache::{RenderCache, RenderCacheConfig, RenderCacheInsertKind},
             replacement::{preflight_text_show_replacement_transaction, TextShowReplacementError},
-            source_object::{PdfObjectOverlay, PdfSourceObjectStore},
+            source_object::{PdfObjectOverlay, PdfSourceObjectCachePolicy, PdfSourceObjectStore},
             translation_patch::{
                 build_translation_patch, resolve_translation_patch_renderer_decisions,
                 TranslationPatchDraft, TranslationPatchEntryDraft,
@@ -1168,11 +1191,23 @@ mod tests {
         let translations = ["Registry page one", "Registry page two"];
         let prepared = prepared_arial(&translations);
         let source_path = fixture_path("2305.13048v2.pdf");
-        let source_objects =
-            PdfSourceObjectStore::open(&source_path).expect("lazy source object store");
+        let source_objects = PdfSourceObjectStore::open_with_cache_policy(
+            &source_path,
+            PdfSourceObjectCachePolicy {
+                maximum_bytes: 2 * 1024 * 1024,
+                maximum_entries: 12,
+                maximum_object_bytes: 1024 * 1024,
+            },
+        )
+        .expect("bounded lazy source object store");
         let selected_pages = PageSet::from_pages([1, 2]).expect("selected pages");
         let page_index =
             PdfPageIndex::resolve(&source_objects, &selected_pages).expect("lazy page index");
+        let ownership_index = PdfStreamOwnershipIndex::resolve(
+            &source_objects,
+            &page_index.selected_content_stream_ids(),
+        )
+        .expect("shared stream ownership index");
         let first_page =
             build_reconciled_page_graph(shared_pdfium(), &source_path, 1).expect("first page");
         let second_page =
@@ -1198,10 +1233,10 @@ mod tests {
             render: first,
             object_delta: first_delta,
         } = stage_translation_patch_with_font_registry(
-            &source_document,
             &source_objects,
             &first_overlay,
             &page_index,
+            &ownership_index,
             &first_page,
             &first_patch,
             &[&prepared],
@@ -1218,10 +1253,10 @@ mod tests {
             render: second,
             object_delta: second_delta,
         } = stage_translation_patch_with_font_registry(
-            &source_document,
             &source_objects,
             &second_overlay,
             &page_index,
+            &ownership_index,
             &second_page,
             &second_patch,
             &[&prepared],
@@ -1242,9 +1277,9 @@ mod tests {
             lazy_stats.resident_entries,
             lazy_stats.resident_bytes,
         );
-        assert!(lazy_stats.source_loads <= 32);
-        assert!(lazy_stats.resident_entries <= 32);
-        assert!(lazy_stats.resident_bytes <= 16 * 1024 * 1024);
+        assert!(lazy_stats.source_loads <= 128);
+        assert!(lazy_stats.resident_entries <= 12);
+        assert!(lazy_stats.resident_bytes <= 2 * 1024 * 1024);
         assert_eq!(
             first
                 .batch
@@ -1539,11 +1574,14 @@ mod tests {
         let accumulated = PdfObjectOverlay::new(&document, &staged_fonts.object_delta);
         let page_index =
             PdfPageIndex::resolve_page(&document, page.page_number).expect("selected page index");
+        let ownership_index =
+            PdfStreamOwnershipIndex::resolve(&document, &page_index.selected_content_stream_ids())
+                .expect("stream ownership index");
         let staged = stage_translation_patch_with_font_registry(
-            &document,
             &document,
             &accumulated,
             &page_index,
+            &ownership_index,
             &page,
             &patch,
             &[&prepared],

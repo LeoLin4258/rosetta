@@ -121,6 +121,13 @@ impl PdfPageIndex {
     pub(crate) fn selected_page_count(&self) -> usize {
         self.pages.len()
     }
+
+    pub(crate) fn selected_content_stream_ids(&self) -> BTreeSet<ObjectId> {
+        self.pages
+            .values()
+            .flat_map(|page| page.content_stream_ids.iter().copied())
+            .collect()
+    }
 }
 
 #[derive(Debug)]

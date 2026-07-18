@@ -215,8 +215,8 @@ Current progress:
 - The current incremental two-page proof remains 1,617,258 bytes from a
   1,590,242-byte source: 27,016 appended bytes and 10 delta objects. Page 1 and
   2 changes remain confined to their translated footer rows and page 3 is
-  pixel-exact. Global cross-page stream/Form ownership discovery is now the
-  final major complete-document migration boundary.
+  pixel-exact. Cross-page stream/Form ownership now uses one reusable bounded
+  lazy index; production page staging no longer accepts a complete document.
 
 ## Purpose
 
@@ -547,10 +547,10 @@ incremental delta writer now copies the immutable source with a fixed 64 KiB
 buffer, appends only changed objects and a new xref/trailer, supports
 cancellation before commit, and atomically replaces the destination after file
 sync. The writer no longer owns source bytes or the previous object graph. The
-current page renderer still reads page trees, resources and content streams
-from a complete `lopdf::Document`, however; scheduler recovery and stress
-validation remain pending before export is genuinely end-to-end bounded-memory
-and streaming. Font registry and page renderer mutation are explicitly staged
+  production page renderer now reads page trees, resources, content streams and
+  cross-page ownership through lazy views and a reusable target-bounded index.
+  Scheduler recovery and job-level stress validation remain pending before the
+  complete app workflow is end-to-end resumable. Font registry and page renderer mutation are explicitly staged
 as merge-checked `PdfObjectDelta` values, and final multi-page export no longer
 applies those deltas to its source traversal document. The incremental writer
 consumes the accumulated delta directly; whole-object-graph comparison is no
@@ -573,8 +573,8 @@ selected-page resource helpers or complete-document source stream reads. The
 real two-page proof loads 12 source objects and keeps 12 cache entries / 28,712
 estimated bytes resident under explicit ceilings.
 
-Form invocation validation and copy-on-write resource traversal no longer share
-the complete immutable `Document` with global ownership discovery. Form
+Form invocation validation and copy-on-write resource traversal use the same
+immutable lazy source boundary. Form
 validation and COW staging now build owned effective resource contexts from the
 lazy source view, resolve each root/Form stream there, rewrite the selected page
 from its page context, and allocate clones above the accumulated overlay
@@ -582,9 +582,14 @@ maximum. A nested repeated-Form proof produces the same four clones as the
 `Document` adapter with 8 source loads, 11 cache hits, 8 resident entries and
 11,272 estimated resident bytes.
 
-Global cross-page stream/Form ownership discovery is now the final major
-complete-document boundary. Until it migrates to a bounded lazy index, renderer
-memory remains unbounded by source object count.
+Global cross-page stream/Form ownership now uses a transient three-state index
+over explicit target stream IDs. It streams page dictionaries, avoids content
+decompression, follows Form-local resource declarations conservatively, and is
+reused across page stages. A 1,000-page synthetic scan retains two requested
+target states; the real 30-page proof stays within a 12-entry object cache.
+Production replacement and TranslationPatch staging no longer accept
+`lopdf::Document`. The next major boundary is Phase 6 scheduler backpressure,
+leases, recovery and 500/1,000-page end-to-end stress.
 
 ### Phase 5 — Translation and protected spans
 
