@@ -9,19 +9,20 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use super::font::{
-    stage_translation_fonts_page_dictionary, translation_font_resource_name,
+    stage_translation_fonts_page_context, translation_font_resource_name,
     DocumentTranslationFontRegistry, PreparedTranslationFont, TranslationFontError,
     TranslationFontWeight,
 };
 use super::{
     layout::{derive_text_show_fit_bounds, TextShowFitBoundsError, TextShowGeometryKey},
     object_delta::{PdfObjectDelta, PdfObjectDeltaError},
+    page_context::{PdfPageContextError, PdfPageObjectContext},
     page_index::{PdfIndexedPage, PdfPageIndex, PdfPageIndexError},
     patch::{
         stage_invocation_local_copy_on_write_batch, ContentPatchError,
         InvocationLocalCopyOnWriteTarget, ResourceReferenceBinding,
     },
-    source_object::PdfObjectView,
+    source_object::{PdfObjectView, PdfSourceObjectError},
     style::{plan_text_show_style, TextShowStyleError, TextShowStylePlan},
     types::{FormInvocationStep, PageGraph},
 };
@@ -146,6 +147,8 @@ pub(crate) enum TextShowReplacementError {
     Patch(ContentPatchError),
     Style(TextShowStyleError),
     ObjectDelta(PdfObjectDeltaError),
+    SourceObject(PdfSourceObjectError),
+    PageContext(PdfPageContextError),
     PageIndex(PdfPageIndexError),
     MissingTranslationFontFace(TranslationFontWeight),
     DuplicateTranslationFontFace(TranslationFontWeight),
@@ -190,6 +193,8 @@ impl fmt::Display for TextShowReplacementError {
             Self::Patch(error) => error.fmt(formatter),
             Self::Style(error) => error.fmt(formatter),
             Self::ObjectDelta(error) => error.fmt(formatter),
+            Self::SourceObject(error) => error.fmt(formatter),
+            Self::PageContext(error) => error.fmt(formatter),
             Self::PageIndex(error) => error.fmt(formatter),
             Self::MissingTranslationFontFace(weight) => {
                 write!(
@@ -293,6 +298,18 @@ impl From<PdfObjectDeltaError> for TextShowReplacementError {
     }
 }
 
+impl From<PdfSourceObjectError> for TextShowReplacementError {
+    fn from(value: PdfSourceObjectError) -> Self {
+        Self::SourceObject(value)
+    }
+}
+
+impl From<PdfPageContextError> for TextShowReplacementError {
+    fn from(value: PdfPageContextError) -> Self {
+        Self::PageContext(value)
+    }
+}
+
 impl From<PdfPageIndexError> for TextShowReplacementError {
     fn from(value: PdfPageIndexError) -> Self {
         Self::PageIndex(value)
@@ -359,14 +376,11 @@ pub(crate) fn apply_single_text_show_replacement(
 }
 
 pub(crate) fn text_show_replacement_target_identity(
-    document: &Document,
+    source_objects: &dyn PdfObjectView,
     request: &TextShowReplacementRequest,
 ) -> Result<TextShowReplacementTargetIdentity, TextShowReplacementError> {
     let stream_id = request.stream_id();
-    let stream = document
-        .get_object(stream_id)
-        .and_then(Object::as_stream)
-        .map_err(|error| TextShowReplacementError::StreamRead(error.to_string()))?;
+    let stream = source_stream(source_objects, stream_id)?;
     let content = Content::decode(
         &stream
             .get_plain_content()
@@ -396,6 +410,7 @@ pub(crate) fn preflight_text_show_replacement_transaction(
     let page_index = PdfPageIndex::resolve_page(document, first.geometry.page_number)?;
     preflight_text_show_replacement_transaction_with_page_index(
         document,
+        document,
         &page_index,
         page_graph,
         requests,
@@ -405,6 +420,7 @@ pub(crate) fn preflight_text_show_replacement_transaction(
 
 pub(crate) fn preflight_text_show_replacement_transaction_with_page_index(
     document: &Document,
+    source_objects: &dyn PdfObjectView,
     page_index: &PdfPageIndex,
     page_graph: &PageGraph,
     requests: &[TextShowReplacementRequest],
@@ -424,6 +440,7 @@ pub(crate) fn preflight_text_show_replacement_transaction_with_page_index(
     }
     let planned = plan_replacement_target(
         document,
+        source_objects,
         indexed_page,
         page_graph,
         requests,
@@ -484,6 +501,7 @@ pub(crate) fn apply_text_show_replacement_batch(
     let staged = stage_text_show_replacement_batch_internal(
         document,
         document,
+        document,
         &page_index,
         page_graph,
         target_requests,
@@ -505,6 +523,7 @@ pub(crate) fn apply_text_show_replacement_batch_with_font_registry(
     let staged = stage_text_show_replacement_batch_internal(
         document,
         document,
+        document,
         &page_index,
         page_graph,
         target_requests,
@@ -517,6 +536,7 @@ pub(crate) fn apply_text_show_replacement_batch_with_font_registry(
 
 pub(crate) fn stage_text_show_replacement_batch_with_font_registry(
     document: &Document,
+    source_objects: &dyn PdfObjectView,
     accumulated_objects: &dyn PdfObjectView,
     page_index: &PdfPageIndex,
     page_graph: &PageGraph,
@@ -526,6 +546,7 @@ pub(crate) fn stage_text_show_replacement_batch_with_font_registry(
 ) -> Result<StagedTextShowReplacementBatch, TextShowReplacementError> {
     stage_text_show_replacement_batch_internal(
         document,
+        source_objects,
         accumulated_objects,
         page_index,
         page_graph,
@@ -544,6 +565,7 @@ pub(crate) fn stage_text_show_replacement_batch(
     let page_index = page_index_for_batch(document, target_requests)?;
     stage_text_show_replacement_batch_with_page_index(
         document,
+        document,
         &page_index,
         page_graph,
         target_requests,
@@ -553,6 +575,7 @@ pub(crate) fn stage_text_show_replacement_batch(
 
 pub(crate) fn stage_text_show_replacement_batch_with_page_index(
     document: &Document,
+    source_objects: &dyn PdfObjectView,
     page_index: &PdfPageIndex,
     page_graph: &PageGraph,
     target_requests: &[TextShowReplacementTargetRequest],
@@ -560,6 +583,7 @@ pub(crate) fn stage_text_show_replacement_batch_with_page_index(
 ) -> Result<StagedTextShowReplacementBatch, TextShowReplacementError> {
     stage_text_show_replacement_batch_internal(
         document,
+        source_objects,
         document,
         page_index,
         page_graph,
@@ -584,6 +608,7 @@ fn page_index_for_batch(
 
 fn stage_text_show_replacement_batch_internal(
     document: &Document,
+    source_objects: &dyn PdfObjectView,
     accumulated_objects: &dyn PdfObjectView,
     page_index: &PdfPageIndex,
     page_graph: &PageGraph,
@@ -620,6 +645,7 @@ fn stage_text_show_replacement_batch_internal(
         }
         let target = plan_replacement_target(
             document,
+            source_objects,
             indexed_page,
             page_graph,
             &target_request.replacements,
@@ -682,7 +708,7 @@ fn stage_text_show_replacement_batch_internal(
         });
     }
     let staged_font_object_count = staged_fonts.iter().map(|font| font.objects.len()).sum();
-    let mut staged_targets = stage_replacement_streams(document, &planned_targets)?;
+    let mut staged_targets = stage_replacement_streams(source_objects, &planned_targets)?;
     let requires_copy_on_write = staged_targets
         .iter()
         .any(|target| target.requires_copy_on_write);
@@ -723,9 +749,9 @@ fn stage_text_show_replacement_batch_internal(
                 )?;
                 staged_streams.insert(target.key.stream_id, staged_stream);
             }
-            let staged_page = stage_translation_fonts_page_dictionary(
-                document,
-                page_id,
+            let page_context = PdfPageObjectContext::resolve(source_objects, indexed_page)?;
+            let staged_page = stage_translation_fonts_page_context(
+                &page_context,
                 resource_bindings
                     .iter()
                     .map(|binding| (binding.name.as_slice(), binding.object_id)),
@@ -856,8 +882,20 @@ struct StagedReplacementTarget {
     staged_stream: Option<lopdf::Stream>,
 }
 
+fn source_stream(
+    source_objects: &dyn PdfObjectView,
+    stream_id: ObjectId,
+) -> Result<lopdf::Stream, TextShowReplacementError> {
+    source_objects
+        .object(stream_id)?
+        .as_stream()
+        .cloned()
+        .map_err(|error| TextShowReplacementError::StreamRead(error.to_string()))
+}
+
 fn plan_replacement_target(
     document: &Document,
+    source_objects: &dyn PdfObjectView,
     indexed_page: &PdfIndexedPage,
     page_graph: &PageGraph,
     requests: &[TextShowReplacementRequest],
@@ -909,10 +947,7 @@ fn plan_replacement_target(
         content_stream_referencing_pages(document, stream_id).len() != 1
     };
 
-    let source_stream = document
-        .get_object(stream_id)
-        .and_then(Object::as_stream)
-        .map_err(|error| TextShowReplacementError::StreamRead(error.to_string()))?;
+    let source_stream = source_stream(source_objects, stream_id)?;
     let source_content = source_stream
         .get_plain_content()
         .map_err(|error| TextShowReplacementError::StreamRead(error.to_string()))?;
@@ -951,7 +986,7 @@ fn plan_replacement_target(
 }
 
 fn stage_replacement_streams(
-    document: &Document,
+    source_objects: &dyn PdfObjectView,
     planned_targets: &[PlannedReplacementTarget],
 ) -> Result<Vec<StagedReplacementTarget>, TextShowReplacementError> {
     let mut grouped = BTreeMap::<ReplacementTargetKey, Vec<&PlannedReplacementTarget>>::new();
@@ -961,10 +996,7 @@ fn stage_replacement_streams(
 
     let mut staged_targets = Vec::with_capacity(grouped.len());
     for (key, targets) in grouped {
-        let source_stream = document
-            .get_object(key.stream_id)
-            .and_then(Object::as_stream)
-            .map_err(|error| TextShowReplacementError::StreamRead(error.to_string()))?;
+        let source_stream = source_stream(source_objects, key.stream_id)?;
         let source_content = source_stream
             .get_plain_content()
             .map_err(|error| TextShowReplacementError::StreamRead(error.to_string()))?;
@@ -2851,6 +2883,7 @@ mod tests {
         let page_index = PdfPageIndex::resolve_page(&document, page_graph.page_number)
             .expect("selected page index");
         let staged_batch = stage_text_show_replacement_batch_with_font_registry(
+            &document,
             &document,
             &font_overlay,
             &page_index,

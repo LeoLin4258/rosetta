@@ -544,10 +544,11 @@ cache miss。它不复用 v1/v2 PDF page cache。
 - registry-aware page render 只能把已有 Type0 object ID 挂到 page/Form effective resources，
   `stagedFontObjectCount` 必须为 0。单页 cache artifact 路径继续独立 staging，以保持既有
   page-PDF byte contract；两种路径不得隐式共享可变 registry。
-- registry 只解决 document-wide font reuse 和输出体积。font allocation 与 registry binding
-  已接收 lazy `PdfObjectView`，但 page/resource/content renderer 仍依赖完整
-  `lopdf::Document`；在该 traversal 迁移完成前，不得把多页 registry render 宣称为
-  bounded-memory streaming export。
+- registry 只解决 document-wide font reuse 和输出体积。font allocation、registry binding、
+  selected page dictionary、inherited resources 与 target content-stream reads 已接收 lazy
+  `PdfObjectView`。跨页 stream/Form ownership discovery、Form invocation validation 与
+  copy-on-write resource path 仍依赖完整 `lopdf::Document`；在这些 traversal 迁移完成前，
+  不得把多页 registry render 宣称为 bounded-memory streaming export。
 
 ## PDF v3 Incremental Export Delta
 
@@ -578,21 +579,24 @@ source PDF + resolved `TranslationPatch` 仍是可重建依据。
   以免 revision 次数导致文件持续膨胀。
 - 当前 font registry 与 page staging 已从 accumulated source/overlay view 读取
   maximum/object identity；selected page number、page object ID 与 top-level `/Contents`
-  identity 由 immutable source 上的 `PdfPageIndex` 提供。page renderer 仍在完整
-  `lopdf::Document` 中读取 resource/content objects 并执行跨页 ownership discovery。
-  final export 不得把 staged delta apply 到该 source traversal document；production
-  scheduler 接入前必须完成剩余 lazy working-set 迁移。
+  identity 由 immutable source 上的 `PdfPageIndex` 提供。page dictionary、materialized
+  inherited resources 与 target content streams 由独立 immutable source view 提供。完整
+  `lopdf::Document` 只保留给跨页 stream/Form ownership discovery、Form invocation validation
+  与 copy-on-write resource traversal。final export 不得把 staged delta apply 到该 legacy
+  traversal document；production scheduler 接入前必须完成这些剩余 lazy working-set 迁移。
 
 `PdfObjectDelta` 是 renderer 与 incremental writer 之间唯一允许的 indirect-object 变更集合。
 
 - delta 保存按 object/generation 排序的 `lopdf::Object` map 和本次分配后的 maximum object
   number，不保存 source bytes、PageGraph、TranslationPatch 或用户可见文本副本。
 - font registry staging 接收 immutable `&dyn PdfObjectView` 并返回 delta；兼容 mutation API
-  只允许在 staging 成功后 apply。TranslationPatch page staging 当前同时接收 immutable
-  `&Document` source traversal、从 immutable source view 解析的 `&PdfPageIndex`，以及独立
-  `&dyn PdfObjectView` accumulated identity。page index 负责所选页 identity；accumulated
-  view 必须包含本次 export 已合并的 font/page delta，并负责 registry lookup 与新对象号预留。
-  预检、fit、copy-on-write 和 object allocation 全部成功前不得修改 source document。
+  只允许在 staging 成功后 apply。TranslationPatch page staging 当前同时接收三个职责分离的
+  read contracts：临时 `&Document` legacy ownership/Form traversal、immutable
+  `&dyn PdfObjectView` source objects，以及独立 `&dyn PdfObjectView` accumulated identity；
+  `PdfPageIndex` 也从同一个 immutable source identity 预先解析。source view 负责 selected page
+  dictionary、inherited resources 与 source streams；accumulated view 必须包含本次 export
+  已合并的 font/page delta，并负责 registry lookup 与新对象号预留。预检、fit、copy-on-write
+  和 object allocation 全部成功前不得修改 source document。
 - 多页 export accumulator 先合并 font delta，再按页合并 page delta。同一 object ID 的完全
   相同值可幂等合并；不同值、同一 object number 的多个 generation、无效 ID 或低于实际
   object ID 的 maximum 必须在 accumulator mutation 前拒绝。
@@ -602,10 +606,11 @@ source PDF + resolved `TranslationPatch` 仍是可重建依据。
 - delta 是 export session 的瞬时敏感内存，不写入 patch store 或普通诊断。结果只报告 object
   count、maximum object number 和已有 renderer 统计。
 - 当前多页 proof 直接基于 lazy source 分配 document font objects，并复用同一个 selected
-  `PdfPageIndex`，让每页读取 immutable source `Document` 与 `source + accumulated delta`
-  overlay。font/page delta 不再 apply 到完整 document；下一阶段必须继续把 inherited
-  resources、content decode 与 ownership discovery 迁移到 bounded lazy traversal，才能移除
-  完整 document ownership。
+  `PdfPageIndex`。每页通过 immutable source view 读取 page dictionary、materialized inherited
+  resources 与 target streams，通过 `source + accumulated delta` overlay 读取 registry identity
+  与 allocation maximum。font/page delta 不再 apply 到完整 document；下一阶段必须继续把
+  Form invocation/COW resource traversal 与 global ownership discovery 迁移到 bounded lazy
+  traversal，才能移除完整 document ownership。
 - 同一 export revision 的每个 page 只能 staging 一次。accumulated overlay 当前只为 page
   renderer 提供 maximum 与 registry object identity，不让同一页的后续 staging 隐式读取前次
   page dictionary/content delta；重复 page/object mutation 必须由 delta merge conflict 拒绝。
@@ -640,11 +645,20 @@ job schema。
   从 immutable lazy source 为整个明确 `PageSet` 构造一次 index，并在各页 staging 间复用。
   index、PageGraph、temporary traversal document 与 accumulated overlay 必须属于同一个 immutable
   source identity，不允许把不同 PDF 的 object IDs 组合成一次 staging。
+- transient `PdfPageObjectContext` 只从 immutable source view 与一个 `PdfIndexedPage` 解析 exact
+  page dictionary 和 effective inherited `/Resources`。它从 page 向 ancestor chain 查找直接或
+  indirect resources，最远 ancestor 先合并、最近 scope 后覆盖，并把 resource category 中的
+  indirect dictionary materialize 成 owned dictionary。reference chain 最多 64 层；cycle、错误
+  page type、非 dictionary resources 与冲突 category 都必须返回 typed failure。
+- `PdfPageObjectContext` 是一次 page staging 的 owned snapshot，不进入 durable job schema，也不
+  持有 source store borrow。non-COW page font binding 必须在该 snapshot 上 clone page/resources，
+  不能重新调用 `Document` inherited-resource helper。
 - production font registry staging、binding 与 page clone allocation 已消费
-  `PdfObjectView`，selected page identity 已消费 `PdfPageIndex`。新 Type0 object 可完全从
-  delta overlay 校验，Form/page clone ID 从 accumulated maximum 之后分配。只有 renderer 的
-  resource/content traversal 与 cross-page ownership discovery 全部改为 lazy view 后，才可声明
-  export 端到端 bounded-memory。
+  `PdfObjectView`，selected page identity 已消费 `PdfPageIndex`，selected page resource/content
+  reads 已消费 `PdfPageObjectContext`/source view。新 Type0 object 可完全从 delta overlay 校验，
+  Form/page clone ID 从 accumulated maximum 之后分配。只有 renderer 的 Form traversal 与
+  cross-page ownership discovery 全部改为 lazy view 后，才可声明 export 端到端
+  bounded-memory。
 
 ## PDF v3 Content Operand Patch
 

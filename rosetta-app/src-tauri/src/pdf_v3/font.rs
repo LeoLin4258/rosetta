@@ -13,6 +13,7 @@ use ttf_parser::{Face, GlyphId, Permissions};
 
 use super::{
     object_delta::{PdfObjectDelta, PdfObjectDeltaError},
+    page_context::PdfPageObjectContext,
     source_object::{PdfObjectView, PdfSourceObjectError},
 };
 
@@ -769,13 +770,39 @@ pub(crate) fn stage_translation_fonts_page_dictionary<'a>(
     page_id: ObjectId,
     fonts_to_attach: impl IntoIterator<Item = (&'a [u8], ObjectId)>,
 ) -> Result<Dictionary, TranslationFontError> {
-    let mut resources = materialize_page_resources(document, page_id)?;
-    let mut fonts = resources
-        .get(b"Font")
-        .ok()
-        .and_then(|object| dereference_dictionary(object, document))
-        .cloned()
-        .unwrap_or_default();
+    let resources = materialize_page_resources(document, page_id)?;
+    let page = document.get_dictionary(page_id).cloned().map_err(|error| {
+        TranslationFontError::PageResources(format!(
+            "failed to clone page dictionary for font resources: {error}"
+        ))
+    })?;
+    stage_translation_fonts_materialized_page(page, resources, fonts_to_attach)
+}
+
+pub(crate) fn stage_translation_fonts_page_context<'a>(
+    context: &PdfPageObjectContext,
+    fonts_to_attach: impl IntoIterator<Item = (&'a [u8], ObjectId)>,
+) -> Result<Dictionary, TranslationFontError> {
+    stage_translation_fonts_materialized_page(
+        context.page_dictionary().clone(),
+        context.resources().clone(),
+        fonts_to_attach,
+    )
+}
+
+fn stage_translation_fonts_materialized_page<'a>(
+    mut page: Dictionary,
+    mut resources: Dictionary,
+    fonts_to_attach: impl IntoIterator<Item = (&'a [u8], ObjectId)>,
+) -> Result<Dictionary, TranslationFontError> {
+    let mut fonts = match resources.get(b"Font") {
+        Ok(object) => object.as_dict().cloned().map_err(|_| {
+            TranslationFontError::PageResources(
+                "materialized page /Font resources are not a dictionary".to_string(),
+            )
+        })?,
+        Err(_) => Dictionary::new(),
+    };
     for (resource_name, type0_font_id) in fonts_to_attach {
         if let Ok(existing) = fonts.get(resource_name) {
             if existing.as_reference().ok() != Some(type0_font_id) {
@@ -789,11 +816,6 @@ pub(crate) fn stage_translation_fonts_page_dictionary<'a>(
         }
     }
     resources.set("Font", Object::Dictionary(fonts));
-    let mut page = document.get_dictionary(page_id).cloned().map_err(|error| {
-        TranslationFontError::PageResources(format!(
-            "failed to clone page dictionary for font resources: {error}"
-        ))
-    })?;
     page.set("Resources", Object::Dictionary(resources));
     Ok(page)
 }

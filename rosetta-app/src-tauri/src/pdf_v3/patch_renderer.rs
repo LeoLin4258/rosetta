@@ -167,6 +167,7 @@ pub(crate) fn render_translation_patch(
     let staged = stage_translation_patch_internal(
         document,
         document,
+        document,
         &page_index,
         page,
         patch,
@@ -190,6 +191,7 @@ pub(crate) fn render_translation_patch_with_font_registry(
     let staged = stage_translation_patch_internal(
         document,
         document,
+        document,
         &page_index,
         page,
         patch,
@@ -203,6 +205,7 @@ pub(crate) fn render_translation_patch_with_font_registry(
 
 pub(crate) fn stage_translation_patch_with_font_registry(
     document: &Document,
+    source_objects: &dyn PdfObjectView,
     accumulated_objects: &dyn PdfObjectView,
     page_index: &PdfPageIndex,
     page: &PageGraph,
@@ -213,6 +216,7 @@ pub(crate) fn stage_translation_patch_with_font_registry(
 ) -> Result<StagedTranslationPatchRender, TranslationPatchRenderError> {
     stage_translation_patch_internal(
         document,
+        source_objects,
         accumulated_objects,
         page_index,
         page,
@@ -225,6 +229,7 @@ pub(crate) fn stage_translation_patch_with_font_registry(
 
 fn stage_translation_patch_internal(
     document: &Document,
+    source_objects: &dyn PdfObjectView,
     accumulated_objects: &dyn PdfObjectView,
     page_index: &PdfPageIndex,
     page: &PageGraph,
@@ -271,20 +276,21 @@ fn stage_translation_patch_internal(
             entry_id: entry.entry_id.clone(),
             request,
         };
-        let identity = match text_show_replacement_target_identity(document, &renderable.request) {
-            Ok(identity) => identity,
-            Err(error) => {
-                if let Some(reason_code) = preservation_reason(&error) {
-                    preserve_entries(
-                        &mut decisions,
-                        std::slice::from_ref(&renderable),
-                        reason_code,
-                    );
-                    continue;
+        let identity =
+            match text_show_replacement_target_identity(source_objects, &renderable.request) {
+                Ok(identity) => identity,
+                Err(error) => {
+                    if let Some(reason_code) = preservation_reason(&error) {
+                        preserve_entries(
+                            &mut decisions,
+                            std::slice::from_ref(&renderable),
+                            reason_code,
+                        );
+                        continue;
+                    }
+                    return Err(error.into());
                 }
-                return Err(error.into());
-            }
-        };
+            };
         grouped.entry(identity).or_default().push(renderable);
     }
 
@@ -303,7 +309,12 @@ fn stage_translation_patch_internal(
             .map(|entry| entry.request.clone())
             .collect::<Vec<_>>();
         let preflight = match preflight_text_show_replacement_transaction_with_page_index(
-            document, page_index, page, &requests, fonts,
+            document,
+            source_objects,
+            page_index,
+            page,
+            &requests,
+            fonts,
         ) {
             Ok(preflight) => preflight,
             Err(error) => {
@@ -375,6 +386,7 @@ fn stage_translation_patch_internal(
         let staged = if let Some(registry) = font_registry {
             stage_text_show_replacement_batch_with_font_registry(
                 document,
+                source_objects,
                 accumulated_objects,
                 page_index,
                 page,
@@ -384,7 +396,12 @@ fn stage_translation_patch_internal(
             )?
         } else {
             stage_text_show_replacement_batch_with_page_index(
-                document, page_index, page, &targets, fonts,
+                document,
+                source_objects,
+                page_index,
+                page,
+                &targets,
+                fonts,
             )?
         };
         (Some(staged.result), staged.object_delta)
@@ -1182,6 +1199,7 @@ mod tests {
             object_delta: first_delta,
         } = stage_translation_patch_with_font_registry(
             &source_document,
+            &source_objects,
             &first_overlay,
             &page_index,
             &first_page,
@@ -1201,6 +1219,7 @@ mod tests {
             object_delta: second_delta,
         } = stage_translation_patch_with_font_registry(
             &source_document,
+            &source_objects,
             &second_overlay,
             &page_index,
             &second_page,
@@ -1213,6 +1232,19 @@ mod tests {
         export_delta
             .merge(second_delta)
             .expect("merge second page delta");
+        let lazy_stats = source_objects
+            .cache_stats()
+            .expect("lazy source cache stats");
+        println!(
+            "pdf-v3 lazy page staging sourceLoads={} cacheHits={} residentEntries={} residentBytes={}",
+            lazy_stats.source_loads,
+            lazy_stats.cache_hits,
+            lazy_stats.resident_entries,
+            lazy_stats.resident_bytes,
+        );
+        assert!(lazy_stats.source_loads <= 32);
+        assert!(lazy_stats.resident_entries <= 32);
+        assert!(lazy_stats.resident_bytes <= 16 * 1024 * 1024);
         assert_eq!(
             first
                 .batch
@@ -1508,6 +1540,7 @@ mod tests {
         let page_index =
             PdfPageIndex::resolve_page(&document, page.page_number).expect("selected page index");
         let staged = stage_translation_patch_with_font_registry(
+            &document,
             &document,
             &accumulated,
             &page_index,

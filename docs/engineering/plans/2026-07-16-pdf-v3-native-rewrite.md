@@ -205,10 +205,14 @@ Current progress:
   source view. It records only the explicit `PageSet`, skips unrelated page-tree
   subtrees by `/Count`, and supplies page/content-root IDs to replacement
   preflight and staging without `Document::get_pages()`.
+- Selected-page dictionaries and inherited resources now come from an owned
+  `PdfPageObjectContext`, while target identity, preflight decode and staged
+  content-stream reads use the immutable lazy source view. The real two-page
+  proof loads 12 source objects and retains 28,712 estimated bytes.
 - The current incremental two-page proof remains 1,617,258 bytes from a
   1,590,242-byte source: 27,016 appended bytes and 10 delta objects. Page 1 and
   2 changes remain confined to their translated footer rows and page 3 is
-  pixel-exact. Inherited resources, content decode and cross-page ownership
+  pixel-exact. Form invocation/COW resource traversal and global ownership
   discovery are still the next lazy-view migration boundary.
 
 ## Purpose
@@ -558,11 +562,20 @@ object allocation already use the accumulated lazy overlay. A selected-page
 `PdfPageIndex` now resolves page count, page object identity, page-tree ancestry
 and direct content-stream references through `PdfObjectView`, skips unselected
 subtrees by `/Count`, and is reused across the real multi-page staging proof.
-Replacement preflight and page staging no longer call `Document::get_pages()`
-or enumerate selected-page `/Contents`. Inherited resources, stream decoding and
-global cross-page ownership discovery still use the complete immutable
-`Document`; until those migrate to bounded lazy traversal, renderer memory
-remains unbounded by source object count.
+`PdfPageObjectContext` resolves the exact page dictionary and materializes
+inherited resources through that same immutable source view. Replacement
+identity, preflight, decode and staged stream reads also use the lazy source
+view, so selected-page staging no longer depends on `Document::get_pages()`,
+selected-page resource helpers or complete-document source stream reads. The
+real two-page proof loads 12 source objects and keeps 12 cache entries / 28,712
+estimated bytes resident under explicit ceilings.
+
+Global cross-page stream/Form ownership discovery, Form invocation validation
+and copy-on-write resource traversal still use the complete immutable
+`Document`. The next Phase 4 slice must move those Form contexts onto owned lazy
+resource views; global ownership discovery is the final major complete-document
+boundary. Until both migrate, renderer memory remains unbounded by source
+object count.
 
 ### Phase 5 — Translation and protected spans
 
