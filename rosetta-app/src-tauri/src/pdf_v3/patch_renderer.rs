@@ -8,15 +8,17 @@ use lopdf::{Document, Object};
 use super::{
     font::{DocumentTranslationFontRegistry, PreparedTranslationFont},
     layout::TextShowGeometryKey,
+    object_delta::PdfObjectDelta,
     render_cache::{
         RenderCache, RenderCacheError, RenderCacheInsertOutcome, RenderCacheKey,
         RenderCacheOptions, RenderCacheOutputKind,
     },
     replacement::{
-        apply_text_show_replacement_batch, apply_text_show_replacement_batch_with_font_registry,
-        preflight_text_show_replacement_transaction, text_show_replacement_target_identity,
-        TextShowReplacementBatchResult, TextShowReplacementError, TextShowReplacementRequest,
-        TextShowReplacementTargetIdentity, TextShowReplacementTargetRequest,
+        preflight_text_show_replacement_transaction, stage_text_show_replacement_batch,
+        stage_text_show_replacement_batch_with_font_registry,
+        text_show_replacement_target_identity, TextShowReplacementBatchResult,
+        TextShowReplacementError, TextShowReplacementRequest, TextShowReplacementTargetIdentity,
+        TextShowReplacementTargetRequest,
     },
     translation_patch::{
         ensure_translation_patch_renderer_resolved, resolve_translation_patch_renderer_decisions,
@@ -54,6 +56,12 @@ pub(crate) struct TranslationPatchRenderResult {
     pub batch: Option<TextShowReplacementBatchResult>,
     pub fitted_entry_count: usize,
     pub preserved_entry_count: usize,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct StagedTranslationPatchRender {
+    pub render: TranslationPatchRenderResult,
+    pub object_delta: PdfObjectDelta,
 }
 
 #[derive(Debug, Clone)]
@@ -153,7 +161,9 @@ pub(crate) fn render_translation_patch(
     fonts: &[&PreparedTranslationFont],
     policy: TranslationPatchRenderPolicy,
 ) -> Result<TranslationPatchRenderResult, TranslationPatchRenderError> {
-    render_translation_patch_internal(document, page, patch, fonts, policy, None)
+    let staged = stage_translation_patch_internal(document, page, patch, fonts, policy, None)?;
+    staged.object_delta.apply_to(document);
+    Ok(staged.render)
 }
 
 pub(crate) fn render_translation_patch_with_font_registry(
@@ -164,17 +174,37 @@ pub(crate) fn render_translation_patch_with_font_registry(
     policy: TranslationPatchRenderPolicy,
     font_registry: &DocumentTranslationFontRegistry,
 ) -> Result<TranslationPatchRenderResult, TranslationPatchRenderError> {
-    render_translation_patch_internal(document, page, patch, fonts, policy, Some(font_registry))
+    let staged = stage_translation_patch_internal(
+        document,
+        page,
+        patch,
+        fonts,
+        policy,
+        Some(font_registry),
+    )?;
+    staged.object_delta.apply_to(document);
+    Ok(staged.render)
 }
 
-fn render_translation_patch_internal(
-    document: &mut Document,
+pub(crate) fn stage_translation_patch_with_font_registry(
+    document: &Document,
+    page: &PageGraph,
+    patch: &TranslationPatch,
+    fonts: &[&PreparedTranslationFont],
+    policy: TranslationPatchRenderPolicy,
+    font_registry: &DocumentTranslationFontRegistry,
+) -> Result<StagedTranslationPatchRender, TranslationPatchRenderError> {
+    stage_translation_patch_internal(document, page, patch, fonts, policy, Some(font_registry))
+}
+
+fn stage_translation_patch_internal(
+    document: &Document,
     page: &PageGraph,
     patch: &TranslationPatch,
     fonts: &[&PreparedTranslationFont],
     policy: TranslationPatchRenderPolicy,
     font_registry: Option<&DocumentTranslationFontRegistry>,
-) -> Result<TranslationPatchRenderResult, TranslationPatchRenderError> {
+) -> Result<StagedTranslationPatchRender, TranslationPatchRenderError> {
     if !policy.minimum_fit_scale.is_finite() || !(0.0..=1.0).contains(&policy.minimum_fit_scale) {
         return Err(TranslationPatchRenderError::InvalidPolicy);
     }
@@ -307,16 +337,17 @@ fn render_translation_patch_internal(
         }
         patch.clone()
     };
-    let batch = if targets.is_empty() {
-        None
+    let (batch, object_delta) = if targets.is_empty() {
+        (None, PdfObjectDelta::empty(document.max_id))
     } else {
-        Some(if let Some(registry) = font_registry {
-            apply_text_show_replacement_batch_with_font_registry(
+        let staged = if let Some(registry) = font_registry {
+            stage_text_show_replacement_batch_with_font_registry(
                 document, page, &targets, fonts, registry,
             )?
         } else {
-            apply_text_show_replacement_batch(document, page, &targets, fonts)?
-        })
+            stage_text_show_replacement_batch(document, page, &targets, fonts)?
+        };
+        (Some(staged.result), staged.object_delta)
     };
     let fitted_entry_count = resolved_patch
         .entries
@@ -329,11 +360,14 @@ fn render_translation_patch_internal(
         })
         .count();
     let preserved_entry_count = resolved_patch.entries.len() - fitted_entry_count;
-    Ok(TranslationPatchRenderResult {
-        resolved_patch,
-        batch,
-        fitted_entry_count,
-        preserved_entry_count,
+    Ok(StagedTranslationPatchRender {
+        render: TranslationPatchRenderResult {
+            resolved_patch,
+            batch,
+            fitted_entry_count,
+            preserved_entry_count,
+        },
+        object_delta,
     })
 }
 
@@ -662,16 +696,18 @@ mod tests {
 
     use super::{
         insert_translation_patch_page_pdf_cache, open_translation_patch_page_pdf_cache,
-        render_translation_patch, render_translation_patch_page_pdf,
-        render_translation_patch_with_font_registry, request_for_entry, source_object_atoms,
-        translation_patch_page_pdf_cache_key, TranslationPatchRenderError,
-        TranslationPatchRenderPolicy, TRANSLATION_PATCH_RENDERER_VERSION,
+        render_translation_patch, render_translation_patch_page_pdf, request_for_entry,
+        source_object_atoms, stage_translation_patch_with_font_registry,
+        translation_patch_page_pdf_cache_key, StagedTranslationPatchRender,
+        TranslationPatchRenderError, TranslationPatchRenderPolicy,
+        TRANSLATION_PATCH_RENDERER_VERSION,
     };
     use crate::{
         pdf_v3::{
             font::{
-                stage_document_translation_fonts, PreparedTranslationFont, TranslationFontAsset,
-                TranslationFontWeight, UnifiedTranslationFontPlan,
+                stage_document_translation_font_registry, PreparedTranslationFont,
+                StagedDocumentTranslationFonts, TranslationFontAsset, TranslationFontWeight,
+                UnifiedTranslationFontPlan,
             },
             identity::{compare_images, render_page},
             incremental_export::{
@@ -1074,28 +1110,48 @@ mod tests {
             first_renderable_patch(&document, &first_page, &prepared, translations[0]);
         let second_patch =
             first_renderable_patch(&document, &second_page, &prepared, translations[1]);
-        let registry = stage_document_translation_fonts(&mut document, &[&prepared])
-            .expect("document font registry");
+        let StagedDocumentTranslationFonts {
+            registry,
+            object_delta: mut export_delta,
+        } = stage_document_translation_font_registry(&document, &[&prepared])
+            .expect("staged document font registry");
+        assert_eq!(export_delta.object_count(), 6);
+        export_delta.apply_to(&mut document);
         assert_eq!(registry.font_count(), 1);
 
-        let first = render_translation_patch_with_font_registry(
-            &mut document,
+        let StagedTranslationPatchRender {
+            render: first,
+            object_delta: first_delta,
+        } = stage_translation_patch_with_font_registry(
+            &document,
             &first_page,
             &first_patch,
             &[&prepared],
             TranslationPatchRenderPolicy::default(),
             &registry,
         )
-        .expect("first page render");
-        let second = render_translation_patch_with_font_registry(
-            &mut document,
+        .expect("first page stage");
+        first_delta.apply_to(&mut document);
+        export_delta
+            .merge(first_delta)
+            .expect("merge first page delta");
+
+        let StagedTranslationPatchRender {
+            render: second,
+            object_delta: second_delta,
+        } = stage_translation_patch_with_font_registry(
+            &document,
             &second_page,
             &second_patch,
             &[&prepared],
             TranslationPatchRenderPolicy::default(),
             &registry,
         )
-        .expect("second page render");
+        .expect("second page stage");
+        second_delta.apply_to(&mut document);
+        export_delta
+            .merge(second_delta)
+            .expect("merge second page delta");
         assert_eq!(
             first
                 .batch
@@ -1128,13 +1184,7 @@ mod tests {
             .count();
         assert_eq!(matching_type0_fonts, 1);
 
-        let delta = document
-            .objects
-            .iter()
-            .filter(|(object_id, object)| source_document.objects.get(object_id) != Some(*object))
-            .map(|(object_id, object)| (*object_id, object.clone()))
-            .collect::<BTreeMap<_, _>>();
-        assert!(!delta.is_empty());
+        assert_eq!(export_delta.object_count(), 10);
         let base = IncrementalExportBase::from_document(
             fingerprint(&source),
             source.len() as u64,
@@ -1147,7 +1197,7 @@ mod tests {
             &source_path,
             &output_path,
             &base,
-            &delta,
+            &export_delta,
             &IncrementalExportCancellation::default(),
         )
         .expect("incremental document export");

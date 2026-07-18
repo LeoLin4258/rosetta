@@ -515,9 +515,11 @@ buffer, appends only changed objects and a new xref/trailer, supports
 cancellation before commit, and atomically replaces the destination after file
 sync. The writer no longer owns source bytes or the previous object graph. The
 current renderer still mutates a complete `lopdf::Document`, however; a lazy
-object reader, explicit renderer delta staging, scheduler recovery and stress
-validation remain pending before export is genuinely end-to-end bounded-memory
-and streaming.
+object reader, scheduler recovery and stress validation remain pending before
+export is genuinely end-to-end bounded-memory and streaming. Font registry and
+page renderer mutation are now explicitly staged as merge-checked
+`PdfObjectDelta` values, and the incremental writer consumes that delta directly;
+whole-object-graph comparison is no longer part of the export path.
 
 ### Phase 5 — Translation and protected spans
 

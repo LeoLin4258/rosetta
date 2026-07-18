@@ -14,6 +14,8 @@ use lopdf::{Dictionary, Document, Object, ObjectId, StringFormat};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
+use super::object_delta::PdfObjectDelta;
+
 const SOURCE_COPY_BUFFER_BYTES: usize = 64 * 1024;
 const MAX_CLASSIC_XREF_OFFSET: u64 = u32::MAX as u64;
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -180,12 +182,13 @@ pub(crate) fn export_incremental_pdf_atomic(
     source_path: impl AsRef<Path>,
     destination_path: impl AsRef<Path>,
     base: &IncrementalExportBase,
-    delta_objects: &BTreeMap<ObjectId, Object>,
+    delta: &PdfObjectDelta,
     cancellation: &IncrementalExportCancellation,
 ) -> Result<IncrementalExportResult, IncrementalExportError> {
     let source_path = source_path.as_ref();
     let destination_path = destination_path.as_ref();
     validate_paths(source_path, destination_path)?;
+    let delta_objects = delta.objects();
     validate_delta(delta_objects)?;
     check_cancelled(cancellation)?;
 
@@ -251,8 +254,9 @@ pub(crate) fn export_incremental_pdf_atomic(
     write_xref_sections(&mut output, &xref_entries)
         .map_err(|error| io_error("write temporary", &temp_path, error))?;
 
-    let delta_maximum = delta_objects.keys().map(|id| id.0).max().unwrap_or(0);
-    let maximum_object_number = base.maximum_object_number.max(delta_maximum);
+    let maximum_object_number = base
+        .maximum_object_number
+        .max(delta.maximum_object_number());
     let trailer = incremental_trailer(base, maximum_object_number)?;
     output
         .write_all(b"trailer\n")
@@ -284,7 +288,7 @@ pub(crate) fn export_incremental_pdf_atomic(
         source_bytes: copied_bytes,
         appended_bytes: output_bytes.saturating_sub(copied_bytes),
         output_bytes,
-        delta_object_count: delta_objects.len(),
+        delta_object_count: delta.object_count(),
         previous_xref_offset: base.previous_xref_offset,
         output_xref_offset,
         source_copy_buffer_bytes: SOURCE_COPY_BUFFER_BYTES,
@@ -692,6 +696,7 @@ mod tests {
         export_incremental_pdf_atomic, IncrementalExportBase, IncrementalExportCancellation,
         IncrementalExportError, SOURCE_COPY_BUFFER_BYTES,
     };
+    use crate::pdf_v3::object_delta::PdfObjectDelta;
     use crate::rosetta_jobs::formats::pdf::test_helpers::fixture_path;
 
     #[test]
@@ -720,7 +725,11 @@ mod tests {
             "Producer",
             Object::string_literal("Rosetta incremental export"),
         );
-        let delta = BTreeMap::from([(info_id, Object::Dictionary(info))]);
+        let delta = PdfObjectDelta::try_from_objects(
+            BTreeMap::from([(info_id, Object::Dictionary(info))]),
+            source_document.max_id,
+        )
+        .expect("Info delta");
         let destination = directory.path().join("translated.pdf");
         fs::write(&destination, b"previous complete export").expect("previous destination");
 
@@ -767,10 +776,15 @@ mod tests {
             &source_document,
         )
         .expect("export base");
-        let delta = BTreeMap::from([(
-            (source_document.max_id + 1, 0),
-            Object::string_literal("unused delta"),
-        )]);
+        let delta_object_number = source_document.max_id + 1;
+        let delta = PdfObjectDelta::try_from_objects(
+            BTreeMap::from([(
+                (delta_object_number, 0),
+                Object::string_literal("unused delta"),
+            )]),
+            delta_object_number,
+        )
+        .expect("unused delta");
         let destination = directory.path().join("translated.pdf");
         let previous = b"previous complete export";
         fs::write(&destination, previous).expect("previous destination");

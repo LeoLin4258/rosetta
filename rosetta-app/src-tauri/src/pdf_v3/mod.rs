@@ -8,6 +8,7 @@ pub(crate) mod identity;
 pub(crate) mod incremental_export;
 pub(crate) mod layout;
 pub(crate) mod mapping;
+pub(crate) mod object_delta;
 pub(crate) mod page_set;
 pub(crate) mod patch;
 pub(crate) mod patch_renderer;

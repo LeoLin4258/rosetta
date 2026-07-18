@@ -11,6 +11,8 @@ use sha2::{Digest, Sha256};
 use subsetter::{subset, GlyphRemapper};
 use ttf_parser::{Face, GlyphId, Permissions};
 
+use super::object_delta::{PdfObjectDelta, PdfObjectDeltaError};
+
 pub(crate) const SOURCE_HAN_SANS_CN_REGULAR: &str = "SourceHanSansCN-Regular.ttf";
 pub(crate) const SOURCE_HAN_SANS_CN_BOLD: &str = "SourceHanSansCN-Bold.ttf";
 pub(crate) const GO_NOTO_KURRENT_REGULAR: &str = "GoNotoKurrent-Regular.ttf";
@@ -74,6 +76,7 @@ pub(crate) enum TranslationFontError {
     ObjectIdOverflow,
     PageResources(String),
     Content(String),
+    ObjectDelta(PdfObjectDeltaError),
 }
 
 impl fmt::Display for TranslationFontError {
@@ -84,6 +87,7 @@ impl fmt::Display for TranslationFontError {
             | Self::Subset(message)
             | Self::PageResources(message)
             | Self::Content(message) => formatter.write_str(message),
+            Self::ObjectDelta(error) => error.fmt(formatter),
             Self::EmbeddingRestricted => {
                 formatter.write_str("translation font does not permit outline embedding")
             }
@@ -130,6 +134,12 @@ impl fmt::Display for TranslationFontError {
 }
 
 impl std::error::Error for TranslationFontError {}
+
+impl From<PdfObjectDeltaError> for TranslationFontError {
+    fn from(value: PdfObjectDeltaError) -> Self {
+        Self::ObjectDelta(value)
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct TranslationFontAsset {
@@ -393,6 +403,12 @@ pub(crate) struct DocumentTranslationFontRegistry {
     fonts: BTreeMap<TranslationFontWeight, DocumentTranslationFontResource>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct StagedDocumentTranslationFonts {
+    pub registry: DocumentTranslationFontRegistry,
+    pub object_delta: PdfObjectDelta,
+}
+
 impl DocumentTranslationFontRegistry {
     pub(crate) fn font_count(&self) -> usize {
         self.fonts.len()
@@ -439,6 +455,15 @@ pub(crate) fn stage_document_translation_fonts(
     document: &mut Document,
     fonts: &[&PreparedTranslationFont],
 ) -> Result<DocumentTranslationFontRegistry, TranslationFontError> {
+    let staged = stage_document_translation_font_registry(document, fonts)?;
+    staged.object_delta.apply_to(document);
+    Ok(staged.registry)
+}
+
+pub(crate) fn stage_document_translation_font_registry(
+    document: &Document,
+    fonts: &[&PreparedTranslationFont],
+) -> Result<StagedDocumentTranslationFonts, TranslationFontError> {
     let mut fonts_by_weight = BTreeMap::new();
     for font in fonts {
         if fonts_by_weight.insert(font.weight(), *font).is_some() {
@@ -469,10 +494,22 @@ pub(crate) fn stage_document_translation_fonts(
         staged_fonts.push(staged);
     }
 
+    let mut objects = BTreeMap::new();
     for staged in staged_fonts {
-        staged.commit(document);
+        for (object_id, object) in staged.objects {
+            if objects.insert(object_id, object).is_some() {
+                return Err(TranslationFontError::Content(format!(
+                    "staged document font object {} {} is duplicated",
+                    object_id.0, object_id.1
+                )));
+            }
+        }
     }
-    Ok(registry)
+    let object_delta = PdfObjectDelta::try_from_objects(objects, reserved_through)?;
+    Ok(StagedDocumentTranslationFonts {
+        registry,
+        object_delta,
+    })
 }
 
 pub(crate) fn translation_font_resource_name(weight: TranslationFontWeight) -> &'static [u8] {

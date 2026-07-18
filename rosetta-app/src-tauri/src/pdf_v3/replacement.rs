@@ -15,6 +15,7 @@ use super::font::{
 };
 use super::{
     layout::{derive_text_show_fit_bounds, TextShowFitBoundsError, TextShowGeometryKey},
+    object_delta::{PdfObjectDelta, PdfObjectDeltaError},
     patch::{
         stage_invocation_local_copy_on_write_batch, ContentPatchError,
         InvocationLocalCopyOnWriteTarget, ResourceReferenceBinding,
@@ -130,12 +131,19 @@ pub(crate) struct TextShowReplacementBatchResult {
     pub targets: Vec<TextShowReplacementBatchTargetResult>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct StagedTextShowReplacementBatch {
+    pub result: TextShowReplacementBatchResult,
+    pub object_delta: PdfObjectDelta,
+}
+
 #[derive(Debug)]
 pub(crate) enum TextShowReplacementError {
     Font(TranslationFontError),
     FitBounds(TextShowFitBoundsError),
     Patch(ContentPatchError),
     Style(TextShowStyleError),
+    ObjectDelta(PdfObjectDeltaError),
     MissingTranslationFontFace(TranslationFontWeight),
     DuplicateTranslationFontFace(TranslationFontWeight),
     PageOutOfBounds {
@@ -178,6 +186,7 @@ impl fmt::Display for TextShowReplacementError {
             Self::FitBounds(error) => error.fmt(formatter),
             Self::Patch(error) => error.fmt(formatter),
             Self::Style(error) => error.fmt(formatter),
+            Self::ObjectDelta(error) => error.fmt(formatter),
             Self::MissingTranslationFontFace(weight) => {
                 write!(
                     formatter,
@@ -271,6 +280,12 @@ impl From<ContentPatchError> for TextShowReplacementError {
 impl From<TextShowStyleError> for TextShowReplacementError {
     fn from(value: TextShowStyleError) -> Self {
         Self::Style(value)
+    }
+}
+
+impl From<PdfObjectDeltaError> for TextShowReplacementError {
+    fn from(value: PdfObjectDeltaError) -> Self {
+        Self::ObjectDelta(value)
     }
 }
 
@@ -437,7 +452,15 @@ pub(crate) fn apply_text_show_replacement_batch(
     target_requests: &[TextShowReplacementTargetRequest],
     fonts: &[&PreparedTranslationFont],
 ) -> Result<TextShowReplacementBatchResult, TextShowReplacementError> {
-    apply_text_show_replacement_batch_internal(document, page_graph, target_requests, fonts, None)
+    let staged = stage_text_show_replacement_batch_internal(
+        document,
+        page_graph,
+        target_requests,
+        fonts,
+        None,
+    )?;
+    staged.object_delta.apply_to(document);
+    Ok(staged.result)
 }
 
 pub(crate) fn apply_text_show_replacement_batch_with_font_registry(
@@ -447,7 +470,25 @@ pub(crate) fn apply_text_show_replacement_batch_with_font_registry(
     fonts: &[&PreparedTranslationFont],
     font_registry: &DocumentTranslationFontRegistry,
 ) -> Result<TextShowReplacementBatchResult, TextShowReplacementError> {
-    apply_text_show_replacement_batch_internal(
+    let staged = stage_text_show_replacement_batch_internal(
+        document,
+        page_graph,
+        target_requests,
+        fonts,
+        Some(font_registry),
+    )?;
+    staged.object_delta.apply_to(document);
+    Ok(staged.result)
+}
+
+pub(crate) fn stage_text_show_replacement_batch_with_font_registry(
+    document: &Document,
+    page_graph: &PageGraph,
+    target_requests: &[TextShowReplacementTargetRequest],
+    fonts: &[&PreparedTranslationFont],
+    font_registry: &DocumentTranslationFontRegistry,
+) -> Result<StagedTextShowReplacementBatch, TextShowReplacementError> {
+    stage_text_show_replacement_batch_internal(
         document,
         page_graph,
         target_requests,
@@ -456,13 +497,22 @@ pub(crate) fn apply_text_show_replacement_batch_with_font_registry(
     )
 }
 
-fn apply_text_show_replacement_batch_internal(
-    document: &mut Document,
+pub(crate) fn stage_text_show_replacement_batch(
+    document: &Document,
+    page_graph: &PageGraph,
+    target_requests: &[TextShowReplacementTargetRequest],
+    fonts: &[&PreparedTranslationFont],
+) -> Result<StagedTextShowReplacementBatch, TextShowReplacementError> {
+    stage_text_show_replacement_batch_internal(document, page_graph, target_requests, fonts, None)
+}
+
+fn stage_text_show_replacement_batch_internal(
+    document: &Document,
     page_graph: &PageGraph,
     target_requests: &[TextShowReplacementTargetRequest],
     fonts: &[&PreparedTranslationFont],
     font_registry: Option<&DocumentTranslationFontRegistry>,
-) -> Result<TextShowReplacementBatchResult, TextShowReplacementError> {
+) -> Result<StagedTextShowReplacementBatch, TextShowReplacementError> {
     let started = Instant::now();
     let first_request = target_requests
         .first()
@@ -606,20 +656,38 @@ fn apply_text_show_replacement_batch_internal(
             (staged_streams, staged_page, 0, false)
         };
 
+    let mut delta_objects = BTreeMap::new();
     for staged_font in staged_fonts {
         for (object_id, object) in staged_font.objects {
-            document.objects.insert(object_id, object);
+            if delta_objects.insert(object_id, object).is_some() {
+                return Err(TextShowReplacementError::SourceIdentityMismatch(format!(
+                    "staged font object {} {} is duplicated",
+                    object_id.0, object_id.1
+                )));
+            }
         }
     }
     for (staged_stream_id, stream) in staged_streams {
-        document
-            .objects
-            .insert(staged_stream_id, Object::Stream(stream));
+        if delta_objects
+            .insert(staged_stream_id, Object::Stream(stream))
+            .is_some()
+        {
+            return Err(TextShowReplacementError::SourceIdentityMismatch(format!(
+                "staged stream object {} {} is duplicated",
+                staged_stream_id.0, staged_stream_id.1
+            )));
+        }
     }
-    document
-        .objects
-        .insert(page_id, Object::Dictionary(staged_page));
-    document.max_id = document.max_id.max(reserved_through);
+    if delta_objects
+        .insert(page_id, Object::Dictionary(staged_page))
+        .is_some()
+    {
+        return Err(TextShowReplacementError::SourceIdentityMismatch(format!(
+            "staged page object {} {} conflicts with another staged object",
+            page_id.0, page_id.1
+        )));
+    }
+    let object_delta = PdfObjectDelta::try_from_objects(delta_objects, reserved_through)?;
 
     let elapsed_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     let mut replacement_count = 0usize;
@@ -674,17 +742,20 @@ fn apply_text_show_replacement_batch_internal(
         })
         .collect::<Vec<_>>();
 
-    Ok(TextShowReplacementBatchResult {
-        schema: "rosetta-pdf-v3-text-show-replacement-batch/1",
-        page_number,
-        target_count: targets.len(),
-        replacement_count,
-        translation_font_weights,
-        staged_font_object_count,
-        cloned_stream_count,
-        page_content_rewired,
-        elapsed_ms,
-        targets,
+    Ok(StagedTextShowReplacementBatch {
+        result: TextShowReplacementBatchResult {
+            schema: "rosetta-pdf-v3-text-show-replacement-batch/1",
+            page_number,
+            target_count: targets.len(),
+            replacement_count,
+            translation_font_weights,
+            staged_font_object_count,
+            cloned_stream_count,
+            page_content_rewired,
+            elapsed_ms,
+            targets,
+        },
+        object_delta,
     })
 }
 
