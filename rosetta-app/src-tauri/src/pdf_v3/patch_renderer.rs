@@ -20,6 +20,7 @@ use super::{
         TextShowReplacementError, TextShowReplacementRequest, TextShowReplacementTargetIdentity,
         TextShowReplacementTargetRequest,
     },
+    source_object::PdfObjectView,
     translation_patch::{
         ensure_translation_patch_renderer_resolved, resolve_translation_patch_renderer_decisions,
         validate_translation_patch, TranslationPatchError,
@@ -161,7 +162,8 @@ pub(crate) fn render_translation_patch(
     fonts: &[&PreparedTranslationFont],
     policy: TranslationPatchRenderPolicy,
 ) -> Result<TranslationPatchRenderResult, TranslationPatchRenderError> {
-    let staged = stage_translation_patch_internal(document, page, patch, fonts, policy, None)?;
+    let staged =
+        stage_translation_patch_internal(document, document, page, patch, fonts, policy, None)?;
     staged.object_delta.apply_to(document);
     Ok(staged.render)
 }
@@ -176,6 +178,7 @@ pub(crate) fn render_translation_patch_with_font_registry(
 ) -> Result<TranslationPatchRenderResult, TranslationPatchRenderError> {
     let staged = stage_translation_patch_internal(
         document,
+        document,
         page,
         patch,
         fonts,
@@ -188,17 +191,27 @@ pub(crate) fn render_translation_patch_with_font_registry(
 
 pub(crate) fn stage_translation_patch_with_font_registry(
     document: &Document,
+    accumulated_objects: &dyn PdfObjectView,
     page: &PageGraph,
     patch: &TranslationPatch,
     fonts: &[&PreparedTranslationFont],
     policy: TranslationPatchRenderPolicy,
     font_registry: &DocumentTranslationFontRegistry,
 ) -> Result<StagedTranslationPatchRender, TranslationPatchRenderError> {
-    stage_translation_patch_internal(document, page, patch, fonts, policy, Some(font_registry))
+    stage_translation_patch_internal(
+        document,
+        accumulated_objects,
+        page,
+        patch,
+        fonts,
+        policy,
+        Some(font_registry),
+    )
 }
 
 fn stage_translation_patch_internal(
     document: &Document,
+    accumulated_objects: &dyn PdfObjectView,
     page: &PageGraph,
     patch: &TranslationPatch,
     fonts: &[&PreparedTranslationFont],
@@ -338,11 +351,19 @@ fn stage_translation_patch_internal(
         patch.clone()
     };
     let (batch, object_delta) = if targets.is_empty() {
-        (None, PdfObjectDelta::empty(document.max_id))
+        (
+            None,
+            PdfObjectDelta::empty(accumulated_objects.maximum_object_number()),
+        )
     } else {
         let staged = if let Some(registry) = font_registry {
             stage_text_show_replacement_batch_with_font_registry(
-                document, page, &targets, fonts, registry,
+                document,
+                accumulated_objects,
+                page,
+                &targets,
+                fonts,
+                registry,
             )?
         } else {
             stage_text_show_replacement_batch(document, page, &targets, fonts)?
@@ -722,7 +743,7 @@ mod tests {
             reconcile::build_reconciled_page_graph,
             render_cache::{RenderCache, RenderCacheConfig, RenderCacheInsertKind},
             replacement::{preflight_text_show_replacement_transaction, TextShowReplacementError},
-            source_object::PdfSourceObjectStore,
+            source_object::{PdfObjectOverlay, PdfSourceObjectStore},
             translation_patch::{
                 build_translation_patch, resolve_translation_patch_renderer_decisions,
                 TranslationPatchDraft, TranslationPatchEntryDraft,
@@ -1108,25 +1129,27 @@ mod tests {
             build_reconciled_page_graph(shared_pdfium(), &source_path, 2).expect("second page");
         let source = fs::read(&source_path).expect("source PDF");
         let source_document = Document::load_mem(&source).expect("source document");
-        let mut document = source_document.clone();
+        let source_object_count = source_document.objects.len();
+        let source_maximum = source_document.max_id;
         let first_patch =
-            first_renderable_patch(&document, &first_page, &prepared, translations[0]);
+            first_renderable_patch(&source_document, &first_page, &prepared, translations[0]);
         let second_patch =
-            first_renderable_patch(&document, &second_page, &prepared, translations[1]);
+            first_renderable_patch(&source_document, &second_page, &prepared, translations[1]);
         let StagedDocumentTranslationFonts {
             registry,
             object_delta: mut export_delta,
         } = stage_document_translation_font_registry(&source_objects, &[&prepared])
             .expect("staged document font registry");
         assert_eq!(export_delta.object_count(), 6);
-        export_delta.apply_to(&mut document);
         assert_eq!(registry.font_count(), 1);
 
+        let first_overlay = PdfObjectOverlay::new(&source_objects, &export_delta);
         let StagedTranslationPatchRender {
             render: first,
             object_delta: first_delta,
         } = stage_translation_patch_with_font_registry(
-            &document,
+            &source_document,
+            &first_overlay,
             &first_page,
             &first_patch,
             &[&prepared],
@@ -1134,16 +1157,17 @@ mod tests {
             &registry,
         )
         .expect("first page stage");
-        first_delta.apply_to(&mut document);
         export_delta
             .merge(first_delta)
             .expect("merge first page delta");
 
+        let second_overlay = PdfObjectOverlay::new(&source_objects, &export_delta);
         let StagedTranslationPatchRender {
             render: second,
             object_delta: second_delta,
         } = stage_translation_patch_with_font_registry(
-            &document,
+            &source_document,
+            &second_overlay,
             &second_page,
             &second_patch,
             &[&prepared],
@@ -1151,7 +1175,6 @@ mod tests {
             &registry,
         )
         .expect("second page stage");
-        second_delta.apply_to(&mut document);
         export_delta
             .merge(second_delta)
             .expect("merge second page delta");
@@ -1169,8 +1192,10 @@ mod tests {
                 .staged_font_object_count,
             0
         );
-        let matching_type0_fonts = document
-            .objects
+        assert_eq!(source_document.objects.len(), source_object_count);
+        assert_eq!(source_document.max_id, source_maximum);
+        let matching_type0_fonts = export_delta
+            .objects()
             .values()
             .filter(|object| {
                 object.as_dict().is_ok_and(|dictionary| {
@@ -1441,6 +1466,28 @@ mod tests {
         let patch = build_translation_patch(&page, patch_draft(vec![(atom_ids, replacement)]))
             .expect("unsupported target patch");
         let before = document.clone();
+
+        let staged_fonts = stage_document_translation_font_registry(&document, &[&prepared])
+            .expect("staged document font registry");
+        let accumulated = PdfObjectOverlay::new(&document, &staged_fonts.object_delta);
+        let staged = stage_translation_patch_with_font_registry(
+            &document,
+            &accumulated,
+            &page,
+            &patch,
+            &[&prepared],
+            TranslationPatchRenderPolicy::default(),
+            &staged_fonts.registry,
+        )
+        .expect("unsupported target stages a resolved preservation");
+        assert!(staged.render.batch.is_none());
+        assert_eq!(staged.object_delta.object_count(), 0);
+        assert_eq!(
+            staged.object_delta.maximum_object_number(),
+            staged_fonts.object_delta.maximum_object_number()
+        );
+        assert_eq!(document.objects, before.objects);
+        assert_eq!(document.max_id, before.max_id);
 
         let result = render_translation_patch(
             &mut document,

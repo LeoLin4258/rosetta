@@ -576,18 +576,20 @@ source PDF + resolved `TranslationPatch` 仍是可重建依据。
   才可报告完成。
 - export 必须始终从 immutable job source 生成，不能把旧译文 export 当作新 source 继续追加，
   以免 revision 次数导致文件持续膨胀。
-- 当前 font registry staging 已从 lazy source/overlay view 读取 maximum/object identity；
-  page renderer 仍在完整 `lopdf::Document` 中读取 page/resource/content objects 并 apply
-  显式 delta。production scheduler 接入前必须完成剩余 lazy working-set 迁移。
+- 当前 font registry 与 page staging 已从 accumulated source/overlay view 读取
+  maximum/object identity；page renderer 仍在完整 `lopdf::Document` 中读取
+  page/resource/content objects。final export 不得把 staged delta apply 到该 source
+  traversal document；production scheduler 接入前必须完成剩余 lazy working-set 迁移。
 
 `PdfObjectDelta` 是 renderer 与 incremental writer 之间唯一允许的 indirect-object 变更集合。
 
 - delta 保存按 object/generation 排序的 `lopdf::Object` map 和本次分配后的 maximum object
   number，不保存 source bytes、PageGraph、TranslationPatch 或用户可见文本副本。
 - font registry staging 接收 immutable `&dyn PdfObjectView` 并返回 delta；兼容 mutation API
-  只允许在 staging 成功后 apply。TranslationPatch page staging 当前仍接收 immutable
-  `&Document`。预检、fit、copy-on-write 和 object allocation 全部成功前不得修改 working
-  document。
+  只允许在 staging 成功后 apply。TranslationPatch page staging 当前同时接收 immutable
+  `&Document` source traversal 与独立 `&dyn PdfObjectView` accumulated identity。后者必须
+  包含本次 export 已合并的 font/page delta，并负责 registry lookup 与新对象号预留。
+  预检、fit、copy-on-write 和 object allocation 全部成功前不得修改 source document。
 - 多页 export accumulator 先合并 font delta，再按页合并 page delta。同一 object ID 的完全
   相同值可幂等合并；不同值、同一 object number 的多个 generation、无效 ID 或低于实际
   object ID 的 maximum 必须在 accumulator mutation 前拒绝。
@@ -596,9 +598,13 @@ source PDF + resolved `TranslationPatch` 仍是可重建依据。
   比较 source/working complete object graph 推导变化。
 - delta 是 export session 的瞬时敏感内存，不写入 patch store 或普通诊断。结果只报告 object
   count、maximum object number 和已有 renderer 统计。
-- 当前多页 proof 已直接基于 lazy source 分配 document font objects，但仍把 font/page delta
-  apply 到完整 `lopdf::Document`，为下一页提供 read view。下一阶段必须以 bounded overlay
-  替代 page renderer 的完整 document ownership。
+- 当前多页 proof 直接基于 lazy source 分配 document font objects，并让每页只读取 immutable
+  source `Document` 与 `source + accumulated delta` overlay。font/page delta 不再 apply 到
+  完整 document；下一阶段必须继续用 page index + bounded overlay 替代 source traversal 的
+  完整 document ownership。
+- 同一 export revision 的每个 page 只能 staging 一次。accumulated overlay 当前只为 page
+  renderer 提供 maximum 与 registry object identity，不让同一页的后续 staging 隐式读取前次
+  page dictionary/content delta；重复 page/object mutation 必须由 delta merge conflict 拒绝。
 
 PDF v3 source object working set 使用独立的 transient `PdfSourceObjectStore`，不进入 durable
 job schema。
@@ -618,9 +624,10 @@ job schema。
   SHA-256，memory map 不是 source identity authority。
 - `PdfObjectView` 也由 `lopdf::Document` 实现，供迁移期 compatibility wrapper 使用；它不应
   重新成为新 renderer API 的 concrete source contract。
-- production font registry staging 与 binding 已消费 `PdfObjectView`，并能完全从 delta
-  overlay 校验新 Type0 object，不读取 source object。只有 renderer 的 page/resource/content
-  traversal 全部改为 lazy view 后，才可声明 export 端到端 bounded-memory。
+- production font registry staging、binding 与 page clone allocation 已消费
+  `PdfObjectView`。新 Type0 object 可完全从 delta overlay 校验，Form/page clone ID 从
+  accumulated maximum 之后分配。只有 renderer 的 page/resource/content traversal 全部改为
+  lazy view 后，才可声明 export 端到端 bounded-memory。
 
 ## PDF v3 Content Operand Patch
 

@@ -20,6 +20,7 @@ use super::{
         stage_invocation_local_copy_on_write_batch, ContentPatchError,
         InvocationLocalCopyOnWriteTarget, ResourceReferenceBinding,
     },
+    source_object::PdfObjectView,
     style::{plan_text_show_style, TextShowStyleError, TextShowStylePlan},
     types::{FormInvocationStep, PageGraph},
 };
@@ -454,6 +455,7 @@ pub(crate) fn apply_text_show_replacement_batch(
 ) -> Result<TextShowReplacementBatchResult, TextShowReplacementError> {
     let staged = stage_text_show_replacement_batch_internal(
         document,
+        document,
         page_graph,
         target_requests,
         fonts,
@@ -472,6 +474,7 @@ pub(crate) fn apply_text_show_replacement_batch_with_font_registry(
 ) -> Result<TextShowReplacementBatchResult, TextShowReplacementError> {
     let staged = stage_text_show_replacement_batch_internal(
         document,
+        document,
         page_graph,
         target_requests,
         fonts,
@@ -483,6 +486,7 @@ pub(crate) fn apply_text_show_replacement_batch_with_font_registry(
 
 pub(crate) fn stage_text_show_replacement_batch_with_font_registry(
     document: &Document,
+    accumulated_objects: &dyn PdfObjectView,
     page_graph: &PageGraph,
     target_requests: &[TextShowReplacementTargetRequest],
     fonts: &[&PreparedTranslationFont],
@@ -490,6 +494,7 @@ pub(crate) fn stage_text_show_replacement_batch_with_font_registry(
 ) -> Result<StagedTextShowReplacementBatch, TextShowReplacementError> {
     stage_text_show_replacement_batch_internal(
         document,
+        accumulated_objects,
         page_graph,
         target_requests,
         fonts,
@@ -503,11 +508,19 @@ pub(crate) fn stage_text_show_replacement_batch(
     target_requests: &[TextShowReplacementTargetRequest],
     fonts: &[&PreparedTranslationFont],
 ) -> Result<StagedTextShowReplacementBatch, TextShowReplacementError> {
-    stage_text_show_replacement_batch_internal(document, page_graph, target_requests, fonts, None)
+    stage_text_show_replacement_batch_internal(
+        document,
+        document,
+        page_graph,
+        target_requests,
+        fonts,
+        None,
+    )
 }
 
 fn stage_text_show_replacement_batch_internal(
     document: &Document,
+    accumulated_objects: &dyn PdfObjectView,
     page_graph: &PageGraph,
     target_requests: &[TextShowReplacementTargetRequest],
     fonts: &[&PreparedTranslationFont],
@@ -573,7 +586,7 @@ fn stage_text_show_replacement_batch_internal(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
-    let mut reserved_through = document.max_id;
+    let mut reserved_through = accumulated_objects.maximum_object_number();
     let mut staged_fonts = Vec::with_capacity(translation_font_weights.len());
     let mut resource_bindings = Vec::with_capacity(translation_font_weights.len());
     for weight in &translation_font_weights {
@@ -581,10 +594,10 @@ fn stage_text_show_replacement_batch_internal(
             TextShowReplacementError::MissingTranslationFontFace(*weight),
         )?;
         let (resource_name, type0_font_id) = if let Some(registry) = font_registry {
-            registry.binding_for(document, font)?
+            registry.binding_for(accumulated_objects, font)?
         } else {
             let staged = font.stage_after(
-                document,
+                accumulated_objects,
                 translation_font_resource_name(*weight).to_vec(),
                 reserved_through,
             )?;
@@ -1452,16 +1465,21 @@ mod tests {
 
     use super::{
         apply_single_text_show_replacement, apply_text_show_replacement_batch,
-        apply_text_show_replacement_transaction, find_text_object_bounds, state_before_operation,
+        apply_text_show_replacement_transaction, find_text_object_bounds,
+        stage_text_show_replacement_batch_with_font_registry, state_before_operation,
         validate_source_style, validate_text_position_boundary, ContentPatchError,
         TextShowReplacementError, TextShowReplacementRequest, TextShowReplacementTargetRequest,
     };
     use crate::{
         pdf_v3::{
-            font::{TranslationFontAsset, TranslationFontWeight, UnifiedTranslationFontPlan},
+            font::{
+                stage_document_translation_font_registry, TranslationFontAsset,
+                TranslationFontWeight, UnifiedTranslationFontPlan,
+            },
             layout::{derive_text_show_fit_bounds, TextShowGeometryKey},
             mapping::map_page_atoms_to_content_operands,
             reconcile::build_reconciled_page_graph,
+            source_object::PdfObjectOverlay,
         },
         rosetta_jobs::formats::pdf::test_helpers::{fixture_path, pdfium_test_lock, shared_pdfium},
     };
@@ -2759,6 +2777,42 @@ mod tests {
         .prepare(&font_plan)
         .expect("prepared Regular font");
 
+        let before_max_id = document.max_id;
+        let before_objects = document.objects.clone();
+        let staged_fonts = stage_document_translation_font_registry(&document, &[&prepared])
+            .expect("staged document font registry");
+        let font_overlay = PdfObjectOverlay::new(&document, &staged_fonts.object_delta);
+        let staged_batch = stage_text_show_replacement_batch_with_font_registry(
+            &document,
+            &font_overlay,
+            &page_graph,
+            &target_requests,
+            &[&prepared],
+            &staged_fonts.registry,
+        )
+        .expect("overlay-backed Form replacement stage");
+        assert_eq!(staged_batch.result.staged_font_object_count, 0);
+        assert_eq!(staged_batch.result.cloned_stream_count, 3);
+        assert_eq!(staged_batch.object_delta.object_count(), 4);
+        assert_eq!(
+            staged_batch.object_delta.maximum_object_number(),
+            before_max_id + 9
+        );
+        assert!(staged_batch
+            .object_delta
+            .objects()
+            .keys()
+            .filter(|object_id| object_id.0 > before_max_id)
+            .all(|object_id| object_id.0 > before_max_id + 6));
+        let mut merged_delta = staged_fonts.object_delta.clone();
+        merged_delta
+            .merge(staged_batch.object_delta)
+            .expect("font and Form deltas do not collide");
+        assert_eq!(merged_delta.object_count(), 10);
+        assert_eq!(merged_delta.maximum_object_number(), before_max_id + 9);
+        assert_eq!(document.max_id, before_max_id);
+        assert_eq!(document.objects, before_objects);
+
         let mut invalid_document = document.clone();
         let invalid_root = invalid_document
             .get_object(root_stream_id)
@@ -2792,7 +2846,6 @@ mod tests {
         assert_eq!(invalid_document.max_id, before_invalid.max_id);
         assert_eq!(invalid_document.objects, before_invalid.objects);
 
-        let before_max_id = document.max_id;
         let source_root = document
             .get_object(root_stream_id)
             .cloned()
