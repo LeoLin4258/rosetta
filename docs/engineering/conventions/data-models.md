@@ -371,6 +371,35 @@ PDF v3 的 `PageGraph` 是独立于当前 PDF v2 page-state 的 native 页面 IR
 - 正式持久化 PageGraph 前必须再确定压缩格式、source/engine/schema identity、
   原子写入和可删除重建规则。
 
+## PDF v3 Translation Plan
+
+PDF v3 `TranslationPagePlan` 是单页、进程内的 provider-neutral 翻译计划，不是磁盘
+authority，也不能进入 job cache、scheduler shard 或前端持久状态。每次处理页面时都从
+当前 reconciled PageGraph 重建，PageGraph 释放时计划也必须释放。
+
+约定：
+
+- `TranslationPagePlan.schemaVersion` 当前为 `1`；计划绑定 exact page number 与
+  `sourcePageHash`。
+- 当前一个 unit 必须完整覆盖一个 source text object 的 provenance-bearing atoms，且
+  atom 必须共享一个 style 与一个 text-show identity。无法满足时记录稳定 preserved
+  reason，不能拆成猜测性的部分回填。
+- `unitId` 由 plan contract version、source page hash、page number 与 source-order atom
+  IDs 计算；不得使用 source text、数组位置或 provider 输出位置作为 correspondence key。
+- provider input 中 protected span 使用不会与该 source unit 冲突的 `{vN}` token。provider
+  result 必须包含每个 token 恰好一次、顺序不变且不得包含未知 token；reassembler 恢复
+  `exactText` 并记录 UTF-8 byte placement。
+- provider results 按 exact `unitId` 组成完整集合。结果可乱序，但 missing、duplicate、
+  unknown 或 extra unit 必须使本页失败，不能按数组位置或文本相似度补配。
+- reassemble 前必须从当前 PageGraph 重建 canonical plan 并与传入 plan 完整比较，拒绝 stale
+  page/hash/atom/style/provenance 或被篡改的计划。
+- 计划最多 100,000 units、每 unit 最多 1 MiB source UTF-8 bytes、每页 accepted source
+  最多 16 MiB；不得跨页持有 PageGraph 或 source text。
+- 没有 safe unit 的页面必须由 translation worker 显式提交 `Preserved`，不得生成空 patch
+  表示翻译成功。
+- 计划中的 source/provider text 只存在于当前处理内存。持久化 TranslationPatch 仍不得复制
+  普通 source text。
+
 ## PDF v3 TranslationPatch
 
 PDF v3 的 `TranslationPatch` 是页级译文的持久化权威数据，不是 PDF 文件，也不同于

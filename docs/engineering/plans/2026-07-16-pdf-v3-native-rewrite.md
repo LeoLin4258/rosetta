@@ -653,6 +653,17 @@ Production replacement and TranslationPatch staging no longer accept
 - Add deterministic fit and safe preservation policies.
 - Add page-level translation revisions and local retry.
 
+Current Phase 5 boundary: a provider-neutral, single-page translation planner
+now turns complete same-style/same-text-show source objects into stable
+atom-identity-bound units. Protected spans already present in PageGraph are
+tokenized, required exactly once and in source order, then restored with exact
+UTF-8 patch placement. Provider results may arrive out of order but must form an
+exact unit-ID set; stale plans, missing/duplicate/unknown results, token drift
+and empty safe plans are rejected. Planning is bounded to one active PageGraph,
+100,000 units, 1 MiB per unit and 16 MiB accepted source text per page. Native
+PageGraph protected-span detection, concrete async provider integration and
+paragraph/mixed-style translation planning remain pending.
+
 ### Phase 6 — Long-document scheduler
 
 - Add bounded queues, backpressure, durable leases, cancellation and crash recovery.
@@ -678,7 +689,9 @@ one exact PageGraph, accepts only a resolved identity-bound patch or explicit
 preservation, persists patch authority before scheduler completion and builds
 the complete bounded recovery inventory. Concrete local-provider/renderer
 integration, Tauri/UI control and a real complex 500/1,000-page end-to-end
-translation/export remain pending.
+translation/export remain pending. The page processor now has a canonical
+PageGraph-to-pending-patch planner/reassembler contract, but the concrete local
+provider call and renderer resolution still remain above the worker.
 
 ### Phase 7 — Component control plane
 
