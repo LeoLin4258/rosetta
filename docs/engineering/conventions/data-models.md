@@ -896,6 +896,33 @@ Render Cache。beta 阶段不迁移 v1/v2 PDF 派生状态。
   manifest，再通过一次 directory rename 暴露 canonical run。一个进程内同 run handles
   必须共享 coordinator lock。
 
+## PDF v3 Translation Runtime Manifest
+
+PDF v3 translation runtime manifest 是每个 scheduler run 的不可变 runtime/component
+身份绑定，不是 provider 连接配置、任务进度或翻译内容 authority。beta 阶段不迁移此前
+隔离开发产生的 PDF v3 artifacts。
+
+约定：
+
+- run directory 中固定使用 `runtime-manifest.json`；schema 当前为 `1`，完整 JSON 不得超过
+  64 KiB，decoder 必须拒绝 unknown fields 并重算 content-derived manifest ID。
+- manifest 必须绑定 scheduler 的 source fingerprint/page count、canonical exact PageSet、
+  source/target language、engine、PageGraph/TranslationPatch schema 和 renderer version。
+- manifest 还必须固定 positive translation revision、exact renderer fit policy、component
+  ID/version/manifest ID/build SHA-256、platform/architecture、provider ID、model ID/model
+  SHA-256，以及 Regular/optional Bold font 的 asset ID、weight、face index、byte count 和
+  complete-file SHA-256。
+- manifest 是 immutable authority：首次写入使用 unique temp + file `sync_all` + rename；
+  exact same content 重交是幂等，任何不同 identity 必须 conflict，不能覆盖或自动升级。
+- manifest 不得保存 provider endpoint、API token、body password、font path、source text、
+  translated text 或 provider raw response。
+- live runtime 必须在 provider I/O 前匹配 provider kind、当前 platform/architecture 和 exact
+  font descriptors。page processor production config 只能从 validated live binding 构造。
+- component manager 负责验证 model/font 安装 artifact、license/component manifest 和实际
+  provider process health；provider response 不得声明或改写 model identity。
+- manifest 大小与页数无关。它不能保存 prepared font subset、pending patch、PageGraph、
+  page object delta 或 export delta。
+
 ## PDF v3 Text-Show Replacement Transactions and Batches
 
 当前 PDF v3 回填开放同一 selected page、底层 stream、结构化 invocation path 和

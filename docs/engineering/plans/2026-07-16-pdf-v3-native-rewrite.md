@@ -403,14 +403,17 @@ The v3 job layout is intentionally independent from existing PDF state:
   source.pdf
   source-manifest.json
   pdf-v3/
+    runs/
+      <runId>/
+        manifest.json
+        runtime-manifest.json
+        shard-XXXXXXXX.json
     extraction/
       page-0001.ir.zst
     translations/
       zh-CN/
         manifest.json
         page-0001.patch
-    runs/
-      <runId>.json
     render-cache/
       bounded LRU entries
   exports/
@@ -713,7 +716,12 @@ replays each durable resolved patch through the renderer against the
 merge-checked lazy overlay, and commits the accumulated delta through the
 source-verified atomic incremental writer. All-preserved exports use a
 SHA-256-verified byte-exact atomic source copy rather than an empty incremental
-section. Runtime-manifest asset binding, Tauri/UI control and a real complex
+section. An immutable 64 KiB-bounded runtime manifest now binds the run's exact
+source/PageSet/schema/revision/render policy to component build, provider/model
+and Regular/optional Bold font byte identities without persisting credentials,
+paths or text. The local page processor can only derive production
+configuration from a live provider/font binding that matches this manifest.
+Tauri/UI control, verified component launch/model health and a real complex
 500/1,000-page end-to-end translation/export remain pending.
 
 ### Phase 7 — Component control plane

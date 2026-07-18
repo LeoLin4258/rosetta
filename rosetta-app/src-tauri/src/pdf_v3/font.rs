@@ -6,7 +6,7 @@ use std::{
 };
 
 use lopdf::{content::Content, Dictionary, Document, Object, ObjectId, Stream, StringFormat};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subsetter::{subset, GlyphRemapper};
 use ttf_parser::{Face, GlyphId, Permissions};
@@ -21,7 +21,7 @@ pub(crate) const SOURCE_HAN_SANS_CN_REGULAR: &str = "SourceHanSansCN-Regular.ttf
 pub(crate) const SOURCE_HAN_SANS_CN_BOLD: &str = "SourceHanSansCN-Bold.ttf";
 pub(crate) const GO_NOTO_KURRENT_REGULAR: &str = "GoNotoKurrent-Regular.ttf";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum TranslationFontWeight {
     Regular,
@@ -270,6 +270,14 @@ impl TranslationFontAsset {
 
     pub(crate) fn byte_count(&self) -> usize {
         self.bytes.len()
+    }
+
+    pub(crate) fn asset_id(&self) -> &str {
+        &self.asset_id
+    }
+
+    pub(crate) fn face_index(&self) -> u32 {
+        self.face_index
     }
 
     pub(crate) fn fingerprint(&self) -> &str {

@@ -63,6 +63,18 @@ pub(crate) enum PdfUnitProviderConfig {
     },
 }
 
+impl PdfUnitProviderConfig {
+    pub(crate) fn provider_id(&self) -> &'static str {
+        match self {
+            Self::MobileBatch(_) => "rwkv-mobile-batch-chat",
+            Self::Lightning(_) => "rwkv-lightning-contents",
+            Self::LlamaCpp(_) => "llama-cpp-chat-completions",
+            #[cfg(test)]
+            Self::Scripted { .. } => "scripted-test-provider",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProviderTranslationUnit {
     unit_id: String,

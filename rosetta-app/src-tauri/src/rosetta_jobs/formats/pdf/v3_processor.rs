@@ -34,6 +34,7 @@ use crate::pdf_v3::{
 use super::unit_translation::{
     translate_pdf_v3_page_plan, PdfUnitProviderConfig, PdfV3ProviderFailureKind,
 };
+use super::v3_runtime::BoundPdfV3TranslationRuntime;
 
 const NO_SAFE_UNITS_REASON: &str = "pdf-v3-no-safe-translation-units";
 const INVALID_RUNTIME_IDENTITY_REASON: &str = "pdf-v3-runtime-identity-mismatch";
@@ -44,18 +45,41 @@ const RENDERER_FAILURE_REASON: &str = "pdf-v3-translation-renderer-failed";
 
 #[derive(Clone)]
 pub(crate) struct PdfV3LocalPageProcessorConfig {
-    pub source_fingerprint: String,
-    pub provider: PdfUnitProviderConfig,
-    pub provider_id: String,
-    pub model_id: String,
-    pub source_language: String,
-    pub target_language: String,
-    pub translation_revision: u64,
-    pub renderer_version: String,
-    pub render_policy: TranslationPatchRenderPolicy,
-    pub cancel: Arc<AtomicBool>,
-    pub regular_font: TranslationFontAsset,
-    pub bold_font: Option<TranslationFontAsset>,
+    source_fingerprint: String,
+    provider: PdfUnitProviderConfig,
+    provider_id: String,
+    model_id: String,
+    source_language: String,
+    target_language: String,
+    translation_revision: u64,
+    renderer_version: String,
+    render_policy: TranslationPatchRenderPolicy,
+    cancel: Arc<AtomicBool>,
+    regular_font: TranslationFontAsset,
+    bold_font: Option<TranslationFontAsset>,
+}
+
+impl PdfV3LocalPageProcessorConfig {
+    pub(crate) fn from_runtime(
+        runtime: &BoundPdfV3TranslationRuntime,
+        cancel: Arc<AtomicBool>,
+    ) -> Self {
+        let manifest = runtime.manifest();
+        Self {
+            source_fingerprint: manifest.source_fingerprint.clone(),
+            provider: runtime.provider().clone(),
+            provider_id: manifest.component.provider_id.clone(),
+            model_id: manifest.component.model_id.clone(),
+            source_language: manifest.source_language.clone(),
+            target_language: manifest.target_language.clone(),
+            translation_revision: manifest.translation_revision,
+            renderer_version: manifest.renderer_version.clone(),
+            render_policy: runtime.render_policy(),
+            cancel,
+            regular_font: runtime.regular_font().clone(),
+            bold_font: runtime.bold_font().cloned(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -397,6 +421,10 @@ mod tests {
         rosetta_jobs::formats::pdf::{
             test_helpers::{fixture_path, pdfium_test_lock, shared_pdfium},
             unit_translation::PdfUnitProviderConfig,
+            v3_runtime::{
+                build_translation_runtime_manifest, BoundPdfV3TranslationRuntime,
+                PdfV3TranslationComponentBinding, PdfV3TranslationRuntimeSpec,
+            },
         },
         rwkv_providers::ProviderTranslateResult,
     };
@@ -448,24 +476,37 @@ mod tests {
         Arc<Mutex<VecDeque<ProviderTranslateResult>>>,
     ) {
         let scripted = Arc::new(Mutex::new(VecDeque::from([provider_success(translations)])));
-        (
-            PdfV3LocalPageProcessorConfig {
-                source_fingerprint: handle.source_fingerprint().to_string(),
-                provider: PdfUnitProviderConfig::Scripted {
-                    results: Arc::clone(&scripted),
-                    max_batch_size: 256,
-                },
-                provider_id: "rwkv-local-test".to_string(),
+        let binding = binding(handle);
+        let provider = PdfUnitProviderConfig::Scripted {
+            results: Arc::clone(&scripted),
+            max_batch_size: 256,
+        };
+        let regular = font_asset(TranslationFontWeight::Regular);
+        let bold = font_asset(TranslationFontWeight::Bold);
+        let manifest = build_translation_runtime_manifest(PdfV3TranslationRuntimeSpec {
+            binding: &binding,
+            translation_revision: 1,
+            component: PdfV3TranslationComponentBinding {
+                component_id: "pdf-v3-processor-test".to_string(),
+                component_version: "1.0.0".to_string(),
+                component_manifest_id: "component-manifest-test".to_string(),
+                component_build_sha256: "b".repeat(64),
+                platform_os: std::env::consts::OS.to_string(),
+                platform_arch: std::env::consts::ARCH.to_string(),
+                provider_id: provider.provider_id().to_string(),
                 model_id: "rwkv-model-test".to_string(),
-                source_language: "en".to_string(),
-                target_language: "zh-CN".to_string(),
-                translation_revision: 1,
-                renderer_version: TRANSLATION_PATCH_RENDERER_VERSION.to_string(),
-                render_policy: TranslationPatchRenderPolicy::default(),
-                cancel: Arc::new(AtomicBool::new(false)),
-                regular_font: font_asset(TranslationFontWeight::Regular),
-                bold_font: Some(font_asset(TranslationFontWeight::Bold)),
+                model_sha256: "c".repeat(64),
             },
+            render_policy: TranslationPatchRenderPolicy::default(),
+            regular_font: &regular,
+            bold_font: Some(&bold),
+        })
+        .expect("processor runtime manifest");
+        let runtime =
+            BoundPdfV3TranslationRuntime::new(&binding, manifest, provider, regular, Some(bold))
+                .expect("bound processor runtime");
+        (
+            PdfV3LocalPageProcessorConfig::from_runtime(&runtime, Arc::new(AtomicBool::new(false))),
             scripted,
         )
     }

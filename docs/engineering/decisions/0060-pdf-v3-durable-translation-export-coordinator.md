@@ -102,8 +102,8 @@ Automated Windows/PDFium tests cover:
   modified pages until the final atomic writer starts.
 - A real complex 500/1,000-page export stress run is required to decide whether
   delta objects need a bounded disk spool.
-- Runtime-manifest asset binding and Tauri/job lifecycle commands remain above
-  this native coordinator.
+- Runtime-manifest asset binding is provided by ADR 0061; Tauri/job lifecycle
+  commands remain above this native coordinator.
 
 ## Rejected Alternatives
 
