@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use lopdf::{content::Content, Dictionary, Document, Encoding, Object, ObjectId, Stream};
+use lopdf::{content::Content, Dictionary, Document, Encoding, Object, ObjectId};
 use pdfium_render::prelude::Pdfium;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -16,7 +16,10 @@ use super::{
     document::{DocumentHandle, DocumentHandleError},
     extract::{extract_pdfium_page_snapshot, PdfV3ExtractionError, PdfiumPageSnapshot},
     identity::text_hash,
+    page_context::{PdfPageContextError, PdfPageObjectContext, PdfResourceContext},
+    page_index::{PdfPageIndex, PdfPageIndexError},
     source_cmap::{ToUnicodeDecodedUnit, ToUnicodeMap},
+    source_object::{PdfObjectView, PdfSourceObjectError},
     types::FormInvocationStep,
 };
 
@@ -226,6 +229,9 @@ pub(crate) struct PageOperandMappingTiming {
 pub(crate) enum PageOperandMappingError {
     Open(DocumentHandleError),
     Inspection(PdfV3ExtractionError),
+    PageIndex(PdfPageIndexError),
+    PageContext(PdfPageContextError),
+    SourceObject(PdfSourceObjectError),
     PageOutOfBounds {
         page: u32,
         page_count: u32,
@@ -248,6 +254,9 @@ impl fmt::Display for PageOperandMappingError {
         match self {
             Self::Open(error) => error.fmt(formatter),
             Self::Inspection(error) => error.fmt(formatter),
+            Self::PageIndex(error) => error.fmt(formatter),
+            Self::PageContext(error) => error.fmt(formatter),
+            Self::SourceObject(error) => error.fmt(formatter),
             Self::FontRead(message) => formatter.write_str(message),
             Self::PageOutOfBounds { page, page_count } => {
                 write!(formatter, "PDF page {page} is outside 1..={page_count}")
@@ -286,22 +295,46 @@ impl From<PdfV3ExtractionError> for PageOperandMappingError {
     }
 }
 
-struct FontDecoder<'a> {
+impl From<PdfPageIndexError> for PageOperandMappingError {
+    fn from(value: PdfPageIndexError) -> Self {
+        Self::PageIndex(value)
+    }
+}
+
+impl From<PdfPageContextError> for PageOperandMappingError {
+    fn from(value: PdfPageContextError) -> Self {
+        Self::PageContext(value)
+    }
+}
+
+impl From<PdfSourceObjectError> for PageOperandMappingError {
+    fn from(value: PdfSourceObjectError) -> Self {
+        Self::SourceObject(value)
+    }
+}
+
+struct FontDecoder {
     resource_name: Vec<u8>,
-    decoder: SourceDecoder<'a>,
+    decoder: SourceDecoder,
     source_reencode_candidate: bool,
 }
 
-enum SourceDecoder<'a> {
-    Lopdf(Encoding<'a>),
+enum SourceDecoder {
+    Lopdf {
+        font: Dictionary,
+        document: Document,
+    },
     ToUnicode(ToUnicodeMap),
 }
 
-impl SourceDecoder<'_> {
+impl SourceDecoder {
     fn decode(&self, encoded: &[u8]) -> Result<String, String> {
         match self {
-            Self::Lopdf(encoding) => {
-                Document::decode_text(encoding, encoded).map_err(|error| error.to_string())
+            Self::Lopdf { font, document } => {
+                let encoding = font
+                    .get_font_encoding(document)
+                    .map_err(|error| error.to_string())?;
+                Document::decode_text(&encoding, encoded).map_err(|error| error.to_string())
             }
             Self::ToUnicode(map) => map.decode(encoded).map_err(|error| error.to_string()),
         }
@@ -313,33 +346,38 @@ impl SourceDecoder<'_> {
                 .decode_units(encoded)
                 .map_err(|error| error.to_string())
                 .map(|units| units.into_iter().map(SourceDecodedUnit::from).collect()),
-            Self::Lopdf(Encoding::OneByteEncoding(_)) => encoded
-                .iter()
-                .enumerate()
-                .map(|(encoded_start, byte)| {
-                    self.decode(std::slice::from_ref(byte))
-                        .map(|text| SourceDecodedUnit {
-                            text,
-                            encoded_start,
-                            encoded_len: 1,
-                        })
-                })
-                .collect(),
-            Self::Lopdf(_) => self.decode(encoded).map(|text| {
-                vec![SourceDecodedUnit {
-                    text,
-                    encoded_start: 0,
-                    encoded_len: encoded.len(),
-                }]
-            }),
+            Self::Lopdf { font, document } => match font.get_font_encoding(document) {
+                Ok(Encoding::OneByteEncoding(_)) => encoded
+                    .iter()
+                    .enumerate()
+                    .map(|(encoded_start, byte)| {
+                        self.decode(std::slice::from_ref(byte))
+                            .map(|text| SourceDecodedUnit {
+                                text,
+                                encoded_start,
+                                encoded_len: 1,
+                            })
+                    })
+                    .collect(),
+                Ok(_) => self.decode(encoded).map(|text| {
+                    vec![SourceDecodedUnit {
+                        text,
+                        encoded_start: 0,
+                        encoded_len: encoded.len(),
+                    }]
+                }),
+                Err(error) => Err(error.to_string()),
+            },
         }
     }
 
     fn encode(&self, text: &str) -> Option<Vec<u8>> {
         match self {
-            Self::Lopdf(encoding) if encoding_can_reencode(encoding) => {
-                Some(Document::encode_text(encoding, text))
-            }
+            Self::Lopdf { font, document } => font
+                .get_font_encoding(document)
+                .ok()
+                .filter(encoding_can_reencode)
+                .map(|encoding| Document::encode_text(&encoding, text)),
             _ => None,
         }
     }
@@ -377,11 +415,6 @@ struct RawTextShow {
 struct RawPdfiumTextObject {
     inspection: PdfiumTextObjectInspection,
     text: String,
-}
-
-#[derive(Clone)]
-struct ResourceContext<'a> {
-    dictionaries: Vec<&'a Dictionary>,
 }
 
 struct CollectedTextShows {
@@ -456,21 +489,22 @@ pub(crate) fn map_page_atoms_to_content_operands_from_snapshot(
     snapshot: &PdfiumPageSnapshot,
 ) -> Result<PageOperandMappingResult, PageOperandMappingError> {
     let started = Instant::now();
-    let document = handle.lopdf_document();
+    let source_objects = handle.source_objects();
     let page_number = snapshot.page_graph.page_number;
 
     let page_lookup_started = Instant::now();
     let source_page_count = handle.page_count();
-    let page_id =
-        handle
-            .lopdf_page_id(page_number)
-            .ok_or(PageOperandMappingError::PageOutOfBounds {
-                page: page_number,
-                page_count: source_page_count,
-            })?;
+    let page_index = PdfPageIndex::resolve_page(source_objects, page_number)?;
+    let indexed_page = page_index.page(page_number)?;
+    let page_context = PdfPageObjectContext::resolve(source_objects, indexed_page)?;
     let page_lookup_us = elapsed_us(page_lookup_started.elapsed());
     let collect_text_shows_started = Instant::now();
-    let collected_text_shows = collect_text_shows(&document, page_id, page_number)?;
+    let collected_text_shows = collect_text_shows(
+        source_objects,
+        indexed_page.content_stream_ids(),
+        page_context.resource_context(),
+        page_number,
+    )?;
     let collect_text_shows_us = elapsed_us(collect_text_shows_started.elapsed());
     let content_stream_count = collected_text_shows.content_stream_count;
     let form_xobject_invocation_count = collected_text_shows.form_xobject_invocation_count;
@@ -676,19 +710,19 @@ pub(crate) fn map_page_atoms_to_content_operands_from_snapshot(
     })
 }
 
-fn inspect_font_resources<'a>(
-    document: &'a Document,
-    resources: &ResourceContext<'a>,
+fn inspect_font_resources(
+    objects: &dyn PdfObjectView,
+    resources: &PdfResourceContext,
     scope_id: &str,
-) -> Result<(Vec<FontResourceInspection>, Vec<FontDecoder<'a>>), PageOperandMappingError> {
-    let fonts = fonts_for_context(document, resources);
+) -> Result<(Vec<FontResourceInspection>, Vec<FontDecoder>), PageOperandMappingError> {
+    let fonts = fonts_for_context(objects, resources)?;
     let mut inspections = Vec::with_capacity(fonts.len());
     let mut decoders = Vec::with_capacity(fonts.len());
     for (resource_name, font) in fonts {
-        let (encoding_kind, encoding_name) = classify_font_encoding(font);
+        let (encoding_kind, encoding_name) = classify_font_encoding(&font);
         let has_to_unicode = font.get(b"ToUnicode").is_ok();
-        let embedded = font_is_embedded(font, document);
-        let (decoder, source_decode_error) = source_decoder(font, document, encoding_kind);
+        let embedded = font_is_embedded(&font, objects);
+        let (decoder, source_decode_error) = source_decoder(&font, objects, encoding_kind);
         let source_decode_available = decoder.is_some();
         let source_reencode_candidate = decoder
             .as_ref()
@@ -727,109 +761,35 @@ fn inspect_font_resources<'a>(
     Ok((inspections, decoders))
 }
 
-fn page_resource_context<'a>(
-    document: &'a Document,
-    page_id: ObjectId,
-) -> Result<ResourceContext<'a>, PageOperandMappingError> {
-    let (direct, resource_ids) = document.get_page_resources(page_id).map_err(|error| {
-        PageOperandMappingError::FontRead(format!("failed to inspect page resources: {error}"))
-    })?;
-    let mut dictionaries = Vec::new();
-    if let Some(direct) = direct {
-        dictionaries.push(direct);
-    }
-    for resource_id in resource_ids {
-        if let Ok(dictionary) = document.get_dictionary(resource_id) {
-            if !dictionaries
-                .iter()
-                .any(|existing| std::ptr::eq(*existing, dictionary))
-            {
-                dictionaries.push(dictionary);
-            }
-        }
-    }
-    Ok(ResourceContext { dictionaries })
-}
-
-fn form_resource_context<'a>(
-    document: &'a Document,
-    stream: &'a Stream,
-    parent: &ResourceContext<'a>,
-) -> ResourceContext<'a> {
-    let mut dictionaries = Vec::new();
-    if let Some(resources) = dictionary_entry(&stream.dict, b"Resources", document) {
-        dictionaries.push(resources);
-    }
-    for parent in &parent.dictionaries {
-        if !dictionaries
-            .iter()
-            .any(|existing| std::ptr::eq(*existing, *parent))
-        {
-            dictionaries.push(parent);
-        }
-    }
-    ResourceContext { dictionaries }
-}
-
-fn fonts_for_context<'a>(
-    document: &'a Document,
-    resources: &ResourceContext<'a>,
-) -> BTreeMap<Vec<u8>, &'a Dictionary> {
+fn fonts_for_context(
+    objects: &dyn PdfObjectView,
+    resources: &PdfResourceContext,
+) -> Result<BTreeMap<Vec<u8>, Dictionary>, PageOperandMappingError> {
     let mut fonts = BTreeMap::new();
-    for resources in &resources.dictionaries {
-        let Some(font_dictionary) = dictionary_entry(resources, b"Font", document) else {
-            continue;
-        };
-        for (name, object) in font_dictionary.iter() {
-            if fonts.contains_key(name) {
-                continue;
-            }
-            if let Some(font) = dereference_dictionary(object, document) {
-                fonts.insert(name.clone(), font);
-            }
+    let Ok(value) = resources.dictionary().get(b"Font") else {
+        return Ok(fonts);
+    };
+    let Some(font_dictionary) = dereference_dictionary(value, objects)? else {
+        return Ok(fonts);
+    };
+    for (name, object) in font_dictionary.iter() {
+        if let Some(font) = dereference_dictionary(object, objects)? {
+            fonts.insert(name.clone(), font);
         }
     }
-    fonts
+    Ok(fonts)
 }
 
-fn resolve_xobject<'a>(
-    document: &'a Document,
-    resources: &ResourceContext<'a>,
-    resource_name: &[u8],
-) -> Option<(Option<ObjectId>, &'a Stream)> {
-    for resources in &resources.dictionaries {
-        let Some(xobjects) = dictionary_entry(resources, b"XObject", document) else {
-            continue;
-        };
-        let Ok(object) = xobjects.get(resource_name) else {
-            continue;
-        };
-        match object {
-            Object::Reference(object_id) => {
-                if let Ok(stream) = document.get_object(*object_id).and_then(Object::as_stream) {
-                    return Some((Some(*object_id), stream));
-                }
-            }
-            Object::Stream(stream) => return Some((None, stream)),
-            _ => {}
-        }
-    }
-    None
-}
-
-fn source_decoder<'a>(
-    font: &'a Dictionary,
-    document: &'a Document,
+fn source_decoder(
+    font: &Dictionary,
+    objects: &dyn PdfObjectView,
     encoding_kind: FontEncodingKind,
-) -> (Option<SourceDecoder<'a>>, Option<String>) {
+) -> (Option<SourceDecoder>, Option<String>) {
     let to_unicode = font
         .get(b"ToUnicode")
         .ok()
-        .and_then(|object| match object {
-            Object::Reference(id) => document.get_object(*id).ok(),
-            object => Some(object),
-        })
-        .and_then(|object| object.as_stream().ok())
+        .and_then(|object| resolve_object(object, objects).ok().flatten())
+        .and_then(|object| object.as_stream().ok().cloned())
         .map(|stream| {
             stream
                 .get_plain_content()
@@ -844,11 +804,24 @@ fn source_decoder<'a>(
         return (Some(SourceDecoder::ToUnicode(map.clone())), None);
     }
 
-    match font.get_font_encoding(document) {
+    let mut fallback_font = font.clone();
+    if let Ok(to_unicode) = font.get(b"ToUnicode") {
+        if let Ok(Some(object)) = resolve_object(to_unicode, objects) {
+            fallback_font.set("ToUnicode", object);
+        }
+    }
+    let fallback_document = Document::new();
+    match fallback_font.get_font_encoding(&fallback_document) {
         Ok(encoding)
             if lopdf_fallback_allowed(font, encoding_kind) && encoding_can_decode(&encoding) =>
         {
-            return (Some(SourceDecoder::Lopdf(encoding)), None);
+            return (
+                Some(SourceDecoder::Lopdf {
+                    font: fallback_font,
+                    document: fallback_document,
+                }),
+                None,
+            );
         }
         lopdf_result => {
             let mut errors = Vec::new();
@@ -913,16 +886,16 @@ fn encoding_can_reencode(encoding: &Encoding<'_>) -> bool {
     matches!(encoding, Encoding::OneByteEncoding(_))
 }
 
-fn font_is_embedded(font: &Dictionary, document: &Document) -> bool {
-    font_descriptor(font, document).is_some_and(|descriptor| {
+fn font_is_embedded(font: &Dictionary, objects: &dyn PdfObjectView) -> bool {
+    font_descriptor(font, objects).is_some_and(|descriptor| {
         [b"FontFile".as_slice(), b"FontFile2", b"FontFile3"]
             .iter()
             .any(|key| descriptor.get(key).is_ok())
     })
 }
 
-fn font_descriptor<'a>(font: &'a Dictionary, document: &'a Document) -> Option<&'a Dictionary> {
-    if let Some(descriptor) = dictionary_entry(font, b"FontDescriptor", document) {
+fn font_descriptor(font: &Dictionary, objects: &dyn PdfObjectView) -> Option<Dictionary> {
+    if let Some(descriptor) = dictionary_entry(font, b"FontDescriptor", objects) {
         return Some(descriptor);
     }
     let descendants = font
@@ -930,49 +903,67 @@ fn font_descriptor<'a>(font: &'a Dictionary, document: &'a Document) -> Option<&
         .and_then(Object::as_array)
         .ok()?;
     let descendant = descendants.first()?;
-    let descendant = dereference_dictionary(descendant, document)?;
-    dictionary_entry(descendant, b"FontDescriptor", document)
+    let descendant = dereference_dictionary(descendant, objects).ok()??;
+    dictionary_entry(&descendant, b"FontDescriptor", objects)
 }
 
-fn dictionary_entry<'a>(
-    dictionary: &'a Dictionary,
+fn dictionary_entry(
+    dictionary: &Dictionary,
     key: &[u8],
-    document: &'a Document,
-) -> Option<&'a Dictionary> {
+    objects: &dyn PdfObjectView,
+) -> Option<Dictionary> {
     dictionary
         .get(key)
         .ok()
-        .and_then(|object| dereference_dictionary(object, document))
+        .and_then(|object| dereference_dictionary(object, objects).ok().flatten())
 }
 
-fn dereference_dictionary<'a>(
-    object: &'a Object,
-    document: &'a Document,
-) -> Option<&'a Dictionary> {
-    match object {
-        Object::Dictionary(dictionary) => Some(dictionary),
-        Object::Reference(id) => document.get_dictionary(*id).ok(),
-        _ => None,
+fn dereference_dictionary(
+    object: &Object,
+    objects: &dyn PdfObjectView,
+) -> Result<Option<Dictionary>, PdfSourceObjectError> {
+    Ok(resolve_object(object, objects)?.and_then(|object| object.as_dict().ok().cloned()))
+}
+
+fn resolve_object(
+    object: &Object,
+    objects: &dyn PdfObjectView,
+) -> Result<Option<Object>, PdfSourceObjectError> {
+    let mut current = object.clone();
+    let mut visited = BTreeSet::new();
+    for _ in 0..64 {
+        match current {
+            Object::Reference(id) => {
+                if !visited.insert(id) {
+                    return Ok(None);
+                }
+                current = objects.object(id)?;
+            }
+            object => return Ok(Some(object)),
+        }
     }
+    Ok(None)
 }
 
 fn collect_text_shows(
-    document: &Document,
-    page_id: ObjectId,
+    objects: &dyn PdfObjectView,
+    content_stream_ids: &[ObjectId],
+    resources: &PdfResourceContext,
     page_number: u32,
 ) -> Result<CollectedTextShows, PageOperandMappingError> {
-    let resources = page_resource_context(document, page_id)?;
     let mut collection = TextShowCollection::default();
     let mut state = TextOperatorState::default();
-    for stream_id in document.get_page_contents(page_id) {
-        collect_stream_text_shows(
-            document,
+    let mut active_content_entries = HashSet::new();
+    for stream_id in content_stream_ids.iter().copied() {
+        collect_page_content_entry(
+            objects,
             stream_id,
-            &resources,
+            resources,
             page_number,
-            &[],
             &mut state,
             &mut collection,
+            &mut active_content_entries,
+            0,
         )?;
     }
 
@@ -1007,10 +998,85 @@ fn collect_text_shows(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn collect_stream_text_shows<'a>(
-    document: &'a Document,
+fn collect_page_content_entry(
+    objects: &dyn PdfObjectView,
+    entry_id: ObjectId,
+    resources: &PdfResourceContext,
+    page_number: u32,
+    state: &mut TextOperatorState,
+    collection: &mut TextShowCollection,
+    active_entries: &mut HashSet<ObjectId>,
+    depth: usize,
+) -> Result<(), PageOperandMappingError> {
+    if depth >= 64 || !active_entries.insert(entry_id) {
+        collection
+            .fallback_reasons
+            .insert("page-content-reference-cycle-or-depth-limit".to_string());
+        return Ok(());
+    }
+    let object = objects
+        .object(entry_id)
+        .map_err(|error| PageOperandMappingError::StreamRead {
+            object_number: entry_id.0,
+            generation: entry_id.1,
+            message: error.to_string(),
+        })?;
+    let result = match object {
+        Object::Stream(_) => collect_stream_text_shows(
+            objects,
+            entry_id,
+            resources,
+            page_number,
+            &[],
+            state,
+            collection,
+        ),
+        Object::Reference(next) => collect_page_content_entry(
+            objects,
+            next,
+            resources,
+            page_number,
+            state,
+            collection,
+            active_entries,
+            depth + 1,
+        ),
+        Object::Array(entries) => {
+            for entry in entries {
+                let Ok(next) = entry.as_reference() else {
+                    collection
+                        .fallback_reasons
+                        .insert("direct-page-content-stream-unsupported".to_string());
+                    continue;
+                };
+                collect_page_content_entry(
+                    objects,
+                    next,
+                    resources,
+                    page_number,
+                    state,
+                    collection,
+                    active_entries,
+                    depth + 1,
+                )?;
+            }
+            Ok(())
+        }
+        _ => Err(PageOperandMappingError::StreamRead {
+            object_number: entry_id.0,
+            generation: entry_id.1,
+            message: "page content entry is neither a stream nor an array".to_string(),
+        }),
+    };
+    active_entries.remove(&entry_id);
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_stream_text_shows(
+    objects: &dyn PdfObjectView,
     stream_id: ObjectId,
-    resources: &ResourceContext<'a>,
+    resources: &PdfResourceContext,
     page_number: u32,
     invocation_path: &[FormInvocationStep],
     state: &mut TextOperatorState,
@@ -1018,14 +1084,22 @@ fn collect_stream_text_shows<'a>(
 ) -> Result<(), PageOperandMappingError> {
     collection.visited_streams.insert(stream_id);
     let stream_decode_started = Instant::now();
-    let stream = document
-        .get_object(stream_id)
-        .and_then(Object::as_stream)
-        .map_err(|error| PageOperandMappingError::StreamRead {
-            object_number: stream_id.0,
-            generation: stream_id.1,
-            message: error.to_string(),
-        })?;
+    let stream_object =
+        objects
+            .object(stream_id)
+            .map_err(|error| PageOperandMappingError::StreamRead {
+                object_number: stream_id.0,
+                generation: stream_id.1,
+                message: error.to_string(),
+            })?;
+    let stream =
+        stream_object
+            .as_stream()
+            .map_err(|error| PageOperandMappingError::StreamRead {
+                object_number: stream_id.0,
+                generation: stream_id.1,
+                message: error.to_string(),
+            })?;
     let content = if let Some(content) = collection.decoded_streams.get(&stream_id) {
         collection.stream_decode_cache_hits += 1;
         Arc::clone(content)
@@ -1095,7 +1169,7 @@ fn collect_stream_text_shows<'a>(
         if matches!(operation.operator.as_str(), "Tj" | "TJ" | "'" | "\"") {
             if local_fonts.is_none() {
                 let font_inspection_started = Instant::now();
-                let inspected = inspect_font_resources(document, resources, &scope_id)?;
+                let inspected = inspect_font_resources(objects, resources, &scope_id)?;
                 collection.font_inspection_elapsed += font_inspection_started.elapsed();
                 for font in &inspected.0 {
                     collection
@@ -1184,11 +1258,11 @@ fn collect_stream_text_shows<'a>(
                 .insert("form-xobject-name-missing".to_string());
             continue;
         };
-        let Some((form_stream_id, form_stream)) =
-            resolve_xobject(document, resources, resource_name)
-        else {
+        let Some(resolved_form) = resources.resolve_xobject(objects, resource_name)? else {
             continue;
         };
+        let form_stream_id = resolved_form.object_id();
+        let form_stream = resolved_form.stream();
         if !form_stream
             .dict
             .get(b"Subtype")
@@ -1228,7 +1302,7 @@ fn collect_stream_text_shows<'a>(
             form_stream_object_number: form_stream_id.0,
             form_stream_generation: form_stream_id.1,
         });
-        let child_resources = form_resource_context(document, form_stream, resources);
+        let child_resources = resources.invoked_form(objects, form_stream_id, form_stream)?;
         let mut child_state = TextOperatorState {
             current_font: state.current_font.clone(),
             current_font_size: state.current_font_size,
@@ -1236,7 +1310,7 @@ fn collect_stream_text_shows<'a>(
             ..TextOperatorState::default()
         };
         let result = collect_stream_text_shows(
-            document,
+            objects,
             form_stream_id,
             &child_resources,
             page_number,
@@ -1335,7 +1409,7 @@ fn numeric_operand_f32(object: &Object) -> Option<f32> {
 fn decode_text_operands(
     operands: &[RawTextOperand<'_>],
     has_font_resource: bool,
-    decoder: Option<&FontDecoder<'_>>,
+    decoder: Option<&FontDecoder>,
 ) -> (
     TextShowDecodeStatus,
     Option<String>,

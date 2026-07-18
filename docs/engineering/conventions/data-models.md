@@ -631,6 +631,10 @@ job schema。
 - source store 保存原始 trailer、latest xref offset、page count 和 maximum object number，供
   incremental export base 使用。最终 writer 在 commit 前仍须重新核对 source length 与
   SHA-256，memory map 不是 source identity authority。
+- extraction/mapping `DocumentHandle` 只组合该 bounded source store、PDFium document 与
+  source identity/page count；不得重新持有完整 `lopdf::Document` 或无条件 all-page object
+  ID vector。每页 mapping 通过 transient one-page index/context 读取资源、内容流、字体与
+  Form，并在页结束时释放 parsed content cache。
 - `PdfObjectView` 也由 `lopdf::Document` 实现，供迁移期 compatibility wrapper 使用；它不应
   重新成为新 renderer API 的 concrete source contract。
 - transient `PdfPageIndex` 从 trailer `/Root` 与 catalog `/Pages` 开始，只为明确 `PageSet`

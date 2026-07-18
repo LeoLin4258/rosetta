@@ -22,7 +22,10 @@ Current progress:
 - PageGraph schema v2 now reconciles PDFium atoms with decoded content operands. Every mapped atom can carry stable `mapping + text-show + operand + encoded byte range + source-unit character index` provenance without copying encoded source bytes into the IR.
 - Reconciliation updates a text object atomically. It distinguishes PDFium-verified atoms, ToUnicode-corrected atoms, PDFium synthetic whitespace, source whitespace with no PDFium geometry, and preserved unmapped atoms. A failed object does not leave partially rewritten PageGraph state.
 - On the real paper page, reconciliation maps 242 / 242 top-level text objects and classifies 3,238 atoms as verified, 15 as ToUnicode-corrected, 602 as synthetic whitespace, 2 source whitespace characters as having no PDFium atom, and 56 Form XObject atoms as preserved. The page remains correctly `partial` until Form XObject recursion exists.
-- A reusable read-only `DocumentHandle` now owns one source fingerprint, one `lopdf::Document`, and one PDFium document built from the same immutable source byte snapshot. It verifies cross-engine page-count identity and lets sparse extraction, mapping, and reconciliation reuse the same document lifetime instead of reopening the source for each stage or page.
+- A reusable read-only `DocumentHandle` now owns one source fingerprint, one
+  bounded lazy `PdfSourceObjectStore` and one PDFium document over the same
+  immutable source path. It verifies cross-engine page-count identity without
+  loading or retaining a complete lopdf source object graph.
 - On the 1.59 MB / 30-page real paper fixture, a Windows debug probe measured about 101 ms to open the handle, then about 658 ms and 691 ms to reconcile pages 1 and 3 through that same handle. Per-page debug timings varied between runs. Repeated document initialization is removed, but page-local PDFium traversal and source mapping remain the dominant unoptimized costs.
 - Extraction and mapping now share one short-lived, non-serializable `PdfiumPageSnapshot`. The combined reconciliation path no longer repeats PDFium page text, text-object character mapping, font-name lookup or Form-object counting for the same page.
 - After the shared snapshot change, three Windows debug runs measured page 1 at 429-477 ms and page 3 at 452-555 ms through an already-open handle. PageGraph atoms, provenance and conservative fallback results remained unchanged.
@@ -34,18 +37,23 @@ Current progress:
   atoms. Exact legacy object-scan and direct-character style equivalence tests
   pass. Content operand mapping is now the largest measured stage.
 - `DocumentHandle` fingerprints through a bounded 64 KiB buffer and opens
-  lopdf/PDFium from the immutable source path, removing one source-sized Rust
-  byte-vector lifetime. The complete lopdf document remains a later
-  long-document extraction-memory boundary.
-- `DocumentHandle` now captures lopdf page object IDs once, so an exact page
-  request no longer repeats a complete page-tree walk. Recursive mapping caches
-  immutable parsed streams only for the active page and still replays every
-  invocation's state, resources and provenance independently.
+  PDFium plus the mmap-backed source adapter from the immutable source path,
+  removing both the source-sized byte-vector lifetime and the remaining
+  complete lopdf extraction/mapping object graph.
+- Exact page requests now resolve a transient one-page `PdfPageIndex` and owned
+  inherited resource context through the bounded source view. Recursive mapping
+  caches immutable parsed streams only for the active page and still replays
+  every invocation's state, resources and provenance independently.
 - After page-local stream reuse and allocation-free hexadecimal digest output,
   three 10-page Windows AMD debug runs measured 717-797 ms total and 373-415 ms
   for content mapping, with 219 repeated stream decodes avoided per run. The
   cache is deliberately not document-wide until a hard retained-memory budget
   is measured.
+- After migrating content streams, fonts, inherited resources and Form traversal
+  to the lazy source view, three equivalent runs measured 742-807 ms total and
+  404-434 ms mapping. The final cache held 167 objects / 524,541 estimated bytes
+  under the fixed 512-object / 16 MiB ceilings. Complete PDF v3 regression is
+  147 passed / 14 ignored.
 - PDFium and source mapping now recursively traverse Form XObjects in invocation order. Form resource dictionaries take priority with parent-context fallback, text-show IDs include the invocation path, and validated shared Form operands retain structured provenance for invocation-local copy-on-write.
 - On the real paper page, recursive traversal aligns 258 / 258 text objects/shows across 27 Form invocations and 5 unique Form streams. The original 242 top-level objects remain mapped; 16 Type3 Form objects are explicitly preserved because no safe source decoder exists.
 - The identity renderer now performs a read-only recursive Form discovery pass and rewrites every unique page/Form content stream exactly once. Shared Form invocation paths are reported separately from underlying stream ownership.
@@ -210,6 +218,10 @@ Current progress:
 - A bounded `PdfSourceObjectStore` now memory-maps the source, resolves xref
   tables/streams and object streams on demand, and exposes a 16 MiB / 512-entry
   object LRU plus an immutable delta overlay.
+- Selected-page extraction, content mapping and PageGraph reconciliation now
+  use that same lazy source view. `DocumentHandle` no longer owns a complete
+  lopdf document or all-page ID vector; one-page index/context and parsed
+  content state are transient.
 - Document-wide font allocation and registry identity validation are the first
   renderer operations migrated from `&lopdf::Document` to `PdfObjectView`.
   The real two-page export stages its six font objects directly against the
@@ -512,9 +524,10 @@ resources and structured invocation provenance are implemented. Shared-stream
 status is retained only after the ordinary mapping gates pass, allowing the
 renderer to choose invocation-local copy-on-write. PDFium character-to-object
 ownership is now exact and single-pass through the narrow vendored adapter.
-Exact lopdf page lookup is indexed once and parsed content reuse remains bounded
-to one active page. Type3 decoding and migration of extraction away from the
-complete lopdf document remain pending.
+Exact pages, resources, content streams and fonts now resolve through the
+bounded lazy source view, while parsed content reuse remains bounded to one
+active page. Type3 decoding remains pending; complete lopdf source ownership is
+no longer part of extraction or mapping.
 
 ### Phase 3 — Identity renderer
 

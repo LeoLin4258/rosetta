@@ -4,6 +4,8 @@ Date: 2026-07-18
 
 Status: Accepted
 
+Raw trailer resolution and extraction/mapping adoption are refined by ADR 0052.
+
 Amends ADR 0040 and ADR 0041.
 
 ## Context

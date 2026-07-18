@@ -6,8 +6,8 @@ Status: Accepted
 
 Form traversal and recursive identity-render boundaries refined by ADR 0019 and
 ADR 0020. Extraction adapter ownership and single-pass identity are refined by
-ADR 0050. Page-local content mapping reuse and constant-time page lookup are
-refined by ADR 0051.
+ADR 0050. Page-local content mapping reuse is refined by ADR 0051. Bounded lazy
+selected-page extraction mapping is refined by ADR 0052.
 
 ## Context
 
@@ -90,9 +90,9 @@ Production rendering remains blocked on explicit solutions for:
   vertical writing, and other unsupported cases;
 - incremental or random-access writing with bounded memory for very long PDFs.
 
-The spike currently loads the complete PDF into `lopdf::Document`. This is
-acceptable for engine selection but explicitly not accepted as the final
-long-document export architecture.
+The original spike loaded the complete PDF into `lopdf::Document`. ADR 0052
+removes that requirement from selected-page extraction and mapping; production
+rendering and incremental export already use the same bounded lazy source view.
 
 ## Consequences
 

@@ -489,8 +489,14 @@ mod tests {
         let total_ms = started.elapsed().as_millis();
         let mut sorted_ms = page_ms.clone();
         sorted_ms.sort_unstable();
+        let source_cache = handle
+            .source_objects()
+            .cache_stats()
+            .expect("source object cache stats");
+        assert!(source_cache.resident_entries <= 512);
+        assert!(source_cache.resident_bytes <= 16 * 1024 * 1024);
         println!(
-            "pdf-v3 ten-page source_bytes={} source_pages={} open={}ms total={}ms median={}ms min={}ms max={}ms extraction_total={}ms setup={}ms object_snapshot={}ms object_text={}us object_identity={}us character_geometry={}ms mapping_total={}ms mapping_page_lookup={}us mapping_collect={}us mapping_stream_decode={}us mapping_stream_decode_cache_hits={} mapping_font_inspection={}us mapping_text_show_decode={}us mapping_object_prepare={}us mapping_pair={}us reconciliation_total={}ms atoms={} page_ms={:?}",
+            "pdf-v3 ten-page source_bytes={} source_pages={} open={}ms total={}ms median={}ms min={}ms max={}ms extraction_total={}ms setup={}ms object_snapshot={}ms object_text={}us object_identity={}us character_geometry={}ms mapping_total={}ms mapping_page_lookup={}us mapping_collect={}us mapping_stream_decode={}us mapping_stream_decode_cache_hits={} mapping_font_inspection={}us mapping_text_show_decode={}us mapping_object_prepare={}us mapping_pair={}us reconciliation_total={}ms source_loads={} source_cache_hits={} source_resident_entries={} source_resident_bytes={} atoms={} page_ms={:?}",
             handle.source_bytes(),
             handle.page_count(),
             handle.open_elapsed().as_millis(),
@@ -514,6 +520,10 @@ mod tests {
             mapping_object_prepare_us,
             mapping_pair_us,
             reconciliation_ms.iter().sum::<u128>(),
+            source_cache.source_loads,
+            source_cache.cache_hits,
+            source_cache.resident_entries,
+            source_cache.resident_bytes,
             atom_count,
             page_ms,
         );

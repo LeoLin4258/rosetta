@@ -6,31 +6,31 @@ use std::{
     time::{Duration, Instant},
 };
 
-use lopdf::{Document, ObjectId};
 use pdfium_render::prelude::{PdfDocument, Pdfium};
 use sha2::{Digest, Sha256};
+
+use super::source_object::{PdfSourceObjectError, PdfSourceObjectStore};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DocumentHandleError {
     Read(String),
-    LopdfLoad(String),
+    SourceObject(PdfSourceObjectError),
     PdfiumLoad(String),
     EncryptedDocument,
-    PageCountMismatch { lopdf: u32, pdfium: u32 },
+    PageCountMismatch { source: u32, pdfium: u32 },
 }
 
 impl fmt::Display for DocumentHandleError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Read(message) | Self::LopdfLoad(message) | Self::PdfiumLoad(message) => {
-                formatter.write_str(message)
-            }
+            Self::Read(message) | Self::PdfiumLoad(message) => formatter.write_str(message),
+            Self::SourceObject(error) => error.fmt(formatter),
             Self::EncryptedDocument => {
                 formatter.write_str("encrypted PDFs are not supported by PDF v3")
             }
-            Self::PageCountMismatch { lopdf, pdfium } => write!(
+            Self::PageCountMismatch { source, pdfium } => write!(
                 formatter,
-                "PDF engine page-count mismatch: lopdf reported {lopdf}, PDFium reported {pdfium}"
+                "PDF engine page-count mismatch: source index reported {source}, PDFium reported {pdfium}"
             ),
         }
     }
@@ -44,8 +44,7 @@ pub(crate) struct DocumentHandle<'pdfium> {
     source_bytes: usize,
     page_count: u32,
     open_elapsed: Duration,
-    lopdf_document: Document,
-    lopdf_page_ids: Vec<ObjectId>,
+    source_objects: PdfSourceObjectStore,
     pdfium_document: PdfDocument<'pdfium>,
 }
 
@@ -57,24 +56,17 @@ impl<'pdfium> DocumentHandle<'pdfium> {
         let started = Instant::now();
         let source_path = source_path.as_ref().to_path_buf();
         let (source_fingerprint, source_bytes) = fingerprint_file(&source_path)?;
-        let lopdf_document = Document::load(&source_path).map_err(|error| {
-            DocumentHandleError::LopdfLoad(format!("failed to load PDF with lopdf: {error}"))
-        })?;
-        if lopdf_document.is_encrypted() {
-            return Err(DocumentHandleError::EncryptedDocument);
-        }
-        let lopdf_pages = lopdf_document.get_pages();
-        let lopdf_page_count = lopdf_pages.len() as u32;
-        let lopdf_page_ids = lopdf_pages.into_values().collect();
+        let source_objects = PdfSourceObjectStore::open(&source_path)?;
+        let source_page_count = source_objects.page_count();
         let pdfium_document = pdfium
             .load_pdf_from_file(&source_path, None)
             .map_err(|error| {
                 DocumentHandleError::PdfiumLoad(format!("failed to load PDF with PDFium: {error}"))
             })?;
         let pdfium_page_count = pdfium_document.pages().len() as u32;
-        if lopdf_page_count != pdfium_page_count {
+        if source_page_count != pdfium_page_count {
             return Err(DocumentHandleError::PageCountMismatch {
-                lopdf: lopdf_page_count,
+                source: source_page_count,
                 pdfium: pdfium_page_count,
             });
         }
@@ -83,10 +75,9 @@ impl<'pdfium> DocumentHandle<'pdfium> {
             source_path,
             source_fingerprint,
             source_bytes,
-            page_count: lopdf_page_count,
+            page_count: source_page_count,
             open_elapsed: started.elapsed(),
-            lopdf_document,
-            lopdf_page_ids,
+            source_objects,
             pdfium_document,
         })
     }
@@ -111,17 +102,21 @@ impl<'pdfium> DocumentHandle<'pdfium> {
         self.open_elapsed
     }
 
-    pub(crate) fn lopdf_document(&self) -> &Document {
-        &self.lopdf_document
-    }
-
-    pub(crate) fn lopdf_page_id(&self, page_number: u32) -> Option<ObjectId> {
-        let index = usize::try_from(page_number.checked_sub(1)?).ok()?;
-        self.lopdf_page_ids.get(index).copied()
+    pub(crate) fn source_objects(&self) -> &PdfSourceObjectStore {
+        &self.source_objects
     }
 
     pub(crate) fn pdfium_document(&self) -> &PdfDocument<'pdfium> {
         &self.pdfium_document
+    }
+}
+
+impl From<PdfSourceObjectError> for DocumentHandleError {
+    fn from(value: PdfSourceObjectError) -> Self {
+        match value {
+            PdfSourceObjectError::EncryptedDocument => Self::EncryptedDocument,
+            value => Self::SourceObject(value),
+        }
     }
 }
 
@@ -159,8 +154,9 @@ fn hex_digest(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::DocumentHandle;
-    use crate::rosetta_jobs::formats::pdf::test_helpers::{
-        fixture_path, pdfium_test_lock, shared_pdfium,
+    use crate::{
+        pdf_v3::page_index::PdfPageIndex,
+        rosetta_jobs::formats::pdf::test_helpers::{fixture_path, pdfium_test_lock, shared_pdfium},
     };
 
     #[test]
@@ -174,13 +170,10 @@ mod tests {
         assert!(handle.source_bytes() > 0);
         assert!(handle.source_fingerprint().starts_with("sha256:"));
         assert_eq!(handle.source_fingerprint().len(), 71);
-        assert_eq!(handle.lopdf_document().get_pages().len(), 1);
-        assert_eq!(
-            handle.lopdf_page_id(1),
-            handle.lopdf_document().get_pages().get(&1).copied()
-        );
-        assert_eq!(handle.lopdf_page_id(0), None);
-        assert_eq!(handle.lopdf_page_id(2), None);
+        let page_index =
+            PdfPageIndex::resolve_page(handle.source_objects(), 1).expect("lazy page index");
+        assert_eq!(page_index.page_count(), 1);
+        assert_eq!(page_index.selected_page_count(), 1);
         assert_eq!(handle.pdfium_document().pages().len(), 1);
     }
 
@@ -197,20 +190,24 @@ mod tests {
     }
 
     #[test]
-    fn indexes_lopdf_pages_for_constant_time_random_access() {
+    fn resolves_sparse_pages_without_a_complete_object_graph() {
         let _guard = pdfium_test_lock();
         let source = fixture_path("2305.13048v2.pdf");
         let handle = DocumentHandle::open(shared_pdfium(), &source).expect("document handle");
-        let expected = handle.lopdf_document().get_pages();
-
         assert_eq!(handle.page_count(), 30);
         for page_number in [1, 15, 30] {
+            let page_index = PdfPageIndex::resolve_page(handle.source_objects(), page_number)
+                .expect("selected page index");
             assert_eq!(
-                handle.lopdf_page_id(page_number),
-                expected.get(&page_number).copied()
+                page_index.page(page_number).unwrap().page_number(),
+                page_number
             );
         }
-        assert_eq!(handle.lopdf_page_id(0), None);
-        assert_eq!(handle.lopdf_page_id(31), None);
+        let stats = handle
+            .source_objects()
+            .cache_stats()
+            .expect("source cache stats");
+        assert!(stats.resident_entries <= 512);
+        assert!(stats.resident_bytes <= 16 * 1024 * 1024);
     }
 }

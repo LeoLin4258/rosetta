@@ -9,7 +9,7 @@ use std::{
 use ::pdf::{
     backend::Backend,
     file::{File as PdfFile, FileOptions, NoCache, NoLog},
-    object::{NoResolve, PlainRef, Resolve},
+    object::{PlainRef, Resolve},
     primitive::{PdfString, Primitive},
 };
 use lopdf::{Dictionary, Object, ObjectId, Stream, StringFormat};
@@ -49,7 +49,7 @@ pub(crate) struct PdfSourceObjectCacheStats {
     pub resident_bytes: usize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PdfSourceObjectError {
     InvalidCachePolicy,
     EmptySource,
@@ -181,16 +181,28 @@ impl PdfSourceObjectStore {
                 .map_err(|error| PdfSourceObjectError::Parse(error.to_string()))?,
         )
         .map_err(|_| PdfSourceObjectError::Parse("xref offset exceeds u64".to_string()))?;
-        let (_, trailer) = source_map
-            .read_xref_table_and_trailer(source_start, &NoResolve)
-            .map_err(|error| PdfSourceObjectError::Parse(error.to_string()))?;
-        let trailer = dictionary_to_lopdf(trailer, &NoResolve)?;
         let file = FileOptions::uncached()
             .load(source_map)
             .map_err(|error| PdfSourceObjectError::Parse(error.to_string()))?;
         if file.trailer.encrypt_dict.is_some() {
             return Err(PdfSourceObjectError::EncryptedDocument);
         }
+        // Xref streams may use an indirect /Length. Parse the raw trailer through
+        // the initialized file resolver while a second read-only map is transiently
+        // available; both mappings share the same OS-backed source pages.
+        let trailer_map = unsafe { MmapOptions::new().map(&source) }.map_err(|error| {
+            PdfSourceObjectError::Map {
+                path: source_path.clone(),
+                message: error.to_string(),
+            }
+        })?;
+        let trailer = {
+            let resolver = file.resolver();
+            let (_, trailer) = trailer_map
+                .read_xref_table_and_trailer(source_start, &resolver)
+                .map_err(|error| PdfSourceObjectError::Parse(error.to_string()))?;
+            dictionary_to_lopdf(trailer, &resolver)?
+        };
         let maximum_object_number = file
             .trailer
             .size
@@ -601,6 +613,21 @@ mod tests {
             stats.resident_entries,
             stats.resident_bytes
         );
+    }
+
+    #[test]
+    fn opens_xref_stream_with_indirect_length_through_file_resolver() {
+        let source_path = fixture_path("pdflatex-image.pdf");
+        let source = PdfSourceObjectStore::open(&source_path)
+            .expect("source with indirect xref-stream length");
+
+        assert!(source.page_count() > 0);
+        assert!(source
+            .trailer()
+            .get(b"Root")
+            .and_then(Object::as_reference)
+            .is_ok());
+        assert!(source.previous_xref_offset() < source.source_bytes());
     }
 
     #[test]

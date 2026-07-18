@@ -82,3 +82,28 @@ Three follow-up debug runs measured:
 Compared by three-run median, content mapping moved from 440 ms in the first
 single-pass result to 400 ms in the follow-up, about 9% faster. Total median
 moved from 808 ms to 767 ms. Run-to-run noise remains material at this scale.
+
+## Follow-Up: Bounded Lazy Source Mapping
+
+The extraction/mapping handle then replaced its complete lopdf object graph and
+all-page object ID vector with the existing mmap-backed `PdfSourceObjectStore`.
+Each mapping resolves a one-page index and inherited resource context on demand.
+
+Three debug runs measured:
+
+| Measurement | Run 1 | Run 2 | Run 3 |
+| --- | ---: | ---: | ---: |
+| Ten-page total | 807 ms | 761 ms | 742 ms |
+| Content operand mapping | 434 ms | 416 ms | 404 ms |
+| Aggregate page index/context lookup | 5,142 us | 4,598 us | 4,749 us |
+| Source object loads | 167 | 167 | 167 |
+| Source object cache hits | 998 | 998 | 998 |
+| Final resident source objects | 167 | 167 | 167 |
+| Final estimated resident bytes | 524,541 | 524,541 | 524,541 |
+| Page-local parsed stream cache hits | 219 | 219 | 219 |
+
+The total median is 761 ms versus 767 ms before the migration. Mapping median
+is 416 ms versus 400 ms. The selected page-tree lookup cost is now visible but
+small, and the complete source object graph is no longer retained. The measured
+working set is well below the fixed 512-object / 16 MiB LRU limits; active
+decompressed stream allocations remain outside this retained-cache figure.

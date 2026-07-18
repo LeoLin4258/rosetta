@@ -4,6 +4,9 @@ Date: 2026-07-18
 
 Status: Accepted
 
+The complete-document page index is replaced by bounded lazy selected-page
+resolution in ADR 0052. The page-local parsed-content cache remains current.
+
 ## Context
 
 After single-pass PDFium object extraction, low-level content operand mapping
