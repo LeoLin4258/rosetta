@@ -605,13 +605,15 @@ sync. The writer no longer owns source bytes or the previous object graph. The
   production page renderer now reads page trees, resources, content streams and
   cross-page ownership through lazy views and a reusable target-bounded index.
   Scheduler extraction and translation workers now commit their content
-  authorities before state and assemble a validated recovery inventory, but the
-  concrete async provider/renderer adapter and job-level stress validation remain
-  pending before the complete app workflow is end-to-end resumable. Font registry and page renderer mutation are explicitly staged
-as merge-checked `PdfObjectDelta` values, and final multi-page export no longer
-applies those deltas to its source traversal document. The incremental writer
-consumes the accumulated delta directly; whole-object-graph comparison is no
-longer part of the export path.
+  authorities before state and assemble a validated recovery inventory. The
+  concrete async provider/renderer processor now resolves pending patches before
+  durable commit; job-level stress validation remains pending before the
+  complete app workflow is end-to-end resumable. Font registry and page
+  renderer mutation are explicitly staged as merge-checked `PdfObjectDelta`
+  values, and final multi-page export no longer applies those deltas to its
+  source traversal document. The incremental writer consumes the accumulated
+  delta directly; whole-object-graph comparison is no longer part of the export
+  path.
 
 The lazy source-object foundation now opens the immutable source through a
 read-only memory map, resolves classic/xref-stream and object-stream entries on
@@ -622,13 +624,14 @@ object allocation already use the accumulated lazy overlay. A selected-page
 `PdfPageIndex` now resolves page count, page object identity, page-tree ancestry
 and direct content-stream references through `PdfObjectView`, skips unselected
 subtrees by `/Count`, and is reused across the real multi-page staging proof.
-`PdfPageObjectContext` resolves the exact page dictionary and materializes
-inherited resources through that same immutable source view. Replacement
-identity, preflight, decode and staged stream reads also use the lazy source
-view, so selected-page staging no longer depends on `Document::get_pages()`,
-selected-page resource helpers or complete-document source stream reads. The
-real two-page proof loads 12 source objects and keeps 12 cache entries / 28,712
-estimated bytes resident under explicit ceilings.
+Indirect `/Contents` arrays are resolved to physical stream IDs before ownership
+analysis. `PdfPageObjectContext` resolves the exact page dictionary and
+materializes inherited resources through that same immutable source view.
+Replacement identity, preflight, decode and staged stream reads also use the
+lazy source view, so selected-page staging no longer depends on
+`Document::get_pages()`, selected-page resource helpers or complete-document
+source stream reads. The real two-page proof loads 12 source objects and keeps
+12 cache entries / 28,712 estimated bytes resident under explicit ceilings.
 
 Form invocation validation and copy-on-write resource traversal use the same
 immutable lazy source boundary. Form
@@ -666,8 +669,11 @@ planning remain pending. The async local-provider bridge now reuses Lightning,
 mobile batch and llama.cpp batching through a provider-owned generic unit,
 keeps protected tokens outside model input, returns exact unit-ID results and
 preserves cancellation/retry/metrics behavior without depending on the legacy
-pdf2zh worker unit. Runtime provider/model identity and renderer-owning page
-processor integration remain pending.
+pdf2zh worker unit. The renderer-owning page processor now receives explicit
+provider/model identity, language direction, translation revision, renderer
+policy, cancellation and prepared Regular/Bold fonts. Native PageGraph
+protected-span detection and broader paragraph/mixed-style planning remain
+pending.
 
 ### Phase 6 — Long-document scheduler
 
@@ -692,12 +698,13 @@ claims exact pages, persists compressed validated PageGraphs and only then
 commits extraction authority. A provider-neutral translation worker now loads
 one exact PageGraph, accepts only a resolved identity-bound patch or explicit
 preservation, persists patch authority before scheduler completion and builds
-the complete bounded recovery inventory. Concrete local-provider/renderer
-integration, Tauri/UI control and a real complex 500/1,000-page end-to-end
-translation/export remain pending. The page processor now has a canonical
-PageGraph-to-pending-patch planner/reassembler contract and an async local
-provider bridge, but runtime identity, renderer resolution and the async worker
-boundary still remain above the durable worker.
+the complete bounded recovery inventory. The worker now awaits one page-bounded
+processor, checks cancellation before patch storage, and accepts only the
+processor's renderer-resolved patch or explicit preservation result. The
+concrete processor owns runtime identity validation, provider execution,
+renderer staging, reusable font/ownership state and a disposable accumulated
+object delta. Tauri/UI control, job-level prepared-font construction and a real
+complex 500/1,000-page end-to-end translation/export remain pending.
 
 ### Phase 7 — Component control plane
 

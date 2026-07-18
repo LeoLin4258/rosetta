@@ -16,6 +16,7 @@ pub(crate) mod run_state;
 pub(crate) mod runtime;
 pub(crate) mod source_state;
 pub(crate) mod unit_translation;
+pub(crate) mod v3_processor;
 
 pub(crate) use rasterize::{count_pages, render_page_as_png};
 pub(crate) use runtime::{probe_status, PdfRuntimeStatus};

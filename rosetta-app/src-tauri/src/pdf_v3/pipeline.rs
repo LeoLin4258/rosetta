@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, fmt, time::Instant};
+use std::{collections::BTreeMap, fmt, future::Future, pin::Pin, time::Instant};
 
 use super::{
     document::DocumentHandle,
@@ -275,6 +275,24 @@ pub(crate) struct PdfV3TranslationProcessFailure {
     pub retryable: bool,
 }
 
+pub(crate) trait PdfV3TranslationPageProcessor {
+    fn process_page<'a>(
+        &'a mut self,
+        page: &'a super::types::PageGraph,
+        binding: &'a PdfV3TranslationBinding,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<PdfV3TranslationPageResult, PdfV3TranslationProcessFailure>>
+                + Send
+                + 'a,
+        >,
+    >;
+
+    fn is_cancelled(&self) -> bool {
+        false
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PdfV3TranslationFailureKind {
     PageGraphAuthority,
@@ -385,15 +403,11 @@ impl<'a> PdfV3TranslationWorker<'a> {
         })
     }
 
-    pub(crate) fn run_batch(
+    pub(crate) async fn run_batch(
         &self,
         requested_limit: u32,
         mut now_ms: impl FnMut() -> u64,
-        mut process: impl FnMut(
-            &super::types::PageGraph,
-            &PdfV3TranslationBinding,
-        )
-            -> Result<PdfV3TranslationPageResult, PdfV3TranslationProcessFailure>,
+        processor: &mut impl PdfV3TranslationPageProcessor,
     ) -> Result<PdfV3TranslationBatchOutcome, PdfV3TranslationWorkerError> {
         let mut outcome = PdfV3TranslationBatchOutcome::default();
         for _ in 0..requested_limit {
@@ -437,12 +451,25 @@ impl<'a> PdfV3TranslationWorker<'a> {
             };
 
             let processor_started = Instant::now();
-            let processed = process(&stored_page.page, &self.binding);
+            let processed = processor
+                .process_page(&stored_page.page, &self.binding)
+                .await;
             outcome.processor_us = outcome
                 .processor_us
                 .saturating_add(elapsed_us(processor_started.elapsed()));
             match processed {
                 Ok(PdfV3TranslationPageResult::Patch(patch)) => {
+                    if processor.is_cancelled() {
+                        self.fail_claim(
+                            &claim,
+                            "pdf-v3-translation-cancelled",
+                            true,
+                            PdfV3TranslationFailureKind::Processor,
+                            now_ms(),
+                            &mut outcome,
+                        )?;
+                        continue;
+                    }
                     if !self.patch_matches_binding(&stored_page.page, &patch) {
                         self.fail_claim(
                             &claim,
@@ -699,15 +726,17 @@ fn validate_translation_binding(
 mod tests {
     use std::{
         fs,
+        future::Future,
         path::PathBuf,
+        pin::Pin,
         sync::atomic::{AtomicU64, Ordering},
         time::Instant,
     };
 
     use super::{
         validated_extraction_inventory, validated_recovery_inventory, PdfV3ExtractionPageOutcome,
-        PdfV3ExtractionWorker, PdfV3TranslationPageOutcome, PdfV3TranslationPageResult,
-        PdfV3TranslationWorker,
+        PdfV3ExtractionWorker, PdfV3TranslationPageOutcome, PdfV3TranslationPageProcessor,
+        PdfV3TranslationPageResult, PdfV3TranslationProcessFailure, PdfV3TranslationWorker,
     };
     use crate::{
         pdf_v3::{
@@ -715,14 +744,90 @@ mod tests {
             page_graph_store::PageGraphStore,
             page_set::PageSet,
             patch_store::TranslationPatchStore,
-            scheduler::{DurablePdfV3Scheduler, PdfV3RunSpec, PdfV3SchedulerCapacity},
+            scheduler::{
+                DurablePdfV3Scheduler, PdfV3RunSpec, PdfV3SchedulerCapacity,
+                PdfV3TranslationBinding,
+            },
             translation_patch::{build_translation_patch, TranslationPatchDraft},
-            types::{PAGE_GRAPH_SCHEMA_VERSION, TRANSLATION_PATCH_SCHEMA_VERSION},
+            types::{PageGraph, PAGE_GRAPH_SCHEMA_VERSION, TRANSLATION_PATCH_SCHEMA_VERSION},
         },
         rosetta_jobs::formats::pdf::test_helpers::{fixture_path, pdfium_test_lock, shared_pdfium},
     };
 
     static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+    enum TestTranslationBehavior {
+        EmptyPatch {
+            renderer_version: Option<String>,
+        },
+        Preserved {
+            reason_code: &'static str,
+        },
+        Failed {
+            reason_code: &'static str,
+            retryable: bool,
+        },
+    }
+
+    struct TestTranslationProcessor {
+        behavior: TestTranslationBehavior,
+        cancel_after_process: bool,
+        cancelled: bool,
+    }
+
+    impl PdfV3TranslationPageProcessor for TestTranslationProcessor {
+        fn process_page<'a>(
+            &'a mut self,
+            page: &'a PageGraph,
+            binding: &'a PdfV3TranslationBinding,
+        ) -> Pin<
+            Box<
+                dyn Future<
+                        Output = Result<PdfV3TranslationPageResult, PdfV3TranslationProcessFailure>,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async move {
+                match &self.behavior {
+                    TestTranslationBehavior::EmptyPatch { renderer_version } => {
+                        let patch = build_translation_patch(
+                            page,
+                            TranslationPatchDraft {
+                                target_language: binding.target_language.clone(),
+                                translation_revision: 1,
+                                provider_id: "provider-test".to_string(),
+                                model_id: "model-test".to_string(),
+                                renderer_version: renderer_version
+                                    .clone()
+                                    .unwrap_or_else(|| binding.renderer_version.clone()),
+                                entries: Vec::new(),
+                            },
+                        )
+                        .expect("resolved empty patch");
+                        if self.cancel_after_process {
+                            self.cancelled = true;
+                        }
+                        Ok(PdfV3TranslationPageResult::Patch(patch))
+                    }
+                    TestTranslationBehavior::Preserved { reason_code } => {
+                        Ok(PdfV3TranslationPageResult::Preserved { reason_code })
+                    }
+                    TestTranslationBehavior::Failed {
+                        reason_code,
+                        retryable,
+                    } => Err(PdfV3TranslationProcessFailure {
+                        reason_code,
+                        retryable: *retryable,
+                    }),
+                }
+            })
+        }
+
+        fn is_cancelled(&self) -> bool {
+            self.cancelled
+        }
+    }
 
     struct TempPipeline {
         root: PathBuf,
@@ -882,8 +987,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn translation_worker_commits_patch_authority_and_builds_recovery_inventory() {
+    #[tokio::test]
+    async fn translation_worker_commits_patch_authority_and_builds_recovery_inventory() {
         let _guard = pdfium_test_lock();
         let temp = TempPipeline::new();
         let source = fixture_path("simple-one-page.pdf");
@@ -902,6 +1007,13 @@ mod tests {
         let worker =
             PdfV3TranslationWorker::new(&scheduler, &page_graph_store, &patch_store, "owner-a")
                 .expect("translation worker");
+        let mut processor = TestTranslationProcessor {
+            behavior: TestTranslationBehavior::EmptyPatch {
+                renderer_version: None,
+            },
+            cancel_after_process: false,
+            cancelled: false,
+        };
         let batch = worker
             .run_batch(
                 1,
@@ -909,22 +1021,9 @@ mod tests {
                     timestamp += 1;
                     timestamp
                 },
-                |page, binding| {
-                    let patch = build_translation_patch(
-                        page,
-                        TranslationPatchDraft {
-                            target_language: binding.target_language.clone(),
-                            translation_revision: 1,
-                            provider_id: "provider-test".to_string(),
-                            model_id: "model-test".to_string(),
-                            renderer_version: binding.renderer_version.clone(),
-                            entries: Vec::new(),
-                        },
-                    )
-                    .expect("resolved empty patch");
-                    Ok(PdfV3TranslationPageResult::Patch(patch))
-                },
+                &mut processor,
             )
+            .await
             .expect("translation batch");
 
         assert_eq!(batch.claimed_pages, 1);
@@ -988,8 +1087,8 @@ mod tests {
         assert_eq!(summary.completed_pages, 1);
     }
 
-    #[test]
-    fn translation_worker_rejects_patch_outside_scheduler_binding() {
+    #[tokio::test]
+    async fn translation_worker_rejects_patch_outside_scheduler_binding() {
         let _guard = pdfium_test_lock();
         let temp = TempPipeline::new();
         let source = fixture_path("simple-one-page.pdf");
@@ -1007,6 +1106,13 @@ mod tests {
         let worker =
             PdfV3TranslationWorker::new(&scheduler, &page_graph_store, &patch_store, "owner-a")
                 .expect("translation worker");
+        let mut processor = TestTranslationProcessor {
+            behavior: TestTranslationBehavior::EmptyPatch {
+                renderer_version: Some("wrong-renderer".to_string()),
+            },
+            cancel_after_process: false,
+            cancelled: false,
+        };
         let batch = worker
             .run_batch(
                 1,
@@ -1014,22 +1120,9 @@ mod tests {
                     timestamp += 1;
                     timestamp
                 },
-                |page, binding| {
-                    let patch = build_translation_patch(
-                        page,
-                        TranslationPatchDraft {
-                            target_language: binding.target_language.clone(),
-                            translation_revision: 1,
-                            provider_id: "provider-test".to_string(),
-                            model_id: "model-test".to_string(),
-                            renderer_version: "wrong-renderer".to_string(),
-                            entries: Vec::new(),
-                        },
-                    )
-                    .expect("patch");
-                    Ok(PdfV3TranslationPageResult::Patch(patch))
-                },
+                &mut processor,
             )
+            .await
             .expect("translation batch");
 
         assert_eq!(batch.failed_pages, 1);
@@ -1048,8 +1141,111 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn translation_worker_commits_explicit_preservation_without_patch() {
+    #[tokio::test]
+    async fn translation_worker_checks_cancellation_before_durable_patch_commit() {
+        let _guard = pdfium_test_lock();
+        let temp = TempPipeline::new();
+        let source = fixture_path("simple-one-page.pdf");
+        let handle = DocumentHandle::open(shared_pdfium(), &source).expect("document handle");
+        let scheduler = test_scheduler(&temp, &handle, "run-cancel-before-patch-commit");
+        let page_graph_store = test_page_graph_store(&temp, &handle);
+        let patch_store = TranslationPatchStore::new(
+            &temp.root.join("translations"),
+            handle.source_fingerprint(),
+            "zh-CN",
+        )
+        .expect("patch store");
+        let mut timestamp = 10u64;
+        extract_test_page(&handle, &scheduler, &page_graph_store, &mut timestamp);
+        let worker =
+            PdfV3TranslationWorker::new(&scheduler, &page_graph_store, &patch_store, "owner-a")
+                .expect("translation worker");
+        let mut processor = TestTranslationProcessor {
+            behavior: TestTranslationBehavior::EmptyPatch {
+                renderer_version: None,
+            },
+            cancel_after_process: true,
+            cancelled: false,
+        };
+
+        let batch = worker
+            .run_batch(
+                1,
+                || {
+                    timestamp += 1;
+                    timestamp
+                },
+                &mut processor,
+            )
+            .await
+            .expect("translation batch");
+
+        assert_eq!(batch.failed_pages, 1);
+        assert!(patch_store
+            .snapshot()
+            .expect("patch snapshot")
+            .pages
+            .is_empty());
+        assert!(matches!(
+            batch.pages.as_slice(),
+            [PdfV3TranslationPageOutcome::Failed {
+                page_number: 1,
+                retryable: true,
+                ..
+            }]
+        ));
+    }
+
+    #[tokio::test]
+    async fn translation_worker_never_commits_a_failed_renderer_result() {
+        let _guard = pdfium_test_lock();
+        let temp = TempPipeline::new();
+        let source = fixture_path("simple-one-page.pdf");
+        let handle = DocumentHandle::open(shared_pdfium(), &source).expect("document handle");
+        let scheduler = test_scheduler(&temp, &handle, "run-renderer-failure");
+        let page_graph_store = test_page_graph_store(&temp, &handle);
+        let patch_store = TranslationPatchStore::new(
+            &temp.root.join("translations"),
+            handle.source_fingerprint(),
+            "zh-CN",
+        )
+        .expect("patch store");
+        let mut timestamp = 10u64;
+        extract_test_page(&handle, &scheduler, &page_graph_store, &mut timestamp);
+        let worker =
+            PdfV3TranslationWorker::new(&scheduler, &page_graph_store, &patch_store, "owner-a")
+                .expect("translation worker");
+        let mut processor = TestTranslationProcessor {
+            behavior: TestTranslationBehavior::Failed {
+                reason_code: "pdf-v3-translation-renderer-failed",
+                retryable: false,
+            },
+            cancel_after_process: false,
+            cancelled: false,
+        };
+
+        let batch = worker
+            .run_batch(
+                1,
+                || {
+                    timestamp += 1;
+                    timestamp
+                },
+                &mut processor,
+            )
+            .await
+            .expect("translation batch");
+
+        assert_eq!(batch.failed_pages, 1);
+        assert!(patch_store
+            .snapshot()
+            .expect("patch snapshot")
+            .pages
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn translation_worker_commits_explicit_preservation_without_patch() {
         let _guard = pdfium_test_lock();
         let temp = TempPipeline::new();
         let source = fixture_path("simple-one-page.pdf");
@@ -1067,6 +1263,13 @@ mod tests {
         let worker =
             PdfV3TranslationWorker::new(&scheduler, &page_graph_store, &patch_store, "owner-a")
                 .expect("translation worker");
+        let mut processor = TestTranslationProcessor {
+            behavior: TestTranslationBehavior::Preserved {
+                reason_code: "pdf-v3-unsupported-page",
+            },
+            cancel_after_process: false,
+            cancelled: false,
+        };
         let batch = worker
             .run_batch(
                 1,
@@ -1074,12 +1277,9 @@ mod tests {
                     timestamp += 1;
                     timestamp
                 },
-                |_page, _binding| {
-                    Ok(PdfV3TranslationPageResult::Preserved {
-                        reason_code: "pdf-v3-unsupported-page",
-                    })
-                },
+                &mut processor,
             )
+            .await
             .expect("translation batch");
 
         assert_eq!(batch.preserved_pages, 1);

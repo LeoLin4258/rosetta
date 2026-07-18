@@ -341,7 +341,11 @@ impl PageTreeTraversal<'_> {
                             page_number: current_page,
                             page_id: kid_id,
                             ancestor_page_tree_ids: child_ancestors.clone(),
-                            content_stream_ids: page_content_stream_ids(&kid_dictionary, kid_id)?,
+                            content_stream_ids: page_content_stream_ids(
+                                self.objects,
+                                &kid_dictionary,
+                                kid_id,
+                            )?,
                         };
                         if pages.insert(current_page, page).is_some() {
                             return Err(PdfPageIndexError::PageTreeNodeRepeated(kid_id));
@@ -405,23 +409,75 @@ fn page_tree_count(dictionary: &Dictionary, object_id: ObjectId) -> Result<u32, 
 }
 
 fn page_content_stream_ids(
+    objects: &dyn PdfObjectView,
     dictionary: &Dictionary,
     page_id: ObjectId,
 ) -> Result<Vec<ObjectId>, PdfPageIndexError> {
     let Ok(contents) = dictionary.get(b"Contents") else {
         return Ok(Vec::new());
     };
+    if matches!(contents, Object::Null) {
+        return Ok(Vec::new());
+    }
+    let mut stream_ids = Vec::new();
+    collect_page_content_stream_ids(
+        objects,
+        contents,
+        page_id,
+        &mut BTreeSet::new(),
+        &mut stream_ids,
+        0,
+    )?;
+    Ok(stream_ids)
+}
+
+fn collect_page_content_stream_ids(
+    objects: &dyn PdfObjectView,
+    contents: &Object,
+    page_id: ObjectId,
+    active_references: &mut BTreeSet<ObjectId>,
+    stream_ids: &mut Vec<ObjectId>,
+    depth: usize,
+) -> Result<(), PdfPageIndexError> {
+    if depth > MAX_PAGE_TREE_DEPTH {
+        return Err(PdfPageIndexError::PageContentsInvalid(page_id));
+    }
     match contents {
-        Object::Reference(id) => Ok(vec![*id]),
-        Object::Array(contents) => contents
-            .iter()
-            .map(|content| {
-                content
-                    .as_reference()
-                    .map_err(|_| PdfPageIndexError::PageContentsInvalid(page_id))
-            })
-            .collect(),
-        Object::Null => Ok(Vec::new()),
+        Object::Reference(object_id) => {
+            if !active_references.insert(*object_id) {
+                return Err(PdfPageIndexError::PageContentsInvalid(page_id));
+            }
+            let object = objects.object(*object_id)?;
+            match &object {
+                Object::Stream(_) => stream_ids.push(*object_id),
+                Object::Array(_) | Object::Reference(_) => collect_page_content_stream_ids(
+                    objects,
+                    &object,
+                    page_id,
+                    active_references,
+                    stream_ids,
+                    depth + 1,
+                )?,
+                Object::Null => {}
+                _ => return Err(PdfPageIndexError::PageContentsInvalid(page_id)),
+            }
+            active_references.remove(object_id);
+            Ok(())
+        }
+        Object::Array(contents) => {
+            for content in contents {
+                collect_page_content_stream_ids(
+                    objects,
+                    content,
+                    page_id,
+                    active_references,
+                    stream_ids,
+                    depth + 1,
+                )?;
+            }
+            Ok(())
+        }
+        Object::Null => Ok(()),
         _ => Err(PdfPageIndexError::PageContentsInvalid(page_id)),
     }
 }
@@ -560,6 +616,27 @@ mod tests {
     }
 
     #[test]
+    fn resolves_indirect_content_arrays_to_physical_stream_ids() {
+        let mut document = nested_page_tree_document();
+        document.objects.insert(
+            (25, 0),
+            Object::Array(vec![Object::Reference((21, 0)), Object::Reference((22, 0))]),
+        );
+        document
+            .get_object_mut((5, 0))
+            .and_then(Object::as_dict_mut)
+            .expect("page dictionary")
+            .set("Contents", Object::Reference((25, 0)));
+        document.max_id = 25;
+
+        let index = PdfPageIndex::resolve_page(&document, 2).expect("page index");
+        assert_eq!(
+            index.page(2).expect("page 2").content_stream_ids(),
+            &[(21, 0), (22, 0)]
+        );
+    }
+
+    #[test]
     fn rejects_out_of_bounds_and_page_tree_cycles() {
         let document = nested_page_tree_document();
         assert!(matches!(
@@ -622,7 +699,9 @@ mod tests {
         let first_index = PdfPageIndex::resolve(&source, &first_only).expect("first page index");
         assert_eq!(first_index.page_count(), 30);
         assert_eq!(first_index.selected_page_count(), 1);
-        assert!(source.cache_stats().expect("cache stats").source_loads <= 4);
+        // Resolving physical content streams adds only the selected page's
+        // indirect Contents objects; later page content remains untouched.
+        assert!(source.cache_stats().expect("cache stats").source_loads <= 16);
 
         let selected = PageSet::from_pages([1, 3, 30]).expect("sparse pages");
         let index = PdfPageIndex::resolve(&source, &selected).expect("sparse page index");
