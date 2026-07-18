@@ -3304,6 +3304,7 @@ name = "rosetta-app"
 version = "0.1.0-beta.22"
 dependencies = [
  "axum",
+ "flate2",
  "futures-util",
  "image",
  "libc",

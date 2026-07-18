@@ -148,3 +148,38 @@ cache. Repeated construction was 44.75 times slower on this worst-case tree.
 These results close the synthetic retained-memory and structural-complexity
 gate for native extraction/mapping. They do not cover translation, persistence,
 final export, UI work or complex real-world long-document corpus behavior.
+
+## Follow-Up: Durable PageGraph Extraction Worker
+
+The scheduler extraction worker now commits each reconciled PageGraph to its
+compressed artifact store before it commits scheduler extraction authority.
+The manual probe runs real-paper pages 1-10 through the complete durable path:
+
+```powershell
+cargo test --locked manual_windows_real_ten_page_extraction_pipeline_probe --lib -- --ignored --nocapture
+```
+
+| Stage | Time |
+| --- | ---: |
+| Complete worker batch | 3,432 ms |
+| Scheduler claims | 161,345 us |
+| Native reconciliation | 722,923 us |
+| PageGraph store | 2,357,095 us |
+| Streaming JSON + gzip | 2,116,120 us |
+| Scheduler commits | 159,069 us |
+
+| Disk measurement | Bytes |
+| --- | ---: |
+| Logical uncompressed PageGraphs | 37,855,795 |
+| Compressed artifact payloads | 3,323,703 |
+| Complete PageGraph store | 3,327,910 |
+| Scheduler directory | 4,034 |
+
+Fast deterministic gzip retains 8.78% of the raw JSON size. The measured native
+reconciliation remains below one second; durable serialization/compression is
+now the largest stage. Gzip level 6 was rejected after it reduced payloads to
+2,010,386 bytes but increased the batch to 5,314 ms.
+
+The current result is still a debug diagnostic with synchronous file durability.
+A compact PageGraph disk schema should be evaluated only if release-profile
+corpus measurements show that the 2.36-second store stage remains material.

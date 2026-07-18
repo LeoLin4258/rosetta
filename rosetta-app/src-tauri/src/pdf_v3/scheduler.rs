@@ -42,6 +42,15 @@ pub(crate) struct PdfV3RunSpec {
     pub renderer_version: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PdfV3ExtractionBinding {
+    pub source_fingerprint: String,
+    pub source_page_count: u32,
+    pub requested_pages: PageSet,
+    pub engine_version: String,
+    pub page_graph_schema_version: u32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PdfV3SchedulerCapacity {
@@ -542,6 +551,18 @@ impl DurablePdfV3Scheduler {
         let _guard = self.lock()?;
         let manifest = self.read_manifest()?;
         Ok((manifest.run_state, manifest.summary))
+    }
+
+    pub(crate) fn extraction_binding(&self) -> Result<PdfV3ExtractionBinding, PdfV3SchedulerError> {
+        let _guard = self.lock()?;
+        let manifest = self.read_manifest()?;
+        Ok(PdfV3ExtractionBinding {
+            source_fingerprint: manifest.source_fingerprint.clone(),
+            source_page_count: manifest.source_page_count,
+            requested_pages: requested_pages(&manifest)?,
+            engine_version: manifest.engine_version.clone(),
+            page_graph_schema_version: manifest.page_graph_schema_version,
+        })
     }
 
     pub(crate) fn page_window(

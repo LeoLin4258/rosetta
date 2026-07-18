@@ -61,6 +61,10 @@ Current progress:
   1,000 pages in 51 ms, 286 ms and 681 ms respectively. The 1,000-page run
   peaked at about 23.7 MB working set and ended with 512 cached source objects /
   521,630 estimated bytes; page snapshots and PageGraphs were not retained.
+- A compressed PageGraph store now provides real extraction authority for the
+  durable scheduler. On real-paper pages 1-10 it reduced 37.86 MB of logical
+  JSON to a 3.33 MB store; the complete debug extraction/store/scheduler worker
+  took 3.43 seconds, including 0.72 seconds of native reconciliation.
 - PDFium and source mapping now recursively traverse Form XObjects in invocation order. Form resource dictionaries take priority with parent-context fallback, text-show IDs include the invocation path, and validated shared Form operands retain structured provenance for invocation-local copy-on-write.
 - On the real paper page, recursive traversal aligns 258 / 258 text objects/shows across 27 Form invocations and 5 unique Form streams. The original 242 top-level objects remain mapped; 16 Type3 Form objects are explicitly preserved because no safe source decoder exists.
 - The identity renderer now performs a read-only recursive Form discovery pass and rewrites every unique page/Form content stream exactly once. Shared Form invocation paths are reported separately from underlying stream ownership.
@@ -595,8 +599,9 @@ cancellation before commit, and atomically replaces the destination after file
 sync. The writer no longer owns source bytes or the previous object graph. The
   production page renderer now reads page trees, resources, content streams and
   cross-page ownership through lazy views and a reusable target-bounded index.
-  Scheduler recovery and job-level stress validation remain pending before the
-  complete app workflow is end-to-end resumable. Font registry and page renderer mutation are explicitly staged
+  The scheduler extraction worker now commits compressed PageGraph authority
+  before state, but translation recovery and job-level stress validation remain
+  pending before the complete app workflow is end-to-end resumable. Font registry and page renderer mutation are explicitly staged
 as merge-checked `PdfObjectDelta` values, and final multi-page export no longer
 applies those deltas to its source traversal document. The incremental writer
 consumes the accumulated delta directly; whole-object-graph comparison is no
@@ -660,8 +665,10 @@ crash are promoted and invalid completion state is not trusted. A 1,000-page
 Windows AMD test uses 16 shards, keeps each shard at or below 64 records and
 proves claim limits without ten-page scheduling semantics. The isolated native
 pipeline also extracts, maps and reconciles a synthetic 1,000-page text PDF in
-681 ms with about 23.7 MB peak working set. Worker/Tauri/UI integration and a
-real complex 500/1,000-page end-to-end translation/export remain pending.
+681 ms with about 23.7 MB peak working set. A source-bound sequential worker now
+claims exact pages, persists compressed validated PageGraphs and only then
+commits extraction authority. Translation worker integration, Tauri/UI control
+and a real complex 500/1,000-page end-to-end translation/export remain pending.
 
 ### Phase 7 — Component control plane
 

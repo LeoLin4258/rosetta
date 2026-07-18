@@ -753,6 +753,36 @@ provenance；译文编码使用 Rosetta 管理的统一字体家族。
 - 普通诊断只记录 asset ID、font fingerprint、glyph/subset byte count、coverage 状态和
   耗时，不记录 translated text 或完整 codepoint 列表。
 
+## PDF v3 PageGraph Artifact Store
+
+PDF v3 `PageGraph` durable authority 独立于 scheduler metadata、TranslationPatch
+Store 和 Render Cache。beta 阶段不迁移旧 PDF extraction artifacts。
+
+约定：
+
+- store manifest 必须绑定 source fingerprint、source page count、native engine
+  version、PageGraph schema version 和固定 64-page shard width；任一 identity 不符
+  不得打开或复用该 store。
+- 每页只有一个 immutable `*.pagegraph.json.gz` artifact。gzip 必须使用固定 mtime=0
+  和受控 compression level；artifact ID 是完整 compressed bytes 的 SHA-256，filename
+  必须包含 exact 1-based page number 和 digest。
+- JSON 必须通过有 64 MiB 上限的 writer 直接流入 gzip，不能先保留 document-wide
+  PageGraph/JSON buffer。compressed artifact 也必须独立限制为 64 MiB；解压读取必须使用
+  `take(limit + 1)` 防止 compression bomb。
+- durable load 必须验证 compressed digest、gzip integrity、decompressed size、PageGraph
+  schema/page、由 source fingerprint 推导的 source-page hash、reconciled status、atom/style
+  identity 和 shard metadata。任一失败的 artifact 不得进入 recovery inventory。
+- artifact file 是 extraction content authority；64-page shard 只是 bounded rebuildable
+  index。repair 必须逐个读取 artifact 并重建 shard，不得同时保留多个 PageGraph。
+- worker construction 必须验证 scheduler binding、DocumentHandle 和 PageGraphStore 的
+  source/page count/engine/schema identity，并为 scheduler exact PageSet 构造一次 reusable
+  mapping index。
+- sequential worker 每次只 claim 一个 extraction lease；只有 PageGraph artifact 原子提交
+  成功后才能 commit scheduler extraction authority，然后才可 claim 下一页。artifact 已提交但
+  scheduler commit 中断时，stale-owner recovery 必须从 validated inventory 提升该页。
+- deterministic reconciliation failure 进入 non-retryable extraction failure；store/I/O
+  failure 进入 retryable failure。reason code 不得包含 source text、translated text 或路径。
+
 ## PDF v3 Durable Scheduler
 
 PDF v3 长文档调度状态独立于 legacy `PdfTranslationRun`、TranslationPatch Store 和
