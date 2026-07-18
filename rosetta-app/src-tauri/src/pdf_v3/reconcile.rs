@@ -447,6 +447,14 @@ mod tests {
         let mut object_identity_us = 0u64;
         let mut character_geometry_ms = 0u64;
         let mut mapping_ms = Vec::new();
+        let mut mapping_page_lookup_us = 0u64;
+        let mut mapping_collect_us = 0u64;
+        let mut mapping_stream_decode_us = 0u64;
+        let mut mapping_font_inspection_us = 0u64;
+        let mut mapping_text_show_decode_us = 0u64;
+        let mut mapping_object_prepare_us = 0u64;
+        let mut mapping_pair_us = 0u64;
+        let mut mapping_stream_decode_cache_hits = 0usize;
         let mut reconciliation_ms = Vec::new();
         let mut atom_count = 0usize;
         for page_number in 1..=10 {
@@ -464,6 +472,14 @@ mod tests {
             let mapping = map_page_atoms_to_content_operands_from_snapshot(&handle, &snapshot)
                 .unwrap_or_else(|error| panic!("page {page_number} mapping: {error}"));
             mapping_ms.push(mapping_started.elapsed().as_millis());
+            mapping_page_lookup_us += mapping.timing.page_lookup_us;
+            mapping_collect_us += mapping.timing.collect_text_shows_us;
+            mapping_stream_decode_us += mapping.timing.stream_decode_us;
+            mapping_font_inspection_us += mapping.timing.font_inspection_us;
+            mapping_text_show_decode_us += mapping.timing.text_show_decode_us;
+            mapping_object_prepare_us += mapping.timing.object_prepare_us;
+            mapping_pair_us += mapping.timing.pair_mappings_us;
+            mapping_stream_decode_cache_hits += mapping.timing.stream_decode_cache_hits;
             let reconciliation_started = Instant::now();
             let page = reconcile_page_graph(snapshot.page_graph, mapping);
             reconciliation_ms.push(reconciliation_started.elapsed().as_millis());
@@ -474,7 +490,7 @@ mod tests {
         let mut sorted_ms = page_ms.clone();
         sorted_ms.sort_unstable();
         println!(
-            "pdf-v3 ten-page source_bytes={} source_pages={} open={}ms total={}ms median={}ms min={}ms max={}ms extraction_total={}ms setup={}ms object_snapshot={}ms object_text={}us object_identity={}us character_geometry={}ms mapping_total={}ms reconciliation_total={}ms atoms={} page_ms={:?}",
+            "pdf-v3 ten-page source_bytes={} source_pages={} open={}ms total={}ms median={}ms min={}ms max={}ms extraction_total={}ms setup={}ms object_snapshot={}ms object_text={}us object_identity={}us character_geometry={}ms mapping_total={}ms mapping_page_lookup={}us mapping_collect={}us mapping_stream_decode={}us mapping_stream_decode_cache_hits={} mapping_font_inspection={}us mapping_text_show_decode={}us mapping_object_prepare={}us mapping_pair={}us reconciliation_total={}ms atoms={} page_ms={:?}",
             handle.source_bytes(),
             handle.page_count(),
             handle.open_elapsed().as_millis(),
@@ -489,6 +505,14 @@ mod tests {
             object_identity_us,
             character_geometry_ms,
             mapping_ms.iter().sum::<u128>(),
+            mapping_page_lookup_us,
+            mapping_collect_us,
+            mapping_stream_decode_us,
+            mapping_stream_decode_cache_hits,
+            mapping_font_inspection_us,
+            mapping_text_show_decode_us,
+            mapping_object_prepare_us,
+            mapping_pair_us,
             reconciliation_ms.iter().sum::<u128>(),
             atom_count,
             page_ms,

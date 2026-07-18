@@ -37,6 +37,15 @@ Current progress:
   lopdf/PDFium from the immutable source path, removing one source-sized Rust
   byte-vector lifetime. The complete lopdf document remains a later
   long-document extraction-memory boundary.
+- `DocumentHandle` now captures lopdf page object IDs once, so an exact page
+  request no longer repeats a complete page-tree walk. Recursive mapping caches
+  immutable parsed streams only for the active page and still replays every
+  invocation's state, resources and provenance independently.
+- After page-local stream reuse and allocation-free hexadecimal digest output,
+  three 10-page Windows AMD debug runs measured 717-797 ms total and 373-415 ms
+  for content mapping, with 219 repeated stream decodes avoided per run. The
+  cache is deliberately not document-wide until a hard retained-memory budget
+  is measured.
 - PDFium and source mapping now recursively traverse Form XObjects in invocation order. Form resource dictionaries take priority with parent-context fallback, text-show IDs include the invocation path, and validated shared Form operands retain structured provenance for invocation-local copy-on-write.
 - On the real paper page, recursive traversal aligns 258 / 258 text objects/shows across 27 Form invocations and 5 unique Form streams. The original 242 top-level objects remain mapped; 16 Type3 Form objects are explicitly preserved because no safe source decoder exists.
 - The identity renderer now performs a read-only recursive Form discovery pass and rewrites every unique page/Form content stream exactly once. Shared Form invocation paths are reported separately from underlying stream ownership.
@@ -503,8 +512,9 @@ resources and structured invocation provenance are implemented. Shared-stream
 status is retained only after the ordinary mapping gates pass, allowing the
 renderer to choose invocation-local copy-on-write. PDFium character-to-object
 ownership is now exact and single-pass through the narrow vendored adapter.
-Type3 decoding and migration of extraction away from the complete lopdf
-document remain pending.
+Exact lopdf page lookup is indexed once and parsed content reuse remains bounded
+to one active page. Type3 decoding and migration of extraction away from the
+complete lopdf document remain pending.
 
 ### Phase 3 — Identity renderer
 

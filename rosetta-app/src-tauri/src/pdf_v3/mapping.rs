@@ -2,7 +2,8 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fmt,
     path::Path,
-    time::Instant,
+    sync::Arc,
+    time::{Duration, Instant},
 };
 
 use lopdf::{content::Content, Dictionary, Document, Encoding, Object, ObjectId, Stream};
@@ -205,6 +206,20 @@ pub(crate) struct PageOperandMappingResult {
     pub mappings: Vec<TextObjectOperandMapping>,
     pub fallback_reasons: Vec<String>,
     pub elapsed_ms: u64,
+    #[serde(skip_serializing)]
+    pub timing: PageOperandMappingTiming,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PageOperandMappingTiming {
+    pub page_lookup_us: u64,
+    pub collect_text_shows_us: u64,
+    pub stream_decode_us: u64,
+    pub font_inspection_us: u64,
+    pub text_show_decode_us: u64,
+    pub object_prepare_us: u64,
+    pub pair_mappings_us: u64,
+    pub stream_decode_cache_hits: usize,
 }
 
 #[derive(Debug)]
@@ -377,6 +392,10 @@ struct CollectedTextShows {
     unique_form_stream_count: usize,
     shared_form_stream_count: usize,
     fallback_reasons: BTreeSet<String>,
+    stream_decode_elapsed: Duration,
+    font_inspection_elapsed: Duration,
+    text_show_decode_elapsed: Duration,
+    stream_decode_cache_hits: usize,
 }
 
 #[derive(Default)]
@@ -387,6 +406,11 @@ struct TextShowCollection {
     form_invocation_counts: HashMap<ObjectId, usize>,
     active_form_streams: HashSet<ObjectId>,
     fallback_reasons: BTreeSet<String>,
+    stream_decode_elapsed: Duration,
+    font_inspection_elapsed: Duration,
+    text_show_decode_elapsed: Duration,
+    decoded_streams: HashMap<ObjectId, Arc<Content>>,
+    stream_decode_cache_hits: usize,
 }
 
 #[derive(Clone)]
@@ -435,25 +459,31 @@ pub(crate) fn map_page_atoms_to_content_operands_from_snapshot(
     let document = handle.lopdf_document();
     let page_number = snapshot.page_graph.page_number;
 
-    let pages = document.get_pages();
+    let page_lookup_started = Instant::now();
     let source_page_count = handle.page_count();
     let page_id =
-        pages
-            .get(&page_number)
-            .copied()
+        handle
+            .lopdf_page_id(page_number)
             .ok_or(PageOperandMappingError::PageOutOfBounds {
                 page: page_number,
                 page_count: source_page_count,
             })?;
+    let page_lookup_us = elapsed_us(page_lookup_started.elapsed());
+    let collect_text_shows_started = Instant::now();
     let collected_text_shows = collect_text_shows(&document, page_id, page_number)?;
+    let collect_text_shows_us = elapsed_us(collect_text_shows_started.elapsed());
     let content_stream_count = collected_text_shows.content_stream_count;
     let form_xobject_invocation_count = collected_text_shows.form_xobject_invocation_count;
     let unique_form_stream_count = collected_text_shows.unique_form_stream_count;
     let shared_form_stream_count = collected_text_shows.shared_form_stream_count;
     let font_resources = collected_text_shows.font_resources;
     let raw_text_shows = collected_text_shows.text_shows;
+    let stream_decode_us = elapsed_us(collected_text_shows.stream_decode_elapsed);
+    let font_inspection_us = elapsed_us(collected_text_shows.font_inspection_elapsed);
+    let text_show_decode_us = elapsed_us(collected_text_shows.text_show_decode_elapsed);
     let pdfium_page_object_count = snapshot.page_object_count;
     let pdfium_form_object_count = snapshot.form_object_count;
+    let object_prepare_started = Instant::now();
     let raw_text_objects = snapshot
         .text_objects
         .iter()
@@ -478,6 +508,7 @@ pub(crate) fn map_page_atoms_to_content_operands_from_snapshot(
             }
         })
         .collect::<Vec<_>>();
+    let object_prepare_us = elapsed_us(object_prepare_started.elapsed());
 
     let ordinal_alignment_valid = raw_text_objects.len() == raw_text_shows.len();
     let paired_mapping_count = raw_text_objects.len().min(raw_text_shows.len());
@@ -490,6 +521,7 @@ pub(crate) fn map_page_atoms_to_content_operands_from_snapshot(
         fallback_reasons.insert("form-xobject-invocation-count-mismatch".to_string());
     }
 
+    let pair_mappings_started = Instant::now();
     let mut mappings = Vec::with_capacity(paired_mapping_count);
     for (text_object, text_show) in raw_text_objects.iter().zip(raw_text_shows.iter()) {
         let font_name_match = text_show
@@ -585,6 +617,7 @@ pub(crate) fn map_page_atoms_to_content_operands_from_snapshot(
             decoded_units: text_show.decoded_units.clone(),
         });
     }
+    let pair_mappings_us = elapsed_us(pair_mappings_started.elapsed());
 
     for show in &raw_text_shows {
         if show.inspection.decode_status != TextShowDecodeStatus::Decoded {
@@ -630,6 +663,16 @@ pub(crate) fn map_page_atoms_to_content_operands_from_snapshot(
         mappings,
         fallback_reasons: fallback_reasons.into_iter().collect(),
         elapsed_ms: started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+        timing: PageOperandMappingTiming {
+            page_lookup_us,
+            collect_text_shows_us,
+            stream_decode_us,
+            font_inspection_us,
+            text_show_decode_us,
+            object_prepare_us,
+            pair_mappings_us,
+            stream_decode_cache_hits: collected_text_shows.stream_decode_cache_hits,
+        },
     })
 }
 
@@ -956,6 +999,10 @@ fn collect_text_shows(
         unique_form_stream_count: collection.form_invocation_counts.len(),
         shared_form_stream_count: shared_form_streams.len(),
         fallback_reasons: collection.fallback_reasons,
+        stream_decode_elapsed: collection.stream_decode_elapsed,
+        font_inspection_elapsed: collection.font_inspection_elapsed,
+        text_show_decode_elapsed: collection.text_show_decode_elapsed,
+        stream_decode_cache_hits: collection.stream_decode_cache_hits,
     })
 }
 
@@ -970,6 +1017,7 @@ fn collect_stream_text_shows<'a>(
     collection: &mut TextShowCollection,
 ) -> Result<(), PageOperandMappingError> {
     collection.visited_streams.insert(stream_id);
+    let stream_decode_started = Instant::now();
     let stream = document
         .get_object(stream_id)
         .and_then(Object::as_stream)
@@ -978,21 +1026,31 @@ fn collect_stream_text_shows<'a>(
             generation: stream_id.1,
             message: error.to_string(),
         })?;
-    let source_content =
-        stream
-            .get_plain_content()
-            .map_err(|error| PageOperandMappingError::StreamRead {
+    let content = if let Some(content) = collection.decoded_streams.get(&stream_id) {
+        collection.stream_decode_cache_hits += 1;
+        Arc::clone(content)
+    } else {
+        let source_content =
+            stream
+                .get_plain_content()
+                .map_err(|error| PageOperandMappingError::StreamRead {
+                    object_number: stream_id.0,
+                    generation: stream_id.1,
+                    message: error.to_string(),
+                })?;
+        let content = Arc::new(Content::decode(&source_content).map_err(|error| {
+            PageOperandMappingError::ContentDecode {
                 object_number: stream_id.0,
                 generation: stream_id.1,
                 message: error.to_string(),
-            })?;
-    let content = Content::decode(&source_content).map_err(|error| {
-        PageOperandMappingError::ContentDecode {
-            object_number: stream_id.0,
-            generation: stream_id.1,
-            message: error.to_string(),
-        }
-    })?;
+            }
+        })?);
+        collection
+            .decoded_streams
+            .insert(stream_id, Arc::clone(&content));
+        collection.stream_decode_elapsed += stream_decode_started.elapsed();
+        content
+    };
     let scope_id = if invocation_path.is_empty() {
         "page".to_string()
     } else {
@@ -1036,7 +1094,9 @@ fn collect_stream_text_shows<'a>(
 
         if matches!(operation.operator.as_str(), "Tj" | "TJ" | "'" | "\"") {
             if local_fonts.is_none() {
+                let font_inspection_started = Instant::now();
                 let inspected = inspect_font_resources(document, resources, &scope_id)?;
+                collection.font_inspection_elapsed += font_inspection_started.elapsed();
                 for font in &inspected.0 {
                     collection
                         .font_resources
@@ -1050,6 +1110,7 @@ fn collect_stream_text_shows<'a>(
                     "font inspection was not initialized for a text-show operation".to_string(),
                 )
             })?;
+            let text_show_decode_started = Instant::now();
             let operands = text_operands(operation, page_number, stream_id, operation_index);
             let font_decoder = state.current_font.as_deref().and_then(|font| {
                 decoders
@@ -1075,6 +1136,7 @@ fn collect_stream_text_shows<'a>(
             let encoded_byte_hash = operand_hash(&operands);
             let decoded_char_count = decoded_text.as_ref().map(|text| text.chars().count());
             let decoded_text_hash = decoded_text.as_ref().map(|text| text_hash(text));
+            collection.text_show_decode_elapsed += text_show_decode_started.elapsed();
             collection.text_shows.push(RawTextShow {
                 inspection: TextShowInspection {
                     text_show_id: invoked_text_show_id(
@@ -1206,12 +1268,8 @@ fn invoked_text_show_id(
         hasher.update(step.form_stream_object_number.to_le_bytes());
         hasher.update(step.form_stream_generation.to_le_bytes());
     }
-    let invocation_hash = hasher
-        .finalize()
-        .iter()
-        .take(8)
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
+    let invocation_hash = hasher.finalize();
+    let invocation_hash = hex_digest(&invocation_hash[..8]);
     format!("{base}-inv-{invocation_hash}")
 }
 
@@ -1380,17 +1438,27 @@ fn first_non_whitespace_difference(left: &str, right: &str) -> (Option<u32>, Opt
     }
 }
 
+fn elapsed_us(duration: Duration) -> u64 {
+    duration.as_micros().min(u128::from(u64::MAX)) as u64
+}
+
 fn operand_hash(operands: &[RawTextOperand<'_>]) -> String {
     let mut hasher = Sha256::new();
     for operand in operands {
         hasher.update((operand.encoded.len() as u64).to_le_bytes());
         hasher.update(operand.encoded);
     }
-    hasher
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    hex_digest(hasher.finalize().as_slice())
+}
+
+fn hex_digest(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    output
 }
 
 #[cfg(test)]
@@ -1480,6 +1548,7 @@ mod tests {
         assert_eq!(result.unique_form_stream_count, 5);
         assert_eq!(result.shared_form_stream_count, 4);
         assert_eq!(result.content_stream_count, 7);
+        assert!(result.timing.stream_decode_cache_hits > 0);
         let form_text_shows = result
             .text_shows
             .iter()
@@ -1527,6 +1596,8 @@ mod tests {
         assert!(!json.contains("objectText\""));
         assert!(json.contains("decodedTextHash"));
         assert!(json.contains("objectTextHash"));
+        assert!(!json.contains("\"timing\""));
+        assert!(!json.contains("streamDecodeCacheHits"));
     }
 
     #[test]

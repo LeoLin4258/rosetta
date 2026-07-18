@@ -240,11 +240,17 @@ fn probe_identity(
 pub(super) fn text_hash(value: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(value.as_bytes());
-    hasher
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    hex_digest(hasher.finalize().as_slice())
+}
+
+fn hex_digest(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    output
 }
 
 pub(super) fn first_text_difference_index(source: &str, output: &str) -> Option<usize> {
@@ -335,10 +341,18 @@ pub(super) fn compare_images(
 
 #[cfg(test)]
 mod tests {
-    use super::{probe_identity_text_replacement, probe_save_roundtrip};
+    use super::{probe_identity_text_replacement, probe_save_roundtrip, text_hash};
     use crate::rosetta_jobs::formats::pdf::test_helpers::{
         fixture_path, pdfium_test_lock, shared_pdfium,
     };
+
+    #[test]
+    fn text_hash_keeps_canonical_lowercase_sha256() {
+        assert_eq!(
+            text_hash("abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
 
     #[test]
     fn simple_pdf_save_roundtrip_is_pixel_exact() {

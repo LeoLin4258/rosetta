@@ -62,3 +62,23 @@ invocation provenance or atomic reconciliation.
 The result is strong evidence for the current fixture only. The full PDF v3
 acceptance matrix still requires release-profile corpus measurements, malformed
 and duplicate-layer cases, and 100/500/1,000-page memory and throughput runs.
+
+## Follow-Up: Content Mapping
+
+The next pass retained parsed immutable content streams for one page mapping,
+indexed lopdf page IDs once per document and removed per-byte formatting
+allocations from SHA-256 ID encoding. It did not retain parsed content across
+pages.
+
+Three follow-up debug runs measured:
+
+| Measurement | Run 1 | Run 2 | Run 3 |
+| --- | ---: | ---: | ---: |
+| Ten-page total | 767 ms | 717 ms | 797 ms |
+| Content operand mapping | 400 ms | 373 ms | 415 ms |
+| Aggregate page lookup | 29 us | 30 us | 30 us |
+| Page-local stream cache hits | 219 | 219 | 219 |
+
+Compared by three-run median, content mapping moved from 440 ms in the first
+single-pass result to 400 ms in the follow-up, about 9% faster. Total median
+moved from 808 ms to 767 ms. Run-to-run noise remains material at this scale.

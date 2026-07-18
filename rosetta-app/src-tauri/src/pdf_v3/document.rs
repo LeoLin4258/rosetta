@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use lopdf::Document;
+use lopdf::{Document, ObjectId};
 use pdfium_render::prelude::{PdfDocument, Pdfium};
 use sha2::{Digest, Sha256};
 
@@ -45,6 +45,7 @@ pub(crate) struct DocumentHandle<'pdfium> {
     page_count: u32,
     open_elapsed: Duration,
     lopdf_document: Document,
+    lopdf_page_ids: Vec<ObjectId>,
     pdfium_document: PdfDocument<'pdfium>,
 }
 
@@ -62,7 +63,9 @@ impl<'pdfium> DocumentHandle<'pdfium> {
         if lopdf_document.is_encrypted() {
             return Err(DocumentHandleError::EncryptedDocument);
         }
-        let lopdf_page_count = lopdf_document.get_pages().len() as u32;
+        let lopdf_pages = lopdf_document.get_pages();
+        let lopdf_page_count = lopdf_pages.len() as u32;
+        let lopdf_page_ids = lopdf_pages.into_values().collect();
         let pdfium_document = pdfium
             .load_pdf_from_file(&source_path, None)
             .map_err(|error| {
@@ -83,6 +86,7 @@ impl<'pdfium> DocumentHandle<'pdfium> {
             page_count: lopdf_page_count,
             open_elapsed: started.elapsed(),
             lopdf_document,
+            lopdf_page_ids,
             pdfium_document,
         })
     }
@@ -109,6 +113,11 @@ impl<'pdfium> DocumentHandle<'pdfium> {
 
     pub(crate) fn lopdf_document(&self) -> &Document {
         &self.lopdf_document
+    }
+
+    pub(crate) fn lopdf_page_id(&self, page_number: u32) -> Option<ObjectId> {
+        let index = usize::try_from(page_number.checked_sub(1)?).ok()?;
+        self.lopdf_page_ids.get(index).copied()
     }
 
     pub(crate) fn pdfium_document(&self) -> &PdfDocument<'pdfium> {
@@ -166,6 +175,12 @@ mod tests {
         assert!(handle.source_fingerprint().starts_with("sha256:"));
         assert_eq!(handle.source_fingerprint().len(), 71);
         assert_eq!(handle.lopdf_document().get_pages().len(), 1);
+        assert_eq!(
+            handle.lopdf_page_id(1),
+            handle.lopdf_document().get_pages().get(&1).copied()
+        );
+        assert_eq!(handle.lopdf_page_id(0), None);
+        assert_eq!(handle.lopdf_page_id(2), None);
         assert_eq!(handle.pdfium_document().pages().len(), 1);
     }
 
@@ -179,5 +194,23 @@ mod tests {
         assert_eq!(first.source_fingerprint(), second.source_fingerprint());
         assert_eq!(first.source_bytes(), second.source_bytes());
         assert_eq!(first.page_count(), second.page_count());
+    }
+
+    #[test]
+    fn indexes_lopdf_pages_for_constant_time_random_access() {
+        let _guard = pdfium_test_lock();
+        let source = fixture_path("2305.13048v2.pdf");
+        let handle = DocumentHandle::open(shared_pdfium(), &source).expect("document handle");
+        let expected = handle.lopdf_document().get_pages();
+
+        assert_eq!(handle.page_count(), 30);
+        for page_number in [1, 15, 30] {
+            assert_eq!(
+                handle.lopdf_page_id(page_number),
+                expected.get(&page_number).copied()
+            );
+        }
+        assert_eq!(handle.lopdf_page_id(0), None);
+        assert_eq!(handle.lopdf_page_id(31), None);
     }
 }
