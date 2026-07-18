@@ -358,7 +358,7 @@ impl TranslationFontAsset {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct UnifiedTranslationFontPlan {
     characters: BTreeSet<char>,
 }
@@ -369,8 +369,28 @@ impl UnifiedTranslationFontPlan {
             .extend(text.chars().filter(|character| !character.is_control()));
     }
 
+    pub(crate) fn try_add_text(
+        &mut self,
+        text: &str,
+        maximum_characters: usize,
+    ) -> Result<(), usize> {
+        let mut next = self.characters.clone();
+        for character in text.chars().filter(|character| !character.is_control()) {
+            next.insert(character);
+            if next.len() > maximum_characters {
+                return Err(next.len());
+            }
+        }
+        self.characters = next;
+        Ok(())
+    }
+
     pub(crate) fn character_count(&self) -> usize {
         self.characters.len()
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.characters.is_empty()
     }
 }
 
@@ -1054,10 +1074,21 @@ mod tests {
         plan.add_text("Rosetta unified font 123");
         let prepared = asset.prepare(&plan).expect("prepared subset");
         let repeated = asset.prepare(&plan).expect("repeated subset");
+        let mut larger_plan = plan.clone();
+        larger_plan.add_text("additional glyph coverage XYZ");
+        let larger = asset.prepare(&larger_plan).expect("larger subset");
         assert_eq!(plan.character_count() + 1, prepared.glyph_count());
         assert!(prepared.subset_bytes.len() < asset.byte_count());
         assert_eq!(prepared.subset_name, repeated.subset_name);
         assert_eq!(prepared.subset_bytes, repeated.subset_bytes);
+        assert_eq!(
+            prepared
+                .text_advance_1000("Rosetta unified font 123")
+                .expect("page subset metrics"),
+            larger
+                .text_advance_1000("Rosetta unified font 123")
+                .expect("document subset metrics")
+        );
 
         let source = fs::read(fixture_path("2305.13048v2.pdf")).expect("source PDF");
         let mut document = Document::load_mem(&source).expect("source document");

@@ -11,11 +11,8 @@ use std::{
 };
 
 use crate::pdf_v3::{
-    font::{
-        stage_document_translation_font_registry, DocumentTranslationFontRegistry,
-        PreparedTranslationFont, TranslationFontError, TranslationFontWeight,
-    },
-    object_delta::PdfObjectDelta,
+    font::{stage_document_translation_font_registry, TranslationFontAsset, TranslationFontWeight},
+    font_plan::TranslationFontCharacterPlan,
     ownership::{PdfStreamOwnershipError, PdfStreamOwnershipIndex},
     page_index::{PdfPageIndex, PdfPageIndexError},
     patch_renderer::{
@@ -45,7 +42,7 @@ const PROVIDER_FAILURE_REASON: &str = "pdf-v3-translation-provider-failed";
 const CANCELLED_REASON: &str = "pdf-v3-translation-cancelled";
 const RENDERER_FAILURE_REASON: &str = "pdf-v3-translation-renderer-failed";
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct PdfV3LocalPageProcessorConfig {
     pub source_fingerprint: String,
     pub provider: PdfUnitProviderConfig,
@@ -57,8 +54,8 @@ pub(crate) struct PdfV3LocalPageProcessorConfig {
     pub renderer_version: String,
     pub render_policy: TranslationPatchRenderPolicy,
     pub cancel: Arc<AtomicBool>,
-    pub regular_font: PreparedTranslationFont,
-    pub bold_font: PreparedTranslationFont,
+    pub regular_font: TranslationFontAsset,
+    pub bold_font: Option<TranslationFontAsset>,
 }
 
 #[derive(Debug)]
@@ -74,7 +71,6 @@ pub(crate) enum PdfV3LocalPageProcessorConfigError {
         expected: TranslationFontWeight,
         actual: TranslationFontWeight,
     },
-    Font(TranslationFontError),
     PageIndex(PdfPageIndexError),
     Ownership(PdfStreamOwnershipError),
 }
@@ -103,7 +99,6 @@ impl fmt::Display for PdfV3LocalPageProcessorConfigError {
                 formatter,
                 "PDF v3 page processor {field} has weight {actual:?}; expected {expected:?}"
             ),
-            Self::Font(error) => error.fmt(formatter),
             Self::PageIndex(error) => error.fmt(formatter),
             Self::Ownership(error) => error.fmt(formatter),
         }
@@ -111,12 +106,6 @@ impl fmt::Display for PdfV3LocalPageProcessorConfigError {
 }
 
 impl std::error::Error for PdfV3LocalPageProcessorConfigError {}
-
-impl From<TranslationFontError> for PdfV3LocalPageProcessorConfigError {
-    fn from(value: TranslationFontError) -> Self {
-        Self::Font(value)
-    }
-}
 
 impl From<PdfPageIndexError> for PdfV3LocalPageProcessorConfigError {
     fn from(value: PdfPageIndexError) -> Self {
@@ -135,8 +124,6 @@ pub(crate) struct PdfV3LocalPageProcessor<'a> {
     config: PdfV3LocalPageProcessorConfig,
     page_index: PdfPageIndex,
     ownership_index: PdfStreamOwnershipIndex,
-    font_registry: DocumentTranslationFontRegistry,
-    accumulated_delta: PdfObjectDelta,
 }
 
 impl<'a> PdfV3LocalPageProcessor<'a> {
@@ -151,23 +138,12 @@ impl<'a> PdfV3LocalPageProcessor<'a> {
             source_objects,
             &page_index.selected_content_stream_ids(),
         )?;
-        let staged_fonts = stage_document_translation_font_registry(
-            source_objects,
-            &[&config.regular_font, &config.bold_font],
-        )?;
         Ok(Self {
             source_objects,
             config,
             page_index,
             ownership_index,
-            font_registry: staged_fonts.registry,
-            accumulated_delta: staged_fonts.object_delta,
         })
-    }
-
-    #[cfg(test)]
-    pub(crate) fn accumulated_object_count(&self) -> usize {
-        self.accumulated_delta.object_count()
     }
 
     async fn process(
@@ -235,25 +211,31 @@ impl<'a> PdfV3LocalPageProcessor<'a> {
         )
         .map_err(|_| process_failure(INVALID_TRANSLATION_PLAN_REASON, false))?;
 
-        let accumulated = PdfObjectOverlay::new(self.source_objects, &self.accumulated_delta);
+        let font_plan = TranslationFontCharacterPlan::for_pending_patch(page, &pending_patch)
+            .map_err(|_| process_failure(RENDERER_FAILURE_REASON, false))?;
+        let prepared_fonts = font_plan
+            .prepare_available_fonts(&self.config.regular_font, self.config.bold_font.as_ref())
+            .map_err(|_| process_failure(RENDERER_FAILURE_REASON, false))?;
+        let fonts = prepared_fonts.iter().collect::<Vec<_>>();
+        let staged_fonts = stage_document_translation_font_registry(self.source_objects, &fonts)
+            .map_err(|_| process_failure(RENDERER_FAILURE_REASON, false))?;
+        let page_font_overlay =
+            PdfObjectOverlay::new(self.source_objects, &staged_fonts.object_delta);
         let staged = stage_translation_patch_with_font_registry(
             self.source_objects,
-            &accumulated,
+            &page_font_overlay,
             &self.page_index,
             &self.ownership_index,
             page,
             &pending_patch,
-            &[&self.config.regular_font, &self.config.bold_font],
+            &fonts,
             self.config.render_policy,
-            &self.font_registry,
+            &staged_fonts.registry,
         )
         .map_err(|_| process_failure(RENDERER_FAILURE_REASON, false))?;
         if self.is_cancelled() {
             return Err(process_failure(CANCELLED_REASON, true));
         }
-        self.accumulated_delta
-            .merge(staged.object_delta)
-            .map_err(|_| process_failure(RENDERER_FAILURE_REASON, false))?;
         Ok(PdfV3TranslationPageResult::Patch(
             staged.render.resolved_patch,
         ))
@@ -313,18 +295,15 @@ fn validate_config(
             "translationRevision",
         ));
     }
-    for (actual, expected, field) in [
-        (
-            config.regular_font.weight(),
-            TranslationFontWeight::Regular,
-            "regularFont",
-        ),
-        (
-            config.bold_font.weight(),
-            TranslationFontWeight::Bold,
-            "boldFont",
-        ),
-    ] {
+    let mut fonts = vec![(
+        config.regular_font.weight(),
+        TranslationFontWeight::Regular,
+        "regularFont",
+    )];
+    if let Some(bold) = &config.bold_font {
+        fonts.push((bold.weight(), TranslationFontWeight::Bold, "boldFont"));
+    }
+    for (actual, expected, field) in fonts {
         if actual != expected {
             return Err(PdfV3LocalPageProcessorConfigError::FontWeightMismatch {
                 field,
@@ -402,7 +381,7 @@ mod tests {
     use crate::{
         pdf_v3::{
             document::DocumentHandle,
-            font::{TranslationFontAsset, TranslationFontWeight, UnifiedTranslationFontPlan},
+            font::{TranslationFontAsset, TranslationFontWeight},
             page_set::PageSet,
             patch_renderer::{TranslationPatchRenderPolicy, TRANSLATION_PATCH_RENDERER_VERSION},
             pipeline::PdfV3TranslationPageResult,
@@ -441,20 +420,13 @@ mod tests {
         }
     }
 
-    fn prepared_font(
-        weight: TranslationFontWeight,
-        text: &str,
-    ) -> crate::pdf_v3::font::PreparedTranslationFont {
+    fn font_asset(weight: TranslationFontWeight) -> TranslationFontAsset {
         let path = match weight {
             TranslationFontWeight::Regular => PathBuf::from(r"C:\Windows\Fonts\arial.ttf"),
             TranslationFontWeight::Bold => PathBuf::from(r"C:\Windows\Fonts\arialbd.ttf"),
         };
-        let asset =
-            TranslationFontAsset::open_weighted(format!("Arial{weight:?}"), weight, &path, 0)
-                .expect("Windows Arial font");
-        let mut plan = UnifiedTranslationFontPlan::default();
-        plan.add_text(text);
-        asset.prepare(&plan).expect("prepared Arial subset")
+        TranslationFontAsset::open_weighted(format!("Arial{weight:?}"), weight, &path, 0)
+            .expect("Windows Arial font")
     }
 
     fn provider_success(translations: Vec<String>) -> ProviderTranslateResult {
@@ -471,7 +443,6 @@ mod tests {
     fn config(
         handle: &DocumentHandle<'_>,
         translations: Vec<String>,
-        prepared_text: &str,
     ) -> (
         PdfV3LocalPageProcessorConfig,
         Arc<Mutex<VecDeque<ProviderTranslateResult>>>,
@@ -492,15 +463,15 @@ mod tests {
                 renderer_version: TRANSLATION_PATCH_RENDERER_VERSION.to_string(),
                 render_policy: TranslationPatchRenderPolicy::default(),
                 cancel: Arc::new(AtomicBool::new(false)),
-                regular_font: prepared_font(TranslationFontWeight::Regular, prepared_text),
-                bold_font: prepared_font(TranslationFontWeight::Bold, prepared_text),
+                regular_font: font_asset(TranslationFontWeight::Regular),
+                bold_font: Some(font_asset(TranslationFontWeight::Bold)),
             },
             scripted,
         )
     }
 
     #[tokio::test]
-    async fn provider_result_resolves_renderer_patch_and_accumulates_only_render_delta() {
+    async fn provider_result_resolves_renderer_patch_with_page_local_fonts() {
         let _guard = pdfium_test_lock();
         let source = fixture_path("002-trivial-libre-office-writer.pdf");
         let handle = DocumentHandle::open(shared_pdfium(), &source).expect("document handle");
@@ -511,10 +482,9 @@ mod tests {
         let translations = vec![translated.to_string(); plan.units.len()];
         let source_objects = PdfSourceObjectStore::open(&source).expect("lazy source");
         let binding = binding(&handle);
-        let (config, _) = config(&handle, translations, translated);
+        let (config, _) = config(&handle, translations);
         let mut processor =
             PdfV3LocalPageProcessor::new(&source_objects, &binding, config).expect("processor");
-        let font_object_count = processor.accumulated_object_count();
 
         let result = processor
             .process(&page, &binding)
@@ -532,7 +502,6 @@ mod tests {
             entry.renderer_decision,
             TranslationPatchRendererDecision::Fitted { .. }
         )));
-        assert!(processor.accumulated_object_count() > font_object_count);
     }
 
     #[tokio::test]
@@ -546,7 +515,7 @@ mod tests {
         }
         let source_objects = PdfSourceObjectStore::open(&source).expect("lazy source");
         let binding = binding(&handle);
-        let (config, scripted) = config(&handle, Vec::new(), "A");
+        let (config, scripted) = config(&handle, Vec::new());
         let mut processor =
             PdfV3LocalPageProcessor::new(&source_objects, &binding, config).expect("processor");
 
@@ -571,7 +540,7 @@ mod tests {
         let page = build_reconciled_page_graph_from_handle(&handle, 1).expect("PageGraph");
         let source_objects = PdfSourceObjectStore::open(&source).expect("lazy source");
         let binding = binding(&handle);
-        let (config, scripted) = config(&handle, Vec::new(), "A");
+        let (config, scripted) = config(&handle, Vec::new());
         config.cancel.store(true, Ordering::SeqCst);
         let mut processor =
             PdfV3LocalPageProcessor::new(&source_objects, &binding, config).expect("processor");
@@ -596,7 +565,7 @@ mod tests {
         let translations = vec![translated.clone(); plan.units.len()];
         let source_objects = PdfSourceObjectStore::open(&source).expect("lazy source");
         let binding = binding(&handle);
-        let (config, _) = config(&handle, translations, &translated);
+        let (config, _) = config(&handle, translations);
         let mut processor =
             PdfV3LocalPageProcessor::new(&source_objects, &binding, config).expect("processor");
 
@@ -619,23 +588,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_prepared_glyph_is_renderer_failure_not_a_patch() {
+    async fn missing_asset_glyph_is_renderer_failure_not_a_patch() {
         let _guard = pdfium_test_lock();
         let source = fixture_path("002-trivial-libre-office-writer.pdf");
         let handle = DocumentHandle::open(shared_pdfium(), &source).expect("document handle");
         let page = build_reconciled_page_graph_from_handle(&handle, 1).expect("PageGraph");
         let plan = build_translation_page_plan(&page).expect("translation plan");
-        let translations = vec!["Z".to_string(); plan.units.len()];
+        let translations = vec!["译".to_string(); plan.units.len()];
         let source_objects = PdfSourceObjectStore::open(&source).expect("lazy source");
         let binding = binding(&handle);
-        let (config, _) = config(&handle, translations, "A");
+        let (config, _) = config(&handle, translations);
         let mut processor =
             PdfV3LocalPageProcessor::new(&source_objects, &binding, config).expect("processor");
 
         let failure = processor
             .process(&page, &binding)
             .await
-            .expect_err("missing prepared glyph must fail rendering");
+            .expect_err("missing asset glyph must fail rendering");
         assert_eq!(failure.reason_code, RENDERER_FAILURE_REASON);
         assert!(!failure.retryable);
     }
@@ -647,7 +616,7 @@ mod tests {
         let handle = DocumentHandle::open(shared_pdfium(), &source).expect("document handle");
         let source_objects = PdfSourceObjectStore::open(&source).expect("lazy source");
         let binding = binding(&handle);
-        let (mut config, _) = config(&handle, Vec::new(), "A");
+        let (mut config, _) = config(&handle, Vec::new());
         config.model_id = " model-with-invalid-boundary ".to_string();
 
         let error = match PdfV3LocalPageProcessor::new(&source_objects, &binding, config) {

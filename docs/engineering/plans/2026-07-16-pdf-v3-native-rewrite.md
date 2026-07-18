@@ -671,7 +671,9 @@ keeps protected tokens outside model input, returns exact unit-ID results and
 preserves cancellation/retry/metrics behavior without depending on the legacy
 pdf2zh worker unit. The renderer-owning page processor now receives explicit
 provider/model identity, language direction, translation revision, renderer
-policy, cancellation and prepared Regular/Bold fonts. Native PageGraph
+policy, cancellation and immutable Regular/optional Bold font assets. It
+prepares page-local temporary subsets after provider translation, resolves fit
+decisions, and discards every temporary PDF object delta. Native PageGraph
 protected-span detection and broader paragraph/mixed-style planning remain
 pending.
 
@@ -702,9 +704,12 @@ the complete bounded recovery inventory. The worker now awaits one page-bounded
 processor, checks cancellation before patch storage, and accepts only the
 processor's renderer-resolved patch or explicit preservation result. The
 concrete processor owns runtime identity validation, provider execution,
-renderer staging, reusable font/ownership state and a disposable accumulated
-object delta. Tauri/UI control, job-level prepared-font construction and a real
-complex 500/1,000-page end-to-end translation/export remain pending.
+page-local renderer staging and a reusable ownership index without retaining
+cross-page font or replacement objects. A bounded export font planner streams
+one durable PageGraph and resolved patch at a time, includes only fitted entry
+characters, and produces deterministic per-weight document character sets.
+Final multi-page patch replay, runtime-manifest asset binding, Tauri/UI control
+and a real complex 500/1,000-page end-to-end translation/export remain pending.
 
 ### Phase 7 — Component control plane
 
