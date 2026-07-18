@@ -174,6 +174,16 @@ Current progress:
   blank regions or layout movement outside the translated footer. Independent
   Poppler rendered the same single-page PDF at 1,200x1,698, the expected
   one-pixel height rounding difference between raster engines.
+- A document-wide translation-font registry now stages each prepared face once
+  and lets consecutive page-patch renders reuse the same Type0 object. Registry
+  binding validates weight, asset/fingerprint/subset identity and the live PDF
+  object before any page mutation; duplicate faces fail atomically.
+- A 30-page Windows AMD probe translated pages 1 and 2 with one 27,568-byte
+  Arial subset. Both page renders staged zero font objects, the document held
+  exactly one matching Type0 font, and the complete output was 1,521,952 bytes
+  versus the 1,590,242-byte source. Poppler changes stayed within the two target
+  footer rows and page 3 remained pixel-exact; page count, annotations and
+  metadata were retained.
 
 ## Purpose
 
@@ -498,7 +508,11 @@ single-page PDF artifacts and use source/patch/revision/current-renderer cache
 identity for bounded insertion and lease-validated reads. Those page artifacts
 now rasterize on demand to exact-width PDFium PNGs with a separately versioned
 preview contract, bounded insertion and lease-validated reads. Patch
-compression and streaming document export remain pending.
+compression remains pending. Document-wide font resource reuse is implemented
+and proven across consecutive page renders, but the current `lopdf` working
+document still owns the complete source object graph. A lazy object reader plus
+incremental delta writer, final atomic file commit and export recovery remain
+pending before export is genuinely bounded-memory and streaming.
 
 ### Phase 5 — Translation and protected spans
 

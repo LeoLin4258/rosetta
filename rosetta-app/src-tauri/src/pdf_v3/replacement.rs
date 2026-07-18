@@ -9,7 +9,8 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use super::font::{
-    stage_translation_fonts_page_dictionary, PreparedTranslationFont, TranslationFontError,
+    stage_translation_fonts_page_dictionary, translation_font_resource_name,
+    DocumentTranslationFontRegistry, PreparedTranslationFont, TranslationFontError,
     TranslationFontWeight,
 };
 use super::{
@@ -436,6 +437,32 @@ pub(crate) fn apply_text_show_replacement_batch(
     target_requests: &[TextShowReplacementTargetRequest],
     fonts: &[&PreparedTranslationFont],
 ) -> Result<TextShowReplacementBatchResult, TextShowReplacementError> {
+    apply_text_show_replacement_batch_internal(document, page_graph, target_requests, fonts, None)
+}
+
+pub(crate) fn apply_text_show_replacement_batch_with_font_registry(
+    document: &mut Document,
+    page_graph: &PageGraph,
+    target_requests: &[TextShowReplacementTargetRequest],
+    fonts: &[&PreparedTranslationFont],
+    font_registry: &DocumentTranslationFontRegistry,
+) -> Result<TextShowReplacementBatchResult, TextShowReplacementError> {
+    apply_text_show_replacement_batch_internal(
+        document,
+        page_graph,
+        target_requests,
+        fonts,
+        Some(font_registry),
+    )
+}
+
+fn apply_text_show_replacement_batch_internal(
+    document: &mut Document,
+    page_graph: &PageGraph,
+    target_requests: &[TextShowReplacementTargetRequest],
+    fonts: &[&PreparedTranslationFont],
+    font_registry: Option<&DocumentTranslationFontRegistry>,
+) -> Result<TextShowReplacementBatchResult, TextShowReplacementError> {
     let started = Instant::now();
     let first_request = target_requests
         .first()
@@ -498,27 +525,36 @@ pub(crate) fn apply_text_show_replacement_batch(
         .collect::<Vec<_>>();
     let mut reserved_through = document.max_id;
     let mut staged_fonts = Vec::with_capacity(translation_font_weights.len());
+    let mut resource_bindings = Vec::with_capacity(translation_font_weights.len());
     for weight in &translation_font_weights {
         let font = fonts_by_weight.get(weight).copied().ok_or(
             TextShowReplacementError::MissingTranslationFontFace(*weight),
         )?;
-        let staged = font.stage_after(
-            document,
-            translation_font_resource(*weight).to_vec(),
-            reserved_through,
-        )?;
-        reserved_through = staged.next_object_number;
-        staged_fonts.push(staged);
+        let (resource_name, type0_font_id) = if let Some(registry) = font_registry {
+            registry.binding_for(document, font)?
+        } else {
+            let staged = font.stage_after(
+                document,
+                translation_font_resource_name(*weight).to_vec(),
+                reserved_through,
+            )?;
+            reserved_through = staged.next_object_number;
+            let binding = (staged.resource_name.clone(), staged.type0_font_id);
+            staged_fonts.push(staged);
+            resource_bindings.push(ResourceReferenceBinding {
+                category: b"Font".to_vec(),
+                name: binding.0,
+                object_id: binding.1,
+            });
+            continue;
+        };
+        resource_bindings.push(ResourceReferenceBinding {
+            category: b"Font".to_vec(),
+            name: resource_name.to_vec(),
+            object_id: type0_font_id,
+        });
     }
     let staged_font_object_count = staged_fonts.iter().map(|font| font.objects.len()).sum();
-    let resource_bindings = staged_fonts
-        .iter()
-        .map(|font| ResourceReferenceBinding {
-            category: b"Font".to_vec(),
-            name: font.resource_name.clone(),
-            object_id: font.type0_font_id,
-        })
-        .collect::<Vec<_>>();
     let mut staged_targets = stage_replacement_streams(document, &planned_targets)?;
     let requires_copy_on_write = staged_targets
         .iter()
@@ -563,9 +599,9 @@ pub(crate) fn apply_text_show_replacement_batch(
             let staged_page = stage_translation_fonts_page_dictionary(
                 document,
                 page_id,
-                staged_fonts
+                resource_bindings
                     .iter()
-                    .map(|font| (font.resource_name.as_slice(), font.type0_font_id)),
+                    .map(|binding| (binding.name.as_slice(), binding.object_id)),
             )?;
             (staged_streams, staged_page, 0, false)
         };
@@ -881,7 +917,7 @@ fn plan_text_show_replacement(
         .ok_or(TextShowReplacementError::MissingTranslationFontFace(
             style_plan.translation_font_weight,
         ))?;
-    let staged_font_resource = translation_font_resource(style_plan.translation_font_weight);
+    let staged_font_resource = translation_font_resource_name(style_plan.translation_font_weight);
     let natural_advance = font.text_advance_1000(&request.translated_text)? as f32 / 1000.0
         * request.geometry.source_font_size
         * (request.geometry.source_horizontal_scaling / 100.0);
@@ -939,13 +975,6 @@ fn plan_text_show_replacement(
         source_opacity: style_plan.opacity,
         source_render_mode: style_plan.render_mode,
     })
-}
-
-fn translation_font_resource(weight: TranslationFontWeight) -> &'static [u8] {
-    match weight {
-        TranslationFontWeight::Regular => b"RosettaTranslationRegular",
-        TranslationFontWeight::Bold => b"RosettaTranslationBold",
-    }
 }
 
 fn state_before_operation(

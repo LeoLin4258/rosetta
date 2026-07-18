@@ -6,17 +6,17 @@ use std::{
 use lopdf::{Document, Object};
 
 use super::{
-    font::PreparedTranslationFont,
+    font::{DocumentTranslationFontRegistry, PreparedTranslationFont},
     layout::TextShowGeometryKey,
     render_cache::{
         RenderCache, RenderCacheError, RenderCacheInsertOutcome, RenderCacheKey,
         RenderCacheOptions, RenderCacheOutputKind,
     },
     replacement::{
-        apply_text_show_replacement_batch, preflight_text_show_replacement_transaction,
-        text_show_replacement_target_identity, TextShowReplacementBatchResult,
-        TextShowReplacementError, TextShowReplacementRequest, TextShowReplacementTargetIdentity,
-        TextShowReplacementTargetRequest,
+        apply_text_show_replacement_batch, apply_text_show_replacement_batch_with_font_registry,
+        preflight_text_show_replacement_transaction, text_show_replacement_target_identity,
+        TextShowReplacementBatchResult, TextShowReplacementError, TextShowReplacementRequest,
+        TextShowReplacementTargetIdentity, TextShowReplacementTargetRequest,
     },
     translation_patch::{
         ensure_translation_patch_renderer_resolved, resolve_translation_patch_renderer_decisions,
@@ -153,6 +153,28 @@ pub(crate) fn render_translation_patch(
     fonts: &[&PreparedTranslationFont],
     policy: TranslationPatchRenderPolicy,
 ) -> Result<TranslationPatchRenderResult, TranslationPatchRenderError> {
+    render_translation_patch_internal(document, page, patch, fonts, policy, None)
+}
+
+pub(crate) fn render_translation_patch_with_font_registry(
+    document: &mut Document,
+    page: &PageGraph,
+    patch: &TranslationPatch,
+    fonts: &[&PreparedTranslationFont],
+    policy: TranslationPatchRenderPolicy,
+    font_registry: &DocumentTranslationFontRegistry,
+) -> Result<TranslationPatchRenderResult, TranslationPatchRenderError> {
+    render_translation_patch_internal(document, page, patch, fonts, policy, Some(font_registry))
+}
+
+fn render_translation_patch_internal(
+    document: &mut Document,
+    page: &PageGraph,
+    patch: &TranslationPatch,
+    fonts: &[&PreparedTranslationFont],
+    policy: TranslationPatchRenderPolicy,
+    font_registry: Option<&DocumentTranslationFontRegistry>,
+) -> Result<TranslationPatchRenderResult, TranslationPatchRenderError> {
     if !policy.minimum_fit_scale.is_finite() || !(0.0..=1.0).contains(&policy.minimum_fit_scale) {
         return Err(TranslationPatchRenderError::InvalidPolicy);
     }
@@ -288,9 +310,13 @@ pub(crate) fn render_translation_patch(
     let batch = if targets.is_empty() {
         None
     } else {
-        Some(apply_text_show_replacement_batch(
-            document, page, &targets, fonts,
-        )?)
+        Some(if let Some(registry) = font_registry {
+            apply_text_show_replacement_batch_with_font_registry(
+                document, page, &targets, fonts, registry,
+            )?
+        } else {
+            apply_text_show_replacement_batch(document, page, &targets, fonts)?
+        })
     };
     let fitted_entry_count = resolved_patch
         .entries
@@ -626,24 +652,25 @@ fn source_object_atoms<'a>(page: &'a PageGraph, atom: &PageAtom) -> Vec<&'a Page
 mod tests {
     use std::{
         collections::{BTreeMap, BTreeSet},
-        fs,
+        env, fs,
         path::{Path, PathBuf},
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use lopdf::Document;
+    use lopdf::{Document, Object};
 
     use super::{
         insert_translation_patch_page_pdf_cache, open_translation_patch_page_pdf_cache,
-        render_translation_patch, render_translation_patch_page_pdf, request_for_entry,
-        source_object_atoms, translation_patch_page_pdf_cache_key, TranslationPatchRenderError,
+        render_translation_patch, render_translation_patch_page_pdf,
+        render_translation_patch_with_font_registry, request_for_entry, source_object_atoms,
+        translation_patch_page_pdf_cache_key, TranslationPatchRenderError,
         TranslationPatchRenderPolicy, TRANSLATION_PATCH_RENDERER_VERSION,
     };
     use crate::{
         pdf_v3::{
             font::{
-                PreparedTranslationFont, TranslationFontAsset, TranslationFontWeight,
-                UnifiedTranslationFontPlan,
+                stage_document_translation_fonts, PreparedTranslationFont, TranslationFontAsset,
+                TranslationFontWeight, UnifiedTranslationFontPlan,
             },
             identity::{compare_images, render_page},
             preview::{
@@ -1023,6 +1050,105 @@ mod tests {
             .expect_err("preview width below bound"),
             TranslationPatchPreviewError::InvalidPixelWidth { requested: 1 }
         ));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn document_font_registry_is_reused_across_page_patch_renders() {
+        let _guard = pdfium_test_lock();
+        let translations = ["Registry page one", "Registry page two"];
+        let prepared = prepared_arial(&translations);
+        let source_path = fixture_path("2305.13048v2.pdf");
+        let first_page =
+            build_reconciled_page_graph(shared_pdfium(), &source_path, 1).expect("first page");
+        let second_page =
+            build_reconciled_page_graph(shared_pdfium(), &source_path, 2).expect("second page");
+        let source = fs::read(&source_path).expect("source PDF");
+        let mut document = Document::load_mem(&source).expect("source document");
+        let first_patch =
+            first_renderable_patch(&document, &first_page, &prepared, translations[0]);
+        let second_patch =
+            first_renderable_patch(&document, &second_page, &prepared, translations[1]);
+        let registry = stage_document_translation_fonts(&mut document, &[&prepared])
+            .expect("document font registry");
+        assert_eq!(registry.font_count(), 1);
+
+        let first = render_translation_patch_with_font_registry(
+            &mut document,
+            &first_page,
+            &first_patch,
+            &[&prepared],
+            TranslationPatchRenderPolicy::default(),
+            &registry,
+        )
+        .expect("first page render");
+        let second = render_translation_patch_with_font_registry(
+            &mut document,
+            &second_page,
+            &second_patch,
+            &[&prepared],
+            TranslationPatchRenderPolicy::default(),
+            &registry,
+        )
+        .expect("second page render");
+        assert_eq!(
+            first
+                .batch
+                .expect("first replacement")
+                .staged_font_object_count,
+            0
+        );
+        assert_eq!(
+            second
+                .batch
+                .expect("second replacement")
+                .staged_font_object_count,
+            0
+        );
+        let matching_type0_fonts = document
+            .objects
+            .values()
+            .filter(|object| {
+                object.as_dict().is_ok_and(|dictionary| {
+                    dictionary
+                        .get(b"Subtype")
+                        .and_then(Object::as_name)
+                        .is_ok_and(|name| name == b"Type0")
+                        && dictionary
+                            .get(b"BaseFont")
+                            .and_then(Object::as_name)
+                            .is_ok_and(|name| name == prepared.subset_name.as_bytes())
+                })
+            })
+            .count();
+        assert_eq!(matching_type0_fonts, 1);
+
+        let mut output = Vec::new();
+        document
+            .save_to(&mut output)
+            .expect("save multi-page output");
+        println!(
+            "pdf-v3 document font registry sourceBytes={} outputBytes={} subsetBytes={} pages=2",
+            source.len(),
+            output.len(),
+            prepared.subset_bytes.len(),
+        );
+        if let Some(path) = env::var_os("ROSETTA_PDF_V3_FONT_REGISTRY_PROBE_OUTPUT") {
+            fs::write(path, &output).expect("write document font registry probe");
+        }
+        let output = shared_pdfium()
+            .load_pdf_from_byte_slice(&output, None)
+            .expect("PDFium output");
+        for (page_index, translation) in translations.iter().enumerate() {
+            let text = output
+                .pages()
+                .get(page_index as i32)
+                .expect("output page")
+                .text()
+                .expect("output text")
+                .all();
+            assert!(text.contains(translation));
+        }
     }
 
     #[cfg(target_os = "windows")]

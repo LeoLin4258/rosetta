@@ -535,6 +535,18 @@ cache miss。它不复用 v1/v2 PDF page cache。
 - page PDF serializer 消费一个显式 working document ownership，完成 replacement 后只保留
   selected page 并 prune/renumber/compress。API 不得为了方便而隐式 clone 整个长 PDF；
   future scheduler/working-document strategy 可以替换输入来源而不改变 artifact/cache contract。
+- 完整文档导出必须先根据全部 resolved patches 收集每个 face 的完整字符集，再原子创建
+  一个 `DocumentTranslationFontRegistry`。registry 按 weight 确定性排序，每个实际使用的
+  face 只提交一套 6-object Type0 subset。
+- registry binding 必须同时匹配 weight、asset ID、source font fingerprint 和 deterministic
+  subset name，并验证 Type0 object 仍存在且 `/BaseFont` 身份一致。不同 subset 不得复用
+  相同 resource binding。
+- registry-aware page render 只能把已有 Type0 object ID 挂到 page/Form effective resources，
+  `stagedFontObjectCount` 必须为 0。单页 cache artifact 路径继续独立 staging，以保持既有
+  page-PDF byte contract；两种路径不得隐式共享可变 registry。
+- registry 只解决 document-wide font reuse 和输出体积。当前 `lopdf::Document` 仍加载完整
+  source object graph；在 lazy object reader / incremental delta writer 完成前，不得把多页
+  registry render 宣称为 bounded-memory streaming export。
 
 ## PDF v3 Content Operand Patch
 

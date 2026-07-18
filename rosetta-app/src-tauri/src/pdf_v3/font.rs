@@ -67,6 +67,10 @@ pub(crate) enum TranslationFontError {
     MissingGlyphs(Vec<u32>),
     Subset(String),
     MissingPreparedGlyph(char),
+    DuplicatePreparedWeight(TranslationFontWeight),
+    MissingDocumentFont(TranslationFontWeight),
+    DocumentFontIdentityMismatch(TranslationFontWeight),
+    DocumentFontObjectInvalid(TranslationFontWeight),
     ObjectIdOverflow,
     PageResources(String),
     Content(String),
@@ -97,6 +101,26 @@ impl fmt::Display for TranslationFontError {
                 formatter,
                 "translation font subset does not contain U+{:04X}",
                 *character as u32
+            ),
+            Self::DuplicatePreparedWeight(weight) => {
+                write!(
+                    formatter,
+                    "duplicate prepared translation font weight {weight:?}"
+                )
+            }
+            Self::MissingDocumentFont(weight) => {
+                write!(
+                    formatter,
+                    "document translation font registry has no {weight:?} face"
+                )
+            }
+            Self::DocumentFontIdentityMismatch(weight) => write!(
+                formatter,
+                "document translation font registry {weight:?} face identity changed"
+            ),
+            Self::DocumentFontObjectInvalid(weight) => write!(
+                formatter,
+                "document translation font registry {weight:?} Type0 object is missing or invalid"
             ),
             Self::ObjectIdOverflow => {
                 formatter.write_str("PDF object ID overflow while staging translation font")
@@ -353,6 +377,109 @@ pub(crate) struct PreparedTranslationFont {
     pub subset_bytes: Vec<u8>,
     glyphs: BTreeMap<char, PreparedGlyph>,
     metrics: PreparedFontMetrics,
+}
+
+#[derive(Debug, Clone)]
+struct DocumentTranslationFontResource {
+    resource_name: Vec<u8>,
+    type0_font_id: ObjectId,
+    asset_id: String,
+    source_fingerprint: String,
+    subset_name: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct DocumentTranslationFontRegistry {
+    fonts: BTreeMap<TranslationFontWeight, DocumentTranslationFontResource>,
+}
+
+impl DocumentTranslationFontRegistry {
+    pub(crate) fn font_count(&self) -> usize {
+        self.fonts.len()
+    }
+
+    pub(crate) fn binding_for(
+        &self,
+        document: &Document,
+        font: &PreparedTranslationFont,
+    ) -> Result<(&[u8], ObjectId), TranslationFontError> {
+        let resource = self
+            .fonts
+            .get(&font.weight)
+            .ok_or(TranslationFontError::MissingDocumentFont(font.weight))?;
+        if resource.asset_id != font.asset_id
+            || resource.source_fingerprint != font.source_fingerprint
+            || resource.subset_name != font.subset_name
+        {
+            return Err(TranslationFontError::DocumentFontIdentityMismatch(
+                font.weight,
+            ));
+        }
+        let valid_type0 = document
+            .get_object(resource.type0_font_id)
+            .and_then(Object::as_dict)
+            .is_ok_and(|dictionary| {
+                dictionary
+                    .get(b"Subtype")
+                    .and_then(Object::as_name)
+                    .is_ok_and(|name| name == b"Type0")
+                    && dictionary
+                        .get(b"BaseFont")
+                        .and_then(Object::as_name)
+                        .is_ok_and(|name| name == resource.subset_name.as_bytes())
+            });
+        if !valid_type0 {
+            return Err(TranslationFontError::DocumentFontObjectInvalid(font.weight));
+        }
+        Ok((&resource.resource_name, resource.type0_font_id))
+    }
+}
+
+pub(crate) fn stage_document_translation_fonts(
+    document: &mut Document,
+    fonts: &[&PreparedTranslationFont],
+) -> Result<DocumentTranslationFontRegistry, TranslationFontError> {
+    let mut fonts_by_weight = BTreeMap::new();
+    for font in fonts {
+        if fonts_by_weight.insert(font.weight(), *font).is_some() {
+            return Err(TranslationFontError::DuplicatePreparedWeight(font.weight()));
+        }
+    }
+
+    let mut reserved_through = document.max_id;
+    let mut staged_fonts = Vec::with_capacity(fonts_by_weight.len());
+    let mut registry = DocumentTranslationFontRegistry::default();
+    for (weight, font) in fonts_by_weight {
+        let staged = font.stage_after(
+            document,
+            translation_font_resource_name(weight).to_vec(),
+            reserved_through,
+        )?;
+        reserved_through = staged.next_object_number;
+        registry.fonts.insert(
+            weight,
+            DocumentTranslationFontResource {
+                resource_name: staged.resource_name.clone(),
+                type0_font_id: staged.type0_font_id,
+                asset_id: font.asset_id.clone(),
+                source_fingerprint: font.source_fingerprint.clone(),
+                subset_name: font.subset_name.clone(),
+            },
+        );
+        staged_fonts.push(staged);
+    }
+
+    for staged in staged_fonts {
+        staged.commit(document);
+    }
+    Ok(registry)
+}
+
+pub(crate) fn translation_font_resource_name(weight: TranslationFontWeight) -> &'static [u8] {
+    match weight {
+        TranslationFontWeight::Regular => b"RosettaTranslationRegular",
+        TranslationFontWeight::Bold => b"RosettaTranslationBold",
+    }
 }
 
 impl PreparedTranslationFont {
@@ -795,9 +922,10 @@ mod tests {
 
     use super::{
         append_translation_text, attach_translation_font_to_page,
-        recommended_translation_font_family, TranslationFontAsset, TranslationFontAssetCache,
-        TranslationFontError, TranslationFontWeight, UnifiedTranslationFontPlan,
-        GO_NOTO_KURRENT_REGULAR, SOURCE_HAN_SANS_CN_BOLD, SOURCE_HAN_SANS_CN_REGULAR,
+        recommended_translation_font_family, stage_document_translation_fonts,
+        TranslationFontAsset, TranslationFontAssetCache, TranslationFontError,
+        TranslationFontWeight, UnifiedTranslationFontPlan, GO_NOTO_KURRENT_REGULAR,
+        SOURCE_HAN_SANS_CN_BOLD, SOURCE_HAN_SANS_CN_REGULAR,
     };
     use crate::rosetta_jobs::formats::pdf::test_helpers::{
         fixture_path, pdfium_test_lock, shared_pdfium,
@@ -949,6 +1077,48 @@ mod tests {
         assert_eq!(regular_prepared.weight(), TranslationFontWeight::Regular);
         assert_eq!(bold_prepared.weight(), TranslationFontWeight::Bold);
         assert_ne!(regular_prepared.subset_bytes, bold_prepared.subset_bytes);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn document_font_registry_is_atomic_and_identity_checked() {
+        let asset = TranslationFontAsset::open(
+            "ArialRegular",
+            PathBuf::from(r"C:\Windows\Fonts\arial.ttf").as_path(),
+            0,
+        )
+        .expect("Windows Arial font");
+        let mut first_plan = UnifiedTranslationFontPlan::default();
+        first_plan.add_text("Registry identity one");
+        let first = asset.prepare(&first_plan).expect("first prepared subset");
+        let mut second_plan = UnifiedTranslationFontPlan::default();
+        second_plan.add_text("Registry identity two");
+        let second = asset.prepare(&second_plan).expect("second prepared subset");
+        let source = fs::read(fixture_path("2305.13048v2.pdf")).expect("source PDF");
+        let mut document = Document::load_mem(&source).expect("source document");
+        let before_objects = document.objects.len();
+        let before_max_id = document.max_id;
+
+        assert!(matches!(
+            stage_document_translation_fonts(&mut document, &[&first, &first])
+                .expect_err("duplicate face must fail before mutation"),
+            TranslationFontError::DuplicatePreparedWeight(TranslationFontWeight::Regular)
+        ));
+        assert_eq!(document.objects.len(), before_objects);
+        assert_eq!(document.max_id, before_max_id);
+
+        let registry = stage_document_translation_fonts(&mut document, &[&first])
+            .expect("document font registry");
+        assert_eq!(registry.font_count(), 1);
+        assert_eq!(document.objects.len(), before_objects + 6);
+        assert_eq!(document.max_id, before_max_id + 6);
+        assert!(registry.binding_for(&document, &first).is_ok());
+        assert!(matches!(
+            registry
+                .binding_for(&document, &second)
+                .expect_err("different subset identity"),
+            TranslationFontError::DocumentFontIdentityMismatch(TranslationFontWeight::Regular)
+        ));
     }
 
     #[cfg(target_os = "windows")]
