@@ -1,6 +1,6 @@
 use std::{collections::BTreeSet, fmt};
 
-use lopdf::{Dictionary, Object, ObjectId};
+use lopdf::{Dictionary, Object, ObjectId, Stream};
 
 use super::{
     page_index::PdfIndexedPage,
@@ -13,7 +13,19 @@ const MAX_INDIRECT_REFERENCE_DEPTH: usize = 64;
 pub(crate) struct PdfPageObjectContext {
     page_id: ObjectId,
     page_dictionary: Dictionary,
+    resources: PdfResourceContext,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PdfResourceContext {
+    owner_id: ObjectId,
     resources: Dictionary,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PdfResolvedXObject {
+    object_id: Option<ObjectId>,
+    stream: Stream,
 }
 
 impl PdfPageObjectContext {
@@ -47,7 +59,10 @@ impl PdfPageObjectContext {
                 &mut resource_dictionaries,
             )?;
         }
-        let resources = materialize_resources(objects, &resource_dictionaries)?;
+        let resources = PdfResourceContext {
+            owner_id: page_id,
+            resources: materialize_resources(objects, &resource_dictionaries)?,
+        };
 
         Ok(Self {
             page_id,
@@ -65,7 +80,72 @@ impl PdfPageObjectContext {
     }
 
     pub(crate) fn resources(&self) -> &Dictionary {
+        self.resources.dictionary()
+    }
+
+    pub(crate) fn resource_context(&self) -> &PdfResourceContext {
         &self.resources
+    }
+}
+
+impl PdfResourceContext {
+    pub(crate) fn dictionary(&self) -> &Dictionary {
+        &self.resources
+    }
+
+    pub(crate) fn invoked_form(
+        &self,
+        objects: &dyn PdfObjectView,
+        form_stream_id: ObjectId,
+        form_stream: &Stream,
+    ) -> Result<Self, PdfPageContextError> {
+        let Ok(value) = form_stream.dict.get(b"Resources") else {
+            return Ok(self.clone());
+        };
+        if matches!(value, Object::Null) {
+            return Ok(self.clone());
+        }
+        let Some(resources) = resolve_dictionary(objects, value)? else {
+            return Err(PdfPageContextError::ResourcesInvalid(form_stream_id));
+        };
+        let scopes = [
+            (form_stream_id, resources),
+            (self.owner_id, self.resources.clone()),
+        ];
+        Ok(Self {
+            owner_id: form_stream_id,
+            resources: materialize_resources(objects, &scopes)?,
+        })
+    }
+
+    pub(crate) fn resolve_xobject(
+        &self,
+        objects: &dyn PdfObjectView,
+        resource_name: &[u8],
+    ) -> Result<Option<PdfResolvedXObject>, PdfPageContextError> {
+        let Ok(value) = self.resources.get(b"XObject") else {
+            return Ok(None);
+        };
+        let Some(xobjects) = resolve_dictionary(objects, value)? else {
+            return Err(PdfPageContextError::ResourceCategoryInvalid {
+                object_id: self.owner_id,
+                category: b"XObject".to_vec(),
+            });
+        };
+        let Ok(value) = xobjects.get(resource_name) else {
+            return Ok(None);
+        };
+        resolve_xobject_stream(objects, value)
+    }
+}
+
+impl PdfResolvedXObject {
+    pub(crate) fn object_id(&self) -> Option<ObjectId> {
+        self.object_id
+    }
+
+    pub(crate) fn stream(&self) -> &Stream {
+        &self.stream
     }
 }
 
@@ -229,12 +309,45 @@ fn resolve_dictionary(
     }
 }
 
+fn resolve_xobject_stream(
+    objects: &dyn PdfObjectView,
+    value: &Object,
+) -> Result<Option<PdfResolvedXObject>, PdfPageContextError> {
+    match value {
+        Object::Stream(stream) => Ok(Some(PdfResolvedXObject {
+            object_id: None,
+            stream: stream.clone(),
+        })),
+        Object::Reference(object_id) => {
+            let mut current = *object_id;
+            let mut visited = BTreeSet::new();
+            for _ in 0..MAX_INDIRECT_REFERENCE_DEPTH {
+                if !visited.insert(current) {
+                    return Err(PdfPageContextError::ReferenceCycle(current));
+                }
+                match objects.object(current)? {
+                    Object::Stream(stream) => {
+                        return Ok(Some(PdfResolvedXObject {
+                            object_id: Some(current),
+                            stream,
+                        }));
+                    }
+                    Object::Reference(next) => current = next,
+                    _ => return Ok(None),
+                }
+            }
+            Err(PdfPageContextError::ReferenceDepthExceeded(current))
+        }
+        _ => Ok(None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(target_os = "windows")]
     use std::fs;
 
-    use lopdf::{Dictionary, Document, Object};
+    use lopdf::{Dictionary, Document, Object, Stream};
 
     use super::{PdfPageContextError, PdfPageObjectContext};
     use crate::pdf_v3::{page_index::PdfPageIndex, page_set::PageSet};
@@ -366,6 +479,94 @@ mod tests {
         assert!(matches!(
             PdfPageObjectContext::resolve(&document, index.page(1).expect("page")),
             Err(PdfPageContextError::ResourcesInvalid((4, 0)))
+        ));
+    }
+
+    #[test]
+    fn invoked_form_resources_override_parent_and_resolve_indirect_xobject() {
+        let mut document = nested_resource_document();
+        let index = PdfPageIndex::resolve_page(&document, 1).expect("page index");
+        let context = PdfPageObjectContext::resolve(&document, index.page(1).expect("page"))
+            .expect("page context");
+
+        let mut form = Stream::new(Dictionary::new(), Vec::new());
+        form.dict.set("Subtype", Object::Name(b"Form".to_vec()));
+        form.dict.set("Resources", Object::Reference((30, 0)));
+        let mut form_resources = Dictionary::new();
+        form_resources.set("Font", Object::Reference((31, 0)));
+        form_resources.set(
+            "XObject",
+            Object::Dictionary(resource_dictionary(&[(
+                "Child",
+                Object::Reference((32, 0)),
+            )])),
+        );
+        document
+            .objects
+            .insert((30, 0), Object::Dictionary(form_resources));
+        document.objects.insert(
+            (31, 0),
+            Object::Dictionary(resource_dictionary(&[(
+                "SharedFont",
+                Object::Reference((24, 0)),
+            )])),
+        );
+        let mut child = Stream::new(Dictionary::new(), Vec::new());
+        child.dict.set("Subtype", Object::Name(b"Form".to_vec()));
+        document.objects.insert((32, 0), Object::Stream(child));
+
+        let invoked = context
+            .resource_context()
+            .invoked_form(&document, (29, 0), &form)
+            .expect("invoked Form resources");
+        let fonts = invoked
+            .dictionary()
+            .get(b"Font")
+            .and_then(Object::as_dict)
+            .expect("merged fonts");
+        assert_eq!(
+            fonts.get(b"RootFont").expect("inherited root font"),
+            &Object::Reference((20, 0))
+        );
+        assert_eq!(
+            fonts.get(b"BranchFont").expect("inherited branch font"),
+            &Object::Reference((21, 0))
+        );
+        assert_eq!(
+            fonts.get(b"SharedFont").expect("Form font override"),
+            &Object::Reference((24, 0))
+        );
+        let child = invoked
+            .resolve_xobject(&document, b"Child")
+            .expect("resolve child XObject")
+            .expect("child XObject");
+        assert_eq!(child.object_id(), Some((32, 0)));
+        assert!(child
+            .stream()
+            .dict
+            .get(b"Subtype")
+            .and_then(Object::as_name)
+            .is_ok_and(|value| value == b"Form"));
+    }
+
+    #[test]
+    fn invoked_form_resources_reject_reference_cycles() {
+        let mut document = nested_resource_document();
+        let index = PdfPageIndex::resolve_page(&document, 1).expect("page index");
+        let context = PdfPageObjectContext::resolve(&document, index.page(1).expect("page"))
+            .expect("page context");
+        let mut form = Stream::new(Dictionary::new(), Vec::new());
+        form.dict.set("Resources", Object::Reference((30, 0)));
+        document.objects.insert((30, 0), Object::Reference((31, 0)));
+        document.objects.insert((31, 0), Object::Reference((30, 0)));
+
+        assert!(matches!(
+            context
+                .resource_context()
+                .invoked_form(&document, (29, 0), &form),
+            Err(PdfPageContextError::ReferenceCycle((30, 0)))
+                | Err(PdfPageContextError::ReferenceCycle((31, 0)))
+                | Err(PdfPageContextError::SourceObject(_))
         ));
     }
 

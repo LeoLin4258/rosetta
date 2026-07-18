@@ -19,7 +19,7 @@ use super::{
     page_context::{PdfPageContextError, PdfPageObjectContext},
     page_index::{PdfIndexedPage, PdfPageIndex, PdfPageIndexError},
     patch::{
-        stage_invocation_local_copy_on_write_batch, ContentPatchError,
+        stage_invocation_local_copy_on_write_batch_with_page_context, ContentPatchError,
         InvocationLocalCopyOnWriteTarget, ResourceReferenceBinding,
     },
     source_object::{PdfObjectView, PdfSourceObjectError},
@@ -709,6 +709,7 @@ fn stage_text_show_replacement_batch_internal(
     }
     let staged_font_object_count = staged_fonts.iter().map(|font| font.objects.len()).sum();
     let mut staged_targets = stage_replacement_streams(source_objects, &planned_targets)?;
+    let page_context = PdfPageObjectContext::resolve(source_objects, indexed_page)?;
     let requires_copy_on_write = staged_targets
         .iter()
         .any(|target| target.requires_copy_on_write);
@@ -729,9 +730,11 @@ fn stage_text_show_replacement_batch_internal(
                     })
                 })
                 .collect::<Result<Vec<_>, TextShowReplacementError>>()?;
-            let stage = stage_invocation_local_copy_on_write_batch(
-                document,
-                page_id,
+            let stage = stage_invocation_local_copy_on_write_batch_with_page_context(
+                source_objects,
+                accumulated_objects,
+                indexed_page,
+                &page_context,
                 page_number,
                 targets,
                 reserved_through,
@@ -749,7 +752,6 @@ fn stage_text_show_replacement_batch_internal(
                 )?;
                 staged_streams.insert(target.key.stream_id, staged_stream);
             }
-            let page_context = PdfPageObjectContext::resolve(source_objects, indexed_page)?;
             let staged_page = stage_translation_fonts_page_context(
                 &page_context,
                 resource_bindings

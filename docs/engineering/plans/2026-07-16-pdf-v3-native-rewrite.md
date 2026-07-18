@@ -209,11 +209,14 @@ Current progress:
   `PdfPageObjectContext`, while target identity, preflight decode and staged
   content-stream reads use the immutable lazy source view. The real two-page
   proof loads 12 source objects and retains 28,712 estimated bytes.
+- Form invocation validation and COW clone-tree staging now use owned effective
+  resource contexts over the lazy source view. A nested repeated-Form proof
+  stages four clones with 8 source loads and about 11 KiB resident.
 - The current incremental two-page proof remains 1,617,258 bytes from a
   1,590,242-byte source: 27,016 appended bytes and 10 delta objects. Page 1 and
   2 changes remain confined to their translated footer rows and page 3 is
-  pixel-exact. Form invocation/COW resource traversal and global ownership
-  discovery are still the next lazy-view migration boundary.
+  pixel-exact. Global cross-page stream/Form ownership discovery is now the
+  final major complete-document migration boundary.
 
 ## Purpose
 
@@ -570,12 +573,18 @@ selected-page resource helpers or complete-document source stream reads. The
 real two-page proof loads 12 source objects and keeps 12 cache entries / 28,712
 estimated bytes resident under explicit ceilings.
 
-Global cross-page stream/Form ownership discovery, Form invocation validation
-and copy-on-write resource traversal still use the complete immutable
-`Document`. The next Phase 4 slice must move those Form contexts onto owned lazy
-resource views; global ownership discovery is the final major complete-document
-boundary. Until both migrate, renderer memory remains unbounded by source
-object count.
+Form invocation validation and copy-on-write resource traversal no longer share
+the complete immutable `Document` with global ownership discovery. Form
+validation and COW staging now build owned effective resource contexts from the
+lazy source view, resolve each root/Form stream there, rewrite the selected page
+from its page context, and allocate clones above the accumulated overlay
+maximum. A nested repeated-Form proof produces the same four clones as the
+`Document` adapter with 8 source loads, 11 cache hits, 8 resident entries and
+11,272 estimated resident bytes.
+
+Global cross-page stream/Form ownership discovery is now the final major
+complete-document boundary. Until it migrates to a bounded lazy index, renderer
+memory remains unbounded by source object count.
 
 ### Phase 5 — Translation and protected spans
 

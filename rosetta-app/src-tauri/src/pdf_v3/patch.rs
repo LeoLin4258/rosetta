@@ -10,6 +10,9 @@ use sha2::{Digest, Sha256};
 
 use super::{
     content_stream::{discover_page_streams, operand_id, ContentStreamProbeError},
+    page_context::{PdfPageContextError, PdfPageObjectContext},
+    page_index::{PdfIndexedPage, PdfPageIndex},
+    source_object::{PdfObjectView, PdfSourceObjectError},
     types::FormInvocationStep,
 };
 
@@ -69,12 +72,14 @@ pub(crate) struct ResourceReferenceBinding {
     pub object_id: ObjectId,
 }
 
+#[derive(Debug)]
 pub(crate) struct InvocationLocalCopyOnWriteStage {
     pub streams: BTreeMap<ObjectId, Stream>,
     pub page: Dictionary,
     pub next_object_number: u32,
 }
 
+#[derive(Clone)]
 pub(crate) struct InvocationLocalCopyOnWriteTarget {
     pub target_stream_id: ObjectId,
     pub form_invocation_path: Vec<FormInvocationStep>,
@@ -85,6 +90,8 @@ pub(crate) struct InvocationLocalCopyOnWriteTarget {
 #[derive(Debug)]
 pub(crate) enum ContentPatchError {
     Discovery(ContentStreamProbeError),
+    SourceObject(PdfSourceObjectError),
+    PageContext(PdfPageContextError),
     PageOutOfBounds {
         page: u32,
         page_count: u32,
@@ -167,6 +174,8 @@ impl fmt::Display for ContentPatchError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Discovery(error) => error.fmt(formatter),
+            Self::SourceObject(error) => error.fmt(formatter),
+            Self::PageContext(error) => error.fmt(formatter),
             Self::PageOutOfBounds { page, page_count } => {
                 write!(formatter, "PDF page {page} is outside 1..={page_count}")
             }
@@ -258,6 +267,18 @@ impl std::error::Error for ContentPatchError {}
 impl From<ContentStreamProbeError> for ContentPatchError {
     fn from(value: ContentStreamProbeError) -> Self {
         Self::Discovery(value)
+    }
+}
+
+impl From<PdfSourceObjectError> for ContentPatchError {
+    fn from(value: PdfSourceObjectError) -> Self {
+        Self::SourceObject(value)
+    }
+}
+
+impl From<PdfPageContextError> for ContentPatchError {
+    fn from(value: PdfPageContextError) -> Self {
+        Self::PageContext(value)
     }
 }
 
@@ -682,6 +703,56 @@ pub(crate) fn stage_invocation_local_copy_on_write_batch(
     targets: Vec<InvocationLocalCopyOnWriteTarget>,
     reserved_through: u32,
 ) -> Result<InvocationLocalCopyOnWriteStage, ContentPatchError> {
+    let page_index = PdfPageIndex::resolve_page(document, page_number)
+        .map_err(|error| ContentPatchError::PageContentRewrite(error.to_string()))?;
+    let indexed_page = page_index
+        .page(page_number)
+        .map_err(|error| ContentPatchError::PageContentRewrite(error.to_string()))?;
+    if indexed_page.page_id() != page_id {
+        return Err(ContentPatchError::PageContentRewrite(format!(
+            "selected page {page_number} resolves to {} {}, not {} {}",
+            indexed_page.page_id().0,
+            indexed_page.page_id().1,
+            page_id.0,
+            page_id.1
+        )));
+    }
+    let page_context = PdfPageObjectContext::resolve(document, indexed_page)?;
+    stage_invocation_local_copy_on_write_batch_with_page_context(
+        document,
+        document,
+        indexed_page,
+        &page_context,
+        page_number,
+        targets,
+        reserved_through,
+    )
+}
+
+pub(crate) fn stage_invocation_local_copy_on_write_batch_with_page_context(
+    source_objects: &dyn PdfObjectView,
+    accumulated_objects: &dyn PdfObjectView,
+    indexed_page: &PdfIndexedPage,
+    page_context: &PdfPageObjectContext,
+    page_number: u32,
+    targets: Vec<InvocationLocalCopyOnWriteTarget>,
+    reserved_through: u32,
+) -> Result<InvocationLocalCopyOnWriteStage, ContentPatchError> {
+    if indexed_page.page_number() != page_number {
+        return Err(ContentPatchError::PageContentRewrite(format!(
+            "COW page number mismatch: index is {}, request is {page_number}",
+            indexed_page.page_number()
+        )));
+    }
+    if page_context.page_id() != indexed_page.page_id() {
+        return Err(ContentPatchError::PageContentRewrite(format!(
+            "COW page object mismatch: index is {} {}, context is {} {}",
+            indexed_page.page_id().0,
+            indexed_page.page_id().1,
+            page_context.page_id().0,
+            page_context.page_id().1
+        )));
+    }
     if targets.is_empty() {
         return Err(ContentPatchError::FormInvocationPathInvalid(
             "copy-on-write batch is empty".to_string(),
@@ -697,8 +768,8 @@ pub(crate) fn stage_invocation_local_copy_on_write_batch(
             .map(FormInvocationStep::parent_stream_id)
             .unwrap_or(target.target_stream_id);
         let validated = if target.form_invocation_path.is_empty() {
-            let reference_count = document
-                .get_page_contents(page_id)
+            let reference_count = indexed_page
+                .content_stream_ids()
                 .iter()
                 .filter(|stream_id| **stream_id == target.target_stream_id)
                 .count();
@@ -712,8 +783,9 @@ pub(crate) fn stage_invocation_local_copy_on_write_batch(
             None
         } else {
             Some(validate_invocation_path(
-                document,
-                page_id,
+                source_objects,
+                indexed_page,
+                page_context,
                 page_number,
                 target.target_stream_id,
                 &target.form_invocation_path,
@@ -804,8 +876,7 @@ pub(crate) fn stage_invocation_local_copy_on_write_batch(
         }
     }
 
-    let mut page_resources =
-        materialize_resource_context(document, &page_resource_context(document, page_id)?);
+    let mut page_resources = page_context.resources().clone();
     let mut page_resources_changed = !page_resource_bindings.is_empty();
     attach_resource_bindings(&mut page_resources, &page_resource_bindings)?;
 
@@ -817,7 +888,9 @@ pub(crate) fn stage_invocation_local_copy_on_write_batch(
             .cmp(&left.path.len())
             .then_with(|| left.cmp(right))
     });
-    let mut next_object_number = document.max_id.max(reserved_through);
+    let mut next_object_number = accumulated_objects
+        .maximum_object_number()
+        .max(reserved_through);
     let mut streams = BTreeMap::new();
     let mut cloned_ids = BTreeMap::<InvocationNodeKey, ObjectId>::new();
     let mut root_replacements = BTreeMap::<ObjectId, ObjectId>::new();
@@ -830,15 +903,7 @@ pub(crate) fn stage_invocation_local_copy_on_write_batch(
         let mut staged_stream = if let Some(stream) = plan.patched_stream {
             stream
         } else {
-            document
-                .get_object(plan.source_stream_id)
-                .and_then(Object::as_stream)
-                .cloned()
-                .map_err(|error| ContentPatchError::StreamRead {
-                    object_number: plan.source_stream_id.0,
-                    generation: plan.source_stream_id.1,
-                    message: error.to_string(),
-                })?
+            source_stream(source_objects, plan.source_stream_id)?
         };
         let mut node_resources = plan.effective_resources;
         if let Some(resources) = node_resources.as_mut() {
@@ -917,7 +982,7 @@ pub(crate) fn stage_invocation_local_copy_on_write_batch(
                 .dict
                 .set("Resources", Object::Dictionary(resources));
         }
-        let staged_stream_id = allocate_staged_object_id(document, &mut next_object_number);
+        let staged_stream_id = allocate_staged_object_id(&mut next_object_number)?;
         streams.insert(staged_stream_id, staged_stream);
         cloned_ids.insert(key.clone(), staged_stream_id);
         if key.path.is_empty() {
@@ -925,7 +990,8 @@ pub(crate) fn stage_invocation_local_copy_on_write_batch(
         }
     }
 
-    let mut page = page_with_replaced_content_streams(document, page_id, &root_replacements)?;
+    let mut page =
+        page_with_replaced_content_streams(indexed_page, page_context, &root_replacements)?;
     if page_resources_changed {
         page.set("Resources", Object::Dictionary(page_resources));
     }
@@ -936,19 +1002,34 @@ pub(crate) fn stage_invocation_local_copy_on_write_batch(
     })
 }
 
-fn allocate_staged_object_id(document: &Document, next_object_number: &mut u32) -> ObjectId {
-    loop {
-        *next_object_number += 1;
-        let object_id = (*next_object_number, 0);
-        if !document.objects.contains_key(&object_id) {
-            return object_id;
-        }
-    }
+fn allocate_staged_object_id(next_object_number: &mut u32) -> Result<ObjectId, ContentPatchError> {
+    *next_object_number = next_object_number.checked_add(1).ok_or_else(|| {
+        ContentPatchError::PageContentRewrite(
+            "PDF object number space is exhausted during Form copy-on-write".to_string(),
+        )
+    })?;
+    Ok((*next_object_number, 0))
+}
+
+fn source_stream(
+    source_objects: &dyn PdfObjectView,
+    stream_id: ObjectId,
+) -> Result<Stream, ContentPatchError> {
+    source_objects
+        .object(stream_id)?
+        .as_stream()
+        .cloned()
+        .map_err(|error| ContentPatchError::StreamRead {
+            object_number: stream_id.0,
+            generation: stream_id.1,
+            message: error.to_string(),
+        })
 }
 
 fn validate_invocation_path(
-    document: &Document,
-    page_id: ObjectId,
+    source_objects: &dyn PdfObjectView,
+    indexed_page: &PdfIndexedPage,
+    page_context: &PdfPageObjectContext,
     page_number: u32,
     target_stream_id: ObjectId,
     path: &[FormInvocationStep],
@@ -960,8 +1041,8 @@ fn validate_invocation_path(
         )));
     }
     let root_stream_id = path[0].parent_stream_id();
-    let root_reference_count = document
-        .get_page_contents(page_id)
+    let root_reference_count = indexed_page
+        .content_stream_ids()
         .iter()
         .filter(|stream_id| **stream_id == root_stream_id)
         .count();
@@ -973,7 +1054,7 @@ fn validate_invocation_path(
         });
     }
 
-    let mut resources = page_resource_context(document, page_id)?;
+    let mut resources = page_context.resource_context().clone();
     let mut expected_parent_stream_id = root_stream_id;
     let mut active_form_streams = HashSet::new();
     let mut links = Vec::with_capacity(path.len());
@@ -987,14 +1068,7 @@ fn validate_invocation_path(
                 expected_parent_stream_id.1
             )));
         }
-        let parent_stream = document
-            .get_object(expected_parent_stream_id)
-            .and_then(Object::as_stream)
-            .map_err(|error| ContentPatchError::StreamRead {
-                object_number: expected_parent_stream_id.0,
-                generation: expected_parent_stream_id.1,
-                message: error.to_string(),
-            })?;
+        let parent_stream = source_stream(source_objects, expected_parent_stream_id)?;
         let parent_content =
             parent_stream
                 .get_plain_content()
@@ -1034,8 +1108,9 @@ fn validate_invocation_path(
                     step.operation_index, expected_parent_stream_id.0, expected_parent_stream_id.1
                 ))
             })?;
-        let (resolved_stream_id, form_stream) =
-            resolve_xobject(document, &resources, resource_name).ok_or_else(|| {
+        let resolved = resources
+            .resolve_xobject(source_objects, resource_name)?
+            .ok_or_else(|| {
                 ContentPatchError::FormInvocationPathInvalid(format!(
                     "resource {} in parent stream {} {} cannot be resolved",
                     String::from_utf8_lossy(resource_name),
@@ -1043,7 +1118,7 @@ fn validate_invocation_path(
                     expected_parent_stream_id.1
                 ))
             })?;
-        let resolved_stream_id = resolved_stream_id.ok_or_else(|| {
+        let resolved_stream_id = resolved.object_id().ok_or_else(|| {
             ContentPatchError::FormInvocationPathInvalid(
                 "direct Form XObject cannot be copy-on-written".to_string(),
             )
@@ -1057,7 +1132,8 @@ fn validate_invocation_path(
                 step.form_stream_generation
             )));
         }
-        if !form_stream
+        if !resolved
+            .stream()
             .dict
             .get(b"Subtype")
             .and_then(Object::as_name)
@@ -1075,9 +1151,10 @@ fn validate_invocation_path(
         }
         links.push(ValidatedInvocationLink {
             step: step.clone(),
-            resources: materialize_resource_context(document, &resources),
+            resources: resources.dictionary().clone(),
         });
-        resources = invoked_form_resource_context(document, form_stream, &resources);
+        resources =
+            resources.invoked_form(source_objects, resolved_stream_id, resolved.stream())?;
         expected_parent_stream_id = resolved_stream_id;
     }
     if expected_parent_stream_id != target_stream_id {
@@ -1091,7 +1168,7 @@ fn validate_invocation_path(
     }
     Ok(ValidatedInvocationPath {
         links,
-        target_resources: materialize_resource_context(document, &resources),
+        target_resources: resources.dictionary().clone(),
     })
 }
 
@@ -1145,11 +1222,11 @@ fn attach_resource_bindings(
 }
 
 fn page_with_replaced_content_streams(
-    document: &Document,
-    page_id: ObjectId,
+    indexed_page: &PdfIndexedPage,
+    page_context: &PdfPageObjectContext,
     replacements: &BTreeMap<ObjectId, ObjectId>,
 ) -> Result<Dictionary, ContentPatchError> {
-    let mut content_streams = document.get_page_contents(page_id);
+    let mut content_streams = indexed_page.content_stream_ids().to_vec();
     for source_stream_id in replacements.keys() {
         let reference_count = content_streams
             .iter()
@@ -1168,11 +1245,7 @@ fn page_with_replaced_content_streams(
             *stream_id = *replacement_stream_id;
         }
     }
-    let mut page = document.get_dictionary(page_id).cloned().map_err(|error| {
-        ContentPatchError::PageContentRewrite(format!(
-            "failed to clone selected page dictionary: {error}"
-        ))
-    })?;
+    let mut page = page_context.page_dictionary().clone();
     page.set(
         "Contents",
         Object::Array(content_streams.into_iter().map(Object::Reference).collect()),
@@ -1479,7 +1552,11 @@ fn byte_hash(value: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{env, fs, path::Path};
+    use std::{
+        env, fs,
+        path::{Path, PathBuf},
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     use lopdf::{
         content::{Content, Operation},
@@ -1487,12 +1564,17 @@ mod tests {
     };
 
     use super::{
-        apply_content_operand_patches, byte_hash, ContentOperandRangePatch, ContentPatchError,
+        apply_content_operand_patches, byte_hash, stage_invocation_local_copy_on_write_batch,
+        stage_invocation_local_copy_on_write_batch_with_page_context, ContentOperandRangePatch,
+        ContentPatchError, InvocationLocalCopyOnWriteTarget,
     };
     use crate::{
         pdf_v3::{
             identity::{compare_images, render_page},
             mapping::map_page_atoms_to_content_operands,
+            page_context::PdfPageObjectContext,
+            page_index::PdfPageIndex,
+            source_object::{PdfObjectView, PdfSourceObjectStore},
             types::FormInvocationStep,
         },
         rosetta_jobs::formats::pdf::test_helpers::{fixture_path, pdfium_test_lock, shared_pdfium},
@@ -1804,6 +1886,131 @@ mod tests {
         if let Ok(path) = env::var("ROSETTA_PDF_V3_MULTI_COW_OUTPUT") {
             fs::write(path, &output).expect("write nested multi-COW output");
         }
+    }
+
+    #[test]
+    fn lazy_nested_form_stage_matches_document_adapter_with_bounded_source_reads() {
+        let (document, source_bytes, page_id, root_stream_id, parent_form_id, leaf_form_id) =
+            nested_repeated_form_document();
+        let source_file = TestPdfFile::new("lazy-nested-form", &source_bytes);
+        let source_objects =
+            PdfSourceObjectStore::open(source_file.path()).expect("lazy source object store");
+        let page_index = PdfPageIndex::resolve_page(&source_objects, 1).expect("lazy page index");
+        let indexed_page = page_index.page(1).expect("indexed page");
+        assert_eq!(indexed_page.page_id(), page_id);
+        let page_context = PdfPageObjectContext::resolve(&source_objects, indexed_page)
+            .expect("lazy page context");
+        let leaf_stream = source_objects
+            .object(leaf_form_id)
+            .expect("lazy leaf Form")
+            .as_stream()
+            .cloned()
+            .expect("leaf Form stream");
+        let path_prefix = FormInvocationStep {
+            parent_stream_object_number: root_stream_id.0,
+            parent_stream_generation: root_stream_id.1,
+            operation_index: 1,
+            form_stream_object_number: parent_form_id.0,
+            form_stream_generation: parent_form_id.1,
+        };
+        let targets = [1, 4]
+            .into_iter()
+            .map(|operation_index| InvocationLocalCopyOnWriteTarget {
+                target_stream_id: leaf_form_id,
+                form_invocation_path: vec![
+                    path_prefix.clone(),
+                    FormInvocationStep {
+                        parent_stream_object_number: parent_form_id.0,
+                        parent_stream_generation: parent_form_id.1,
+                        operation_index,
+                        form_stream_object_number: leaf_form_id.0,
+                        form_stream_generation: leaf_form_id.1,
+                    },
+                ],
+                patched_stream: leaf_stream.clone(),
+                resource_bindings: Vec::new(),
+            })
+            .collect::<Vec<_>>();
+
+        let lazy = stage_invocation_local_copy_on_write_batch_with_page_context(
+            &source_objects,
+            &source_objects,
+            indexed_page,
+            &page_context,
+            1,
+            targets.clone(),
+            source_objects.maximum_object_number(),
+        )
+        .expect("lazy nested Form COW stage");
+        let compatibility = stage_invocation_local_copy_on_write_batch(
+            &document,
+            page_id,
+            1,
+            targets,
+            document.max_id,
+        )
+        .expect("Document adapter nested Form COW stage");
+        assert_eq!(lazy.streams, compatibility.streams);
+        assert_eq!(lazy.page, compatibility.page);
+        assert_eq!(lazy.next_object_number, compatibility.next_object_number);
+        assert_eq!(lazy.streams.len(), 4);
+        assert_eq!(
+            lazy.next_object_number,
+            source_objects.maximum_object_number() + 4
+        );
+        let mismatch = stage_invocation_local_copy_on_write_batch_with_page_context(
+            &source_objects,
+            &source_objects,
+            indexed_page,
+            &page_context,
+            2,
+            Vec::new(),
+            source_objects.maximum_object_number(),
+        )
+        .expect_err("mismatched page context must fail before target staging");
+        assert!(matches!(mismatch, ContentPatchError::PageContentRewrite(_)));
+
+        let stats = source_objects.cache_stats().expect("lazy cache stats");
+        println!(
+            "pdf-v3 lazy nested Form staging sourceLoads={} cacheHits={} residentEntries={} residentBytes={}",
+            stats.source_loads,
+            stats.cache_hits,
+            stats.resident_entries,
+            stats.resident_bytes,
+        );
+        assert!(stats.source_loads <= 32);
+        assert!(stats.resident_entries <= 32);
+        assert!(stats.resident_bytes <= 16 * 1024 * 1024);
+    }
+
+    #[test]
+    fn form_clone_allocation_rejects_exhausted_object_number_space() {
+        let (document, _, page_id, root_stream_id, form_stream_id) = repeated_form_document();
+        let patched_stream = document
+            .get_object(form_stream_id)
+            .and_then(Object::as_stream)
+            .cloned()
+            .expect("source Form stream");
+        let error = stage_invocation_local_copy_on_write_batch(
+            &document,
+            page_id,
+            1,
+            vec![InvocationLocalCopyOnWriteTarget {
+                target_stream_id: form_stream_id,
+                form_invocation_path: vec![FormInvocationStep {
+                    parent_stream_object_number: root_stream_id.0,
+                    parent_stream_generation: root_stream_id.1,
+                    operation_index: 1,
+                    form_stream_object_number: form_stream_id.0,
+                    form_stream_generation: form_stream_id.1,
+                }],
+                patched_stream,
+                resource_bindings: Vec::new(),
+            }],
+            u32::MAX,
+        )
+        .expect_err("exhausted object number space must fail");
+        assert!(matches!(error, ContentPatchError::PageContentRewrite(_)));
     }
 
     #[test]
@@ -2264,6 +2471,33 @@ mod tests {
             parent_form_id,
             leaf_form_id,
         )
+    }
+
+    struct TestPdfFile(PathBuf);
+
+    impl TestPdfFile {
+        fn new(label: &str, bytes: &[u8]) -> Self {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos();
+            let path = env::temp_dir().join(format!(
+                "rosetta-pdf-v3-patch-{label}-{}-{nanos}.pdf",
+                std::process::id()
+            ));
+            fs::write(&path, bytes).expect("write test PDF");
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestPdfFile {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.0);
+        }
     }
 
     fn first_page_identity_patch(
