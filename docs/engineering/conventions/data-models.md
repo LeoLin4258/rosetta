@@ -917,6 +917,17 @@ PDF v3 run control 是 durable scheduler 和 Tauri/UI 之间的窄接口，不�
   必须幂等，允许 active lease settle 后重试并完成状态收敛。
 - runtime status 必须先验证 `runtime-manifest.json` 与 scheduler translation binding；
   identity drift 或缺失 manifest 是硬错误，不能降级成未知字符串或继续运行。
+- status schema `rosetta-pdf-v3-run-control-status/2` 必须返回
+  `ownerRecoveryEligibleAtMs`。当前 native takeover 下限固定为 owner lease 最后更新时间后
+  5 分钟，前端不得传入或缩短 stale cutoff。
+- recovery 必须在 scheduler coordinator lock 内拒绝当前 session 仍有 active page lease
+  的自接管，并拒绝未过期的其他 session owner。过期后只能用 validated
+  PageGraph/TranslationPatch inventory 调用 scheduler
+  recovery；patch revision 必须等于当前 runtime manifest revision。不得信任旧 shard
+  authority，也不得恢复 pending patch、prepared font 或 PDF delta。
+- recovery inventory 校验可能遍历完整 PageSet，Tauri 命令必须在 blocking worker 中执行。
+  接管释放旧 lease 后，如果 run 已处于 `cancelling` 且 active lease 清零，必须立即收敛到
+  `cancelled`。
 
 ## PDF v3 Translation Runtime Manifest
 

@@ -6,9 +6,14 @@ use std::{
 use serde::Serialize;
 
 use crate::{
-    pdf_v3::scheduler::{
-        DurablePdfV3Scheduler, PdfV3Cancellation, PdfV3PageState, PdfV3RunState,
-        PdfV3SchedulerError, PdfV3SchedulerStage, PdfV3SchedulerSummary,
+    pdf_v3::{
+        page_graph_store::PageGraphStore,
+        patch_store::TranslationPatchStore,
+        pipeline::{validated_recovery_inventory, PdfV3TranslationWorkerError},
+        scheduler::{
+            DurablePdfV3Scheduler, PdfV3Cancellation, PdfV3PageState, PdfV3RecoveryReport,
+            PdfV3RunState, PdfV3SchedulerError, PdfV3SchedulerStage, PdfV3SchedulerSummary,
+        },
     },
     rosetta_jobs::path::is_safe_job_id,
 };
@@ -20,6 +25,7 @@ use super::v3_runtime::{
 
 pub(crate) const DEFAULT_PDF_V3_STATUS_WINDOW: usize = 64;
 pub(crate) const MAX_PDF_V3_STATUS_WINDOW: usize = 256;
+pub(crate) const PDF_V3_OWNER_LEASE_TIMEOUT_MS: u64 = 5 * 60 * 1_000;
 const USER_CANCEL_REASON: &str = "user-requested";
 
 #[derive(Debug, Clone, Serialize)]
@@ -74,6 +80,7 @@ pub(crate) struct PdfV3RunControlStatus {
     pub target_language: String,
     pub owned_by_current_session: bool,
     pub owner_lease_updated_at_ms: u64,
+    pub owner_recovery_eligible_at_ms: u64,
     pub cancellation: Option<PdfV3Cancellation>,
     pub summary: PdfV3SchedulerSummary,
     pub runtime: PdfV3RuntimeIdentityStatus,
@@ -82,13 +89,23 @@ pub(crate) struct PdfV3RunControlStatus {
     pub has_more: bool,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PdfV3RunRecoveryResult {
+    pub schema: &'static str,
+    pub recovery: PdfV3RecoveryReport,
+    pub status: PdfV3RunControlStatus,
+}
+
 #[derive(Debug)]
 pub(crate) enum PdfV3RunControlError {
     InvalidJobDirectory,
     InvalidRunId,
     InvalidStatusLimit(usize),
+    InvalidRecoveryCutoff,
     Scheduler(PdfV3SchedulerError),
     Runtime(PdfV3RuntimeManifestError),
+    Recovery(PdfV3TranslationWorkerError),
 }
 
 impl fmt::Display for PdfV3RunControlError {
@@ -100,8 +117,12 @@ impl fmt::Display for PdfV3RunControlError {
                 formatter,
                 "PDF v3 status window {limit} is outside 1..={MAX_PDF_V3_STATUS_WINDOW}"
             ),
+            Self::InvalidRecoveryCutoff => {
+                formatter.write_str("PDF v3 recovery cutoff is later than the current time")
+            }
             Self::Scheduler(error) => error.fmt(formatter),
             Self::Runtime(error) => error.fmt(formatter),
+            Self::Recovery(error) => error.fmt(formatter),
         }
     }
 }
@@ -117,6 +138,12 @@ impl From<PdfV3SchedulerError> for PdfV3RunControlError {
 impl From<PdfV3RuntimeManifestError> for PdfV3RunControlError {
     fn from(value: PdfV3RuntimeManifestError) -> Self {
         Self::Runtime(value)
+    }
+}
+
+impl From<PdfV3TranslationWorkerError> for PdfV3RunControlError {
+    fn from(value: PdfV3TranslationWorkerError) -> Self {
+        Self::Recovery(value)
     }
 }
 
@@ -230,6 +257,76 @@ pub(crate) fn cancel_pdf_v3_run(
     )
 }
 
+pub(crate) fn recover_pdf_v3_run(
+    job_directory: &Path,
+    run_id: &str,
+    new_owner_session_id: &str,
+    now_ms: u64,
+    stale_before_ms: u64,
+) -> Result<PdfV3RunRecoveryResult, PdfV3RunControlError> {
+    if stale_before_ms > now_ms {
+        return Err(PdfV3RunControlError::InvalidRecoveryCutoff);
+    }
+    let run_directory = pdf_v3_run_directory(job_directory, run_id)?;
+    let scheduler = DurablePdfV3Scheduler::open(&run_directory)?;
+    let initial = scheduler.status_snapshot()?;
+    let has_active_leases =
+        initial.summary.extracting_pages != 0 || initial.summary.translating_pages != 0;
+    if initial.owner_session_id == new_owner_session_id && has_active_leases {
+        return Err(PdfV3SchedulerError::OwnerHasActiveLeases.into());
+    }
+    if initial.owner_session_id != new_owner_session_id
+        && initial.owner_lease_updated_at_ms >= stale_before_ms
+    {
+        return Err(PdfV3SchedulerError::OwnerLeaseActive.into());
+    }
+
+    let binding = scheduler.translation_binding()?;
+    let manifest = load_translation_runtime_manifest(&run_directory)?;
+    validate_runtime_manifest_binding(&manifest, &binding)?;
+    let pdf_v3_directory = job_directory.join("pdf-v3");
+    let page_graph_store = PageGraphStore::new(
+        &pdf_v3_directory.join("extraction"),
+        binding.source_fingerprint.clone(),
+        binding.source_page_count,
+        binding.engine_version.clone(),
+    )
+    .map_err(PdfV3TranslationWorkerError::from)?;
+    let patch_store = TranslationPatchStore::new(
+        &pdf_v3_directory.join("translations"),
+        binding.source_fingerprint.clone(),
+        binding.target_language.clone(),
+    )
+    .map_err(PdfV3TranslationWorkerError::from)?;
+    let inventory = validated_recovery_inventory(
+        &scheduler,
+        &page_graph_store,
+        &patch_store,
+        manifest.translation_revision,
+    )?;
+    let recovery =
+        scheduler.recover_stale_owner(new_owner_session_id, now_ms, stale_before_ms, &inventory)?;
+    let recovered = scheduler.status_snapshot()?;
+    if recovered.run_state == PdfV3RunState::Cancelling
+        && recovered.summary.extracting_pages == 0
+        && recovered.summary.translating_pages == 0
+    {
+        scheduler.finish_cancellation(new_owner_session_id, now_ms)?;
+    }
+    let status = build_status(
+        &scheduler,
+        &run_directory,
+        new_owner_session_id,
+        None,
+        DEFAULT_PDF_V3_STATUS_WINDOW,
+    )?;
+    Ok(PdfV3RunRecoveryResult {
+        schema: "rosetta-pdf-v3-run-recovery-result/1",
+        recovery,
+        status,
+    })
+}
+
 fn build_status(
     scheduler: &DurablePdfV3Scheduler,
     run_directory: &Path,
@@ -269,7 +366,7 @@ fn build_status(
     let component = &manifest.component;
 
     Ok(PdfV3RunControlStatus {
-        schema: "rosetta-pdf-v3-run-control-status/1",
+        schema: "rosetta-pdf-v3-run-control-status/2",
         run_id: snapshot.run_id,
         state: snapshot.run_state,
         source_fingerprint: manifest.source_fingerprint,
@@ -279,6 +376,10 @@ fn build_status(
         target_language: snapshot.target_language,
         owned_by_current_session: snapshot.owner_session_id == current_session_id,
         owner_lease_updated_at_ms: snapshot.owner_lease_updated_at_ms,
+        owner_recovery_eligible_at_ms: snapshot
+            .owner_lease_updated_at_ms
+            .saturating_add(PDF_V3_OWNER_LEASE_TIMEOUT_MS)
+            .saturating_add(1),
         cancellation: snapshot.cancellation,
         summary: snapshot.summary,
         runtime: PdfV3RuntimeIdentityStatus {
@@ -329,8 +430,8 @@ mod tests {
     };
 
     use super::{
-        cancel_pdf_v3_run, pause_pdf_v3_run, pdf_v3_run_status, resume_pdf_v3_run,
-        PdfV3RunControlError,
+        cancel_pdf_v3_run, pause_pdf_v3_run, pdf_v3_run_status, recover_pdf_v3_run,
+        resume_pdf_v3_run, PdfV3RunControlError, PDF_V3_OWNER_LEASE_TIMEOUT_MS,
     };
 
     #[test]
@@ -339,12 +440,17 @@ mod tests {
 
         let first = pdf_v3_run_status(run.job_dir(), "run-test", "owner-a", None, 2)
             .expect("first status window");
+        assert_eq!(first.schema, "rosetta-pdf-v3-run-control-status/2");
         assert_eq!(first.state, PdfV3RunState::Running);
         assert_eq!(first.requested_page_set, "1-3,9");
         assert_eq!(first.pages.len(), 2);
         assert_eq!(first.next_start_after, Some(2));
         assert!(first.has_more);
         assert!(first.owned_by_current_session);
+        assert_eq!(
+            first.owner_recovery_eligible_at_ms,
+            2 + PDF_V3_OWNER_LEASE_TIMEOUT_MS
+        );
         assert_eq!(first.runtime.provider_id, "scripted-test-provider");
         assert_eq!(
             first.runtime.regular_font.weight,
@@ -445,6 +551,41 @@ mod tests {
                 .state,
             PdfV3RunState::Cancelled
         );
+    }
+
+    #[test]
+    fn recovery_requires_stale_ownership_and_reconciles_cancellation() {
+        let run = TestRun::new();
+        let scheduler = DurablePdfV3Scheduler::open(&run.run_dir()).expect("scheduler");
+        let claims = scheduler
+            .claim_extraction("owner-a", 1, 2)
+            .expect("extraction claim");
+        assert_eq!(claims.len(), 1);
+
+        assert!(matches!(
+            recover_pdf_v3_run(run.job_dir(), "run-test", "owner-a", 10, 5),
+            Err(PdfV3RunControlError::Scheduler(
+                crate::pdf_v3::scheduler::PdfV3SchedulerError::OwnerHasActiveLeases
+            ))
+        ));
+        assert!(matches!(
+            recover_pdf_v3_run(run.job_dir(), "run-test", "owner-b", 10, 2),
+            Err(PdfV3RunControlError::Scheduler(
+                crate::pdf_v3::scheduler::PdfV3SchedulerError::OwnerLeaseActive
+            ))
+        ));
+
+        scheduler
+            .request_cancel("owner-a", 4, "user-requested")
+            .expect("request cancellation");
+        let recovered = recover_pdf_v3_run(run.job_dir(), "run-test", "owner-b", 100, 50)
+            .expect("recover stale owner");
+        assert_eq!(recovered.schema, "rosetta-pdf-v3-run-recovery-result/1");
+        assert_eq!(recovered.recovery.released_extraction_leases, 1);
+        assert_eq!(recovered.status.state, PdfV3RunState::Cancelled);
+        assert!(recovered.status.owned_by_current_session);
+        assert_eq!(recovered.status.summary.extracting_pages, 0);
+        assert_eq!(recovered.status.summary.pending_pages, 4);
     }
 
     struct TestRun {

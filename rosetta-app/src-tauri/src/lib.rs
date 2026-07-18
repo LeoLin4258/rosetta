@@ -252,6 +252,7 @@ pub fn run() {
             rosetta_jobs::pick_rosetta_import_path,
             rosetta_jobs::probe_pdf_runtime,
             rosetta_jobs::read_rosetta_pdf_bytes,
+            rosetta_jobs::recover_rosetta_pdf_v3_run,
             rosetta_jobs::repair_rosetta_pdf_job,
             rosetta_jobs::render_rosetta_pdf_page_as_png,
             rosetta_jobs::render_rosetta_pdf_translated_page_as_png,

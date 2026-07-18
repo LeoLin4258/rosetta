@@ -298,6 +298,35 @@ pub fn cancel_rosetta_pdf_v3_run(
     )
 }
 
+#[tauri::command]
+pub async fn recover_rosetta_pdf_v3_run(
+    app: AppHandle,
+    cancel_state: State<'_, PdfTranslationCancelState>,
+    job_id: String,
+    run_id: String,
+) -> Result<formats::pdf::v3_control::PdfV3RunRecoveryResult, String> {
+    let root = path::jobs_root(&app)?;
+    let dir = path::checked_job_dir(&root, &job_id)?;
+    let session_id = cancel_state.session_id().to_string();
+    tokio::task::spawn_blocking(move || {
+        let now_ms = path::timestamp_ms_string()
+            .parse::<u64>()
+            .map_err(|_| "无法读取当前时间。".to_string())?;
+        let stale_before_ms =
+            now_ms.saturating_sub(formats::pdf::v3_control::PDF_V3_OWNER_LEASE_TIMEOUT_MS);
+        formats::pdf::v3_control::recover_pdf_v3_run(
+            &dir,
+            &run_id,
+            &session_id,
+            now_ms,
+            stale_before_ms,
+        )
+        .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("PDF v3 恢复任务异常结束: {error}"))?
+}
+
 fn control_rosetta_pdf_v3_run(
     app: &AppHandle,
     cancel_state: &PdfTranslationCancelState,

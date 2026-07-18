@@ -630,7 +630,13 @@ pub(crate) fn validated_recovery_inventory(
     scheduler: &DurablePdfV3Scheduler,
     page_graph_store: &PageGraphStore,
     patch_store: &TranslationPatchStore,
+    expected_translation_revision: u64,
 ) -> Result<PdfV3RecoveryInventory, PdfV3TranslationWorkerError> {
+    if expected_translation_revision == 0 {
+        return Err(PdfV3TranslationWorkerError::BindingMismatch(
+            "translationRevision",
+        ));
+    }
     let binding = scheduler.translation_binding()?;
     validate_translation_binding(&binding, page_graph_store, patch_store)?;
     let extraction_snapshot = page_graph_store.validated_snapshot()?;
@@ -650,12 +656,10 @@ pub(crate) fn validated_recovery_inventory(
         .collect::<BTreeMap<_, _>>();
 
     let mut patches = BTreeMap::new();
-    for entry in patch_store
-        .snapshot()?
-        .pages
-        .into_iter()
-        .filter(|entry| binding.requested_pages.contains(entry.page_number))
-    {
+    for entry in patch_store.snapshot()?.pages.into_iter().filter(|entry| {
+        binding.requested_pages.contains(entry.page_number)
+            && entry.translation_revision == expected_translation_revision
+    }) {
         let Some(extraction) = extractions.get(&entry.page_number) else {
             continue;
         };
@@ -1035,8 +1039,9 @@ mod tests {
         ));
         let (_, summary) = scheduler.manifest_snapshot().expect("scheduler summary");
         assert_eq!(summary.completed_pages, 1);
-        let inventory = validated_recovery_inventory(&scheduler, &page_graph_store, &patch_store)
-            .expect("recovery inventory");
+        let inventory =
+            validated_recovery_inventory(&scheduler, &page_graph_store, &patch_store, 1)
+                .expect("recovery inventory");
         assert_eq!(inventory.extractions.len(), 1);
         assert_eq!(inventory.patches.len(), 1);
     }
@@ -1077,8 +1082,13 @@ mod tests {
             .commit(&stored_page.page, &patch)
             .expect("durable patch commit");
 
-        let inventory = validated_recovery_inventory(&scheduler, &page_graph_store, &patch_store)
-            .expect("recovery inventory");
+        let wrong_revision =
+            validated_recovery_inventory(&scheduler, &page_graph_store, &patch_store, 2)
+                .expect("wrong-revision inventory");
+        assert!(wrong_revision.patches.is_empty());
+        let inventory =
+            validated_recovery_inventory(&scheduler, &page_graph_store, &patch_store, 1)
+                .expect("recovery inventory");
         let report = scheduler
             .recover_stale_owner("owner-b", 200, 100, &inventory)
             .expect("recover committed patch");

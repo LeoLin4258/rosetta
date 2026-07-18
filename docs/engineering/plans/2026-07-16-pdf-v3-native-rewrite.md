@@ -723,8 +723,12 @@ paths or text. The local page processor can only derive production
 configuration from a live provider/font binding that matches this manifest. A
 typed Tauri run-control surface now exposes bounded paginated status plus
 owner-gated pause, resume and cancellation without exposing paths, owner IDs,
-credentials or document text. Frontend control integration, verified component
-launch/model health and a real complex 500/1,000-page end-to-end
+credentials or document text. Native stale-owner recovery now validates the
+runtime binding and complete PageGraph/TranslationPatch inventory in a blocking
+worker before releasing leases or promoting durable authority; a conservative
+five-minute lease window remains until the lifecycle manager owns heartbeat and
+process identity. Frontend control integration, run creation, verified
+component launch/model health and a real complex 500/1,000-page end-to-end
 translation/export remain pending.
 
 ### Phase 7 — Component control plane

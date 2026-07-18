@@ -214,7 +214,8 @@ pub(crate) struct PdfV3RecoveryInventory {
     pub patches: BTreeMap<u32, PdfV3PatchAuthority>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct PdfV3RecoveryReport {
     pub released_extraction_leases: u32,
     pub released_translation_leases: u32,
@@ -293,6 +294,7 @@ pub(crate) enum PdfV3SchedulerError {
     },
     Corrupt(String),
     OwnerLeaseActive,
+    OwnerHasActiveLeases,
     OwnerMismatch,
     RunNotClaimable(PdfV3RunState),
     RunNotPausable(PdfV3RunState),
@@ -358,6 +360,9 @@ impl fmt::Display for PdfV3SchedulerError {
             }
             Self::OwnerLeaseActive => {
                 formatter.write_str("PDF v3 scheduler run is owned by a live session")
+            }
+            Self::OwnerHasActiveLeases => {
+                formatter.write_str("PDF v3 scheduler owner still has active page leases")
             }
             Self::OwnerMismatch => {
                 formatter.write_str("PDF v3 scheduler owner session does not match")
@@ -1085,6 +1090,11 @@ impl DurablePdfV3Scheduler {
         }
         let _guard = self.lock()?;
         let mut manifest = self.read_manifest()?;
+        if manifest.owner_session_id == new_owner_session_id
+            && (manifest.summary.extracting_pages != 0 || manifest.summary.translating_pages != 0)
+        {
+            return Err(PdfV3SchedulerError::OwnerHasActiveLeases);
+        }
         if manifest.owner_session_id != new_owner_session_id
             && manifest.owner_lease_updated_at_ms >= stale_before_ms
         {
@@ -2158,6 +2168,10 @@ mod tests {
         let claims = scheduler
             .claim_extraction("owner-a", 3, 10)
             .expect("claim extraction");
+        assert!(matches!(
+            scheduler.recover_stale_owner("owner-a", 20, 10, &PdfV3RecoveryInventory::default()),
+            Err(PdfV3SchedulerError::OwnerHasActiveLeases)
+        ));
         assert!(matches!(
             scheduler.recover_stale_owner("owner-b", 20, 10, &PdfV3RecoveryInventory::default()),
             Err(PdfV3SchedulerError::OwnerLeaseActive)
