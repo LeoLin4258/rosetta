@@ -661,8 +661,13 @@ UTF-8 patch placement. Provider results may arrive out of order but must form an
 exact unit-ID set; stale plans, missing/duplicate/unknown results, token drift
 and empty safe plans are rejected. Planning is bounded to one active PageGraph,
 100,000 units, 1 MiB per unit and 16 MiB accepted source text per page. Native
-PageGraph protected-span detection, concrete async provider integration and
-paragraph/mixed-style translation planning remain pending.
+PageGraph protected-span detection and paragraph/mixed-style translation
+planning remain pending. The async local-provider bridge now reuses Lightning,
+mobile batch and llama.cpp batching through a provider-owned generic unit,
+keeps protected tokens outside model input, returns exact unit-ID results and
+preserves cancellation/retry/metrics behavior without depending on the legacy
+pdf2zh worker unit. Runtime provider/model identity and renderer-owning page
+processor integration remain pending.
 
 ### Phase 6 — Long-document scheduler
 
@@ -690,8 +695,9 @@ preservation, persists patch authority before scheduler completion and builds
 the complete bounded recovery inventory. Concrete local-provider/renderer
 integration, Tauri/UI control and a real complex 500/1,000-page end-to-end
 translation/export remain pending. The page processor now has a canonical
-PageGraph-to-pending-patch planner/reassembler contract, but the concrete local
-provider call and renderer resolution still remain above the worker.
+PageGraph-to-pending-patch planner/reassembler contract and an async local
+provider bridge, but runtime identity, renderer resolution and the async worker
+boundary still remain above the durable worker.
 
 ### Phase 7 — Component control plane
 

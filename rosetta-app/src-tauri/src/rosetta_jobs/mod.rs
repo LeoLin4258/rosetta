@@ -1176,6 +1176,8 @@ fn pdf_run_chunk_size_for_provider(
         PdfUnitProviderConfig::Lightning(_) => Some("rwkv-lightning-contents"),
         PdfUnitProviderConfig::MobileBatch(_) => Some("rwkv-mobile-batch-chat"),
         PdfUnitProviderConfig::LlamaCpp(_) => Some("llama-cpp-chat-completions"),
+        #[cfg(test)]
+        PdfUnitProviderConfig::Scripted { .. } => Some("scripted-test-provider"),
     };
     pdf_run_chunk_size_for_provider_id(provider_id, pages_to_process)
 }

@@ -399,6 +399,15 @@ authority，也不能进入 job cache、scheduler shard 或前端持久状态。
   表示翻译成功。
 - 计划中的 source/provider text 只存在于当前处理内存。持久化 TranslationPatch 仍不得复制
   普通 source text。
+- local-provider bridge 只消费 plan 的 `providerText`，并通过 provider-owned generic unit
+  执行 batch/chunk/retry。PDF v3 不得构造或持有 legacy pdf2zh worker unit。
+- `{vN}` protected token 必须在 provider chunk planner 中从 model input 移除，并在 provider
+  output 重建时保持原 token；随后仍由 Translation Plan reassembler 验证 exact set/order 并
+  恢复 `exactText`。
+- provider bridge failure 只能暴露稳定 kind、retryability 和无文本 message；raw response、
+  source text 或 translated text 不得进入 scheduler shard、普通诊断或前端状态。
+- provider/model identity 不由 plan 或 bridge 猜测。renderer-owning page processor 必须从选中
+  runtime/component manifest 获取并写入 `TranslationPatchDraftMetadata`。
 
 ## PDF v3 TranslationPatch
 
