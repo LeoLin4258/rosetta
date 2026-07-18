@@ -11,7 +11,7 @@ use super::{
     extract::{extract_pdfium_page_snapshot, PdfV3ExtractionError},
     mapping::{
         map_page_atoms_to_content_operands_from_snapshot, DecodedTextUnit, OperandMappingStatus,
-        PageOperandMappingError, TextObjectOperandMapping,
+        PageOperandMappingError, PageOperandMappingResult, TextObjectOperandMapping,
     },
     types::{
         PageAtomSourceKind, PageAtomSourceProvenance, PageGraph, PageReconciliationStatus,
@@ -99,8 +99,10 @@ pub(crate) fn build_reconciled_page_graph_from_handle(
 ) -> Result<PageGraph, PageGraphReconciliationError> {
     let snapshot = extract_pdfium_page_snapshot(handle, page_number)?;
     let mapping = map_page_atoms_to_content_operands_from_snapshot(handle, &snapshot)?;
-    let mut page = snapshot.page_graph;
+    Ok(reconcile_page_graph(snapshot.page_graph, mapping))
+}
 
+fn reconcile_page_graph(mut page: PageGraph, mapping: PageOperandMappingResult) -> PageGraph {
     for atom in &mut page.atoms {
         atom.source_kind = PageAtomSourceKind::PreservedUnmapped;
         atom.source_provenance = None;
@@ -210,7 +212,7 @@ pub(crate) fn build_reconciled_page_graph_from_handle(
         fallback_reasons: fallback_reasons.into_iter().collect(),
     };
 
-    Ok(page)
+    page
 }
 
 fn plan_object_updates(
@@ -372,11 +374,15 @@ fn count_atoms(page: &PageGraph, source_kind: PageAtomSourceKind) -> usize {
 mod tests {
     use std::time::Instant;
 
-    use super::{build_reconciled_page_graph, build_reconciled_page_graph_from_handle};
+    use super::{
+        build_reconciled_page_graph, build_reconciled_page_graph_from_handle, reconcile_page_graph,
+    };
     use crate::{
         pdf_v3::{
             content_stream::probe_content_stream_save_only,
             document::DocumentHandle,
+            extract::extract_pdfium_page_snapshot,
+            mapping::map_page_atoms_to_content_operands_from_snapshot,
             types::{PageAtomSourceKind, PageReconciliationStatus},
         },
         rosetta_jobs::formats::pdf::test_helpers::{fixture_path, pdfium_test_lock, shared_pdfium},
@@ -423,6 +429,69 @@ mod tests {
             third.atoms.len(),
             first.reconciliation.status,
             third.reconciliation.status,
+        );
+    }
+
+    #[test]
+    #[ignore = "manual Windows ten-page PageGraph timing benchmark"]
+    fn manual_windows_ten_page_reconciliation_benchmark() {
+        let _guard = pdfium_test_lock();
+        let source = fixture_path("2305.13048v2.pdf");
+        let handle = DocumentHandle::open(shared_pdfium(), &source).expect("document handle");
+        let started = Instant::now();
+        let mut page_ms = Vec::new();
+        let mut extraction_ms = Vec::new();
+        let mut setup_ms = 0u64;
+        let mut object_snapshot_ms = 0u64;
+        let mut object_text_us = 0u64;
+        let mut object_identity_us = 0u64;
+        let mut character_geometry_ms = 0u64;
+        let mut mapping_ms = Vec::new();
+        let mut reconciliation_ms = Vec::new();
+        let mut atom_count = 0usize;
+        for page_number in 1..=10 {
+            let page_started = Instant::now();
+            let extraction_started = Instant::now();
+            let snapshot = extract_pdfium_page_snapshot(&handle, page_number)
+                .unwrap_or_else(|error| panic!("page {page_number} extraction: {error}"));
+            extraction_ms.push(extraction_started.elapsed().as_millis());
+            setup_ms += snapshot.timing.setup_ms;
+            object_snapshot_ms += snapshot.timing.object_snapshot_ms;
+            object_text_us += snapshot.timing.object_text_us;
+            object_identity_us += snapshot.timing.object_identity_us;
+            character_geometry_ms += snapshot.timing.character_geometry_ms;
+            let mapping_started = Instant::now();
+            let mapping = map_page_atoms_to_content_operands_from_snapshot(&handle, &snapshot)
+                .unwrap_or_else(|error| panic!("page {page_number} mapping: {error}"));
+            mapping_ms.push(mapping_started.elapsed().as_millis());
+            let reconciliation_started = Instant::now();
+            let page = reconcile_page_graph(snapshot.page_graph, mapping);
+            reconciliation_ms.push(reconciliation_started.elapsed().as_millis());
+            page_ms.push(page_started.elapsed().as_millis());
+            atom_count += page.atoms.len();
+        }
+        let total_ms = started.elapsed().as_millis();
+        let mut sorted_ms = page_ms.clone();
+        sorted_ms.sort_unstable();
+        println!(
+            "pdf-v3 ten-page source_bytes={} source_pages={} open={}ms total={}ms median={}ms min={}ms max={}ms extraction_total={}ms setup={}ms object_snapshot={}ms object_text={}us object_identity={}us character_geometry={}ms mapping_total={}ms reconciliation_total={}ms atoms={} page_ms={:?}",
+            handle.source_bytes(),
+            handle.page_count(),
+            handle.open_elapsed().as_millis(),
+            total_ms,
+            sorted_ms[sorted_ms.len() / 2],
+            sorted_ms[0],
+            sorted_ms[sorted_ms.len() - 1],
+            extraction_ms.iter().sum::<u128>(),
+            setup_ms,
+            object_snapshot_ms,
+            object_text_us,
+            object_identity_us,
+            character_geometry_ms,
+            mapping_ms.iter().sum::<u128>(),
+            reconciliation_ms.iter().sum::<u128>(),
+            atom_count,
+            page_ms,
         );
     }
 

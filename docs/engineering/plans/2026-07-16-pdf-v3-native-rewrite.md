@@ -26,6 +26,17 @@ Current progress:
 - On the 1.59 MB / 30-page real paper fixture, a Windows debug probe measured about 101 ms to open the handle, then about 658 ms and 691 ms to reconcile pages 1 and 3 through that same handle. Per-page debug timings varied between runs. Repeated document initialization is removed, but page-local PDFium traversal and source mapping remain the dominant unoptimized costs.
 - Extraction and mapping now share one short-lived, non-serializable `PdfiumPageSnapshot`. The combined reconciliation path no longer repeats PDFium page text, text-object character mapping, font-name lookup or Form-object counting for the same page.
 - After the shared snapshot change, three Windows debug runs measured page 1 at 429-477 ms and page 3 at 452-555 ms through an already-open handle. PageGraph atoms, provenance and conservative fallback results remained unchanged.
+- PDFium object text now reuses the already-open page text handle, and exact
+  character ownership uses one process-local object-identity query per page
+  character instead of scanning every page character for every text object.
+- On the first ten pages of the 30-page real-paper fixture, three Windows AMD
+  debug runs fell from 4,692-4,791 ms to 784-874 ms while retaining all 39,783
+  atoms. Exact legacy object-scan and direct-character style equivalence tests
+  pass. Content operand mapping is now the largest measured stage.
+- `DocumentHandle` fingerprints through a bounded 64 KiB buffer and opens
+  lopdf/PDFium from the immutable source path, removing one source-sized Rust
+  byte-vector lifetime. The complete lopdf document remains a later
+  long-document extraction-memory boundary.
 - PDFium and source mapping now recursively traverse Form XObjects in invocation order. Form resource dictionaries take priority with parent-context fallback, text-show IDs include the invocation path, and validated shared Form operands retain structured provenance for invocation-local copy-on-write.
 - On the real paper page, recursive traversal aligns 258 / 258 text objects/shows across 27 Form invocations and 5 unique Form streams. The original 242 top-level objects remain mapped; 16 Type3 Form objects are explicitly preserved because no safe source decoder exists.
 - The identity renderer now performs a read-only recursive Form discovery pass and rewrites every unique page/Form content stream exactly once. Shared Form invocation paths are reported separately from underlying stream ownership.
@@ -490,8 +501,10 @@ reconciliation are implemented in the isolated Rust module. Extraction and
 mapping share one PDFium page snapshot. Recursive Form XObjects, inherited
 resources and structured invocation provenance are implemented. Shared-stream
 status is retained only after the ordinary mapping gates pass, allowing the
-renderer to choose invocation-local copy-on-write. Type3 decoding remains
-pending.
+renderer to choose invocation-local copy-on-write. PDFium character-to-object
+ownership is now exact and single-pass through the narrow vendored adapter.
+Type3 decoding and migration of extraction away from the complete lopdf
+document remain pending.
 
 ### Phase 3 — Identity renderer
 

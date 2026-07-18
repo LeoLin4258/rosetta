@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
     path::Path,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use pdfium_render::prelude::{
@@ -74,6 +74,11 @@ pub(crate) struct PageSetExtraction {
 pub(crate) struct PageExtractionTiming {
     pub page_number: u32,
     pub elapsed_ms: u64,
+    pub setup_ms: u64,
+    pub object_snapshot_ms: u64,
+    pub object_text_us: u64,
+    pub object_identity_us: u64,
+    pub character_geometry_ms: u64,
     pub character_count: usize,
     pub style_count: usize,
 }
@@ -98,6 +103,40 @@ pub(crate) struct PdfiumPageSnapshot {
     pub form_object_count: usize,
     pub text_objects: Vec<PdfiumTextObjectSnapshot>,
     pub timing: PageExtractionTiming,
+}
+
+struct PdfiumTextObjectSnapshotBuilder {
+    snapshot: PdfiumTextObjectSnapshot,
+    object_api_text: String,
+    mapped_text: String,
+    unicode_complete: bool,
+    style_id: Option<String>,
+}
+
+impl PdfiumTextObjectSnapshotBuilder {
+    fn record_character(&mut self, character_index: usize, unicode: Option<char>) {
+        let mapped_atom_count = self.snapshot.mapped_atom_count.get_or_insert(0);
+        *mapped_atom_count += 1;
+        self.snapshot
+            .first_atom_order
+            .get_or_insert(character_index);
+        self.snapshot.last_atom_order = Some(character_index);
+        if let Some(unicode) = unicode {
+            self.mapped_text.push(unicode);
+        } else {
+            self.unicode_complete = false;
+        }
+    }
+
+    fn finish(mut self) -> PdfiumTextObjectSnapshot {
+        if self.unicode_complete {
+            self.snapshot.mapped_unicode_atom_count = Some(self.mapped_text.chars().count());
+            self.snapshot.text = self.mapped_text;
+        } else {
+            self.snapshot.text = self.object_api_text;
+        }
+        self.snapshot
+    }
 }
 
 pub(crate) fn extract_page_set(
@@ -163,15 +202,18 @@ pub(crate) fn extract_pdfium_page_snapshot(
             page: page_number,
             message: error.to_string(),
         })?;
+    let setup_ms = elapsed_ms(page_started);
 
     let mut atoms = Vec::with_capacity(page_text.len().max(0) as usize);
     let mut styles = BTreeMap::<String, PageStyle>::new();
     let mut warnings = BTreeSet::<String>::new();
-    let mut object_ids_by_character = BTreeMap::<usize, String>::new();
     let page_objects = page.objects();
     let page_object_count = page_objects.len();
     let mut form_object_count = 0usize;
-    let mut text_objects = Vec::new();
+    let mut text_object_builders = Vec::new();
+    let mut text_object_indices_by_identity = BTreeMap::<usize, Vec<usize>>::new();
+    let mut object_text_elapsed = Duration::ZERO;
+    let object_snapshot_started = Instant::now();
     for (page_object_index, object) in page_objects.iter().enumerate() {
         let source_object_id = format!("page-{page_number:04}-object-{page_object_index:06}");
         collect_pdfium_object_snapshot(
@@ -180,23 +222,63 @@ pub(crate) fn extract_pdfium_page_snapshot(
             source_object_id,
             page_object_index,
             &mut form_object_count,
-            &mut text_objects,
-            &mut object_ids_by_character,
+            &mut text_object_builders,
+            &mut text_object_indices_by_identity,
+            &mut object_text_elapsed,
             &mut warnings,
         );
     }
+    let object_snapshot_ms = elapsed_ms(object_snapshot_started);
 
+    let mut object_identity_elapsed = Duration::ZERO;
+    let character_geometry_started = Instant::now();
     for character in page_text.chars().iter() {
         let generated = character.is_generated().unwrap_or(false);
         let hyphen = character.is_hyphen().unwrap_or(false);
-        let unicode = character.unicode_char().unwrap_or('\u{fffd}');
+        let mapped_unicode = character.unicode_char();
+        let unicode = mapped_unicode.unwrap_or('\u{fffd}');
         if unicode == '\u{fffd}' {
             warnings.insert("invalid-unicode-mapping".to_string());
         }
 
-        let style = style_for_character(&character);
-        let style_id = style.style_id.clone();
-        styles.entry(style_id.clone()).or_insert(style);
+        let object_identity_started = Instant::now();
+        let object_identity = character.text_object_identity().ok();
+        object_identity_elapsed += object_identity_started.elapsed();
+        let object_indices =
+            object_identity.and_then(|identity| text_object_indices_by_identity.get(&identity));
+        let source_object_id = object_indices.and_then(|indices| {
+            indices.first().map(|index| {
+                text_object_builders[*index]
+                    .snapshot
+                    .source_object_id
+                    .clone()
+            })
+        });
+        let style_id = if let Some(object_indices) = object_indices {
+            let primary_index = object_indices[0];
+            let style_id =
+                if let Some(style_id) = text_object_builders[primary_index].style_id.as_ref() {
+                    style_id.clone()
+                } else {
+                    let style = style_for_character(&character);
+                    let style_id = style.style_id.clone();
+                    styles.entry(style_id.clone()).or_insert(style);
+                    for object_index in object_indices {
+                        text_object_builders[*object_index].style_id = Some(style_id.clone());
+                    }
+                    style_id
+                };
+            for object_index in object_indices {
+                text_object_builders[*object_index]
+                    .record_character(character.index(), mapped_unicode);
+            }
+            style_id
+        } else {
+            let style = style_for_character(&character);
+            let style_id = style.style_id.clone();
+            styles.entry(style_id.clone()).or_insert(style);
+            style_id
+        };
 
         let bounds = character
             .tight_bounds()
@@ -228,7 +310,7 @@ pub(crate) fn extract_pdfium_page_snapshot(
         atoms.push(PageAtom {
             atom_id: format!("page-{page_number:04}-char-{:06}", character.index()),
             source_text: unicode.to_string(),
-            source_object_id: object_ids_by_character.get(&character.index()).cloned(),
+            source_object_id,
             kind: if unicode == '\u{fffd}' {
                 PageAtomKind::Unknown
             } else {
@@ -248,17 +330,16 @@ pub(crate) fn extract_pdfium_page_snapshot(
             source_provenance: None,
         });
     }
+    let character_geometry_ms = elapsed_ms(character_geometry_started);
 
+    let text_objects = text_object_builders
+        .into_iter()
+        .map(PdfiumTextObjectSnapshotBuilder::finish)
+        .collect();
     let styles = styles.into_values().collect::<Vec<_>>();
     if atoms.iter().any(|atom| atom.source_object_id.is_none()) {
         warnings.insert("pdfium-character-object-unmapped".to_string());
     }
-    let timing = PageExtractionTiming {
-        page_number,
-        elapsed_ms: page_started.elapsed().as_millis() as u64,
-        character_count: atoms.len(),
-        style_count: styles.len(),
-    };
     let atom_count = atoms.len();
     let page_graph = PageGraph {
         schema_version: PAGE_GRAPH_SCHEMA_VERSION,
@@ -277,6 +358,17 @@ pub(crate) fn extract_pdfium_page_snapshot(
         reconciliation: PageReconciliationSummary::unreconciled(atom_count),
         warnings: warnings.into_iter().collect(),
     };
+    let timing = PageExtractionTiming {
+        page_number,
+        elapsed_ms: elapsed_ms(page_started),
+        setup_ms,
+        object_snapshot_ms,
+        object_text_us: elapsed_us(object_text_elapsed),
+        object_identity_us: elapsed_us(object_identity_elapsed),
+        character_geometry_ms,
+        character_count: page_graph.atoms.len(),
+        style_count: page_graph.styles.len(),
+    };
 
     Ok(PdfiumPageSnapshot {
         page_graph,
@@ -293,8 +385,9 @@ fn collect_pdfium_object_snapshot<'a>(
     source_object_id: String,
     root_page_object_index: usize,
     form_object_count: &mut usize,
-    text_objects: &mut Vec<PdfiumTextObjectSnapshot>,
-    object_ids_by_character: &mut BTreeMap<usize, String>,
+    text_objects: &mut Vec<PdfiumTextObjectSnapshotBuilder>,
+    text_object_indices_by_identity: &mut BTreeMap<usize, Vec<usize>>,
+    object_text_elapsed: &mut Duration,
     warnings: &mut BTreeSet<String>,
 ) {
     if let Some(form_object) = object.as_x_object_form_object() {
@@ -308,7 +401,8 @@ fn collect_pdfium_object_snapshot<'a>(
                     root_page_object_index,
                     form_object_count,
                     text_objects,
-                    object_ids_by_character,
+                    text_object_indices_by_identity,
+                    object_text_elapsed,
                     warnings,
                 ),
                 Err(_) => {
@@ -322,43 +416,31 @@ fn collect_pdfium_object_snapshot<'a>(
     let Some(text_object) = object.as_text_object() else {
         return;
     };
-    let object_api_text = text_object.text();
-    let (mapped_atom_count, mapped_unicode_atom_count, first_atom_order, last_atom_order, text) =
-        match text_object.chars(page_text) {
-            Ok(characters) => {
-                for character in characters.iter() {
-                    object_ids_by_character
-                        .entry(character.index())
-                        .or_insert_with(|| source_object_id.clone());
-                }
-                let atom_text = characters
-                    .iter()
-                    .map(|character| character.unicode_char())
-                    .collect::<Option<String>>();
-                let mapped_unicode_atom_count = atom_text.as_ref().map(|text| text.chars().count());
-                (
-                    Some(characters.len()),
-                    mapped_unicode_atom_count,
-                    characters.first_char_index(),
-                    characters.last_char_index(),
-                    atom_text.unwrap_or(object_api_text),
-                )
-            }
-            Err(_) => {
-                warnings.insert("pdfium-text-object-character-map-failed".to_string());
-                (None, None, None, None, object_api_text)
-            }
-        };
-    text_objects.push(PdfiumTextObjectSnapshot {
-        source_object_id,
-        page_object_index: root_page_object_index,
-        text_object_index: text_objects.len(),
-        font_name: text_object.font().name(),
-        text,
-        mapped_atom_count,
-        mapped_unicode_atom_count,
-        first_atom_order,
-        last_atom_order,
+    let object_text_started = Instant::now();
+    let object_api_text = page_text.for_object(text_object);
+    *object_text_elapsed += object_text_started.elapsed();
+    let object_identity = text_object.object_identity();
+    let text_object_index = text_objects.len();
+    text_object_indices_by_identity
+        .entry(object_identity)
+        .or_default()
+        .push(text_object_index);
+    text_objects.push(PdfiumTextObjectSnapshotBuilder {
+        snapshot: PdfiumTextObjectSnapshot {
+            source_object_id,
+            page_object_index: root_page_object_index,
+            text_object_index,
+            font_name: text_object.font().name(),
+            text: String::new(),
+            mapped_atom_count: Some(0),
+            mapped_unicode_atom_count: None,
+            first_atom_order: None,
+            last_atom_order: None,
+        },
+        object_api_text,
+        mapped_text: String::new(),
+        unicode_complete: true,
+        style_id: None,
     });
 }
 
@@ -455,9 +537,22 @@ fn hex_digest(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+fn elapsed_ms(started: Instant) -> u64 {
+    started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+fn elapsed_us(duration: Duration) -> u64 {
+    duration.as_micros().min(u128::from(u64::MAX)) as u64
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{extract_page_set, extract_pdfium_page_snapshot, PdfV3ExtractionError};
+    use pdfium_render::prelude::{PdfPageObject, PdfPageObjectsCommon, PdfPageText};
+
+    use super::{
+        extract_page_set, extract_pdfium_page_snapshot, style_for_character, PdfV3ExtractionError,
+        PdfiumPageSnapshot,
+    };
     use crate::{
         pdf_v3::{document::DocumentHandle, page_set::PageSet},
         rosetta_jobs::formats::pdf::test_helpers::{fixture_path, pdfium_test_lock, shared_pdfium},
@@ -529,6 +624,108 @@ mod tests {
                     && atom.bounds[2] >= atom.bounds[0]
                     && atom.bounds[3] >= atom.bounds[1]
             }));
+    }
+
+    #[test]
+    fn text_object_style_cache_matches_direct_character_styles() {
+        let _guard = pdfium_test_lock();
+        let source = fixture_path("2305.13048v2.pdf");
+        let handle = DocumentHandle::open(shared_pdfium(), &source).expect("document handle");
+        let snapshot = extract_pdfium_page_snapshot(&handle, 1).expect("page snapshot");
+        let page = handle.pdfium_document().pages().get(0).expect("first page");
+        let page_text = page.text().expect("page text");
+
+        for character in page_text.chars().iter() {
+            let atom = &snapshot.page_graph.atoms[character.index()];
+            let actual = snapshot
+                .page_graph
+                .styles
+                .iter()
+                .find(|style| Some(&style.style_id) == atom.style_id.as_ref())
+                .expect("atom style");
+            assert_eq!(actual, &style_for_character(&character));
+        }
+    }
+
+    #[test]
+    fn single_pass_object_identity_matches_pdfium_object_scans() {
+        let _guard = pdfium_test_lock();
+        let source = fixture_path("2305.13048v2.pdf");
+        let handle = DocumentHandle::open(shared_pdfium(), &source).expect("document handle");
+        let snapshot = extract_pdfium_page_snapshot(&handle, 1).expect("page snapshot");
+        let page = handle.pdfium_document().pages().get(0).expect("first page");
+        let page_text = page.text().expect("page text");
+
+        for (page_object_index, object) in page.objects().iter().enumerate() {
+            assert_object_mapping_matches_pdfium_scan(
+                &object,
+                &page_text,
+                format!("page-0001-object-{page_object_index:06}"),
+                &snapshot,
+            );
+        }
+    }
+
+    fn assert_object_mapping_matches_pdfium_scan<'a>(
+        object: &PdfPageObject<'a>,
+        page_text: &'a PdfPageText<'a>,
+        source_object_id: String,
+        snapshot: &PdfiumPageSnapshot,
+    ) {
+        if let Some(form_object) = object.as_x_object_form_object() {
+            for child_index in form_object.as_range() {
+                let child = form_object.get(child_index).expect("form child");
+                assert_object_mapping_matches_pdfium_scan(
+                    &child,
+                    page_text,
+                    format!("{source_object_id}-form-{child_index:06}"),
+                    snapshot,
+                );
+            }
+            return;
+        }
+
+        let Some(text_object) = object.as_text_object() else {
+            return;
+        };
+        let expected_characters = text_object.chars(page_text).expect("object characters");
+        let expected_text = expected_characters
+            .iter()
+            .map(|character| character.unicode_char())
+            .collect::<Option<String>>()
+            .unwrap_or_else(|| page_text.for_object(text_object));
+        let actual = snapshot
+            .text_objects
+            .iter()
+            .find(|object| object.source_object_id == source_object_id)
+            .expect("text object snapshot");
+
+        assert_eq!(actual.text, expected_text);
+        assert_eq!(actual.mapped_atom_count, Some(expected_characters.len()));
+        assert_eq!(
+            actual.mapped_unicode_atom_count,
+            expected_characters
+                .iter()
+                .map(|character| character.unicode_char())
+                .collect::<Option<String>>()
+                .map(|text| text.chars().count())
+        );
+        assert_eq!(
+            actual.first_atom_order,
+            expected_characters.first_char_index()
+        );
+        assert_eq!(
+            actual.last_atom_order,
+            expected_characters.last_char_index()
+        );
+        for character in expected_characters.iter() {
+            assert_eq!(
+                snapshot.page_graph.atoms[character.index()]
+                    .source_object_id
+                    .as_deref(),
+                Some(source_object_id.as_str())
+            );
+        }
     }
 
     #[test]

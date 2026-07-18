@@ -1,5 +1,7 @@
 use std::{
     fmt,
+    fs::File,
+    io::Read,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -53,11 +55,8 @@ impl<'pdfium> DocumentHandle<'pdfium> {
     ) -> Result<Self, DocumentHandleError> {
         let started = Instant::now();
         let source_path = source_path.as_ref().to_path_buf();
-        let source = std::fs::read(&source_path)
-            .map_err(|error| DocumentHandleError::Read(format!("failed to read PDF: {error}")))?;
-        let source_bytes = source.len();
-        let source_fingerprint = fingerprint_bytes(&source);
-        let lopdf_document = Document::load_mem(&source).map_err(|error| {
+        let (source_fingerprint, source_bytes) = fingerprint_file(&source_path)?;
+        let lopdf_document = Document::load(&source_path).map_err(|error| {
             DocumentHandleError::LopdfLoad(format!("failed to load PDF with lopdf: {error}"))
         })?;
         if lopdf_document.is_encrypted() {
@@ -65,7 +64,7 @@ impl<'pdfium> DocumentHandle<'pdfium> {
         }
         let lopdf_page_count = lopdf_document.get_pages().len() as u32;
         let pdfium_document = pdfium
-            .load_pdf_from_byte_vec(source, None)
+            .load_pdf_from_file(&source_path, None)
             .map_err(|error| {
                 DocumentHandleError::PdfiumLoad(format!("failed to load PDF with PDFium: {error}"))
             })?;
@@ -117,10 +116,31 @@ impl<'pdfium> DocumentHandle<'pdfium> {
     }
 }
 
-fn fingerprint_bytes(bytes: &[u8]) -> String {
+fn fingerprint_file(path: &Path) -> Result<(String, usize), DocumentHandleError> {
+    let mut file = File::open(path)
+        .map_err(|error| DocumentHandleError::Read(format!("failed to open PDF: {error}")))?;
+    let source_bytes = file
+        .metadata()
+        .map_err(|error| DocumentHandleError::Read(format!("failed to inspect PDF: {error}")))?
+        .len();
+    let source_bytes = usize::try_from(source_bytes).map_err(|_| {
+        DocumentHandleError::Read("PDF byte length exceeds this platform".to_string())
+    })?;
     let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    format!("sha256:{}", hex_digest(hasher.finalize().as_slice()))
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| DocumentHandleError::Read(format!("failed to hash PDF: {error}")))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok((
+        format!("sha256:{}", hex_digest(hasher.finalize().as_slice())),
+        source_bytes,
+    ))
 }
 
 fn hex_digest(bytes: &[u8]) -> String {

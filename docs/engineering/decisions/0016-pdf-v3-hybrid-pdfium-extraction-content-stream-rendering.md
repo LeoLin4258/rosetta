@@ -5,7 +5,8 @@ Date: 2026-07-17
 Status: Accepted
 
 Form traversal and recursive identity-render boundaries refined by ADR 0019 and
-ADR 0020.
+ADR 0020. Extraction adapter ownership and single-pass identity are refined by
+ADR 0050.
 
 ## Context
 

@@ -30,7 +30,7 @@ tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 tokio = { version = "1", features = ["sync", "time", "process", "io-util", "net"] }
 axum = "0.7"
-pdfium-render = { version = "0.9", features = ["thread_safe", "image_latest"] }
+pdfium-render = { path = "vendor/pdfium-render", features = ["thread_safe", "image_latest"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 lopdf = "0.34"
 pdf = { version = "0.10", default-features = false, features = ["sync", "mmap"] }
