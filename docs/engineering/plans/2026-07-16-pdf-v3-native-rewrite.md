@@ -741,9 +741,13 @@ the existing workers under the
 durable `2 / 4 / 1` backpressure. Creation and stale recovery start the
 supervisor; pause quiesces it, cancellation interrupts provider I/O and settles
 leases, and app exit waits for workers before shutting down the managed model.
-Typed status schema 4 exposes only bounded worker health. Explicit failed-page
-retry, run enumeration, frontend integration and a real complex 500/1,000-page
-end-to-end translation/export run remain pending.
+Typed status schema 4 exposes only bounded worker health. An owner-gated exact
+failed-page retry command now restores only `retryable=true` failures, returns
+a status window beginning at that page and revalidates the complete trusted
+binding before restarting an inactive supervisor. The same validator now runs
+before stale recovery changes ownership. Run enumeration, frontend integration
+and a real complex 500/1,000-page end-to-end translation/export run remain
+pending.
 
 ### Phase 7 — Component control plane
 

@@ -388,6 +388,47 @@ fn prepare_pdf_v3_run_job(
     })
 }
 
+async fn prepare_pdf_v3_worker_binding(
+    app: &AppHandle,
+    registry: &crate::managed_rwkv::Registry,
+    component_state: &PdfV3ComponentState,
+    job_id: &str,
+    run_directory: &Path,
+    target_language: &str,
+) -> Result<
+    (
+        crate::pdf_v3::document::VerifiedDocumentIdentity,
+        formats::pdf::v3_component::ResolvedPdfV3TranslationComponent,
+    ),
+    String,
+> {
+    let source_path = store::cached_pdf_source_path(app, job_id)?;
+    let source_identity_task = tokio::task::spawn_blocking(move || {
+        crate::pdf_v3::document::VerifiedDocumentIdentity::verify(source_path)
+            .map_err(|error| error.to_string())
+    });
+    let (component, source_identity) = tokio::join!(
+        component_state.resolve(app, registry, target_language),
+        source_identity_task
+    );
+    let component = component.map_err(|error| error.to_string())?;
+    let source_identity = source_identity
+        .map_err(|_| "PDF v3 source verification task ended unexpectedly".to_string())??;
+    let validation_directory = run_directory.to_path_buf();
+    let validation_identity = source_identity.clone();
+    let validation_component = component.clone();
+    tokio::task::spawn_blocking(move || {
+        formats::pdf::v3_worker::validate_worker_binding(
+            &validation_directory,
+            &validation_identity,
+            &validation_component,
+        )
+    })
+    .await
+    .map_err(|_| "PDF v3 worker binding validation task ended unexpectedly".to_string())??;
+    Ok((source_identity, component))
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PdfV3DocumentLanguageMetadata {
@@ -501,6 +542,92 @@ pub fn cancel_rosetta_pdf_v3_run(
 }
 
 #[tauri::command]
+pub async fn retry_rosetta_pdf_v3_page(
+    app: AppHandle,
+    registry: State<'_, crate::managed_rwkv::Registry>,
+    component_state: State<'_, PdfV3ComponentState>,
+    lifecycle: State<'_, PdfV3RunLifecycleState>,
+    worker_state: State<'_, PdfV3RunWorkerState>,
+    job_id: String,
+    run_id: String,
+    page_number: u32,
+) -> Result<formats::pdf::v3_control::PdfV3RunControlStatus, String> {
+    let root = path::jobs_root(&app)?;
+    let dir = path::checked_job_dir(&root, &job_id)?;
+    let run_directory = formats::pdf::v3_control::pdf_v3_run_directory(&dir, &run_id)
+        .map_err(|error| error.to_string())?;
+    let preflight_directory = dir.clone();
+    let preflight_run_id = run_id.clone();
+    let owner_session_id = lifecycle.session_id().to_string();
+    let preflight_owner = owner_session_id.clone();
+    let preflight = tokio::task::spawn_blocking(move || {
+        formats::pdf::v3_control::preflight_pdf_v3_page_retry(
+            &preflight_directory,
+            &preflight_run_id,
+            &preflight_owner,
+            page_number,
+        )
+        .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|_| "PDF v3 page retry preflight task ended unexpectedly".to_string())??;
+
+    let restart_binding = if worker_state.worker_status(&run_directory)?.active {
+        None
+    } else {
+        Some(
+            prepare_pdf_v3_worker_binding(
+                &app,
+                &registry,
+                &component_state,
+                &job_id,
+                &run_directory,
+                &preflight.target_language,
+            )
+            .await?,
+        )
+    };
+
+    let retry_directory = dir.clone();
+    let retry_run_id = run_id.clone();
+    let retry_owner = owner_session_id;
+    let status = tokio::task::spawn_blocking(move || {
+        let now_ms = path::timestamp_ms_string()
+            .parse::<u64>()
+            .map_err(|_| "无法读取当前时间。".to_string())?;
+        formats::pdf::v3_control::retry_pdf_v3_page(
+            &retry_directory,
+            &retry_run_id,
+            &retry_owner,
+            page_number,
+            now_ms,
+        )
+        .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|_| "PDF v3 page retry task ended unexpectedly".to_string())??;
+
+    if let Some((source_identity, component)) = restart_binding {
+        worker_state.ensure_worker(
+            app.clone(),
+            lifecycle.inner().clone(),
+            &run_directory,
+            source_identity,
+            component,
+        )?;
+    }
+    synchronize_pdf_v3_run_lifecycle(
+        &lifecycle,
+        &worker_state,
+        &dir,
+        &run_id,
+        status,
+        Some(page_number.saturating_sub(1)),
+        formats::pdf::v3_control::DEFAULT_PDF_V3_STATUS_WINDOW,
+    )
+}
+
+#[tauri::command]
 pub async fn recover_rosetta_pdf_v3_run(
     app: AppHandle,
     registry: State<'_, crate::managed_rwkv::Registry>,
@@ -523,18 +650,15 @@ pub async fn recover_rosetta_pdf_v3_run(
     })
     .await
     .map_err(|_| "PDF v3 runtime binding task ended unexpectedly".to_string())??;
-    let source_path = store::cached_pdf_source_path(&app, &job_id)?;
-    let source_identity_task = tokio::task::spawn_blocking(move || {
-        crate::pdf_v3::document::VerifiedDocumentIdentity::verify(source_path)
-            .map_err(|error| error.to_string())
-    });
-    let (component, source_identity) = tokio::join!(
-        component_state.resolve(&app, &registry, &target_language),
-        source_identity_task
-    );
-    let component = component.map_err(|error| error.to_string())?;
-    let source_identity = source_identity
-        .map_err(|_| "PDF v3 source verification task ended unexpectedly".to_string())??;
+    let (source_identity, component) = prepare_pdf_v3_worker_binding(
+        &app,
+        &registry,
+        &component_state,
+        &job_id,
+        &run_directory,
+        &target_language,
+    )
+    .await?;
     let recovery_dir = dir.clone();
     let recovery_run_id = run_id.clone();
     let session_id = lifecycle.session_id().to_string();

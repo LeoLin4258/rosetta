@@ -101,6 +101,11 @@ pub(crate) struct PdfV3RunRecoveryResult {
     pub status: PdfV3RunControlStatus,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PdfV3PageRetryPreflight {
+    pub target_language: String,
+}
+
 #[derive(Debug)]
 pub(crate) enum PdfV3RunControlError {
     InvalidJobDirectory,
@@ -257,6 +262,63 @@ pub(crate) fn cancel_pdf_v3_run(
         &run_directory,
         owner_session_id,
         None,
+        DEFAULT_PDF_V3_STATUS_WINDOW,
+    )
+}
+
+pub(crate) fn preflight_pdf_v3_page_retry(
+    job_directory: &Path,
+    run_id: &str,
+    owner_session_id: &str,
+    page_number: u32,
+) -> Result<PdfV3PageRetryPreflight, PdfV3RunControlError> {
+    let run_directory = pdf_v3_run_directory(job_directory, run_id)?;
+    let scheduler = DurablePdfV3Scheduler::open(&run_directory)?;
+    let snapshot = scheduler.status_snapshot()?;
+    if snapshot.owner_session_id != owner_session_id {
+        return Err(PdfV3SchedulerError::OwnerMismatch.into());
+    }
+    if !matches!(
+        snapshot.run_state,
+        PdfV3RunState::Running | PdfV3RunState::Paused
+    ) {
+        return Err(PdfV3SchedulerError::RunNotRetryable(snapshot.run_state).into());
+    }
+    let page = scheduler
+        .page_window(Some(page_number.saturating_sub(1)), 1)?
+        .into_iter()
+        .next()
+        .filter(|page| page.page_number == page_number)
+        .ok_or(PdfV3SchedulerError::PageNotRequested(page_number))?;
+    if !matches!(
+        page.state,
+        PdfV3PageState::Failed {
+            retryable: true,
+            ..
+        }
+    ) {
+        return Err(PdfV3SchedulerError::InvalidTransition { page_number }.into());
+    }
+    Ok(PdfV3PageRetryPreflight {
+        target_language: snapshot.target_language,
+    })
+}
+
+pub(crate) fn retry_pdf_v3_page(
+    job_directory: &Path,
+    run_id: &str,
+    owner_session_id: &str,
+    page_number: u32,
+    now_ms: u64,
+) -> Result<PdfV3RunControlStatus, PdfV3RunControlError> {
+    let run_directory = pdf_v3_run_directory(job_directory, run_id)?;
+    let scheduler = DurablePdfV3Scheduler::open(&run_directory)?;
+    scheduler.retry_failed(owner_session_id, page_number, now_ms)?;
+    build_status(
+        &scheduler,
+        &run_directory,
+        owner_session_id,
+        Some(page_number.saturating_sub(1)),
         DEFAULT_PDF_V3_STATUS_WINDOW,
     )
 }
@@ -425,7 +487,8 @@ mod tests {
             page_set::PageSet,
             patch_renderer::{TranslationPatchRenderPolicy, TRANSLATION_PATCH_RENDERER_VERSION},
             scheduler::{
-                DurablePdfV3Scheduler, PdfV3RunSpec, PdfV3RunState, PdfV3SchedulerCapacity,
+                DurablePdfV3Scheduler, PdfV3ExtractionAuthority, PdfV3PageState, PdfV3RunSpec,
+                PdfV3RunState, PdfV3SchedulerCapacity, PdfV3SchedulerError,
             },
             types::{PAGE_GRAPH_SCHEMA_VERSION, TRANSLATION_PATCH_SCHEMA_VERSION},
         },
@@ -436,8 +499,9 @@ mod tests {
     };
 
     use super::{
-        cancel_pdf_v3_run, pause_pdf_v3_run, pdf_v3_run_status, recover_pdf_v3_run,
-        resume_pdf_v3_run, PdfV3RunControlError, PDF_V3_OWNER_LEASE_TIMEOUT_MS,
+        cancel_pdf_v3_run, pause_pdf_v3_run, pdf_v3_run_status, preflight_pdf_v3_page_retry,
+        recover_pdf_v3_run, resume_pdf_v3_run, retry_pdf_v3_page, PdfV3RunControlError,
+        PDF_V3_OWNER_LEASE_TIMEOUT_MS,
     };
 
     #[test]
@@ -559,6 +623,136 @@ mod tests {
                 .state,
             PdfV3RunState::Cancelled
         );
+    }
+
+    #[test]
+    fn failed_page_retry_is_owner_gated_bounded_and_valid_while_paused() {
+        let run = TestRun::new();
+        let scheduler = DurablePdfV3Scheduler::open(&run.run_dir()).expect("scheduler");
+        let first = scheduler
+            .claim_extraction("owner-a", 1, 2)
+            .expect("first claim")
+            .remove(0);
+        scheduler
+            .fail_claim("owner-a", &first, "transient-extraction", true, 3)
+            .expect("first failure");
+        let second = scheduler
+            .claim_extraction("owner-a", 1, 4)
+            .expect("second claim")
+            .remove(0);
+        scheduler
+            .fail_claim("owner-a", &second, "transient-extraction", true, 5)
+            .expect("second failure");
+
+        let preflight =
+            preflight_pdf_v3_page_retry(run.job_dir(), "run-test", "owner-a", first.page_number)
+                .expect("running preflight");
+        assert_eq!(preflight.target_language, "zh-CN");
+        assert!(matches!(
+            preflight_pdf_v3_page_retry(
+                run.job_dir(),
+                "run-test",
+                "owner-other",
+                first.page_number,
+            ),
+            Err(PdfV3RunControlError::Scheduler(
+                PdfV3SchedulerError::OwnerMismatch
+            ))
+        ));
+
+        let running = retry_pdf_v3_page(run.job_dir(), "run-test", "owner-a", first.page_number, 6)
+            .expect("running retry");
+        assert_eq!(running.state, PdfV3RunState::Running);
+        assert_eq!(running.pages[0].page_number, first.page_number);
+        assert!(matches!(running.pages[0].state, PdfV3PageState::Pending));
+        assert!(running.pages.len() <= super::DEFAULT_PDF_V3_STATUS_WINDOW);
+
+        scheduler.pause("owner-a", 7).expect("pause");
+        let paused = retry_pdf_v3_page(run.job_dir(), "run-test", "owner-a", second.page_number, 8)
+            .expect("paused retry");
+        assert_eq!(paused.state, PdfV3RunState::Paused);
+        assert_eq!(paused.pages[0].page_number, second.page_number);
+        assert!(matches!(paused.pages[0].state, PdfV3PageState::Pending));
+    }
+
+    #[test]
+    fn failed_page_retry_rejects_non_retryable_and_terminal_runs() {
+        let run = TestRun::new();
+        let scheduler = DurablePdfV3Scheduler::open(&run.run_dir()).expect("scheduler");
+        let claim = scheduler
+            .claim_extraction("owner-a", 1, 2)
+            .expect("claim")
+            .remove(0);
+        scheduler
+            .fail_claim("owner-a", &claim, "permanent-extraction", false, 3)
+            .expect("non-retryable failure");
+
+        assert!(matches!(
+            preflight_pdf_v3_page_retry(run.job_dir(), "run-test", "owner-a", claim.page_number,),
+            Err(PdfV3RunControlError::Scheduler(
+                PdfV3SchedulerError::InvalidTransition { page_number: 1 }
+            ))
+        ));
+        assert!(matches!(
+            retry_pdf_v3_page(run.job_dir(), "run-test", "owner-a", claim.page_number, 4),
+            Err(PdfV3RunControlError::Scheduler(
+                PdfV3SchedulerError::InvalidTransition { page_number: 1 }
+            ))
+        ));
+
+        scheduler
+            .request_cancel("owner-a", 5, "user-requested")
+            .expect("request cancellation");
+        scheduler
+            .finish_cancellation("owner-a", 6)
+            .expect("finish cancellation");
+        assert!(matches!(
+            preflight_pdf_v3_page_retry(run.job_dir(), "run-test", "owner-a", claim.page_number,),
+            Err(PdfV3RunControlError::Scheduler(
+                PdfV3SchedulerError::RunNotRetryable(PdfV3RunState::Cancelled)
+            ))
+        ));
+    }
+
+    #[test]
+    fn translation_failure_retry_preserves_extraction_authority() {
+        let run = TestRun::new();
+        let scheduler = DurablePdfV3Scheduler::open(&run.run_dir()).expect("scheduler");
+        let extraction_claim = scheduler
+            .claim_extraction("owner-a", 1, 2)
+            .expect("extraction claim")
+            .remove(0);
+        let extraction = PdfV3ExtractionAuthority {
+            artifact_id: "page-graph-authority-1".to_string(),
+            source_page_hash: format!("sha256:{}", "d".repeat(64)),
+        };
+        scheduler
+            .commit_extraction("owner-a", &extraction_claim, extraction.clone(), 3)
+            .expect("extraction commit");
+        let translation_claim = scheduler
+            .claim_translation("owner-a", 1, 4)
+            .expect("translation claim")
+            .remove(0);
+        scheduler
+            .fail_claim("owner-a", &translation_claim, "provider-transient", true, 5)
+            .expect("translation failure");
+
+        let status = retry_pdf_v3_page(
+            run.job_dir(),
+            "run-test",
+            "owner-a",
+            translation_claim.page_number,
+            6,
+        )
+        .expect("translation retry");
+        assert!(matches!(
+            &status.pages[0].state,
+            PdfV3PageState::Extracted {
+                extraction: restored
+            } if restored == &extraction
+        ));
+        assert_eq!(status.pages[0].extraction_attempts, 1);
+        assert_eq!(status.pages[0].translation_attempts, 1);
     }
 
     #[test]

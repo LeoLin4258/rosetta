@@ -915,6 +915,15 @@ PDF v3 run control 是 durable scheduler 和 Tauri/UI 之间的窄接口，不�
 - pause/resume/cancel 必须由 scheduler owner gate 执行。取消先进入 `cancelling`，只有
   extraction/translation active leases 都清零后才能进入 `cancelled`。cancel command
   必须幂等，允许 active lease settle 后重试并完成状态收敛。
+- exact failed-page retry 公开输入只能增加 `pageNumber`，owner/timestamp/runtime identity
+  仍由 native 提供。只允许当前 owner 在 `running` 或 `paused` 中恢复
+  `retryable=true` 的 requested page；extraction failure 回到 `pending`，保留有效
+  extraction authority 的 translation failure 回到 `extracted`。不得清零 attempt 或删除
+  durable artifact authority。
+- retry status 复用 schema 4，并从被重试页开始返回默认最多 64 条 ordered records；不得为
+  单页重试返回完整长文档状态。inactive worker 必须先重新解析并精确验证 source、runtime
+  manifest、live component/provider/model 和统一字体 binding，之后才能改变页状态和幂等注册
+  一个 supervisor。普通 status polling 不得触发该路径。
 - runtime status 必须先验证 `runtime-manifest.json` 与 scheduler translation binding；
   identity drift 或缺失 manifest 是硬错误，不能降级成未知字符串或继续运行。
 - status schema `rosetta-pdf-v3-run-control-status/4` 必须返回
@@ -936,6 +945,7 @@ PDF v3 run control 是 durable scheduler 和 Tauri/UI 之间的窄接口，不�
   recovery；patch revision 必须等于当前 runtime manifest revision。不得信任旧 shard
   authority，也不得恢复 pending patch、prepared font 或 PDF delta。
 - recovery inventory 校验可能遍历完整 PageSet，Tauri 命令必须在 blocking worker 中执行。
+  source identity 与 live component/runtime/font binding 也必须在改变 owner 前完成精确验证。
   接管释放旧 lease 后，如果 run 已处于 `cancelling` 且 active lease 清零，必须立即收敛到
   `cancelled`。
 

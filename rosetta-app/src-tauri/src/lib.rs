@@ -261,6 +261,7 @@ pub fn run() {
             rosetta_jobs::repair_rosetta_pdf_job,
             rosetta_jobs::render_rosetta_pdf_page_as_png,
             rosetta_jobs::render_rosetta_pdf_translated_page_as_png,
+            rosetta_jobs::retry_rosetta_pdf_v3_page,
             rosetta_jobs::resume_rosetta_pdf_v3_run,
             rosetta_jobs::rename_rosetta_job,
             rosetta_jobs::save_rosetta_segments,

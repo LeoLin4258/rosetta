@@ -372,14 +372,32 @@ fn prepare_worker(
     component: ResolvedPdfV3TranslationComponent,
     owner_session_id: &str,
 ) -> Result<PreparedWorker, String> {
-    let scheduler =
-        DurablePdfV3Scheduler::open(run_directory).map_err(|error| error.to_string())?;
-    let status = scheduler
+    let prepared = prepare_worker_binding(run_directory, source_identity, component)?;
+    let status = prepared
+        .scheduler
         .status_snapshot()
         .map_err(|error| error.to_string())?;
     if status.owner_session_id != owner_session_id {
         return Err("PDF v3 worker owner identity changed".to_string());
     }
+    Ok(prepared)
+}
+
+pub(crate) fn validate_worker_binding(
+    run_directory: &Path,
+    source_identity: &VerifiedDocumentIdentity,
+    component: &ResolvedPdfV3TranslationComponent,
+) -> Result<(), String> {
+    prepare_worker_binding(run_directory, source_identity, component.clone()).map(drop)
+}
+
+fn prepare_worker_binding(
+    run_directory: &Path,
+    source_identity: &VerifiedDocumentIdentity,
+    component: ResolvedPdfV3TranslationComponent,
+) -> Result<PreparedWorker, String> {
+    let scheduler =
+        DurablePdfV3Scheduler::open(run_directory).map_err(|error| error.to_string())?;
     let binding = scheduler
         .translation_binding()
         .map_err(|error| error.to_string())?;
