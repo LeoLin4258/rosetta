@@ -23,6 +23,10 @@ Date: 2026-07-19
 - Page-local content streams are now shared between replacement identity,
   preflight and final staging, keyed by stream identity plus Form invocation
   path and released after each page render.
+- Translation worker outcomes now expose the first committed patch page and
+  batch-relative authority time for first-visible latency measurement.
+- The acceptance path separately measures a complete cold translated preview
+  without including final document export.
 
 ## Validation
 
@@ -42,6 +46,10 @@ Date: 2026-07-19
   3,468 ms for replacement rendering, versus 4,234 ms before this change.
   The measured renderer-stage reduction is roughly 14%-18%; full pipeline time
   remains a debug diagnostic.
+- Two first-visible probes measured the first durable translated patch at
+  911-945 ms and the cold 1,200-pixel translated preview at 588-807 ms. Their
+  non-provider sum is 1,499-1,752 ms; real latency additionally includes the
+  first RWKV result and frontend display delay.
 
 This change updates native replacement planning, TranslationPatch storage
 representation and acceptance measurement only. It does not change runtime

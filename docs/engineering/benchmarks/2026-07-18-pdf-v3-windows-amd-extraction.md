@@ -335,3 +335,25 @@ This reduces the patch authority footprint without duplicating PDF resources or
 changing crash ordering. The 20-page timing is a debug diagnostic; 500-page
 compression and throughput still need one later acceptance run after the full
 regression passes.
+
+## Follow-Up: First Visible Translation Latency
+
+The acceptance harness now records the first durable translated-page authority
+inside the translation worker and separately executes a cold 1,200-pixel
+translated preview. The cold preview includes PageGraph/Patch loading, resolved
+font planning, single-page PDF reconstruction, PDFium rasterization and PNG
+encoding. It excludes final document export.
+
+Two consecutive Windows AMD debug runs measured:
+
+| Measurement | Run 1 | Run 2 |
+| --- | ---: | ---: |
+| First translated patch authority | 911 ms | 945 ms |
+| Cold translated preview | 588 ms | 807 ms |
+| Non-provider first-visible estimate | 1,499 ms | 1,752 ms |
+| Preview PNG | 63,018 B | 63,018 B |
+
+The first-visible estimate is the sum of independently measured authority and
+cold-preview stages. The preview ran after the full pipeline, so source object
+and OS file caches may be warmer than a true application cold start. Real user
+latency also includes the first RWKV result and frontend command/render delay.

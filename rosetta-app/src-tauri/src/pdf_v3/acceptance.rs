@@ -24,6 +24,7 @@ use super::{
     page_index::PdfPageIndex,
     page_set::PageSet,
     patch_renderer::{
+        render_resolved_translation_patch_page_pdf_from_view,
         stage_translation_patch_with_font_registry, TranslationPatchRenderPolicy,
         TRANSLATION_PATCH_RENDERER_VERSION,
     },
@@ -33,6 +34,7 @@ use super::{
         PdfV3TranslationPageProcessor, PdfV3TranslationPageResult, PdfV3TranslationProcessFailure,
         PdfV3TranslationWorker,
     },
+    preview::render_translation_patch_preview_png,
     scheduler::{
         DurablePdfV3Scheduler, PdfV3RunSpec, PdfV3RunState, PdfV3SchedulerCapacity,
         PdfV3TranslationBinding,
@@ -175,6 +177,8 @@ async fn run_long_document_acceptance(page_count: u32, preserve_every: u32) {
     let mut translation_elapsed = Duration::ZERO;
     let mut max_working_set_bytes = baseline_memory.working_set_bytes;
     let mut max_private_bytes = baseline_memory.private_bytes;
+    let mut first_patch_authority_us = None;
+    let mut first_patch_page_number = None;
 
     for _ in 0..=page_count {
         let extraction_started = Instant::now();
@@ -185,6 +189,7 @@ async fn run_long_document_acceptance(page_count: u32, preserve_every: u32) {
         accumulate_extraction(&mut extraction, extracted);
 
         let translation_started = Instant::now();
+        let translation_batch_pipeline_offset_us = elapsed_us(pipeline_started.elapsed());
         let translated = translation_worker
             .run_batch(
                 PIPELINE_WINDOW,
@@ -193,6 +198,13 @@ async fn run_long_document_acceptance(page_count: u32, preserve_every: u32) {
             )
             .await
             .expect("translation batch");
+        if first_patch_authority_us.is_none() {
+            if let Some(batch_first_us) = translated.first_committed_page_us {
+                first_patch_authority_us =
+                    Some(translation_batch_pipeline_offset_us.saturating_add(batch_first_us));
+                first_patch_page_number = translated.first_committed_page_number;
+            }
+        }
         translation_elapsed += translation_started.elapsed();
         accumulate_translation(&mut translation, translated);
 
@@ -229,6 +241,42 @@ async fn run_long_document_acceptance(page_count: u32, preserve_every: u32) {
     let patch_snapshot = patch_store.snapshot().expect("patch snapshot");
     assert_eq!(page_snapshot.pages.len(), page_count as usize);
     assert_eq!(patch_snapshot.pages.len(), summary.completed_pages as usize);
+
+    let first_patch_page_number = first_patch_page_number.expect("first translated page");
+    let cold_preview_started = Instant::now();
+    let first_stored_page = page_graph_store
+        .load(first_patch_page_number)
+        .expect("first preview PageGraph")
+        .expect("first preview PageGraph authority");
+    let first_stored_patch = patch_store
+        .load(&first_stored_page.page)
+        .expect("first preview patch")
+        .expect("first preview patch authority");
+    let first_preview_font_plan = TranslationFontCharacterPlan::for_resolved_replay(
+        &first_stored_page.page,
+        &first_stored_patch.patch,
+    )
+    .expect("first preview font plan");
+    let first_preview_fonts = first_preview_font_plan
+        .prepare_available_fonts(&regular_font, None)
+        .expect("first preview fonts");
+    let first_preview_font_refs = first_preview_fonts.iter().collect::<Vec<_>>();
+    let first_preview_page_pdf = render_resolved_translation_patch_page_pdf_from_view(
+        &source_objects,
+        handle.source_fingerprint(),
+        &first_stored_page.page,
+        &first_stored_patch.patch,
+        &first_preview_font_refs,
+        TranslationPatchRenderPolicy::default(),
+    )
+    .expect("first translated page PDF");
+    let first_preview_png =
+        render_translation_patch_preview_png(shared_pdfium(), &first_preview_page_pdf, 1_200)
+            .expect("first translated page preview");
+    assert!(first_preview_png
+        .png_bytes()
+        .starts_with(b"\x89PNG\r\n\x1a\n"));
+    let cold_preview_elapsed = cold_preview_started.elapsed();
 
     let patched_pages = PageSet::from_pages(
         (1..=page_count).filter(|page_number| page_number % preserve_every != 0),
@@ -289,9 +337,13 @@ async fn run_long_document_acceptance(page_count: u32, preserve_every: u32) {
     let patch_disk_bytes = directory_file_bytes(&patch_dir);
     let scheduler_disk_bytes = directory_file_bytes(&scheduler_dir);
     println!(
-        "pdf-v3 long-e2e pages={page_count} sourceBytes={source_bytes} fixtureMs={} pipelineMs={} extractionWallMs={} translationWallMs={} exportMs={} extractionReconciliationUs={} pageGraphStoreUs={} pageGraphSerializeCompressUs={} translationProcessorUs={} patchStoreUs={} processorPlanPatchUs={} processorFontPlanUs={} processorFontPrepareUs={} processorFontStageUs={} processorRenderStageUs={} pageGraphUncompressedBytes={} pageGraphCompressedBytes={} pageGraphDiskBytes={page_graph_disk_bytes} patchUncompressedBytes={} patchStoredBytes={} patchDiskBytes={patch_disk_bytes} schedulerDiskBytes={scheduler_disk_bytes} completedPatches={} preservedPages={} fittedEntries={} fontSubsetBytes={} deltaObjects={} appendedBytes={} outputBytes={} baselineWorkingSet={} maxPipelineWorkingSet={} finalWorkingSet={} processPeakWorkingSet={} baselinePrivate={} maxPipelinePrivate={} finalPrivate={}",
+        "pdf-v3 long-e2e pages={page_count} sourceBytes={source_bytes} fixtureMs={} pipelineMs={} firstPatchAuthorityUs={} firstPatchPage={} coldPreviewMs={} coldPreviewBytes={} extractionWallMs={} translationWallMs={} exportMs={} extractionReconciliationUs={} pageGraphStoreUs={} pageGraphSerializeCompressUs={} translationProcessorUs={} patchStoreUs={} processorPlanPatchUs={} processorFontPlanUs={} processorFontPrepareUs={} processorFontStageUs={} processorRenderStageUs={} pageGraphUncompressedBytes={} pageGraphCompressedBytes={} pageGraphDiskBytes={page_graph_disk_bytes} patchUncompressedBytes={} patchStoredBytes={} patchDiskBytes={patch_disk_bytes} schedulerDiskBytes={scheduler_disk_bytes} completedPatches={} preservedPages={} fittedEntries={} fontSubsetBytes={} deltaObjects={} appendedBytes={} outputBytes={} baselineWorkingSet={} maxPipelineWorkingSet={} finalWorkingSet={} processPeakWorkingSet={} baselinePrivate={} maxPipelinePrivate={} finalPrivate={}",
         fixture_elapsed.as_millis(),
         pipeline_elapsed.as_millis(),
+        first_patch_authority_us.expect("first patch authority timing"),
+        first_patch_page_number,
+        cold_preview_elapsed.as_millis(),
+        first_preview_png.png_bytes().len(),
         extraction_elapsed.as_millis(),
         translation_elapsed.as_millis(),
         export_elapsed.as_millis(),

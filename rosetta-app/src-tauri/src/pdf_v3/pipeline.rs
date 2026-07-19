@@ -331,6 +331,8 @@ pub(crate) struct PdfV3TranslationBatchOutcome {
     pub scheduler_commit_us: u64,
     pub patch_bytes: u64,
     pub uncompressed_patch_bytes: u64,
+    pub first_committed_page_number: Option<u32>,
+    pub first_committed_page_us: Option<u64>,
     pub pages: Vec<PdfV3TranslationPageOutcome>,
 }
 
@@ -410,6 +412,7 @@ impl<'a> PdfV3TranslationWorker<'a> {
         mut now_ms: impl FnMut() -> u64,
         processor: &mut impl PdfV3TranslationPageProcessor,
     ) -> Result<PdfV3TranslationBatchOutcome, PdfV3TranslationWorkerError> {
+        let batch_started = Instant::now();
         let mut outcome = PdfV3TranslationBatchOutcome::default();
         for _ in 0..requested_limit {
             let claim_started = Instant::now();
@@ -504,6 +507,11 @@ impl<'a> PdfV3TranslationWorker<'a> {
                                 .scheduler_commit_us
                                 .saturating_add(elapsed_us(scheduler_started.elapsed()));
                             outcome.committed_pages = outcome.committed_pages.saturating_add(1);
+                            if outcome.first_committed_page_us.is_none() {
+                                outcome.first_committed_page_number = Some(claim.page_number);
+                                outcome.first_committed_page_us =
+                                    Some(elapsed_us(batch_started.elapsed()));
+                            }
                             outcome.patch_bytes =
                                 outcome.patch_bytes.saturating_add(committed.patch_bytes);
                             outcome.uncompressed_patch_bytes = outcome
@@ -1037,6 +1045,8 @@ mod tests {
         assert_eq!(batch.claimed_pages, 1);
         assert_eq!(batch.committed_pages, 1);
         assert_eq!(batch.failed_pages, 0);
+        assert_eq!(batch.first_committed_page_number, Some(1));
+        assert!(batch.first_committed_page_us.is_some());
         assert!(matches!(
             batch.pages.as_slice(),
             [PdfV3TranslationPageOutcome::Committed { page_number: 1, .. }]
@@ -1297,6 +1307,8 @@ mod tests {
             .expect("translation batch");
 
         assert_eq!(batch.preserved_pages, 1);
+        assert_eq!(batch.first_committed_page_number, None);
+        assert_eq!(batch.first_committed_page_us, None);
         assert!(patch_store
             .snapshot()
             .expect("patch snapshot")
