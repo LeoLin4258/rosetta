@@ -1073,6 +1073,35 @@ frontend 可组装的通用 manifest API。
 - 创建结果复用 bounded run-control status，不得返回 source path、document text、endpoint、PID、
   owner/session ID、credential 或 raw storage/component error。
 
+## PDF v3 Bounded Run Enumeration
+
+PDF v3 run list 是 committed scheduler/runtime authority 的只读、分页投影，不是新的持久化
+run index，也不是 lifecycle 或 worker 状态权威。
+
+约定：
+
+- 公开输入只允许 `jobId`、optional `targetLanguage`、optional exclusive
+  `beforeRevision` 和 optional `limit`。job root 与当前 native session 必须由 Tauri 内部解析；
+  前端不得传 path、owner/session ID 或 timestamp。
+- list schema 固定为 `rosetta-pdf-v3-run-list/1`，按 positive translation revision 降序。
+  默认最多 16 个 run，硬上限 64；`nextBeforeRevision` 只在仍有更旧结果时返回当前页最后一个
+  revision，下一页必须使用严格小于该 revision 的语义。
+- 扫描期间只能保留 requested top-K 候选，不得让 response working set 随 run history 增长。
+  当前目录扫描和 authority validation 仍与历史 run 数量线性相关；未来如引入 durable index，
+  必须由 native 原子维护并新增 ADR，不能把前端缓存升级为权威。
+- hidden creation staging directory 必须忽略；每个 visible committed run 必须重新打开 scheduler、
+  流式重建 summary，并验证 immutable runtime manifest binding。任何 visible run 无效都必须 fail
+  closed，不得静默跳过后复用 revision 或给出不完整历史。
+- target filter 使用与 trusted creation 相同的 primary-language normalization；返回 item 仍保留
+  scheduler 中的 exact source/target language identity。
+- item 只允许返回 run ID、revision、state、source page count、exact PageSet、source/target
+  language、summary、`ownedByCurrentSession` 和固定 native recovery eligibility timestamp。
+  不得返回 page records、source fingerprint、runtime/component identity、owner/lease ID、path、
+  endpoint、credential、raw error、原文或译文。
+- enumeration 必须是纯观察操作：不得同步 lifecycle、注册/停止 worker、挂接 heartbeat、更新
+  owner lease 或执行 stale recovery。选中 run 后的页级状态必须另行读取 bounded run-control
+  window。
+
 ## PDF v3 Text-Show Replacement Transactions and Batches
 
 当前 PDF v3 回填开放同一 selected page、底层 stream、结构化 invocation path 和

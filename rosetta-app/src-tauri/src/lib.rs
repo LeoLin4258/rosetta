@@ -236,6 +236,7 @@ pub fn run() {
             rosetta_jobs::create_welcome_document,
             rosetta_jobs::import_rosetta_document_from_path,
             rosetta_jobs::import_rosetta_project_from_directory,
+            rosetta_jobs::list_rosetta_pdf_v3_runs,
             rosetta_jobs::list_rosetta_jobs,
             rosetta_jobs::load_rosetta_job,
             rosetta_jobs::load_rosetta_translation_file,

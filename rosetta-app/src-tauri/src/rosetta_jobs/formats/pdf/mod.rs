@@ -21,6 +21,7 @@ pub(crate) mod v3_control;
 pub(crate) mod v3_lifecycle;
 pub(crate) mod v3_processor;
 pub(crate) mod v3_run_creation;
+pub(crate) mod v3_run_list;
 pub(crate) mod v3_runtime;
 pub(crate) mod v3_worker;
 

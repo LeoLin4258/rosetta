@@ -331,6 +331,36 @@ pub async fn create_rosetta_pdf_v3_run(
     )
 }
 
+#[tauri::command]
+pub async fn list_rosetta_pdf_v3_runs(
+    app: AppHandle,
+    lifecycle: State<'_, PdfV3RunLifecycleState>,
+    job_id: String,
+    target_language: Option<String>,
+    before_revision: Option<u64>,
+    limit: Option<usize>,
+) -> Result<formats::pdf::v3_run_list::PdfV3RunList, String> {
+    let root = path::jobs_root(&app)?;
+    let job_directory = path::checked_job_dir(&root, &job_id)?;
+    if !job_directory.is_dir() {
+        return Err("PDF v3 项目不存在。".to_string());
+    }
+    let session_id = lifecycle.session_id().to_string();
+    let limit = limit.unwrap_or(formats::pdf::v3_run_list::DEFAULT_PDF_V3_RUN_LIST_LIMIT);
+    tokio::task::spawn_blocking(move || {
+        formats::pdf::v3_run_list::list_pdf_v3_runs(
+            &job_directory,
+            &session_id,
+            target_language.as_deref(),
+            before_revision,
+            limit,
+        )
+        .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|_| "PDF v3 run 列表任务异常结束。".to_string())?
+}
+
 struct PreparedPdfV3RunJob {
     source_identity: crate::pdf_v3::document::VerifiedDocumentIdentity,
     source_fingerprint: String,

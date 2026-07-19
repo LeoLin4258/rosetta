@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  PdfV3RunList,
   RosettaExportKind,
   RosettaExportResult,
   RosettaJobDeleteResult,
@@ -155,6 +156,22 @@ export function pickRosettaExportPath(
 
 export function listRosettaJobs() {
   return invoke<RosettaJobSummary[]>("list_rosetta_jobs");
+}
+
+export function listRosettaPdfV3Runs(
+  jobId: string,
+  options: {
+    targetLanguage?: string | null;
+    beforeRevision?: number | null;
+    limit?: number | null;
+  } = {}
+) {
+  return invoke<PdfV3RunList>("list_rosetta_pdf_v3_runs", {
+    jobId,
+    targetLanguage: options.targetLanguage,
+    beforeRevision: options.beforeRevision,
+    limit: options.limit,
+  });
 }
 
 export function loadRosettaJob(jobId: string) {

@@ -146,6 +146,44 @@ export type RosettaJob = {
 
 export type RosettaJobSummary = RosettaJob;
 
+export type PdfV3RunState =
+  | "running"
+  | "paused"
+  | "cancelling"
+  | "cancelled"
+  | "completed";
+
+export type PdfV3SchedulerSummary = {
+  requestedPages: number;
+  pendingPages: number;
+  extractingPages: number;
+  extractedPages: number;
+  translatingPages: number;
+  completedPages: number;
+  preservedPages: number;
+  failedPages: number;
+};
+
+export type PdfV3RunListItem = {
+  runId: string;
+  translationRevision: number;
+  state: PdfV3RunState;
+  sourcePageCount: number;
+  requestedPageSet: string;
+  sourceLanguage: string;
+  targetLanguage: string;
+  ownedByCurrentSession: boolean;
+  ownerRecoveryEligibleAtMs: number;
+  summary: PdfV3SchedulerSummary;
+};
+
+export type PdfV3RunList = {
+  schema: "rosetta-pdf-v3-run-list/1";
+  runs: PdfV3RunListItem[];
+  nextBeforeRevision: number | null;
+  hasMore: boolean;
+};
+
 export type RosettaJobBundle = {
   schemaVersion: number;
   job: RosettaJobSummary;
