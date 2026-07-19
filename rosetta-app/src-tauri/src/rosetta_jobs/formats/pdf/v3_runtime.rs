@@ -226,34 +226,13 @@ impl BoundPdfV3TranslationRuntime {
         regular_font: TranslationFontAsset,
         bold_font: Option<TranslationFontAsset>,
     ) -> Result<Self, PdfV3RuntimeManifestError> {
-        validate_translation_runtime_manifest(&manifest)?;
-        validate_runtime_manifest_binding(&manifest, binding)?;
-        if manifest.component.platform_os != std::env::consts::OS {
-            return Err(PdfV3RuntimeManifestError::BindingMismatch("platformOs"));
-        }
-        if manifest.component.platform_arch != std::env::consts::ARCH {
-            return Err(PdfV3RuntimeManifestError::BindingMismatch("platformArch"));
-        }
+        validate_runtime_render_assets(binding, &manifest, &regular_font, bold_font.as_ref())?;
         let live_provider_id = provider.provider_id();
         if manifest.component.provider_id != live_provider_id {
             return Err(PdfV3RuntimeManifestError::ProviderMismatch {
                 expected: manifest.component.provider_id.clone(),
                 actual: live_provider_id.to_string(),
             });
-        }
-        if !manifest.regular_font.matches_asset(&regular_font) {
-            return Err(PdfV3RuntimeManifestError::FontMismatch(
-                TranslationFontWeight::Regular,
-            ));
-        }
-        match (&manifest.bold_font, &bold_font) {
-            (Some(expected), Some(actual)) if expected.matches_asset(actual) => {}
-            (None, None) => {}
-            _ => {
-                return Err(PdfV3RuntimeManifestError::FontMismatch(
-                    TranslationFontWeight::Bold,
-                ));
-            }
         }
         Ok(Self {
             manifest,
@@ -281,6 +260,34 @@ impl BoundPdfV3TranslationRuntime {
 
     pub(crate) fn render_policy(&self) -> TranslationPatchRenderPolicy {
         self.manifest.render_policy.into()
+    }
+}
+
+pub(crate) fn validate_runtime_render_assets(
+    binding: &PdfV3TranslationBinding,
+    manifest: &PdfV3TranslationRuntimeManifest,
+    regular_font: &TranslationFontAsset,
+    bold_font: Option<&TranslationFontAsset>,
+) -> Result<(), PdfV3RuntimeManifestError> {
+    validate_translation_runtime_manifest(manifest)?;
+    validate_runtime_manifest_binding(manifest, binding)?;
+    if manifest.component.platform_os != std::env::consts::OS {
+        return Err(PdfV3RuntimeManifestError::BindingMismatch("platformOs"));
+    }
+    if manifest.component.platform_arch != std::env::consts::ARCH {
+        return Err(PdfV3RuntimeManifestError::BindingMismatch("platformArch"));
+    }
+    if !manifest.regular_font.matches_asset(regular_font) {
+        return Err(PdfV3RuntimeManifestError::FontMismatch(
+            TranslationFontWeight::Regular,
+        ));
+    }
+    match (&manifest.bold_font, bold_font) {
+        (Some(expected), Some(actual)) if expected.matches_asset(actual) => Ok(()),
+        (None, None) => Ok(()),
+        _ => Err(PdfV3RuntimeManifestError::FontMismatch(
+            TranslationFontWeight::Bold,
+        )),
     }
 }
 

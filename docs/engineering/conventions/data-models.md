@@ -1102,6 +1102,39 @@ run index，也不是 lifecycle 或 worker 状态权威。
   owner lease 或执行 stale recovery。选中 run 后的页级状态必须另行读取 bounded run-control
   window。
 
+## PDF v3 Lazy Translated-Page Preview
+
+PDF v3 translated preview 是 durable scheduler、PageGraph 和 TranslationPatch authority
+的按需二进制投影，不是完整译文 PDF、第二份 page state 或导出权威。
+
+约定：
+
+- 公开命令只接受 `jobId`、safe `runId`、positive `pageNumber` 和 bounded
+  `targetWidth`。job/source path、source fingerprint、target language、revision、font、
+  provider 与 renderer policy 必须从 native authority 推导，前端不得覆盖。
+- 只有无 active lease 的 exact `completed` page 可以生成译文预览。scheduler 中的
+  extraction artifact/source-page hash 和 patch ID/revision 必须分别匹配当前 PageGraph store、
+  TranslationPatch store 与 immutable runtime manifest。pending、extracted、preserved、failed、
+  leased、non-requested 或 superseded authority 必须 fail closed。
+- 缓存读取顺序固定为 exact-width PNG、single-page translated PDF、lazy source replay。
+  PNG hit 可以直接返回 raw IPC bytes，不得 hash source 或加载 font；page-PDF hit 必须验证
+  source identity，但不得解析 font；只有 full miss 才允许加载 run manifest 绑定的统一译文字体。
+- source identity cache 最多保留 32 个 absolute source entries，以 byte count 和 modified
+  nanoseconds 作为失效 stamp。stamp 未变化时可复用已计算 SHA-256；stamp 变化必须重新 hash
+  完整 source。stamp 本身不得替代 source fingerprint authority。
+- full miss 必须通过 bounded lazy source-object view 只物化 selected page 可达对象及其继承的
+  resources/page geometry，不得加载完整 source `lopdf::Document`。单页物化必须拒绝跨页 page-tree
+  references，并限制 65,536 reachable objects 与 128 traversal depth。
+- preview font resolver 只能读取受管统一 Regular/optional Bold bytes，并与 immutable runtime
+  manifest 精确匹配；它不得要求 translation provider/model process 仍健康，也不得读取 endpoint
+  或 credential。统一译文字体是 renderer identity，不要求复用原文字体。
+- PDFium rasterization 必须在 process-wide operation lock 下执行并返回
+  `tauri::ipc::Response` raw PNG bytes。公开 response/error 不得包含 source/translated text、path、
+  fingerprint、font path、provider response 或 credential。
+- page PDF 与 PNG 都是 render cache 中的 disposable derivatives。插入失败可以 best effort 忽略；
+  cache miss/corruption 必须从 durable patch 重建，不能改变 scheduler completed state。preserved page
+  没有 patch，UI 必须根据 typed page state 复用 source preview。
+
 ## PDF v3 Text-Show Replacement Transactions and Batches
 
 当前 PDF v3 回填开放同一 selected page、底层 stream、结构化 invocation path 和

@@ -14,6 +14,7 @@ pub(crate) mod ownership;
 pub(crate) mod page_context;
 pub(crate) mod page_graph_store;
 pub(crate) mod page_index;
+pub(crate) mod page_pdf;
 pub(crate) mod page_set;
 pub(crate) mod patch;
 pub(crate) mod patch_renderer;

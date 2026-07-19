@@ -11,6 +11,7 @@ use super::{
     object_delta::PdfObjectDelta,
     ownership::PdfStreamOwnershipIndex,
     page_index::PdfPageIndex,
+    page_pdf::{serialize_single_page_pdf_from_view, PdfSinglePageError},
     render_cache::{
         RenderCache, RenderCacheError, RenderCacheInsertOutcome, RenderCacheKey,
         RenderCacheOptions, RenderCacheOutputKind,
@@ -97,6 +98,7 @@ pub(crate) enum TranslationPatchRenderError {
     PageOutOfBounds { page: u32, page_count: u32 },
     PagePdfSerialization(String),
     InvalidPagePdf(&'static str),
+    SinglePage(PdfSinglePageError),
     Patch(TranslationPatchError),
     Replacement(TextShowReplacementError),
     Cache(RenderCacheError),
@@ -124,6 +126,7 @@ impl fmt::Display for TranslationPatchRenderError {
             Self::InvalidPagePdf(reason) => {
                 write!(formatter, "rendered single-page PDF is invalid: {reason}")
             }
+            Self::SinglePage(error) => error.fmt(formatter),
             Self::Patch(error) => error.fmt(formatter),
             Self::Replacement(error) => error.fmt(formatter),
             Self::Cache(error) => error.fmt(formatter),
@@ -148,6 +151,12 @@ impl From<TextShowReplacementError> for TranslationPatchRenderError {
 impl From<RenderCacheError> for TranslationPatchRenderError {
     fn from(value: RenderCacheError) -> Self {
         Self::Cache(value)
+    }
+}
+
+impl From<PdfSinglePageError> for TranslationPatchRenderError {
+    fn from(value: PdfSinglePageError) -> Self {
+        Self::SinglePage(value)
     }
 }
 
@@ -256,6 +265,44 @@ pub(crate) fn stage_resolved_translation_patch_with_font_registry(
         policy,
         Some(font_registry),
     )
+}
+
+pub(crate) fn render_resolved_translation_patch_page_pdf_from_view(
+    source_objects: &dyn PdfObjectView,
+    source_fingerprint: &str,
+    page: &PageGraph,
+    patch: &TranslationPatch,
+    fonts: &[&PreparedTranslationFont],
+    policy: TranslationPatchRenderPolicy,
+) -> Result<TranslationPatchPagePdf, TranslationPatchRenderError> {
+    ensure_translation_patch_renderer_resolved(patch)?;
+    let page_index = PdfPageIndex::resolve_page(source_objects, page.page_number)
+        .map_err(TextShowReplacementError::from)?;
+    let ownership_index =
+        PdfStreamOwnershipIndex::resolve(source_objects, &page_index.selected_content_stream_ids())
+            .map_err(TextShowReplacementError::from)?;
+    let staged = stage_translation_patch_internal(
+        source_objects,
+        source_objects,
+        &page_index,
+        Some(&ownership_index),
+        page,
+        patch,
+        fonts,
+        fonts,
+        policy,
+        None,
+    )?;
+    let overlay = super::source_object::PdfObjectOverlay::new(source_objects, &staged.object_delta);
+    let indexed_page = page_index
+        .page(page.page_number)
+        .map_err(TextShowReplacementError::from)?;
+    let pdf_bytes = serialize_single_page_pdf_from_view(&overlay, indexed_page)?;
+    Ok(TranslationPatchPagePdf {
+        source_fingerprint: source_fingerprint.to_string(),
+        render: staged.render,
+        pdf_bytes,
+    })
 }
 
 fn stage_translation_patch_internal(
@@ -561,6 +608,48 @@ pub(crate) fn open_translation_patch_page_pdf_cache(
         Err(RenderCacheError::CorruptArtifact { .. }) => Ok(None),
         Err(error) => Err(error.into()),
     }
+}
+
+pub(crate) fn restore_translation_patch_page_pdf(
+    source_fingerprint: &str,
+    patch: &TranslationPatch,
+    pdf_bytes: Vec<u8>,
+) -> Result<TranslationPatchPagePdf, TranslationPatchRenderError> {
+    ensure_translation_patch_renderer_resolved(patch)?;
+    validate_renderer_version(patch)?;
+    if !pdf_bytes.starts_with(b"%PDF-") {
+        return Err(TranslationPatchRenderError::InvalidPagePdf("signature"));
+    }
+    let document = Document::load_mem(&pdf_bytes).map_err(|error| {
+        TranslationPatchRenderError::PagePdfSerialization(format!(
+            "failed to validate cached single-page PDF: {error}"
+        ))
+    })?;
+    if document.get_pages().len() != 1 {
+        return Err(TranslationPatchRenderError::InvalidPagePdf(
+            "page count is not one",
+        ));
+    }
+    let fitted_entry_count = patch
+        .entries
+        .iter()
+        .filter(|entry| {
+            matches!(
+                entry.renderer_decision,
+                TranslationPatchRendererDecision::Fitted { .. }
+            )
+        })
+        .count();
+    Ok(TranslationPatchPagePdf {
+        source_fingerprint: source_fingerprint.to_string(),
+        render: TranslationPatchRenderResult {
+            resolved_patch: patch.clone(),
+            batch: None,
+            fitted_entry_count,
+            preserved_entry_count: patch.entries.len().saturating_sub(fitted_entry_count),
+        },
+        pdf_bytes,
+    })
 }
 
 fn serialize_single_page_pdf(

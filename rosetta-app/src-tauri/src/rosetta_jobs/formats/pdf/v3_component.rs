@@ -76,6 +76,12 @@ pub(crate) struct ResolvedPdfV3TranslationComponent {
     pub supported_directions: &'static [&'static str],
 }
 
+#[derive(Clone)]
+pub(crate) struct ResolvedPdfV3RenderAssets {
+    pub regular_font: TranslationFontAsset,
+    pub bold_font: Option<TranslationFontAsset>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PdfV3ComponentStatus {
@@ -121,6 +127,38 @@ impl fmt::Display for PdfV3ComponentError {
 impl std::error::Error for PdfV3ComponentError {}
 
 impl PdfV3ComponentState {
+    pub(crate) async fn resolve_render_assets(
+        &self,
+        app: &AppHandle,
+        target_language: &str,
+    ) -> Result<ResolvedPdfV3RenderAssets, PdfV3ComponentError> {
+        let pdf_profile = pdf_component_profile::current_profile()
+            .ok_or(PdfV3ComponentError::FontPackUnavailable)?;
+        let pdf_layout = Pdf2zhLayout::from_app(app, pdf_profile)
+            .map_err(|_| PdfV3ComponentError::FontPackUnavailable)?;
+        if !pdf_layout.has_required_babeldoc_fonts()
+            || !pdf_layout.pack_manifest_matches_profile(pdf_profile)
+        {
+            return Err(PdfV3ComponentError::FontPackUnavailable);
+        }
+        let family = recommended_translation_font_family(target_language);
+        let font_directory = pdf_layout.babeldoc_cache_dir().join("fonts");
+        let cache = self.inner.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut cache = cache
+                .lock()
+                .map_err(|_| PdfV3ComponentError::LockPoisoned)?;
+            let (regular_font, bold_font) =
+                resolve_font_assets(&mut cache, family, &font_directory)?;
+            Ok(ResolvedPdfV3RenderAssets {
+                regular_font,
+                bold_font,
+            })
+        })
+        .await
+        .map_err(|_| PdfV3ComponentError::Worker)?
+    }
+
     pub(crate) async fn resolve(
         &self,
         app: &AppHandle,
@@ -208,33 +246,7 @@ fn resolve_blocking(
         return Err(PdfV3ComponentError::ArtifactIntegrity("model"));
     };
 
-    let regular_path = font_directory.join(family.regular_filename);
-    let regular_font = cache
-        .fonts
-        .load_weighted(
-            format!("{}-regular", family.family_id),
-            TranslationFontWeight::Regular,
-            &regular_path,
-            0,
-        )
-        .map_err(|_| PdfV3ComponentError::ArtifactIntegrity("regularFont"))?;
-    verify_font_fingerprint(&regular_font, family.regular_filename)?;
-    let bold_font = family
-        .bold_filename
-        .map(|filename| {
-            let asset = cache
-                .fonts
-                .load_weighted(
-                    format!("{}-bold", family.family_id),
-                    TranslationFontWeight::Bold,
-                    &font_directory.join(filename),
-                    0,
-                )
-                .map_err(|_| PdfV3ComponentError::ArtifactIntegrity("boldFont"))?;
-            verify_font_fingerprint(&asset, filename)?;
-            Ok(asset)
-        })
-        .transpose()?;
+    let (regular_font, bold_font) = resolve_font_assets(&mut cache, family, &font_directory)?;
 
     let runtime_release_sha256 = runtime.runtime_release_sha256.map(str::to_string);
     let component_manifest_id = component_manifest_id(&ComponentManifestIdentity {
@@ -272,6 +284,40 @@ fn resolve_blocking(
         runtime_release_sha256,
         supported_directions: runtime.profile.supported_directions,
     })
+}
+
+fn resolve_font_assets(
+    cache: &mut PdfV3ComponentCache,
+    family: TranslationFontFamilySpec,
+    font_directory: &Path,
+) -> Result<(TranslationFontAsset, Option<TranslationFontAsset>), PdfV3ComponentError> {
+    let regular_font = cache
+        .fonts
+        .load_weighted(
+            format!("{}-regular", family.family_id),
+            TranslationFontWeight::Regular,
+            &font_directory.join(family.regular_filename),
+            0,
+        )
+        .map_err(|_| PdfV3ComponentError::ArtifactIntegrity("regularFont"))?;
+    verify_font_fingerprint(&regular_font, family.regular_filename)?;
+    let bold_font = family
+        .bold_filename
+        .map(|filename| {
+            let asset = cache
+                .fonts
+                .load_weighted(
+                    format!("{}-bold", family.family_id),
+                    TranslationFontWeight::Bold,
+                    &font_directory.join(filename),
+                    0,
+                )
+                .map_err(|_| PdfV3ComponentError::ArtifactIntegrity("boldFont"))?;
+            verify_font_fingerprint(&asset, filename)?;
+            Ok(asset)
+        })
+        .transpose()?;
+    Ok((regular_font, bold_font))
 }
 
 fn provider_config(

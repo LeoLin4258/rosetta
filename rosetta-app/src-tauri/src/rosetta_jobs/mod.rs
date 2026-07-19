@@ -226,6 +226,7 @@ impl Default for PdfTranslationCancelState {
 pub use formats::pdf::runtime::PngCache as PdfPngCache;
 pub use formats::pdf::v3_component::PdfV3ComponentState;
 pub use formats::pdf::v3_lifecycle::PdfV3RunLifecycleState;
+pub use formats::pdf::v3_source_identity::PdfV3SourceIdentityState;
 pub use formats::pdf::v3_worker::PdfV3RunWorkerState;
 
 #[tauri::command]
@@ -359,6 +360,72 @@ pub async fn list_rosetta_pdf_v3_runs(
     })
     .await
     .map_err(|_| "PDF v3 run 列表任务异常结束。".to_string())?
+}
+
+#[tauri::command]
+pub async fn render_rosetta_pdf_v3_translated_page_as_png(
+    app: AppHandle,
+    component_state: State<'_, PdfV3ComponentState>,
+    source_identity_state: State<'_, PdfV3SourceIdentityState>,
+    job_id: String,
+    run_id: String,
+    page_number: u32,
+    target_width: u32,
+) -> Result<tauri::ipc::Response, String> {
+    let root = path::jobs_root(&app)?;
+    let job_directory = path::checked_job_dir(&root, &job_id)?;
+    let source_path = store::cached_pdf_source_path(&app, &job_id)?;
+    let authority_directory = job_directory.clone();
+    let authority_source = source_path.clone();
+    let authority = tokio::task::spawn_blocking(move || {
+        formats::pdf::v3_preview::load_pdf_v3_preview_authority(
+            &authority_directory,
+            authority_source,
+            &run_id,
+            page_number,
+            target_width,
+        )
+        .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|_| "PDF v3 preview authority task ended unexpectedly".to_string())??;
+
+    if let Some(png) = authority.cached_png() {
+        return Ok(tauri::ipc::Response::new(png.to_vec()));
+    }
+
+    let expected_fingerprint = authority.source_fingerprint().to_string();
+    let verification_state = source_identity_state.inner().clone();
+    let verification_source = source_path;
+    tokio::task::spawn_blocking(move || {
+        verification_state.verify(&verification_source, &expected_fingerprint)
+    })
+    .await
+    .map_err(|_| "PDF v3 preview source verification task ended unexpectedly".to_string())??;
+
+    if authority.has_cached_page_pdf() {
+        let raster_app = app.clone();
+        let png = tokio::task::spawn_blocking(move || {
+            formats::pdf::v3_preview::rasterize_cached_pdf_v3_preview(&raster_app, authority)
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|_| "PDF v3 cached preview task ended unexpectedly".to_string())??;
+        return Ok(tauri::ipc::Response::new(png));
+    }
+
+    let assets = component_state
+        .resolve_render_assets(&app, authority.target_language())
+        .await
+        .map_err(|error| error.to_string())?;
+    let render_app = app.clone();
+    let png = tokio::task::spawn_blocking(move || {
+        formats::pdf::v3_preview::render_pdf_v3_preview(&render_app, authority, assets)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|_| "PDF v3 preview render task ended unexpectedly".to_string())??;
+    Ok(tauri::ipc::Response::new(png))
 }
 
 struct PreparedPdfV3RunJob {

@@ -19,10 +19,12 @@ pub(crate) mod unit_translation;
 pub(crate) mod v3_component;
 pub(crate) mod v3_control;
 pub(crate) mod v3_lifecycle;
+pub(crate) mod v3_preview;
 pub(crate) mod v3_processor;
 pub(crate) mod v3_run_creation;
 pub(crate) mod v3_run_list;
 pub(crate) mod v3_runtime;
+pub(crate) mod v3_source_identity;
 pub(crate) mod v3_worker;
 
 pub(crate) use rasterize::{count_pages, render_page_as_png};

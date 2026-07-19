@@ -40,6 +40,7 @@ pub fn run() {
         .manage(rosetta_jobs::PdfTranslationCancelState::default())
         .manage(rosetta_jobs::PdfV3ComponentState::default())
         .manage(rosetta_jobs::PdfV3RunLifecycleState::default())
+        .manage(rosetta_jobs::PdfV3SourceIdentityState::default())
         .manage(rosetta_jobs::PdfV3RunWorkerState::default())
         .manage(rosetta_jobs::PdfPngCache::default())
         .plugin(tauri_plugin_dialog::init())
@@ -262,6 +263,7 @@ pub fn run() {
             rosetta_jobs::repair_rosetta_pdf_job,
             rosetta_jobs::render_rosetta_pdf_page_as_png,
             rosetta_jobs::render_rosetta_pdf_translated_page_as_png,
+            rosetta_jobs::render_rosetta_pdf_v3_translated_page_as_png,
             rosetta_jobs::retry_rosetta_pdf_v3_page,
             rosetta_jobs::resume_rosetta_pdf_v3_run,
             rosetta_jobs::rename_rosetta_job,

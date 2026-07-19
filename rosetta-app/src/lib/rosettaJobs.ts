@@ -522,3 +522,21 @@ export async function renderRosettaPdfTranslatedPageAsPng(
   );
   return new Uint8Array(buffer);
 }
+
+export async function renderRosettaPdfV3TranslatedPageAsPng(
+  jobId: string,
+  runId: string,
+  pageNumber: number,
+  targetWidth: number,
+): Promise<Uint8Array> {
+  const buffer = await invoke<ArrayBuffer>(
+    "render_rosetta_pdf_v3_translated_page_as_png",
+    {
+      jobId,
+      runId,
+      pageNumber,
+      targetWidth,
+    },
+  );
+  return new Uint8Array(buffer);
+}

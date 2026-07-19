@@ -599,8 +599,14 @@ single-page PDF artifacts and use source/patch/revision/current-renderer cache
 identity for bounded insertion and lease-validated reads. Those page artifacts
 now rasterize on demand to exact-width PDFium PNGs with a separately versioned
 preview contract, bounded insertion and lease-validated reads. Patch
-compression remains pending. Document-wide font resource reuse is implemented
-and proven across consecutive page renders. A source-identity-checked
+compression remains pending. A production raw-binary preview command now
+requires exact completed scheduler/PageGraph/Patch/runtime authority, returns
+cached PNG bytes immediately, verifies source identity before reusing a cached
+single-page PDF, and only resolves unified font assets on a complete cache
+miss. The miss path lazily materializes the selected page and its reachable
+objects without loading the complete source into `lopdf::Document`; preview no
+longer depends on live translation-provider health. Document-wide font resource
+reuse is implemented and proven across consecutive page renders. A source-identity-checked
 incremental delta writer now copies the immutable source with a fixed 64 KiB
 buffer, appends only changed objects and a new xref/trailer, supports
 cancellation before commit, and atomically replaces the destination after file
@@ -745,9 +751,11 @@ Typed status schema 4 exposes only bounded worker health. An owner-gated exact
 failed-page retry command now restores only `retryable=true` failures, returns
 a status window beginning at that page and revalidates the complete trusted
 binding before restarting an inactive supervisor. The same validator now runs
-before stale recovery changes ownership. Run enumeration, frontend integration
-and a real complex 500/1,000-page end-to-end translation/export run remain
-pending.
+before stale recovery changes ownership. Bounded revision-descending run
+enumeration and typed frontend wrappers are implemented without introducing a
+second run index. The lazy completed-page translated-preview command is also
+implemented. Full workbench UI integration and a real complex 500/1,000-page
+end-to-end translation/export run remain pending.
 
 ### Phase 7 — Component control plane
 
