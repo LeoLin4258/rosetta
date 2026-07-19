@@ -754,8 +754,12 @@ binding before restarting an inactive supervisor. The same validator now runs
 before stale recovery changes ownership. Bounded revision-descending run
 enumeration and typed frontend wrappers are implemented without introducing a
 second run index. The lazy completed-page translated-preview command is also
-implemented. Full workbench UI integration and a real complex 500/1,000-page
-end-to-end translation/export run remain pending.
+implemented. The existing virtualized workbench now selects the newest run for
+the active target language, reads only visible 64-record status windows through
+a four-window cache, renders completed pages lazily and reuses source preview
+for preserved pages. Run control actions, native run creation from the primary
+translation workflow and a real complex 500/1,000-page end-to-end
+translation/export run remain pending.
 
 ### Phase 7 — Component control plane
 

@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  PdfV3RunControlStatus,
   PdfV3RunList,
   RosettaExportKind,
   RosettaExportResult,
@@ -170,6 +171,22 @@ export function listRosettaPdfV3Runs(
     jobId,
     targetLanguage: options.targetLanguage,
     beforeRevision: options.beforeRevision,
+    limit: options.limit,
+  });
+}
+
+export function getRosettaPdfV3RunStatus(
+  jobId: string,
+  runId: string,
+  options: {
+    startAfter?: number | null;
+    limit?: number | null;
+  } = {},
+) {
+  return invoke<PdfV3RunControlStatus>("get_rosetta_pdf_v3_run_status", {
+    jobId,
+    runId,
+    startAfter: options.startAfter,
     limit: options.limit,
   });
 }

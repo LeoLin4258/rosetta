@@ -939,6 +939,12 @@ PDF v3 run control 是 durable scheduler 和 Tauri/UI 之间的窄接口，不�
   `lastProgressAtMs` 和 `consecutiveFailures`。不得返回 run/source path、owner ID、provider
   endpoint、raw error、原文或译文。worker inactive 时不得仅因 status polling 重新挂接
   heartbeat。
+- 工作台只通过 bounded run list 为当前 target language 选择最新 revision；该选择是可重建的
+  frontend projection，不持久化第二份 current-run ID，也不覆盖 scheduler authority。没有 v3 run
+  时才允许回退到 legacy PDF 页状态和译文预览。
+- 工作台页状态按当前虚拟可见页对齐到 64-record window 获取。frontend 最多保留 4 个 window，
+  稀疏 PageSet 造成重叠时按最近一次 fetch 合并；run 进入 terminal state 后，每个旧 window 必须
+  至少刷新一次 terminal projection。不得为了页码滚动预取完整 PageSet 状态。
 - recovery 必须在 scheduler coordinator lock 内拒绝当前 session 仍有 active page lease
   的自接管，并拒绝未过期的其他 session owner。过期后只能用 validated
   PageGraph/TranslationPatch inventory 调用 scheduler
@@ -1134,6 +1140,10 @@ PDF v3 translated preview 是 durable scheduler、PageGraph 和 TranslationPatch
 - page PDF 与 PNG 都是 render cache 中的 disposable derivatives。插入失败可以 best effort 忽略；
   cache miss/corruption 必须从 durable patch 重建，不能改变 scheduler completed state。preserved page
   没有 patch，UI 必须根据 typed page state 复用 source preview。
+- virtualized workbench 只有在 selected run 的 bounded page state 为 exact `completed` 时才调用 v3
+  translated PNG command；`preserved` 复用同页 source PNG，pending/extracted/leased/failed、未请求页
+  和尚未加载的 status window 都保持占位。preview cache identity 必须包含 run ID、patch ID、
+  translation revision 和 page update identity，不能复用 legacy translated-PDF path 作为 v3 authority。
 
 ## PDF v3 Text-Show Replacement Transactions and Batches
 

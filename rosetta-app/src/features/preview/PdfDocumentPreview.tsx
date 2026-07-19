@@ -8,6 +8,7 @@ import {
   countRosettaPdfPages,
   getRosettaPdfSnapshot,
   renderRosettaPdfTranslatedPageAsPng,
+  renderRosettaPdfV3TranslatedPageAsPng,
   type PdfPageTranslation,
   type PdfPageTranslationState,
 } from "@/lib/rosettaJobs";
@@ -17,12 +18,15 @@ import {
 } from "@/lib/pdfPageSelectionPolicy";
 import { cn } from "@/lib/utils";
 import type {
+  PdfV3PageControlStatus,
+  PdfV3RunState,
   RosettaDocument,
   RosettaTranslationFile,
 } from "../../types/rosetta";
 
 import { pdfPreviewPaneWidth, pdfRasterTargetWidth } from "./pdfRasterSizing";
 import { PdfPageImage } from "./PdfPane";
+import { usePdfV3Preview } from "./usePdfV3Preview";
 
 const PAGE_ASPECT_RATIO = 1.4142;
 const PDF_PREVIEW_OVERSCAN_ROWS = 1;
@@ -185,6 +189,39 @@ export function PdfDocumentPreview({
     overscan: PDF_PREVIEW_OVERSCAN_ROWS,
   });
 
+  const virtualItems = virtualizer.getVirtualItems();
+  const firstVisiblePageNumber =
+    virtualItems[0]?.index != null ? virtualItems[0].index + 1 : 1;
+  const pdfV3Preview = usePdfV3Preview({
+    jobId,
+    targetLanguage: targetLang,
+    visiblePageNumber: firstVisiblePageNumber,
+    isTranslating,
+  });
+  const pdfV3RunId = pdfV3Preview.run?.runId ?? null;
+
+  const renderPdfV3TranslatedPage = useCallback(
+    (index: number, width: number) => {
+      if (!pdfV3RunId) {
+        return Promise.reject(new Error("PDF v3 运行不可用。"));
+      }
+      return renderRosettaPdfV3TranslatedPageAsPng(
+        jobId,
+        pdfV3RunId,
+        index + 1,
+        width,
+      );
+    },
+    [jobId, pdfV3RunId],
+  );
+
+  useEffect(() => {
+    const pageCount = pdfV3Preview.run?.sourcePageCount ?? null;
+    if (!pageCount) return;
+    setSourcePageCount(pageCount);
+    onPageCountChange(pageCount);
+  }, [onPageCountChange, pdfV3Preview.run?.sourcePageCount]);
+
   const refreshPageState = useCallback(async () => {
     try {
       const snapshot = await getRosettaPdfSnapshot(jobId, targetLang);
@@ -333,8 +370,6 @@ export function PdfDocumentPreview({
     });
   }, []);
 
-  const virtualItems = virtualizer.getVirtualItems();
-
   return (
     <Card className="flex h-full min-h-0 flex-col gap-0 overflow-hidden rounded-none border-0 py-0">
       <ScrollArea className="h-full min-h-0 bg-muted/30" viewportRef={scrollRef}>
@@ -359,15 +394,59 @@ export function PdfDocumentPreview({
               const pageIndex = pages[item.index];
               const pageNumber = pageIndex + 1;
               const status = pageStatus(pageIndex);
+              const pdfV3Page = pdfV3Preview.pagesByNumber.get(pageNumber) ?? null;
+              const usePdfV3 = pdfV3Preview.run != null;
+              const pdfV3PageRequested = usePdfV3
+                ? pdfV3Preview.isPageRequested(pageNumber)
+                : false;
+              const legacyPreviewReady =
+                !pdfV3Preview.isDiscovering && !pdfV3Preview.discoveryError;
               const sourcePageSrc = sourcePageImages[pageIndex] ?? null;
-              const showSourceAsTranslation = status?.resultKind === "no_text";
-              const activity = displayPageActivity(
-                status?.status ?? null,
-                pageNumber,
-                currentTranslatingPageNumber,
-                activePageNumberSet,
-                isTranslating,
-              );
+              const showSourceAsTranslation = usePdfV3
+                ? pdfV3Page?.state.kind === "preserved"
+                : status?.resultKind === "no_text";
+              const activity = usePdfV3
+                ? pdfV3PageActivity(
+                    pdfV3Page,
+                    pdfV3Preview.runState,
+                    pdfV3PageRequested,
+                  )
+                : !legacyPreviewReady
+                  ? "pending"
+                  : displayPageActivity(
+                      status?.status ?? null,
+                      pageNumber,
+                      currentTranslatingPageNumber,
+                      activePageNumberSet,
+                      isTranslating,
+                    );
+              const canRenderTranslation = usePdfV3
+                ? showSourceAsTranslation
+                  ? !!sourcePageSrc
+                  : pdfV3Page?.state.kind === "completed"
+                : legacyPreviewReady &&
+                  (showSourceAsTranslation
+                    ? !!sourcePageSrc
+                    : status?.status === "translated" &&
+                      !!status.translatedPdfPath &&
+                      !stablePreviewMode);
+              const translationStatus = usePdfV3
+                ? pdfV3TranslatedPageLabel({
+                    pageNumber,
+                    page: pdfV3Page,
+                    runState: pdfV3Preview.runState,
+                    requested: pdfV3PageRequested,
+                    error: pdfV3Preview.error,
+                  })
+                : legacyPreviewReady
+                  ? translatedPageLabel(
+                      pageNumber,
+                      status,
+                      activity,
+                      stablePreviewMode,
+                    )
+                  : pdfV3Preview.discoveryError ??
+                    "正在读取 PDF 翻译状态...";
 
               return (
                 <div
@@ -420,30 +499,30 @@ export function PdfDocumentPreview({
                         jobId={jobId}
                         kind="translated"
                         pageIndex={pageIndex}
-                        renderVersion={translatedPageRenderVersion(pageNumber, status)}
-                        targetWidth={rasterTargetWidth}
-                        canRender={
-                          showSourceAsTranslation
-                            ? !!sourcePageSrc
-                            : status?.status === "translated" &&
-                              !!status.translatedPdfPath &&
-                              !stablePreviewMode
+                        renderVersion={
+                          usePdfV3
+                            ? pdfV3TranslatedPageRenderVersion(
+                                pdfV3RunId,
+                                pdfV3Page,
+                              )
+                            : translatedPageRenderVersion(pageNumber, status)
                         }
+                        targetWidth={rasterTargetWidth}
+                        canRender={canRenderTranslation}
                         activity={activity}
                         backdropSrc={showSourceAsTranslation ? null : sourcePageSrc}
                         staticSrc={showSourceAsTranslation ? sourcePageSrc : null}
                         imageAlt={
                           showSourceAsTranslation
-                            ? `第 ${pageNumber} 页译文：无可翻译文本，显示原页`
+                            ? `第 ${pageNumber} 页译文：保留原页`
                             : `第 ${pageNumber} 页译文`
                         }
-                        renderPage={renderTranslatedPdfPage}
-                        status={translatedPageLabel(
-                          pageNumber,
-                          status,
-                          activity,
-                          stablePreviewMode,
-                        )}
+                        renderPage={
+                          usePdfV3
+                            ? renderPdfV3TranslatedPage
+                            : renderTranslatedPdfPage
+                        }
+                        status={translationStatus}
                       />
                     </div>
                   </div>
@@ -544,6 +623,71 @@ function translatedPageRenderVersion(
   if (page?.status !== "translated") return "pending";
   if (page.resultKind === "no_text") return `${pageNumber}:no_text:${page.updatedAt ?? ""}`;
   return `${pageNumber}:${page.translatedPdfPath ?? ""}:${page.updatedAt ?? "translated"}`;
+}
+
+function pdfV3TranslatedPageRenderVersion(
+  runId: string | null,
+  page: PdfV3PageControlStatus | null,
+) {
+  if (!runId || page?.state.kind !== "completed") return "pending";
+  return `${runId}:${page.state.patch.patchId}:${page.state.patch.translationRevision}:${page.updatedAtMs}`;
+}
+
+function pdfV3PageActivity(
+  page: PdfV3PageControlStatus | null,
+  runState: PdfV3RunState | null,
+  requested: boolean,
+) {
+  if (!requested) return "pending";
+  if (page?.state.kind === "failed") return "failed";
+  if (
+    page?.state.kind === "completed" ||
+    page?.state.kind === "preserved"
+  ) {
+    return "translated";
+  }
+  if (page?.activeLease) return "translating";
+  if (page?.state.kind === "extracted") return "queued";
+  if (runState === "running" || runState === "cancelling") return "queued";
+  return "pending";
+}
+
+function pdfV3TranslatedPageLabel({
+  pageNumber,
+  page,
+  runState,
+  requested,
+  error,
+}: {
+  pageNumber: number;
+  page: PdfV3PageControlStatus | null;
+  runState: PdfV3RunState | null;
+  requested: boolean;
+  error: string | null;
+}) {
+  if (!requested) return `第 ${pageNumber} 页不在本次翻译范围内`;
+  if (!page) return error ?? `正在读取第 ${pageNumber} 页状态...`;
+
+  switch (page.state.kind) {
+    case "completed":
+      return `加载第 ${pageNumber} 页译文...`;
+    case "preserved":
+      return `第 ${pageNumber} 页无需替换文字，显示原页`;
+    case "failed":
+      return page.state.retryable
+        ? `第 ${pageNumber} 页处理失败，可以重试`
+        : `第 ${pageNumber} 页处理失败`;
+    case "extracted":
+      return page.activeLease?.stage === "translation"
+        ? null
+        : `第 ${pageNumber} 页已解析，等待翻译`;
+    case "pending":
+      if (page.activeLease) return null;
+      if (runState === "paused") return "本次 PDF 翻译已暂停";
+      if (runState === "cancelling") return "正在停止本次 PDF 翻译";
+      if (runState === "cancelled") return "本次 PDF 翻译已停止";
+      return `等待处理第 ${pageNumber} 页`;
+  }
 }
 
 function displayPageActivity(
