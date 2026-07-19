@@ -197,11 +197,13 @@ export function createRosettaPdfV3Run(
   jobId: string,
   requestedPageSet: string | null,
   targetLanguage: string,
+  preferredPageNumber: number | null = null,
 ) {
   return invoke<PdfV3RunControlStatus>("create_rosetta_pdf_v3_run", {
     jobId,
     requestedPageSet,
     targetLanguage,
+    preferredPageNumber,
   });
 }
 

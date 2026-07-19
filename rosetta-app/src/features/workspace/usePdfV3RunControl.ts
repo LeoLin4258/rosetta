@@ -229,10 +229,15 @@ export function usePdfV3RunControl({
   );
 
   const create = useCallback(
-    async (requestedPageSet: string) => {
+    async (requestedPageSet: string, preferredPageNumber: number | null) => {
       if (!jobId) throw new Error("PDF 项目不可用。");
       return execute("creating", () =>
-        createRosettaPdfV3Run(jobId, requestedPageSet, targetLanguage),
+        createRosettaPdfV3Run(
+          jobId,
+          requestedPageSet,
+          targetLanguage,
+          preferredPageNumber,
+        ),
       );
     },
     [execute, jobId, targetLanguage],

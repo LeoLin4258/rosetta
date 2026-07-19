@@ -6,6 +6,9 @@ Status: Accepted
 
 Refines ADR 0055, ADR 0066, ADR 0068, ADR 0069 and ADR 0071.
 
+Refined by ADR 0074, which forwards the currently visible selected page as a
+one-time trusted run-creation scheduling hint.
+
 ## Context
 
 The workbench could inspect and lazily preview a native PDF v3 run, but its

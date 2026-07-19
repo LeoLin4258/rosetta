@@ -789,6 +789,43 @@ impl DurablePdfV3Scheduler {
         )
     }
 
+    pub(crate) fn set_initial_page_priority(
+        &self,
+        owner_session_id: &str,
+        page_number: u32,
+        now_ms: u64,
+    ) -> Result<(), PdfV3SchedulerError> {
+        let _guard = self.lock()?;
+        let mut manifest = self.read_manifest()?;
+        ensure_owner(&manifest, owner_session_id)?;
+        if manifest.run_state != PdfV3RunState::Running {
+            return Err(PdfV3SchedulerError::RunNotClaimable(manifest.run_state));
+        }
+        let requested = requested_pages(&manifest)?;
+        if !requested.contains(page_number) {
+            return Err(PdfV3SchedulerError::PageNotRequested(page_number));
+        }
+        let summary = self.scan_summary(&manifest)?;
+        if summary.pending_pages != summary.requested_pages
+            || summary.extracting_pages != 0
+            || summary.extracted_pages != 0
+            || summary.translating_pages != 0
+            || summary.completed_pages != 0
+            || summary.preserved_pages != 0
+            || summary.failed_pages != 0
+        {
+            return Err(PdfV3SchedulerError::InvalidTransition { page_number });
+        }
+
+        let cursor = page_number.saturating_sub(1);
+        manifest.extraction_cursor = cursor;
+        manifest.translation_cursor = cursor;
+        manifest.summary = summary;
+        manifest.owner_lease_updated_at_ms = now_ms;
+        bump_manifest_generation(&mut manifest)?;
+        self.write_manifest(&manifest)
+    }
+
     pub(crate) fn claim_translation(
         &self,
         owner_session_id: &str,
@@ -2165,6 +2202,45 @@ mod tests {
         assert!(matches!(
             scheduler.page_window(None, MAX_STATUS_WINDOW + 1),
             Err(PdfV3SchedulerError::InvalidLimit { .. })
+        ));
+    }
+
+    #[test]
+    fn initial_page_priority_rotates_both_bounded_stage_cursors() {
+        let run = TempRun::new("initial-priority");
+        let scheduler = create(&run, 10);
+
+        scheduler
+            .set_initial_page_priority("owner-a", 7, 9)
+            .expect("set initial priority");
+        let extraction_claims = scheduler
+            .claim_extraction("owner-a", 10, 10)
+            .expect("claim prioritized extraction");
+        assert_eq!(
+            extraction_claims
+                .iter()
+                .map(|claim| claim.page_number)
+                .collect::<Vec<_>>(),
+            vec![7, 8, 9]
+        );
+        for claim in &extraction_claims {
+            scheduler
+                .commit_extraction("owner-a", claim, extraction(claim.page_number), 20)
+                .expect("commit prioritized extraction");
+        }
+        let translation_claims = scheduler
+            .claim_translation("owner-a", 10, 30)
+            .expect("claim prioritized translation");
+        assert_eq!(
+            translation_claims
+                .iter()
+                .map(|claim| claim.page_number)
+                .collect::<Vec<_>>(),
+            vec![7, 8]
+        );
+        assert!(matches!(
+            scheduler.set_initial_page_priority("owner-a", 1, 31),
+            Err(PdfV3SchedulerError::InvalidTransition { page_number: 1 })
         ));
     }
 

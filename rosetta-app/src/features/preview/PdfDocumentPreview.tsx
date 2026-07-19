@@ -41,6 +41,7 @@ type PdfDocumentPreviewProps = {
   selectedPages: number[];
   onPageCountChange: (count: number) => void;
   onSelectedPagesChange: (pages: number[]) => void;
+  onVisiblePageChange: (pageNumber: number) => void;
   onRetryPdfV3Page: (pageNumber: number) => void;
 };
 
@@ -56,6 +57,7 @@ export function PdfDocumentPreview({
   selectedPages,
   onPageCountChange,
   onSelectedPagesChange,
+  onVisiblePageChange,
   onRetryPdfV3Page,
 }: PdfDocumentPreviewProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -98,8 +100,14 @@ export function PdfDocumentPreview({
   });
 
   const virtualItems = virtualizer.getVirtualItems();
+  const scrollOffset = virtualizer.scrollOffset ?? 0;
   const firstVisiblePageNumber =
-    virtualItems[0]?.index != null ? virtualItems[0].index + 1 : 1;
+    (virtualItems.find((item) => item.end > scrollOffset)?.index ?? 0) + 1;
+
+  useEffect(() => {
+    if (pageCount > 0) onVisiblePageChange(firstVisiblePageNumber);
+  }, [firstVisiblePageNumber, onVisiblePageChange, pageCount]);
+
   const pdfV3Preview = usePdfV3Preview({
     jobId,
     runStatus: pdfV3RunStatus,

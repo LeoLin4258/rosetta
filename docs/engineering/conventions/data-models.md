@@ -1058,10 +1058,12 @@ frontend 可组装的通用 manifest API。
 
 约定：
 
-- 公开输入只允许 `jobId`、optional exact `requestedPageSet` 与 `targetLanguage`。省略 PageSet
-  表示全部源页；空集合、越界页或 reversed range 必须拒绝。前端不得提供 run ID、source path、
-  fingerprint/page count、source language、revision、capacity、render policy、owner 或任何
-  component/provider/model/font identity。
+- 公开输入只允许 `jobId`、optional exact `requestedPageSet`、`targetLanguage` 与 optional
+  `preferredPageNumber`。省略 PageSet 表示全部源页；空集合、越界页或 reversed range 必须拒绝。
+  preferred page 只允许是 exact PageSet 的成员，并且只在原子创建期间旋转已有 extraction/
+  translation cursor；它不得改变 PageSet、capacity、page authority 或恢复规则。前端不得提供
+  run ID、source path、fingerprint/page count、source language、revision、capacity、render policy、
+  owner 或任何 component/provider/model/font identity。
 - source path 必须从 app-data job root 派生，实际 source bytes 必须重新计算 canonical
   `sha256:` fingerprint 并与 `pdf_source.json` authority 一致。page count 来自该 source
   metadata；缺失、zero page 或 identity drift 必须在创建前拒绝。

@@ -446,6 +446,7 @@ mod tests {
                 source_fingerprint: &format!("sha256:{}", "a".repeat(64)),
                 source_page_count: 10,
                 requested_page_set: Some("1-3,9"),
+                preferred_page_number: None,
                 source_language: source,
                 target_language: target,
                 owner_session_id: owner,

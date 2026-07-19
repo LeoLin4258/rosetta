@@ -261,6 +261,7 @@ pub async fn create_rosetta_pdf_v3_run(
     job_id: String,
     requested_page_set: Option<String>,
     target_language: String,
+    preferred_page_number: Option<u32>,
 ) -> Result<formats::pdf::v3_control::PdfV3RunControlStatus, String> {
     let target_language = target_language.trim().to_string();
     if target_language.is_empty() || target_language.len() > 64 {
@@ -300,6 +301,7 @@ pub async fn create_rosetta_pdf_v3_run(
                 source_fingerprint: &prepared.source_fingerprint,
                 source_page_count: prepared.source_page_count,
                 requested_page_set: requested_page_set.as_deref(),
+                preferred_page_number,
                 source_language: &prepared.source_language,
                 target_language: &creation_target,
                 owner_session_id: &owner_session_id,

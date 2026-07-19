@@ -57,6 +57,7 @@ export function DocumentPreview({
   onSourceEditStart,
   onPdfPageCountChange,
   onPdfSelectedPagesChange,
+  onPdfVisiblePageChange,
   onRetryPdfV3Page,
 }: {
   /// Required for PDF preview (needed to resolve `<job_dir>/source.pdf` and
@@ -96,6 +97,7 @@ export function DocumentPreview({
   onSourceEditStart?: () => void;
   onPdfPageCountChange?: (count: number) => void;
   onPdfSelectedPagesChange?: (pages: number[]) => void;
+  onPdfVisiblePageChange?: (pageNumber: number) => void;
   onRetryPdfV3Page?: (pageNumber: number) => void;
 }) {
   const sourceRef = useRef<HTMLDivElement>(null);
@@ -125,6 +127,7 @@ export function DocumentPreview({
         selectedPages={pdfSelectedPages}
         onPageCountChange={onPdfPageCountChange ?? (() => {})}
         onSelectedPagesChange={onPdfSelectedPagesChange ?? (() => {})}
+        onVisiblePageChange={onPdfVisiblePageChange ?? (() => {})}
         onRetryPdfV3Page={onRetryPdfV3Page ?? (() => {})}
       />
     );

@@ -33,6 +33,7 @@ pub(crate) struct PdfV3RunCreationRequest<'a> {
     pub source_fingerprint: &'a str,
     pub source_page_count: u32,
     pub requested_page_set: Option<&'a str>,
+    pub preferred_page_number: Option<u32>,
     pub source_language: &'a str,
     pub target_language: &'a str,
     pub owner_session_id: &'a str,
@@ -88,6 +89,12 @@ pub(crate) fn create_pdf_v3_run(
     }
     .map_err(|_| PdfV3RunCreationError::InvalidPageSet)?;
     if requested_pages.is_empty() {
+        return Err(PdfV3RunCreationError::InvalidPageSet);
+    }
+    if request
+        .preferred_page_number
+        .is_some_and(|page_number| !requested_pages.contains(page_number))
+    {
         return Err(PdfV3RunCreationError::InvalidPageSet);
     }
 
@@ -157,6 +164,11 @@ fn create_staged_run(
         request.now_ms,
     )
     .map_err(|_| PdfV3RunCreationError::Storage)?;
+    if let Some(page_number) = request.preferred_page_number {
+        scheduler
+            .set_initial_page_priority(request.owner_session_id, page_number, request.now_ms)
+            .map_err(|_| PdfV3RunCreationError::Storage)?;
+    }
     let binding = scheduler
         .translation_binding()
         .map_err(|_| PdfV3RunCreationError::Storage)?;
@@ -303,7 +315,10 @@ mod tests {
     };
 
     use crate::{
-        pdf_v3::font::{TranslationFontAsset, TranslationFontWeight},
+        pdf_v3::{
+            font::{TranslationFontAsset, TranslationFontWeight},
+            scheduler::DurablePdfV3Scheduler,
+        },
         rosetta_jobs::formats::pdf::{
             unit_translation::{LlamaCppPdfApiConfig, PdfUnitProviderConfig},
             v3_component::ResolvedPdfV3TranslationComponent,
@@ -351,10 +366,55 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn creation_applies_only_a_requested_initial_page_priority() {
+        let root = temp_root("priority");
+        let job = root.join("job-test");
+        fs::create_dir_all(&job).expect("job directory");
+        let component = test_component();
+
+        let status = create_with_priority(&job, &component, Some("1-3,7-9"), Some(7), 10, 100)
+            .expect("prioritized run");
+        let scheduler =
+            DurablePdfV3Scheduler::open(&job.join("pdf-v3").join("runs").join(status.run_id))
+                .expect("open prioritized scheduler");
+        let claims = scheduler
+            .claim_extraction("owner-test", 2, 101)
+            .expect("claim prioritized pages");
+        assert_eq!(
+            claims
+                .iter()
+                .map(|claim| claim.page_number)
+                .collect::<Vec<_>>(),
+            vec![7, 8]
+        );
+
+        assert!(matches!(
+            create_with_priority(&job, &component, Some("1-3,7-9"), Some(6), 10, 102),
+            Err(super::PdfV3RunCreationError::InvalidPageSet)
+        ));
+        assert_no_staging_directories(&job);
+        let _ = fs::remove_dir_all(root);
+    }
+
     fn create(
         job: &Path,
         component: &ResolvedPdfV3TranslationComponent,
         pages: Option<&str>,
+        page_count: u32,
+        now_ms: u64,
+    ) -> Result<
+        crate::rosetta_jobs::formats::pdf::v3_control::PdfV3RunControlStatus,
+        super::PdfV3RunCreationError,
+    > {
+        create_with_priority(job, component, pages, None, page_count, now_ms)
+    }
+
+    fn create_with_priority(
+        job: &Path,
+        component: &ResolvedPdfV3TranslationComponent,
+        pages: Option<&str>,
+        preferred_page_number: Option<u32>,
         page_count: u32,
         now_ms: u64,
     ) -> Result<
@@ -366,6 +426,7 @@ mod tests {
             source_fingerprint: &format!("sha256:{}", "a".repeat(64)),
             source_page_count: page_count,
             requested_page_set: pages,
+            preferred_page_number,
             source_language: "en",
             target_language: "zh-CN",
             owner_session_id: "owner-test",

@@ -27,6 +27,9 @@ Date: 2026-07-19
   batch-relative authority time for first-visible latency measurement.
 - The acceptance path separately measures a complete cold translated preview
   without including final document export.
+- New runs now prioritize the currently visible selected page by rotating the
+  existing bounded extraction and translation cursors before worker startup.
+  No additional page queue or durable authority is introduced.
 
 ## Validation
 
@@ -50,7 +53,10 @@ Date: 2026-07-19
   911-945 ms and the cold 1,200-pixel translated preview at 588-807 ms. Their
   non-provider sum is 1,499-1,752 ms; real latency additionally includes the
   first RWKV result and frontend display delay.
+- Scheduler and trusted-creation tests verify that page 7 is claimed first for
+  a sparse requested PageSet, while an unrequested preferred page is rejected
+  before a run becomes visible.
 
-This change updates native replacement planning, TranslationPatch storage
-representation and acceptance measurement only. It does not change runtime
-commands, product UI or Tauri permissions.
+This change updates native replacement planning, TranslationPatch storage,
+acceptance measurement and the narrow run-creation scheduling hint. It does
+not change Tauri permissions or add a second translation authority.

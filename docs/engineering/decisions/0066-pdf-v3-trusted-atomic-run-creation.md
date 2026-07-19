@@ -6,6 +6,9 @@ Status: Accepted
 
 Refines ADR 0055, ADR 0061, ADR 0064 and ADR 0065.
 
+Refined by ADR 0074, which adds one validated PageSet-local initial scheduling
+hint without exposing runtime or authority identity.
+
 ## Context
 
 PDF v3 already had a durable scheduler, immutable runtime manifest, native

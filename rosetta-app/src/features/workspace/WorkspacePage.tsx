@@ -103,6 +103,7 @@ export function WorkspacePage() {
   const [sourceDraft, setSourceDraft] = useState("");
   const [isSavingSource, setIsSavingSource] = useState(false);
   const [isPdfV3Exporting, setIsPdfV3Exporting] = useState(false);
+  const [pdfVisiblePageNumber, setPdfVisiblePageNumber] = useState(1);
   const cancelRef = useRef<(() => void) | null>(null);
 
   // Per-job language selections, with fallback to document default / global default
@@ -165,6 +166,7 @@ export function WorkspacePage() {
     setSelectedBlockIds([]);
     setPdfPageCount(0);
     setPdfSelectedPages([]);
+    setPdfVisiblePageNumber(1);
     setPendingLongPdfTranslation(null);
     setIsEditingSource(false);
     setSourceDraft("");
@@ -345,6 +347,9 @@ export function WorkspacePage() {
       formatPageSelection(normalizedPages),
       targetLangOverride,
       sourceLangOverride,
+      normalizedPages.includes(pdfVisiblePageNumber)
+        ? pdfVisiblePageNumber
+        : normalizedPages[0],
     );
   }
 
@@ -362,6 +367,9 @@ export function WorkspacePage() {
       formatPageSelection(normalizedPages),
       pending.targetLang,
       pending.sourceLang,
+      normalizedPages.includes(pdfVisiblePageNumber)
+        ? pdfVisiblePageNumber
+        : normalizedPages[0],
     );
   }
 
@@ -492,6 +500,7 @@ export function WorkspacePage() {
     pageSelection: string,
     targetLangOverride = targetLang,
     sourceLangOverride = sourceLang,
+    preferredPageNumber: number | null = null,
   ) {
     if (!activeJobId || !activeSourceFileId) return null;
     const pageTargetLang = targetLangOverride;
@@ -513,7 +522,7 @@ export function WorkspacePage() {
         pageTargetLang,
       );
       setActiveTranslationFileBundle(tfBundle);
-      return await pdfV3Control.create(pageSelection);
+      return await pdfV3Control.create(pageSelection, preferredPageNumber);
     } catch (err) {
       console.error("[pdf-v3] failed to create run", err);
       const msg = errorMessage(err, "");
@@ -1011,6 +1020,7 @@ export function WorkspacePage() {
               pdfSelectedPages={pdfSelectedPages}
               onPdfPageCountChange={handlePdfPageCountChange}
               onPdfSelectedPagesChange={handlePdfSelectedPagesChange}
+              onPdfVisiblePageChange={setPdfVisiblePageNumber}
               onRetryPdfV3Page={(pageNumber) =>
                 void handlePdfV3Control(
                   () => pdfV3Control.retryPage(pageNumber),
