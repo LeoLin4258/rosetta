@@ -73,6 +73,7 @@ export function PdfPageImage({
   backdropSrc,
   staticSrc,
   imageAlt,
+  action,
   onRendered,
 }: {
   jobId: string;
@@ -87,6 +88,7 @@ export function PdfPageImage({
   backdropSrc?: string | null;
   staticSrc?: string | null;
   imageAlt?: string;
+  action?: React.ReactNode;
   onRendered?: (pageIndex: number, src: string | null) => void;
 }) {
   const [src, setSrc] = useState<string | null>(null);
@@ -179,6 +181,7 @@ export function PdfPageImage({
             activity={activity}
             pageNumber={pageIndex + 1}
             status={status}
+            action={action}
           />
         ) : (
           <div className="flex h-full items-center justify-center px-4 text-center text-xs text-muted-foreground">
@@ -257,10 +260,12 @@ function PdfPagePlaceholder({
   activity,
   pageNumber,
   status,
+  action,
 }: {
   activity?: PdfPageActivity | null;
   pageNumber: number;
   status?: React.ReactNode;
+  action?: React.ReactNode;
 }) {
   const failed = activity === "failed";
   const translating = activity === "translating";
@@ -302,6 +307,7 @@ function PdfPagePlaceholder({
           {status ?? "可重试此页。"}
         </div>
       ) : null}
+      {action ? <div className="mt-1">{action}</div> : null}
     </div>
   );
 }

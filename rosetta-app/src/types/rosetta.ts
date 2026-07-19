@@ -289,6 +289,22 @@ export type PdfV3TranslationFontBinding = {
   byteCount: number;
 };
 
+export type PdfV3RecoveryReport = {
+  releasedExtractionLeases: number;
+  releasedTranslationLeases: number;
+  promotedExtractions: number;
+  promotedPatches: number;
+  invalidatedExtractions: number;
+  invalidatedPatches: number;
+  retainedCompletedPages: number;
+};
+
+export type PdfV3RunRecoveryResult = {
+  schema: "rosetta-pdf-v3-run-recovery-result/1";
+  recovery: PdfV3RecoveryReport;
+  status: PdfV3RunControlStatus;
+};
+
 export type RosettaJobBundle = {
   schemaVersion: number;
   job: RosettaJobSummary;

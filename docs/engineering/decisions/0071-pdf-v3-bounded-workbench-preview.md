@@ -6,6 +6,9 @@ Status: Accepted
 
 Refines ADR 0055, ADR 0069 and ADR 0070.
 
+Refined by ADR 0072, which removes the temporary legacy preview fallback and
+centralizes run discovery/polling in the workbench controller.
+
 ## Context
 
 The native v3 scheduler, bounded run enumeration and lazy translated-page PNG

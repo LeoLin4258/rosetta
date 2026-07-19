@@ -203,20 +203,15 @@ extraction/translation authority, atomic trusted run creation, native bounded
 worker supervision, owner heartbeat and stale recovery, pause/resume/cancel,
 and exact failed-page retry.
 
-This phase adds bounded run enumeration so the frontend can discover committed
-history after navigation or restart without maintaining a second run index.
-Enumeration is revision-descending, cursor-paginated, target-language aware and
-strictly observational. It does not return page arrays or trigger execution.
-
-The next implementation boundary remains a native page-bounded translated
-preview raster command. The visible workspace must not switch from the legacy
-PDF flow until v3 can render one requested translated page lazily; generating a
-complete translated PDF merely for preview would violate the long-document
-memory and disk goals of the rewrite.
+The visible workbench now uses native v3 run authority end to end. It discovers
+the newest target-language run, polls bounded control/page windows, creates new
+native revisions, and exposes pause/resume/cancel/recover/retry without a
+frontend run index or fake segment run. Completed pages render lazily and
+preserved pages reuse the source preview. The workbench no longer reads legacy
+PDF progress events, page state or translated-PDF paths.
 
 Still pending as beta gates:
 
-- lazy translated-page preview raster and visible workspace controls;
 - final native export command integration;
 - real managed-runtime validation on complex 500/1,000-page documents;
 - measured performance, peak-memory, cancellation/recovery and disk-size

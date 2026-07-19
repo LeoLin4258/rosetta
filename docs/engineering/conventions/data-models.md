@@ -154,14 +154,14 @@ AppData/Rosetta/jobs/
 - TXT 按空行切分为段落。
 - Markdown 使用轻量 block parser，首版只保留标题、段落、列表、引用、代码块和空行等基础结构。
 - fenced code block、纯 URL 行和空白行默认 `skipped`。
-- PDF v2 的当前实现是视觉 PDF 翻译路径：导入阶段只创建 job-local `source.pdf` 和 PDF skeleton document，翻译阶段由 PDFMathTranslate fork 的 Rosetta-native engine contract 生成页级译文 PDF。旧的“PDF 转 RosettaBlock/Segment 后复用 TXT/Markdown 调度”和 v1 shim/replay 路径是历史背景，不再描述当前主路径。
+- PDF v3 是当前视觉 PDF 翻译主路径：导入阶段只创建 job-local `source.pdf` 和 PDF skeleton document；翻译阶段创建 trusted native run，由 bounded scheduler、PageGraph、TranslationPatch 和统一译文字体 renderer 组成持久化权威。旧的 PDFMathTranslate/pdf2zh、页级译文 PDF 和“PDF 转 RosettaBlock/Segment”路径都不是工作台权威。
 - PDF importer 应输出 `RosettaDocument(format: "pdf")`、一个 `RosettaSourceFile(format: "pdf")`、空 `RosettaBlock[]` 和空 `Segment[]`。PDF 仍进入普通 job/workbench 模型，但页面翻译事实不保存在 `Segment[]` 中。
 - PDF importer 遇到 image-only、加密或无法解析的文件时必须返回清晰错误，不能创建空任务。
 - 系统文件选择和导出路径选择必须通过非阻塞 Tauri dialog command 完成，不能在 command 中调用 `blocking_pick_file` 或 `blocking_save_file`，避免 Windows 原生对话框打开时卡住应用窗口。
-- 当前视觉 PDF 翻译路径把 PDF 作为版面保持型文档处理：导入阶段复制 `source.pdf`，翻译阶段使用 PDFMathTranslate fork 的 Rosetta-native engine contract 按 page window 生成页级译文 PDF，并把页状态保存到 `pdf_pages.<targetLang>.json`。这条路径不把 PDF 文本回填为普通 Rosetta text segments。
-- 视觉 PDF 翻译路径中的文本单元由 Python PDF engine 抽取为 typed `TranslationUnit[]`，再由 Rust 调用本地 provider 翻译。Python worker 不调用 RWKV、OpenAI-compatible shim、Rosetta HTTP batch endpoint 或 translator service。PDF 翻译事实不经过普通文档的 `Segment[]` 调度。
+- PDF v3 把 PDF 作为版面保持型文档处理，但页面状态来自 native scheduler shard，提取事实来自 PageGraph store，译文事实来自 TranslationPatch store；这些事实不经过普通文档 `Segment[]` 调度，也不投影成前端 `ActiveTranslationRun`。
+- 工作台在创建 run 前必须先通过窄 Tauri command 持久化当前文件的 source/target language metadata。trusted run creation 只接受 `jobId`、exact PageSet 和 target language，source language 由 native 从持久化 metadata 解析，前端不得把它作为未验证 authority 传入 run command。
 - `pdf_source.json` 是 PDF source 元数据文件，记录 `pageCount`、`sourceFingerprint`、导入文件名、原始路径快照和时间戳。`sourceFingerprint` 使用 canonical `sha256:<64 lowercase hex>`，并与 PDF v3 `DocumentHandle` identity 完全一致；它只用于 source authority、诊断和未来显式去重，不触发隐式跨 job 共享状态。旧 beta 裸 64-hex 值不迁移，其 PDF 派生状态从缓存 `source.pdf` 重建。
-- `pdf_pages.<targetLang>.json` 是 PDF 页级译文状态文件，记录源 PDF 页数、目标语言、每页状态、正式 `PageResult` 元数据和页级译文 PDF 相对路径。schema version 2 只持久化 `pending`、`translated`、`failed`。应用加载时遗留的 `queued` / `translating` 页必须恢复为可重试状态。
+- `pdf_pages.<targetLang>.json` 是 legacy v2 页状态，不再由 PDF v3 工作台读取或写入。
 - `pdf_pages.<targetLang>.json` v2 中，`resultKind` 可为 `translated`、`no_text`、`failed`。`resultKind="no_text"` 表示该页完成但无可提取文本，不应伪造 `translatedPdfPath` 或译文字数。
 - PDF v2 不迁移 beta v1 页状态。读取到 `schemaVersion < 2` 的 PDF page state 时，Rosetta 必须清理派生译文 artifacts 和旧 page-state 文件，保留 `source.pdf`，并返回空的 v2 pending state。
 - `pdf_run.<targetLang>.json` 是当前或最近一次 PDF 翻译 run。`running` / `pausing` run 必须绑定 `ownerSessionId`；新 app session 看到旧 live run 时必须恢复为 `paused`。
@@ -275,7 +275,7 @@ PDF cleanup task:
 - Markdown 导出只承诺保留基础 marker，不承诺完整 CommonMark AST 级别还原。
 - 任务工作台的导出最小单位是当前选中的译文文件，而不是整个项目。项目是文件集合与共享设置容器，不能让用户在当前文件视图里误触发整项目导出。
 - 当前译文文件必须完成翻译后才能导出；`done`、`edited` 和 `skipped` 视为已处理，`pending`、`translating`、`failed` 或空译文不能导出。
-- PDF 导出例外：视觉 PDF 导出始终生成完整 PDF，已翻译页使用 `translated-pages/` 中的页级译文 PDF，未翻译页或失败页保留源 PDF 对应页面。因此 PDF 不要求所有页面完成后才能导出。
+- PDF v3 导出必须由 native export coordinator 从 immutable source、durable patches、统一字体和 merge-checked object delta 生成。公开导出 command 接入前，工作台必须隐藏 PDF 导出，不得回退到 legacy `translated-pages/` 产物。
 - 当前译文文件导出到用户选择的具体文件路径，输出文件名默认来自源文件名和目标语言，例如 `chapter.zh-CN.md` 或 `chapter.zh-CN.bilingual.md`。
 - 多文件项目的批量导出如果后续恢复，应作为单独的项目级入口，并明确提示会导出项目内所有文件。删除项目只删除 Rosetta job cache，不删除用户原始文件或已导出目录。
 
@@ -328,6 +328,10 @@ PDF v3 的 `PageGraph` 是独立于当前 PDF v2 page-state 的 native 页面 IR
 派生 artifact。
 
 约定：
+
+- PDF v3 工作台只持有 newest target-language run 的可重建投影：一个 bounded control status，以及最多四个 64-record visible page windows。不得读取完整长文档 page state、持久化 current-run pointer，或把前端缓存升级成 authority。
+- run discovery 未完成或失败时必须 fail closed，不能创建并发 run、显示 legacy 译文或开放 legacy PDF 导出。nonterminal run 的页面选择必须锁定。
+- 顶栏状态与 pause/resume/cancel/recover/retry 只由 native run status 和 owner eligibility 驱动。`completed + preserved` 是完成页计数；failed page retry 只在 `retryable=true` 且当前 session 拥有 run 时开放。
 
 - `PageGraph.schemaVersion` 当前为 `5`。
 - 一个 `PageAtom` 只在 reconciliation 全部对象级检查通过后，才能从

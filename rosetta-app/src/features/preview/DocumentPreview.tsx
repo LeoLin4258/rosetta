@@ -13,12 +13,14 @@ import { cn } from "@/lib/utils";
 import type {
   RosettaBlock,
   RosettaDocument,
+  PdfV3RunControlStatus,
   RosettaSourceDocumentFormat,
   RosettaSourceFile,
   RosettaTranslationFile,
   Segment,
   TranslationSegment,
 } from "../../types/rosetta";
+import type { PdfV3RunOperation } from "@/features/workspace/usePdfV3RunControl";
 
 import { PdfDocumentPreview } from "./PdfDocumentPreview";
 
@@ -29,7 +31,6 @@ export function DocumentPreview({
   document,
   hoveredBlockId,
   isTranslating = false,
-  liveProgress,
   layout = "bilingual",
   onBlockHover,
   onBlockLeave,
@@ -40,9 +41,11 @@ export function DocumentPreview({
   sourceSegments,
   translationFile,
   translationSegments,
-  pdfProgress,
   pdfError,
-  pdfActivePages = [],
+  pdfV3RunStatus = null,
+  pdfV3IsDiscovering = false,
+  pdfV3DiscoveryError = null,
+  pdfV3ControlOperation = null,
   pdfSelectedPages = [],
   sourceEditing = false,
   sourceEditText = "",
@@ -54,6 +57,7 @@ export function DocumentPreview({
   onSourceEditStart,
   onPdfPageCountChange,
   onPdfSelectedPagesChange,
+  onRetryPdfV3Page,
 }: {
   /// Required for PDF preview (needed to resolve `<job_dir>/source.pdf` and
   /// trigger translated-PDF generation). Other format paths don't use it; the
@@ -65,10 +69,6 @@ export function DocumentPreview({
   /// True while a translation run is actively writing segments. PDF preview
   /// uses this to differentiate "翻译中" from "等待翻译"; other formats ignore.
   isTranslating?: boolean;
-  /// Live segment counts from `activeTranslationRun`. PDF preview needs the
-  /// real-time progress for its right-pane placeholder; the persisted counts
-  /// on `translationFile` only update after a run finishes.
-  liveProgress?: { completed: number; total: number };
   layout?: "bilingual" | "source";
   onBlockHover?: (blockId: string) => void;
   onBlockLeave?: () => void;
@@ -79,18 +79,12 @@ export function DocumentPreview({
   sourceSegments: Segment[];
   translationFile: RosettaTranslationFile | null;
   translationSegments: TranslationSegment[];
-  /// PDF-specific: live phase+percent (+per-page progress) from pdf2zh
-  /// progress events. See WorkspacePage for shape rationale.
-  pdfProgress?: {
-    phase: string;
-    percent: number | null;
-    currentPage: number | null;
-    totalPages: number | null;
-    completedPages?: number | null;
-  } | null;
   /// PDF-specific: error message from the last failed PDF generation.
   pdfError?: string | null;
-  pdfActivePages?: number[];
+  pdfV3RunStatus?: PdfV3RunControlStatus | null;
+  pdfV3IsDiscovering?: boolean;
+  pdfV3DiscoveryError?: string | null;
+  pdfV3ControlOperation?: PdfV3RunOperation | null;
   pdfSelectedPages?: number[];
   sourceEditing?: boolean;
   sourceEditText?: string;
@@ -102,37 +96,8 @@ export function DocumentPreview({
   onSourceEditStart?: () => void;
   onPdfPageCountChange?: (count: number) => void;
   onPdfSelectedPagesChange?: (pages: number[]) => void;
+  onRetryPdfV3Page?: (pageNumber: number) => void;
 }) {
-  // PDF documents get a dedicated react-pdf-based preview. The temporary
-  // markdown-block fallback below is kept as the renderer for txt/md and as
-  // the "block list / edit" view that Phase 3 will add a toggle for.
-  if (document && jobId && document.format === "pdf" && layout === "bilingual") {
-    // During a live translation, the persisted `translationFile.completedSegments`
-    // only updates after the run finishes — relying on it makes the right-pane
-    // placeholder stay frozen at "0 / N" until completion. Switch to the live
-    // counts from `liveProgress` (sourced from `activeTranslationRun` in
-    // WorkspacePage) so the placeholder ticks up in real time.
-    const liveCompleted = liveProgress?.completed ?? translationFile?.completedSegments ?? 0;
-    const liveTotal =
-      liveProgress?.total ?? translationFile?.segmentCount ?? sourceSegments.length;
-    return (
-      <PdfDocumentPreview
-        jobId={jobId}
-        document={document}
-        translationFile={translationFile}
-        segmentCount={liveTotal}
-        completedSegments={liveCompleted}
-        failedSegments={translationFile?.failedSegments ?? 0}
-        isTranslating={isTranslating}
-        pdfProgress={pdfProgress}
-        pdfError={pdfError}
-        activePages={pdfActivePages}
-        selectedPages={pdfSelectedPages}
-        onPageCountChange={onPdfPageCountChange ?? (() => {})}
-        onSelectedPagesChange={onPdfSelectedPagesChange ?? (() => {})}
-      />
-    );
-  }
   const sourceRef = useRef<HTMLDivElement>(null);
   const translationRef = useRef<HTMLDivElement>(null);
   const scrollDriverRef = useRef<PreviewSide | null>(null);
@@ -143,6 +108,27 @@ export function DocumentPreview({
       if (scrollDriverTimeoutRef.current) clearTimeout(scrollDriverTimeoutRef.current);
     };
   }, []);
+
+  // PDF documents use the native page workbench; text formats keep the
+  // block-level preview below.
+  if (document && jobId && document.format === "pdf" && layout === "bilingual") {
+    return (
+      <PdfDocumentPreview
+        jobId={jobId}
+        document={document}
+        isTranslating={isTranslating}
+        pdfError={pdfError}
+        pdfV3RunStatus={pdfV3RunStatus}
+        pdfV3IsDiscovering={pdfV3IsDiscovering}
+        pdfV3DiscoveryError={pdfV3DiscoveryError}
+        pdfV3ControlOperation={pdfV3ControlOperation}
+        selectedPages={pdfSelectedPages}
+        onPageCountChange={onPdfPageCountChange ?? (() => {})}
+        onSelectedPagesChange={onPdfSelectedPagesChange ?? (() => {})}
+        onRetryPdfV3Page={onRetryPdfV3Page ?? (() => {})}
+      />
+    );
+  }
 
   if (!document || !sourceFile) {
     return (

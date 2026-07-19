@@ -754,12 +754,19 @@ binding before restarting an inactive supervisor. The same validator now runs
 before stale recovery changes ownership. Bounded revision-descending run
 enumeration and typed frontend wrappers are implemented without introducing a
 second run index. The lazy completed-page translated-preview command is also
-implemented. The existing virtualized workbench now selects the newest run for
-the active target language, reads only visible 64-record status windows through
-a four-window cache, renders completed pages lazily and reuses source preview
-for preserved pages. Run control actions, native run creation from the primary
-translation workflow and a real complex 500/1,000-page end-to-end
-translation/export run remain pending.
+implemented. The existing virtualized workbench now owns one reconstructible
+projection of the newest run for the active target language. It polls one
+bounded control record, reads only visible 64-record page windows through a
+four-window cache, renders completed pages lazily and reuses source preview for
+preserved pages. The primary PDF action persists the selected source/target
+language metadata and creates a trusted native run directly; it no longer
+prewarms or preparses pdf2zh, invokes the legacy page translator, or creates a
+fake frontend segment run. The workbench exposes owner-gated
+pause/resume/cancel, stale-owner recovery and exact failed-page retry. Native
+run state drives the topbar and page selection remains locked for nonterminal
+runs. Legacy progress events, page state and translated-PDF paths are no longer
+workbench authorities. Native export command integration and a real complex
+500/1,000-page end-to-end translation/export run remain pending.
 
 ### Phase 7 — Component control plane
 
