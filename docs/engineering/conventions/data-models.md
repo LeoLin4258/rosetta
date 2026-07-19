@@ -991,6 +991,39 @@ PDF v3 translation component status 是 native component resolver 对当前可�
 - trusted run creation 必须直接消费 resolved live binding 并生成 immutable runtime manifest；不得
   接受前端声明的 component/provider/model/font identity。
 
+## PDF v3 Trusted Run Creation
+
+PDF v3 run creation 是 scheduler 与 immutable runtime manifest 的唯一生产创建边界，不是
+frontend 可组装的通用 manifest API。
+
+约定：
+
+- 公开输入只允许 `jobId`、optional exact `requestedPageSet` 与 `targetLanguage`。省略 PageSet
+  表示全部源页；空集合、越界页或 reversed range 必须拒绝。前端不得提供 run ID、source path、
+  fingerprint/page count、source language、revision、capacity、render policy、owner 或任何
+  component/provider/model/font identity。
+- source path 必须从 app-data job root 派生，实际 source bytes 必须重新计算 canonical
+  `sha256:` fingerprint 并与 `pdf_source.json` authority 一致。page count 来自该 source
+  metadata；缺失、zero page 或 identity drift 必须在创建前拒绝。
+- source language 必须从持久化 document/file metadata 解析；读取不得加载 blocks、segments 或
+  translation history。缺失 source language 时，只能按当前双语 profile 确定性选择 target 的反向
+  language，并再次验证 live profile supported direction。
+- run ID 与 positive translation revision 只能由 native 分配。当前同进程 creation lock 下扫描
+  committed immutable runtime manifests，revision 使用 `max + 1`；已提交 run identity 无效时不得
+  跳过后复用 revision。
+- scheduler manifest/shards 与 `runtime-manifest.json` 必须先在 hidden sibling directory 中完整
+  durable commit，并用 staged scheduler binding 重建/验证 bounded status。只有全部成功后才能通过
+  one directory rename 暴露 final run；pre-rename failure 必须清除 staging，partial run 不得可见。
+- production engine identity 当前为 `rosetta-pdf-v3-native-engine/1`；PageGraph/Patch/renderer version
+  必须使用当前 native constants。默认 render policy 与 independent scheduler capacities 由 native
+  固定，前端不得把 capacity 当 batch/chunk 配置。
+- 当前默认 capacity 为 extracting `2`、extracted-waiting `4`、translating `1`。它只限制内存与
+  backpressure，不限制 PageSet 大小，也不产生用户可见的十页切分。
+- final rename 后必须立即挂接当前 process-native owner heartbeat。run creation 只建立 durable
+  authority；在 worker supervisor 接入前不得把 `running` 状态解释成已有 page worker 执行。
+- 创建结果复用 bounded run-control status，不得返回 source path、document text、endpoint、PID、
+  owner/session ID、credential 或 raw storage/component error。
+
 ## PDF v3 Text-Show Replacement Transactions and Batches
 
 当前 PDF v3 回填开放同一 selected page、底层 stream、结构化 invocation path 和

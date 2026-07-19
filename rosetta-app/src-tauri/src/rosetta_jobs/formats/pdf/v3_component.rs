@@ -73,6 +73,7 @@ pub(crate) struct ResolvedPdfV3TranslationComponent {
     pub regular_font: TranslationFontAsset,
     pub bold_font: Option<TranslationFontAsset>,
     pub runtime_release_sha256: Option<String>,
+    pub supported_directions: &'static [&'static str],
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -269,6 +270,7 @@ fn resolve_blocking(
         regular_font,
         bold_font,
         runtime_release_sha256,
+        supported_directions: runtime.profile.supported_directions,
     })
 }
 

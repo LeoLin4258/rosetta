@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 pub(crate) const PDF_V3_CONTRACT_VERSION: u32 = 1;
+pub(crate) const PDF_V3_ENGINE_VERSION: &str = "rosetta-pdf-v3-native-engine/1";
 pub(crate) const PAGE_GRAPH_SCHEMA_VERSION: u32 = 5;
 pub(crate) const TRANSLATION_PATCH_SCHEMA_VERSION: u32 = 1;
 

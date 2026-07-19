@@ -1,5 +1,6 @@
 use std::{
-    fs,
+    fs::{self, File},
+    io::BufReader,
     path::{Component, Path},
     str::FromStr,
     sync::{
@@ -8,7 +9,7 @@ use std::{
     },
 };
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_dialog::DialogExt;
@@ -246,6 +247,155 @@ pub async fn probe_rosetta_pdf_v3_component(
         .status(&app, &registry, target_language)
         .await
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn create_rosetta_pdf_v3_run(
+    app: AppHandle,
+    registry: State<'_, crate::managed_rwkv::Registry>,
+    component_state: State<'_, PdfV3ComponentState>,
+    lifecycle: State<'_, PdfV3RunLifecycleState>,
+    job_id: String,
+    requested_page_set: Option<String>,
+    target_language: String,
+) -> Result<formats::pdf::v3_control::PdfV3RunControlStatus, String> {
+    let target_language = target_language.trim().to_string();
+    if target_language.is_empty() || target_language.len() > 64 {
+        return Err("PDF v3 目标语言无效。".to_string());
+    }
+    let root = path::jobs_root(&app)?;
+    let job_directory = path::checked_job_dir(&root, &job_id)?;
+    if !job_directory.is_dir() {
+        return Err("PDF v3 项目不存在。".to_string());
+    }
+
+    let preparation_app = app.clone();
+    let preparation_job_id = job_id.clone();
+    let preparation_target = target_language.clone();
+    let preparation = tokio::task::spawn_blocking(move || {
+        prepare_pdf_v3_run_job(&preparation_app, &preparation_job_id, &preparation_target)
+    });
+    let (component, prepared) = tokio::join!(
+        component_state.resolve(&app, &registry, &target_language),
+        preparation
+    );
+    let component = component.map_err(|error| error.to_string())?;
+    let prepared = prepared
+        .map_err(|_| "PDF v3 源文件验证任务异常结束。".to_string())?
+        .map_err(|_| "PDF v3 源文件或语言设置无效。".to_string())?;
+    let now_ms = path::timestamp_ms_string()
+        .parse::<u64>()
+        .map_err(|_| "无法读取当前时间。".to_string())?;
+    let owner_session_id = lifecycle.session_id().to_string();
+    let creation_directory = job_directory.clone();
+    let creation_target = target_language.clone();
+    let status = tokio::task::spawn_blocking(move || {
+        formats::pdf::v3_run_creation::create_pdf_v3_run(
+            formats::pdf::v3_run_creation::PdfV3RunCreationRequest {
+                job_directory: &creation_directory,
+                source_fingerprint: &prepared.source_fingerprint,
+                source_page_count: prepared.source_page_count,
+                requested_page_set: requested_page_set.as_deref(),
+                source_language: &prepared.source_language,
+                target_language: &creation_target,
+                owner_session_id: &owner_session_id,
+                now_ms,
+                component: &component,
+            },
+        )
+        .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|_| "PDF v3 run 创建任务异常结束。".to_string())??;
+    let run_id = status.run_id.clone();
+    synchronize_pdf_v3_run_lifecycle(
+        &lifecycle,
+        &job_directory,
+        &run_id,
+        status,
+        None,
+        formats::pdf::v3_control::DEFAULT_PDF_V3_STATUS_WINDOW,
+    )
+}
+
+struct PreparedPdfV3RunJob {
+    source_fingerprint: String,
+    source_page_count: u32,
+    source_language: String,
+}
+
+fn prepare_pdf_v3_run_job(
+    app: &AppHandle,
+    job_id: &str,
+    target_language: &str,
+) -> Result<PreparedPdfV3RunJob, String> {
+    let root = path::jobs_root(app)?;
+    let job_directory = path::checked_job_dir(&root, job_id)?;
+    let document = read_pdf_v3_document_language_metadata(&job_directory)?;
+    if document.format != "pdf" {
+        return Err("项目不是 PDF。".to_string());
+    }
+    let source_path = store::cached_pdf_source_path(app, job_id)?;
+    if !source_path.is_file() {
+        return Err("源 PDF 不存在。".to_string());
+    }
+    let source = formats::pdf::source_state::read_pdf_source_metadata(&job_directory)?
+        .ok_or_else(|| "PDF source metadata 缺失。".to_string())?;
+    if source.schema_version != model::SCHEMA_VERSION || source.page_count == 0 {
+        return Err("PDF source metadata 无效。".to_string());
+    }
+    let actual_fingerprint = formats::pdf::source_state::fingerprint_file(&source_path)?;
+    if actual_fingerprint != source.source_fingerprint {
+        return Err("源 PDF identity 已变化。".to_string());
+    }
+    let source_language = document
+        .files
+        .first()
+        .and_then(|file| file.source_lang.clone())
+        .or(document.source_lang)
+        .filter(|language| !language.trim().is_empty() && language != "auto")
+        .unwrap_or_else(|| {
+            if target_language
+                .split(['-', '_'])
+                .next()
+                .is_some_and(|language| language.eq_ignore_ascii_case("en"))
+            {
+                "zh-CN".to_string()
+            } else {
+                "en".to_string()
+            }
+        });
+    Ok(PreparedPdfV3RunJob {
+        source_fingerprint: actual_fingerprint,
+        source_page_count: source.page_count,
+        source_language,
+    })
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PdfV3DocumentLanguageMetadata {
+    format: String,
+    #[serde(default)]
+    source_lang: Option<String>,
+    #[serde(default)]
+    files: Vec<PdfV3SourceFileLanguageMetadata>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PdfV3SourceFileLanguageMetadata {
+    #[serde(default)]
+    source_lang: Option<String>,
+}
+
+fn read_pdf_v3_document_language_metadata(
+    job_directory: &Path,
+) -> Result<PdfV3DocumentLanguageMetadata, String> {
+    let path = job_directory.join("document.json");
+    let file = File::open(&path).map_err(|_| "PDF document metadata 缺失。".to_string())?;
+    serde_json::from_reader(BufReader::new(file))
+        .map_err(|_| "PDF document metadata 无效。".to_string())
 }
 
 #[tauri::command]

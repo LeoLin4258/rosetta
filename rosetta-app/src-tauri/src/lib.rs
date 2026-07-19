@@ -239,6 +239,7 @@ pub fn run() {
             rosetta_jobs::load_rosetta_job,
             rosetta_jobs::load_rosetta_translation_file,
             rosetta_jobs::count_rosetta_pdf_pages,
+            rosetta_jobs::create_rosetta_pdf_v3_run,
             rosetta_jobs::cancel_rosetta_pdf_v3_run,
             rosetta_jobs::cancel_rosetta_translated_pdf,
             rosetta_jobs::generate_rosetta_translated_pdf,

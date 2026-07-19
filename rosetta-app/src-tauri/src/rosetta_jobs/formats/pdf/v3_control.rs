@@ -329,7 +329,7 @@ pub(crate) fn recover_pdf_v3_run(
     })
 }
 
-fn build_status(
+pub(crate) fn build_status(
     scheduler: &DurablePdfV3Scheduler,
     run_directory: &Path,
     current_session_id: &str,

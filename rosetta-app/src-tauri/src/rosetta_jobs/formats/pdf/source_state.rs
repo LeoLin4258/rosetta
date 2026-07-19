@@ -64,7 +64,7 @@ pub(crate) fn build_pdf_source_metadata(
     })
 }
 
-fn fingerprint_file(path: &Path) -> Result<String, String> {
+pub(crate) fn fingerprint_file(path: &Path) -> Result<String, String> {
     let file = File::open(path)
         .map_err(|error| format!("无法读取 PDF 指纹 {}: {error}", path.display()))?;
     let mut reader = BufReader::new(file);

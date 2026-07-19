@@ -731,8 +731,10 @@ native lifecycle now supplies an independent process session and one bounded
 blocking workers, and unloads on terminal state, owner loss or app exit. Typed
 status exposes only bounded heartbeat health. The conservative five-minute
 stale window remains until native old-process verification can justify a
-different policy. Frontend control integration, trusted run creation, verified
-component launch/model health and a real complex 500/1,000-page end-to-end
+different policy. Trusted native run creation now resolves source/language and
+component identity, allocates run/revision identity, atomically exposes the
+scheduler plus runtime manifest and attaches the owner heartbeat. Worker
+supervision, frontend integration and a real complex 500/1,000-page end-to-end
 translation/export remain pending.
 
 ### Phase 7 — Component control plane
@@ -751,9 +753,12 @@ immutably and checked against exact Source Han/GoNoto fingerprints. The
 content-derived component manifest and typed status expose no paths,
 credentials, endpoints, process identity or raw errors. Only the font assets
 and release manifest are reused from the legacy PDF pack; Python and doclayout
-readiness are not required. Trusted run creation, signed standalone manifests,
-native install/repair/update/remove, capability events and component self-test
-remain pending.
+readiness are not required. Trusted run creation now consumes that resolver
+directly, verifies the source authority and supported direction, and commits a
+complete scheduler/runtime pair through a hidden staging transaction before
+one final directory rename. Signed standalone manifests, native
+install/repair/update/remove, capability events and component self-test remain
+pending.
 
 ### Phase 8 — Optional complex-page fallback
 
