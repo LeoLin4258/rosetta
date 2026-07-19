@@ -226,6 +226,7 @@ impl Default for PdfTranslationCancelState {
 pub use formats::pdf::runtime::PngCache as PdfPngCache;
 pub use formats::pdf::v3_component::PdfV3ComponentState;
 pub use formats::pdf::v3_lifecycle::PdfV3RunLifecycleState;
+pub use formats::pdf::v3_worker::PdfV3RunWorkerState;
 
 #[tauri::command]
 pub fn cancel_rosetta_translated_pdf(cancel_state: State<'_, PdfTranslationCancelState>) {
@@ -255,6 +256,7 @@ pub async fn create_rosetta_pdf_v3_run(
     registry: State<'_, crate::managed_rwkv::Registry>,
     component_state: State<'_, PdfV3ComponentState>,
     lifecycle: State<'_, PdfV3RunLifecycleState>,
+    worker_state: State<'_, PdfV3RunWorkerState>,
     job_id: String,
     requested_page_set: Option<String>,
     target_language: String,
@@ -280,6 +282,7 @@ pub async fn create_rosetta_pdf_v3_run(
         preparation
     );
     let component = component.map_err(|error| error.to_string())?;
+    let worker_component = component.clone();
     let prepared = prepared
         .map_err(|_| "PDF v3 源文件验证任务异常结束。".to_string())?
         .map_err(|_| "PDF v3 源文件或语言设置无效。".to_string())?;
@@ -308,8 +311,18 @@ pub async fn create_rosetta_pdf_v3_run(
     .await
     .map_err(|_| "PDF v3 run 创建任务异常结束。".to_string())??;
     let run_id = status.run_id.clone();
+    let run_directory = formats::pdf::v3_control::pdf_v3_run_directory(&job_directory, &run_id)
+        .map_err(|error| error.to_string())?;
+    worker_state.ensure_worker(
+        app.clone(),
+        lifecycle.inner().clone(),
+        &run_directory,
+        prepared.source_identity,
+        worker_component,
+    )?;
     synchronize_pdf_v3_run_lifecycle(
         &lifecycle,
+        &worker_state,
         &job_directory,
         &run_id,
         status,
@@ -319,6 +332,7 @@ pub async fn create_rosetta_pdf_v3_run(
 }
 
 struct PreparedPdfV3RunJob {
+    source_identity: crate::pdf_v3::document::VerifiedDocumentIdentity,
     source_fingerprint: String,
     source_page_count: u32,
     source_language: String,
@@ -344,8 +358,9 @@ fn prepare_pdf_v3_run_job(
     if source.schema_version != model::SCHEMA_VERSION || source.page_count == 0 {
         return Err("PDF source metadata 无效。".to_string());
     }
-    let actual_fingerprint = formats::pdf::source_state::fingerprint_file(&source_path)?;
-    if actual_fingerprint != source.source_fingerprint {
+    let source_identity = crate::pdf_v3::document::VerifiedDocumentIdentity::verify(&source_path)
+        .map_err(|_| "无法验证源 PDF。".to_string())?;
+    if source_identity.source_fingerprint() != source.source_fingerprint {
         return Err("源 PDF identity 已变化。".to_string());
     }
     let source_language = document
@@ -366,7 +381,8 @@ fn prepare_pdf_v3_run_job(
             }
         });
     Ok(PreparedPdfV3RunJob {
-        source_fingerprint: actual_fingerprint,
+        source_fingerprint: source_identity.source_fingerprint().to_string(),
+        source_identity,
         source_page_count: source.page_count,
         source_language,
     })
@@ -402,6 +418,7 @@ fn read_pdf_v3_document_language_metadata(
 pub fn get_rosetta_pdf_v3_run_status(
     app: AppHandle,
     lifecycle: State<'_, PdfV3RunLifecycleState>,
+    worker_state: State<'_, PdfV3RunWorkerState>,
     job_id: String,
     run_id: String,
     start_after: Option<u32>,
@@ -418,19 +435,29 @@ pub fn get_rosetta_pdf_v3_run_status(
         limit,
     )
     .map_err(|error| error.to_string())?;
-    synchronize_pdf_v3_run_lifecycle(&lifecycle, &dir, &run_id, status, start_after, limit)
+    synchronize_pdf_v3_run_lifecycle(
+        &lifecycle,
+        &worker_state,
+        &dir,
+        &run_id,
+        status,
+        start_after,
+        limit,
+    )
 }
 
 #[tauri::command]
 pub fn pause_rosetta_pdf_v3_run(
     app: AppHandle,
     lifecycle: State<'_, PdfV3RunLifecycleState>,
+    worker_state: State<'_, PdfV3RunWorkerState>,
     job_id: String,
     run_id: String,
 ) -> Result<formats::pdf::v3_control::PdfV3RunControlStatus, String> {
     control_rosetta_pdf_v3_run(
         &app,
         &lifecycle,
+        &worker_state,
         &job_id,
         &run_id,
         formats::pdf::v3_control::pause_pdf_v3_run,
@@ -441,12 +468,14 @@ pub fn pause_rosetta_pdf_v3_run(
 pub fn resume_rosetta_pdf_v3_run(
     app: AppHandle,
     lifecycle: State<'_, PdfV3RunLifecycleState>,
+    worker_state: State<'_, PdfV3RunWorkerState>,
     job_id: String,
     run_id: String,
 ) -> Result<formats::pdf::v3_control::PdfV3RunControlStatus, String> {
     control_rosetta_pdf_v3_run(
         &app,
         &lifecycle,
+        &worker_state,
         &job_id,
         &run_id,
         formats::pdf::v3_control::resume_pdf_v3_run,
@@ -457,12 +486,14 @@ pub fn resume_rosetta_pdf_v3_run(
 pub fn cancel_rosetta_pdf_v3_run(
     app: AppHandle,
     lifecycle: State<'_, PdfV3RunLifecycleState>,
+    worker_state: State<'_, PdfV3RunWorkerState>,
     job_id: String,
     run_id: String,
 ) -> Result<formats::pdf::v3_control::PdfV3RunControlStatus, String> {
     control_rosetta_pdf_v3_run(
         &app,
         &lifecycle,
+        &worker_state,
         &job_id,
         &run_id,
         formats::pdf::v3_control::cancel_pdf_v3_run,
@@ -472,12 +503,38 @@ pub fn cancel_rosetta_pdf_v3_run(
 #[tauri::command]
 pub async fn recover_rosetta_pdf_v3_run(
     app: AppHandle,
+    registry: State<'_, crate::managed_rwkv::Registry>,
+    component_state: State<'_, PdfV3ComponentState>,
     lifecycle: State<'_, PdfV3RunLifecycleState>,
+    worker_state: State<'_, PdfV3RunWorkerState>,
     job_id: String,
     run_id: String,
 ) -> Result<formats::pdf::v3_control::PdfV3RunRecoveryResult, String> {
     let root = path::jobs_root(&app)?;
     let dir = path::checked_job_dir(&root, &job_id)?;
+    let run_directory = formats::pdf::v3_control::pdf_v3_run_directory(&dir, &run_id)
+        .map_err(|error| error.to_string())?;
+    let binding_directory = run_directory.clone();
+    let target_language = tokio::task::spawn_blocking(move || {
+        crate::pdf_v3::scheduler::DurablePdfV3Scheduler::open(&binding_directory)
+            .and_then(|scheduler| scheduler.translation_binding())
+            .map(|binding| binding.target_language)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|_| "PDF v3 runtime binding task ended unexpectedly".to_string())??;
+    let source_path = store::cached_pdf_source_path(&app, &job_id)?;
+    let source_identity_task = tokio::task::spawn_blocking(move || {
+        crate::pdf_v3::document::VerifiedDocumentIdentity::verify(source_path)
+            .map_err(|error| error.to_string())
+    });
+    let (component, source_identity) = tokio::join!(
+        component_state.resolve(&app, &registry, &target_language),
+        source_identity_task
+    );
+    let component = component.map_err(|error| error.to_string())?;
+    let source_identity = source_identity
+        .map_err(|_| "PDF v3 source verification task ended unexpectedly".to_string())??;
     let recovery_dir = dir.clone();
     let recovery_run_id = run_id.clone();
     let session_id = lifecycle.session_id().to_string();
@@ -498,8 +555,23 @@ pub async fn recover_rosetta_pdf_v3_run(
     })
     .await
     .map_err(|error| format!("PDF v3 恢复任务异常结束: {error}"))??;
+    if !matches!(
+        result.status.state,
+        crate::pdf_v3::scheduler::PdfV3RunState::Cancelled
+            | crate::pdf_v3::scheduler::PdfV3RunState::Completed
+    ) && result.status.owned_by_current_session
+    {
+        worker_state.ensure_worker(
+            app.clone(),
+            lifecycle.inner().clone(),
+            &run_directory,
+            source_identity,
+            component,
+        )?;
+    }
     result.status = synchronize_pdf_v3_run_lifecycle(
         &lifecycle,
+        &worker_state,
         &dir,
         &run_id,
         result.status,
@@ -512,6 +584,7 @@ pub async fn recover_rosetta_pdf_v3_run(
 fn control_rosetta_pdf_v3_run(
     app: &AppHandle,
     lifecycle: &PdfV3RunLifecycleState,
+    worker_state: &PdfV3RunWorkerState,
     job_id: &str,
     run_id: &str,
     control: fn(
@@ -531,8 +604,14 @@ fn control_rosetta_pdf_v3_run(
         .map_err(|_| "无法读取当前时间。".to_string())?;
     let status =
         control(&dir, run_id, lifecycle.session_id(), now_ms).map_err(|error| error.to_string())?;
+    let run_directory = formats::pdf::v3_control::pdf_v3_run_directory(&dir, run_id)
+        .map_err(|error| error.to_string())?;
+    if status.state == crate::pdf_v3::scheduler::PdfV3RunState::Cancelling {
+        worker_state.request_cancel(&run_directory)?;
+    }
     synchronize_pdf_v3_run_lifecycle(
         lifecycle,
+        worker_state,
         &dir,
         run_id,
         status,
@@ -543,6 +622,7 @@ fn control_rosetta_pdf_v3_run(
 
 fn synchronize_pdf_v3_run_lifecycle(
     lifecycle: &PdfV3RunLifecycleState,
+    worker_state: &PdfV3RunWorkerState,
     job_directory: &Path,
     run_id: &str,
     mut status: formats::pdf::v3_control::PdfV3RunControlStatus,
@@ -557,12 +637,20 @@ fn synchronize_pdf_v3_run_lifecycle(
             | crate::pdf_v3::scheduler::PdfV3RunState::Completed
     ) || !status.owned_by_current_session
     {
+        worker_state.stop_worker(&run_directory)?;
         status.owner_heartbeat = lifecycle
             .stop_heartbeat(&run_directory)
             .map_err(|error| error.to_string())?;
         return Ok(status);
     }
 
+    status.worker = worker_state.worker_status(&run_directory)?;
+    if !status.worker.active {
+        status.owner_heartbeat = lifecycle
+            .stop_heartbeat(&run_directory)
+            .map_err(|error| error.to_string())?;
+        return Ok(status);
+    }
     if let Err(error) = lifecycle.ensure_heartbeat(&run_directory) {
         if !matches!(
             &error,
@@ -587,6 +675,7 @@ fn synchronize_pdf_v3_run_lifecycle(
             | crate::pdf_v3::scheduler::PdfV3RunState::Completed
     ) || !refreshed.owned_by_current_session
     {
+        worker_state.stop_worker(&run_directory)?;
         lifecycle
             .stop_heartbeat(&run_directory)
             .map_err(|error| error.to_string())?
@@ -595,6 +684,7 @@ fn synchronize_pdf_v3_run_lifecycle(
             .heartbeat_status(&run_directory)
             .map_err(|error| error.to_string())?
     };
+    refreshed.worker = worker_state.worker_status(&run_directory)?;
     Ok(refreshed)
 }
 
@@ -2947,12 +3037,16 @@ pub fn rename_rosetta_job(
 }
 
 #[tauri::command]
-pub fn delete_rosetta_job(
+pub async fn delete_rosetta_job(
     app: AppHandle,
     cancel_state: State<'_, PdfTranslationCancelState>,
+    pdf_v3_workers: State<'_, PdfV3RunWorkerState>,
     job_id: String,
 ) -> Result<RosettaJobDeleteResult, String> {
     cancel_state.request_cancel_for_job(&job_id);
+    let root = path::jobs_root(&app)?;
+    let job_directory = path::checked_job_dir(&root, &job_id)?;
+    pdf_v3_workers.shutdown_job(&job_directory).await?;
     import::delete_job(&app, &job_id)
 }
 

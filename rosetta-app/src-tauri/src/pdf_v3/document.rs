@@ -48,14 +48,51 @@ pub(crate) struct DocumentHandle<'pdfium> {
     pdfium_document: PdfDocument<'pdfium>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct VerifiedDocumentIdentity {
+    source_path: PathBuf,
+    source_fingerprint: String,
+    source_bytes: usize,
+}
+
+impl VerifiedDocumentIdentity {
+    pub(crate) fn verify(source_path: impl AsRef<Path>) -> Result<Self, DocumentHandleError> {
+        let source_path = source_path.as_ref().to_path_buf();
+        let (source_fingerprint, source_bytes) = fingerprint_file(&source_path)?;
+        Ok(Self {
+            source_path,
+            source_fingerprint,
+            source_bytes,
+        })
+    }
+
+    pub(crate) fn source_path(&self) -> &Path {
+        &self.source_path
+    }
+
+    pub(crate) fn source_fingerprint(&self) -> &str {
+        &self.source_fingerprint
+    }
+}
+
 impl<'pdfium> DocumentHandle<'pdfium> {
     pub(crate) fn open(
         pdfium: &'pdfium Pdfium,
         source_path: impl AsRef<Path>,
     ) -> Result<Self, DocumentHandleError> {
+        Self::open_verified(pdfium, VerifiedDocumentIdentity::verify(source_path)?)
+    }
+
+    pub(crate) fn open_verified(
+        pdfium: &'pdfium Pdfium,
+        identity: VerifiedDocumentIdentity,
+    ) -> Result<Self, DocumentHandleError> {
         let started = Instant::now();
-        let source_path = source_path.as_ref().to_path_buf();
-        let (source_fingerprint, source_bytes) = fingerprint_file(&source_path)?;
+        let VerifiedDocumentIdentity {
+            source_path,
+            source_fingerprint,
+            source_bytes,
+        } = identity;
         let source_objects = PdfSourceObjectStore::open(&source_path)?;
         let source_page_count = source_objects.page_count();
         let pdfium_document = pdfium

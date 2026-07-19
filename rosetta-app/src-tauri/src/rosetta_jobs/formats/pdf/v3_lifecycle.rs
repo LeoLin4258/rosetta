@@ -69,6 +69,7 @@ impl From<PdfV3SchedulerError> for PdfV3RunLifecycleError {
     }
 }
 
+#[derive(Clone)]
 pub struct PdfV3RunLifecycleState {
     inner: Arc<PdfV3RunLifecycleInner>,
 }

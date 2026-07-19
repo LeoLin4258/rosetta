@@ -917,7 +917,7 @@ PDF v3 run control 是 durable scheduler 和 Tauri/UI 之间的窄接口，不�
   必须幂等，允许 active lease settle 后重试并完成状态收敛。
 - runtime status 必须先验证 `runtime-manifest.json` 与 scheduler translation binding；
   identity drift 或缺失 manifest 是硬错误，不能降级成未知字符串或继续运行。
-- status schema `rosetta-pdf-v3-run-control-status/3` 必须返回
+- status schema `rosetta-pdf-v3-run-control-status/4` 必须返回
   `ownerRecoveryEligibleAtMs` 和 bounded `ownerHeartbeat` 健康投影。heartbeat 只能包含
   `active`、`intervalMs`、`lastSuccessAtMs` 和 `consecutiveFailures`，不得包含 session ID、
   run path 或 raw error。当前 native takeover 下限固定为 owner lease 最后更新时间后
@@ -926,6 +926,10 @@ PDF v3 run control 是 durable scheduler 和 Tauri/UI 之间的窄接口，不�
   coordinator lock 内同时验证 owner 和 nonterminal state。terminal、owner mismatch 和 app
   exit 必须卸载 heartbeat。heartbeat 不得自动接管其他 owner，接管只能走 validated stale
   recovery；前端轮询不得成为 owner lease authority。
+- status 还必须返回 bounded `worker` 健康投影，只允许 `active`、当前 `stage`、
+  `lastProgressAtMs` 和 `consecutiveFailures`。不得返回 run/source path、owner ID、provider
+  endpoint、raw error、原文或译文。worker inactive 时不得仅因 status polling 重新挂接
+  heartbeat。
 - recovery 必须在 scheduler coordinator lock 内拒绝当前 session 仍有 active page lease
   的自接管，并拒绝未过期的其他 session owner。过期后只能用 validated
   PageGraph/TranslationPatch inventory 调用 scheduler
@@ -934,6 +938,40 @@ PDF v3 run control 是 durable scheduler 和 Tauri/UI 之间的窄接口，不�
 - recovery inventory 校验可能遍历完整 PageSet，Tauri 命令必须在 blocking worker 中执行。
   接管释放旧 lease 后，如果 run 已处于 `cancelling` 且 active lease 清零，必须立即收敛到
   `cancelled`。
+
+## PDF v3 Native Worker Supervisor
+
+PDF v3 native worker supervisor 是 process-local execution owner，不是 durable page state、
+frontend timer 或第二份 scheduler。
+
+约定：
+
+- 每个 canonical run directory 最多注册一个 supervisor。它内部可以分别持有 extraction 与
+  translation blocking loop，但 registry identity、stop/cancel signal、health 和 completion
+  wait 必须以 run 为单位。
+- supervisor 只能接收由 run creation 或 stale recovery blocking verifier 产生的
+  `VerifiedDocumentIdentity`，并精确匹配 scheduler binding、immutable runtime manifest、live
+  component/provider/model 和统一字体 bytes。source bytes 在该边界只允许 hash 一次；PDFium
+  打开必须消费同一 verified identity，不能再次全文件 hash。任何 drift 必须 fail closed，不能
+  先执行 provider I/O 或写 patch。
+- extraction loop 可以在同一 blocking thread 内复用一个 `DocumentHandle` 与 mapping index；
+  translation loop 可以复用一个 lazy source-object view 与 ownership index。每个 stage 一次只
+  处理一个 active page/PageGraph，claim 总量仍由 scheduler `2 / 4 / 1` capacity 控制。
+- durable scheduler、PageGraph store、patch store 与 PDFium 操作不得在 async executor thread 上
+  直接执行。translation provider future 可以通过当前 Tokio runtime 驱动，但其 page-bounded
+  filesystem 前后处理仍留在 blocking worker。
+- 同一 process 的 PDFium open/extract/render/drop 必须共享一个 operation lock。extraction 只按
+  bounded worker batch 持锁，不能为完整长文档独占 PDFium；translation 不经过该锁。
+- `paused` 阻止新 claim 并让 loop 有界休眠；已有 lease 可以完成。`cancelling` 必须立即设置
+  level-triggered provider cancel flag，等待当前 extraction/translation lease commit/fail 后由
+  supervisor 收敛到 `cancelled`。不得丢弃仍在磁盘 scheduler 中的 lease。
+- terminal state、owner mismatch 或 stop signal 必须卸载 supervisor。App exit 与 local-data
+  reset 必须先 signal stop/cancel，等待已注册 supervisor 完成，再停止 owner heartbeat 和
+  managed translation runtime；reset 只有在这些步骤完成后才能删除 jobs/model directories。
+- 删除单个 job 必须先停止并等待该 job `pdf-v3/runs/` 下的全部 supervisor；不得在 worker
+  仍持有 source mmap、PDFium handle、scheduler lease 或 provider request 时删除 job tree。
+- stale recovery 在改变 owner 前必须重新解析 live trusted component；成功接管 nonterminal run
+  后才能注册新 supervisor。frontend polling、pause/resume 和 heartbeat 不得创建第二个 worker。
 
 ## PDF v3 Translation Runtime Manifest
 
@@ -1019,8 +1057,9 @@ frontend 可组装的通用 manifest API。
   固定，前端不得把 capacity 当 batch/chunk 配置。
 - 当前默认 capacity 为 extracting `2`、extracted-waiting `4`、translating `1`。它只限制内存与
   backpressure，不限制 PageSet 大小，也不产生用户可见的十页切分。
-- final rename 后必须立即挂接当前 process-native owner heartbeat。run creation 只建立 durable
-  authority；在 worker supervisor 接入前不得把 `running` 状态解释成已有 page worker 执行。
+- final rename 后必须立即注册当前 process-native worker supervisor，并由 active worker 挂接
+  owner heartbeat。worker 在执行前仍须重新验证 source/runtime/component binding；注册失败或
+  worker inactive 时 status 不得声称 run 正在本机推进。
 - 创建结果复用 bounded run-control status，不得返回 source path、document text、endpoint、PID、
   owner/session ID、credential 或 raw storage/component error。
 

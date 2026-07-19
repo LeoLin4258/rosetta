@@ -23,6 +23,7 @@ use super::v3_runtime::{
     load_translation_runtime_manifest, validate_runtime_manifest_binding,
     PdfV3RuntimeManifestError, PdfV3TranslationFontBinding,
 };
+use super::v3_worker::PdfV3RunWorkerStatus;
 
 pub(crate) const DEFAULT_PDF_V3_STATUS_WINDOW: usize = 64;
 pub(crate) const MAX_PDF_V3_STATUS_WINDOW: usize = 256;
@@ -83,6 +84,7 @@ pub(crate) struct PdfV3RunControlStatus {
     pub owner_lease_updated_at_ms: u64,
     pub owner_recovery_eligible_at_ms: u64,
     pub owner_heartbeat: PdfV3LeaseHeartbeatStatus,
+    pub worker: PdfV3RunWorkerStatus,
     pub cancellation: Option<PdfV3Cancellation>,
     pub summary: PdfV3SchedulerSummary,
     pub runtime: PdfV3RuntimeIdentityStatus,
@@ -368,7 +370,7 @@ pub(crate) fn build_status(
     let component = &manifest.component;
 
     Ok(PdfV3RunControlStatus {
-        schema: "rosetta-pdf-v3-run-control-status/3",
+        schema: "rosetta-pdf-v3-run-control-status/4",
         run_id: snapshot.run_id,
         state: snapshot.run_state,
         source_fingerprint: manifest.source_fingerprint,
@@ -383,6 +385,7 @@ pub(crate) fn build_status(
             .saturating_add(PDF_V3_OWNER_LEASE_TIMEOUT_MS)
             .saturating_add(1),
         owner_heartbeat: PdfV3LeaseHeartbeatStatus::inactive(),
+        worker: PdfV3RunWorkerStatus::inactive(),
         cancellation: snapshot.cancellation,
         summary: snapshot.summary,
         runtime: PdfV3RuntimeIdentityStatus {
@@ -443,7 +446,7 @@ mod tests {
 
         let first = pdf_v3_run_status(run.job_dir(), "run-test", "owner-a", None, 2)
             .expect("first status window");
-        assert_eq!(first.schema, "rosetta-pdf-v3-run-control-status/3");
+        assert_eq!(first.schema, "rosetta-pdf-v3-run-control-status/4");
         assert_eq!(first.state, PdfV3RunState::Running);
         assert_eq!(first.requested_page_set, "1-3,9");
         assert_eq!(first.pages.len(), 2);
@@ -451,6 +454,7 @@ mod tests {
         assert!(first.has_more);
         assert!(first.owned_by_current_session);
         assert!(!first.owner_heartbeat.active);
+        assert!(!first.worker.active);
         assert_eq!(
             first.owner_recovery_eligible_at_ms,
             2 + PDF_V3_OWNER_LEASE_TIMEOUT_MS

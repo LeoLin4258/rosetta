@@ -733,9 +733,17 @@ status exposes only bounded heartbeat health. The conservative five-minute
 stale window remains until native old-process verification can justify a
 different policy. Trusted native run creation now resolves source/language and
 component identity, allocates run/revision identity, atomically exposes the
-scheduler plus runtime manifest and attaches the owner heartbeat. Worker
-supervision, frontend integration and a real complex 500/1,000-page end-to-end
-translation/export remain pending.
+scheduler plus runtime manifest and attaches the owner heartbeat. A
+process-native worker supervisor now registers one execution owner per run,
+revalidates source/runtime/live component identity before work, retains PDFium
+extraction and lazy translation state in separate blocking loops, and advances
+the existing workers under the
+durable `2 / 4 / 1` backpressure. Creation and stale recovery start the
+supervisor; pause quiesces it, cancellation interrupts provider I/O and settles
+leases, and app exit waits for workers before shutting down the managed model.
+Typed status schema 4 exposes only bounded worker health. Explicit failed-page
+retry, run enumeration, frontend integration and a real complex 500/1,000-page
+end-to-end translation/export run remain pending.
 
 ### Phase 7 — Component control plane
 
