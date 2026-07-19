@@ -447,11 +447,12 @@ renderer 内部瞬时使用的 `ContentOperandRangePatch`。当前逻辑 schema 
   渲染，不能恢复或猜测一个半完成的 pending draft。
 - decode 必须针对当前 PageGraph 重建 canonical patch，拒绝 page/hash/schema、atom hash、
   entry order/content、protected placement 或 patch identity 不一致的内容。
-- 初始 encoding 为 compact JSON。build、encode 和 decode 都执行 16 MiB page-patch
+- 逻辑 encoding 为 compact JSON。build、encode 和 decode 都执行 16 MiB page-patch
   上限；单 entry translated text 上限为 8 MiB，单 patch entry count 上限为 100,000。
+  TranslationPatch Store 将这个 canonical JSON 以 gzip 容器保存为磁盘 authority；压缩
+  只改变存储表示，不改变 patch ID、entry identity、renderer validation 或恢复语义。
 - compact JSON patch 本身不负责文件所有权；原子 revisioned 文件与索引由下述
-  TranslationPatch Store 管理。压缩容器、render-cache quota 和 streaming export 仍属于
-  后续 Phase 4。
+  TranslationPatch Store 管理。render-cache quota 和 streaming export 仍属于后续 Phase 4。
 
 ## PDF v3 TranslationPatch Store
 
@@ -469,8 +470,9 @@ PDF v3 patch store 是 source document + target language 隔离的页级译文�
 - 64 页是内部 index bound，不是 PageSet、translation batch、scheduler window 或 UI chunk。
   任意页仍可独立读取、提交和重试。
 - page entry 必须保存 page/source hash、positive translation revision、patch ID、immutable
-  patch filename 和 byte count。filename 必须由 page/revision/patch ID 确定，不能接受
-  manifest 中的任意相对路径。
+  gzip patch filename 和压缩后 byte count。filename 必须由 page/revision/patch ID 确定，不能
+  接受 manifest 中的任意相对路径；读取时必须先限制压缩输入和解压输出，再验证 canonical
+  patch identity。
 - patch file 先通过 unique temp + `sync_all` + rename 提交；owning shard 再通过
   temp + backup + rename 原子替换。新 shard durable 后才能删除被替换的旧 revision。
 - 同 revision + 同 patch ID 是幂等写；同 revision + 不同内容是 conflict；低 revision

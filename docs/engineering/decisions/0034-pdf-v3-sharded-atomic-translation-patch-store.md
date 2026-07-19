@@ -34,7 +34,7 @@ translations/
     manifest.json
     shard-00000000.json
     shard-00000001.json
-    page-0000000001-revision-00000000000000000001-patch-<sha256>.patch.json
+    page-0000000001-revision-00000000000000000001-patch-<sha256>.patch.json.gz
 ```
 
 `manifest.json` is a small stable identity record containing schema version,
@@ -51,13 +51,19 @@ batch, scheduler window, PageSet restriction or user-visible chunk. Arbitrary
 pages remain independently addressable and commits in one shard do not require
 loading patch payloads from other pages.
 
-Patch files are immutable and revision/content addressed. A commit:
+Patch files contain gzip-compressed canonical JSON. They are immutable and
+revision/content addressed. A commit:
 
 1. validates the patch against its current PageGraph;
 2. rejects lower revisions and same-revision content conflicts;
 3. writes and `sync_all`s the immutable patch through a unique temp file;
 4. updates only the owning shard using temp + backup + rename;
 5. removes the replaced patch after the new shard is durable.
+
+The shard byte count is the compressed file size. Reads enforce both the
+compressed input limit and the 16 MiB decompressed patch limit before JSON
+validation. The compression container is storage-only: patch IDs and all
+renderer/source identity checks are calculated from the canonical JSON.
 
 Store operations for the same absolute language directory are serialized by a
 shared in-process coordinator. Different store handles therefore cannot lose a
@@ -79,6 +85,7 @@ shard; they do not re-read every historical page patch.
 Automated tests cover:
 
 - compact commit/load without ordinary source text in store files;
+- gzip patch payloads with bounded decompression and canonical JSON round-trip;
 - stale revision, same-revision conflict and idempotent commit behavior;
 - repair of a corrupt current patch from a valid idempotent commit;
 - highest-generation temp promotion over an older canonical shard;
@@ -103,7 +110,8 @@ measurement, not extraction or translation latency.
   rest of a long document.
 - Old revisions and failed commits do not accumulate indefinitely.
 - Patch storage remains text-scale and does not duplicate PDF fonts, images or
-  page resources.
+  page resources; repeated structural fields compress well across each page
+  payload.
 - The store is page-addressable without exposing fixed chunk semantics.
 
 ### Costs

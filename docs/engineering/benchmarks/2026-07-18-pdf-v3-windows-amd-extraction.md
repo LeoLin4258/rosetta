@@ -291,3 +291,27 @@ debug-run noise; it is not a claim about 500-page throughput. Its durable
 benefit is removing repeated scans and repeated stream decoding from the
 renderer hot path while retaining the existing conservative validation rules.
 The full PDF v3 test suite remains green after the change.
+
+## Follow-Up: Compressed TranslationPatch Artifacts
+
+TranslationPatch keeps canonical compact JSON as its logical representation,
+but the durable patch file is now a bounded gzip payload. Patch IDs, entry
+identity and renderer validation continue to operate on the decompressed
+canonical JSON. The store records the compressed byte count and rejects both
+oversized compressed input and oversized decompressed output.
+
+The 20-page deterministic smoke acceptance measured:
+
+| Measurement | Result |
+| --- | ---: |
+| Logical patch JSON | 1,306,935 B |
+| Compressed patch payloads | 455,253 B |
+| Complete patch directory | 462,586 B |
+| Logical-to-stored reduction | 65.2% |
+| Patch store stage | 1,318,667 us |
+| Complete pipeline | 11,411 ms |
+
+This reduces the patch authority footprint without duplicating PDF resources or
+changing crash ordering. The 20-page timing is a debug diagnostic; 500-page
+compression and throughput still need one later acceptance run after the full
+regression passes.

@@ -330,6 +330,7 @@ pub(crate) struct PdfV3TranslationBatchOutcome {
     pub patch_store_us: u64,
     pub scheduler_commit_us: u64,
     pub patch_bytes: u64,
+    pub uncompressed_patch_bytes: u64,
     pub pages: Vec<PdfV3TranslationPageOutcome>,
 }
 
@@ -505,6 +506,9 @@ impl<'a> PdfV3TranslationWorker<'a> {
                             outcome.committed_pages = outcome.committed_pages.saturating_add(1);
                             outcome.patch_bytes =
                                 outcome.patch_bytes.saturating_add(committed.patch_bytes);
+                            outcome.uncompressed_patch_bytes = outcome
+                                .uncompressed_patch_bytes
+                                .saturating_add(committed.uncompressed_patch_bytes);
                             outcome.pages.push(PdfV3TranslationPageOutcome::Committed {
                                 page_number: claim.page_number,
                                 authority,

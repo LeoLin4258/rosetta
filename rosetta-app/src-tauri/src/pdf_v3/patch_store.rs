@@ -10,6 +10,7 @@ use std::{
     },
 };
 
+use flate2::{read::GzDecoder, write::GzEncoder, Compression};
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -23,7 +24,7 @@ use super::{
     types::{PageGraph, TranslationPatch},
 };
 
-const PATCH_STORE_SCHEMA_VERSION: u32 = 1;
+const PATCH_STORE_SCHEMA_VERSION: u32 = 2;
 const MANIFEST_FILENAME: &str = "manifest.json";
 const PAGES_PER_SHARD: u32 = 64;
 const MAX_INDEX_BYTES: u64 = 1024 * 1024;
@@ -107,6 +108,7 @@ pub(crate) struct TranslationPatchCommitOutcome {
     pub translation_revision: u64,
     pub shard_generation: u64,
     pub patch_bytes: u64,
+    pub uncompressed_patch_bytes: u64,
     pub cleanup: TranslationPatchStoreRepairReport,
 }
 
@@ -174,6 +176,11 @@ pub(crate) enum TranslationPatchStoreError {
     PatchFileMismatch {
         page_number: u32,
     },
+    PatchCompression(String),
+    PatchTooLarge {
+        bytes: u64,
+        maximum: u64,
+    },
     Patch(TranslationPatchError),
 }
 
@@ -231,6 +238,11 @@ impl fmt::Display for TranslationPatchStoreError {
             Self::PatchFileMismatch { page_number } => write!(
                 formatter,
                 "TranslationPatch page {page_number} file does not match its index entry"
+            ),
+            Self::PatchCompression(message) => formatter.write_str(message),
+            Self::PatchTooLarge { bytes, maximum } => write!(
+                formatter,
+                "TranslationPatch size {bytes} exceeds maximum {maximum}"
             ),
             Self::Patch(error) => error.fmt(formatter),
         }
@@ -293,7 +305,9 @@ impl TranslationPatchStore {
         }
         validate_translation_patch(page, patch)?;
         ensure_translation_patch_renderer_resolved(patch)?;
-        let patch_bytes = encode_translation_patch(patch)?;
+        let encoded_patch = encode_translation_patch(patch)?;
+        let uncompressed_patch_byte_count = u64::try_from(encoded_patch.len()).unwrap_or(u64::MAX);
+        let patch_bytes = compress_patch(&encoded_patch)?;
         let patch_byte_count = u64::try_from(patch_bytes.len()).map_err(|_| {
             TranslationPatchStoreError::PatchFileMismatch {
                 page_number: patch.page_number,
@@ -349,6 +363,7 @@ impl TranslationPatchStore {
                                     .map(|shard| shard.generation)
                                     .unwrap_or(0),
                                 patch_bytes: current.patch_bytes,
+                                uncompressed_patch_bytes: uncompressed_patch_byte_count,
                                 cleanup,
                             });
                         }
@@ -412,6 +427,7 @@ impl TranslationPatchStore {
                 translation_revision: patch.translation_revision,
                 shard_generation: next.generation,
                 patch_bytes: patch_byte_count,
+                uncompressed_patch_bytes: uncompressed_patch_byte_count,
                 cleanup,
             })
         })
@@ -795,12 +811,13 @@ impl TranslationPatchStore {
                 page_number: entry.page_number,
             });
         }
-        let bytes = read_limited(&path, MAX_PATCH_BYTES)?;
-        if u64::try_from(bytes.len()).ok() != Some(entry.patch_bytes) {
+        let compressed = read_limited(&path, MAX_PATCH_BYTES)?;
+        if u64::try_from(compressed.len()).ok() != Some(entry.patch_bytes) {
             return Err(TranslationPatchStoreError::PatchFileMismatch {
                 page_number: entry.page_number,
             });
         }
+        let bytes = decompress_patch(&compressed)?;
         let patch = decode_and_validate_translation_patch(page, &bytes)?;
         ensure_translation_patch_renderer_resolved(&patch)?;
         if !entry_matches_patch(entry, &patch, &self.target_language) {
@@ -819,16 +836,17 @@ impl TranslationPatchStore {
         if !try_exists(&path)? {
             return Ok(false);
         }
-        let bytes = match read_limited(&path, MAX_PATCH_BYTES) {
+        let compressed = match read_limited(&path, MAX_PATCH_BYTES) {
             Ok(bytes) => bytes,
             Err(error @ TranslationPatchStoreError::Io { .. }) => return Err(error),
             Err(_) => return Ok(false),
         };
-        if u64::try_from(bytes.len()).ok() != Some(entry.patch_bytes) {
+        if u64::try_from(compressed.len()).ok() != Some(entry.patch_bytes) {
             return Ok(false);
         }
-        Ok(decode_and_validate_translation_patch_identity(&bytes)
+        Ok(decompress_patch(&compressed)
             .and_then(|patch| {
+                let patch = decode_and_validate_translation_patch_identity(&patch)?;
                 ensure_translation_patch_renderer_resolved(&patch)?;
                 Ok(patch)
             })
@@ -1032,20 +1050,55 @@ fn is_index_sidecar(name: &str, target_name: &str) -> bool {
 
 fn patch_filename(patch: &TranslationPatch) -> String {
     format!(
-        "page-{:010}-revision-{:020}-{}.patch.json",
+        "page-{:010}-revision-{:020}-{}.patch.json.gz",
         patch.page_number, patch.translation_revision, patch.patch_id
     )
 }
 
 fn patch_filename_from_entry(entry: &TranslationPatchManifestPage) -> String {
     format!(
-        "page-{:010}-revision-{:020}-{}.patch.json",
+        "page-{:010}-revision-{:020}-{}.patch.json.gz",
         entry.page_number, entry.translation_revision, entry.patch_id
     )
 }
 
 fn is_patch_filename(name: &str) -> bool {
-    name.starts_with("page-") && name.ends_with(".patch.json")
+    name.starts_with("page-") && name.ends_with(".patch.json.gz")
+}
+
+fn compress_patch(bytes: &[u8]) -> Result<Vec<u8>, TranslationPatchStoreError> {
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+    encoder
+        .write_all(bytes)
+        .map_err(|error| TranslationPatchStoreError::PatchCompression(error.to_string()))?;
+    let compressed = encoder
+        .finish()
+        .map_err(|error| TranslationPatchStoreError::PatchCompression(error.to_string()))?;
+    let byte_count = u64::try_from(compressed.len()).unwrap_or(u64::MAX);
+    if byte_count > MAX_PATCH_BYTES {
+        return Err(TranslationPatchStoreError::PatchTooLarge {
+            bytes: byte_count,
+            maximum: MAX_PATCH_BYTES,
+        });
+    }
+    Ok(compressed)
+}
+
+fn decompress_patch(bytes: &[u8]) -> Result<Vec<u8>, TranslationPatchStoreError> {
+    let decoder = GzDecoder::new(bytes);
+    let mut decoded = Vec::new();
+    decoder
+        .take(MAX_PATCH_BYTES.saturating_add(1))
+        .read_to_end(&mut decoded)
+        .map_err(|error| TranslationPatchStoreError::PatchCompression(error.to_string()))?;
+    let byte_count = u64::try_from(decoded.len()).unwrap_or(u64::MAX);
+    if byte_count > MAX_PATCH_BYTES {
+        return Err(TranslationPatchStoreError::PatchTooLarge {
+            bytes: byte_count,
+            maximum: MAX_PATCH_BYTES,
+        });
+    }
+    Ok(decoded)
 }
 
 fn is_safe_file_name(name: &str) -> bool {
@@ -1258,8 +1311,8 @@ mod tests {
     };
 
     use super::{
-        encode_index, shard_filename, shard_id, TranslationPatchCommitKind, TranslationPatchStore,
-        TranslationPatchStoreError,
+        decompress_patch, encode_index, is_patch_filename, shard_filename, shard_id,
+        TranslationPatchCommitKind, TranslationPatchStore, TranslationPatchStoreError,
     };
     use crate::pdf_v3::{
         translation_patch::{
@@ -1283,6 +1336,7 @@ mod tests {
         let outcome = store.commit(&page, &patch).expect("commit patch");
         assert_eq!(outcome.kind, TranslationPatchCommitKind::Written);
         assert_eq!(outcome.shard_generation, 1);
+        assert!(outcome.patch_bytes < outcome.uncompressed_patch_bytes);
         let loaded = store
             .load(&page)
             .expect("load patch")
@@ -1294,6 +1348,9 @@ mod tests {
         assert_eq!(snapshot.shard_count, 1);
         assert_eq!(snapshot.patch_bytes, loaded.patch_bytes);
         assert!(snapshot.manifest_id.starts_with("manifest-"));
+        let stored_patch = fs::read(store.language_dir().join(&snapshot.pages[0].patch_file))
+            .expect("compressed patch file");
+        assert_eq!(stored_patch.get(..2), Some([0x1f, 0x8b].as_slice()));
 
         let language_name = store
             .language_dir()
@@ -1305,7 +1362,17 @@ mod tests {
         for entry in fs::read_dir(store.language_dir()).expect("store files") {
             let path = entry.expect("store entry").path();
             if path.is_file() {
-                let contents = fs::read_to_string(path).expect("UTF-8 store file");
+                let bytes = fs::read(&path).expect("store file");
+                let decoded = if path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(is_patch_filename)
+                {
+                    decompress_patch(&bytes).expect("compressed patch")
+                } else {
+                    bytes
+                };
+                let contents = String::from_utf8(decoded).expect("UTF-8 store payload");
                 assert!(!contents.contains("secret source page one"));
             }
         }
@@ -1733,7 +1800,7 @@ mod tests {
 
     fn patch_files(directory: &Path) -> Vec<PathBuf> {
         matching_files(directory, |name| {
-            name.starts_with("page-") && name.ends_with(".patch.json")
+            name.starts_with("page-") && name.ends_with(".patch.json.gz")
         })
     }
 

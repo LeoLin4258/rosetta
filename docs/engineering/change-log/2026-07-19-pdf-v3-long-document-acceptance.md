@@ -18,6 +18,8 @@ Date: 2026-07-19
   bytes, patch counts, font subset bytes and PDF append/output bytes.
 - Replacement planning now de-duplicates page-local content scans and decoded
   content streams without retaining cache state across pages or jobs.
+- TranslationPatch files now use bounded gzip storage while preserving the
+  canonical JSON identity and renderer validation contract.
 
 ## Validation
 
@@ -30,7 +32,10 @@ Date: 2026-07-19
   replacement render stage after the de-duplication change, versus roughly
   12,100 ms and 4,590 ms in the preceding smoke baseline. This is a debug
   diagnostic, not a long-document throughput claim.
+- A subsequent 20-page rerun measured 1,306,935 B of logical patch JSON,
+  455,253 B of compressed patch payloads and 462,586 B for the complete patch
+  directory, a 65.2% reduction in patch payload bytes.
 
-This change updates native replacement planning and acceptance measurement
-only. It does not change runtime commands, persistent schemas, product UI or
-Tauri permissions.
+This change updates native replacement planning, TranslationPatch storage
+representation and acceptance measurement only. It does not change runtime
+commands, product UI or Tauri permissions.

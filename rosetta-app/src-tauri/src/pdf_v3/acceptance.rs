@@ -289,7 +289,7 @@ async fn run_long_document_acceptance(page_count: u32, preserve_every: u32) {
     let patch_disk_bytes = directory_file_bytes(&patch_dir);
     let scheduler_disk_bytes = directory_file_bytes(&scheduler_dir);
     println!(
-        "pdf-v3 long-e2e pages={page_count} sourceBytes={source_bytes} fixtureMs={} pipelineMs={} extractionWallMs={} translationWallMs={} exportMs={} extractionReconciliationUs={} pageGraphStoreUs={} pageGraphSerializeCompressUs={} translationProcessorUs={} patchStoreUs={} processorPlanPatchUs={} processorFontPlanUs={} processorFontPrepareUs={} processorFontStageUs={} processorRenderStageUs={} pageGraphUncompressedBytes={} pageGraphCompressedBytes={} pageGraphDiskBytes={page_graph_disk_bytes} patchLogicalBytes={} patchDiskBytes={patch_disk_bytes} schedulerDiskBytes={scheduler_disk_bytes} completedPatches={} preservedPages={} fittedEntries={} fontSubsetBytes={} deltaObjects={} appendedBytes={} outputBytes={} baselineWorkingSet={} maxPipelineWorkingSet={} finalWorkingSet={} processPeakWorkingSet={} baselinePrivate={} maxPipelinePrivate={} finalPrivate={}",
+        "pdf-v3 long-e2e pages={page_count} sourceBytes={source_bytes} fixtureMs={} pipelineMs={} extractionWallMs={} translationWallMs={} exportMs={} extractionReconciliationUs={} pageGraphStoreUs={} pageGraphSerializeCompressUs={} translationProcessorUs={} patchStoreUs={} processorPlanPatchUs={} processorFontPlanUs={} processorFontPrepareUs={} processorFontStageUs={} processorRenderStageUs={} pageGraphUncompressedBytes={} pageGraphCompressedBytes={} pageGraphDiskBytes={page_graph_disk_bytes} patchUncompressedBytes={} patchStoredBytes={} patchDiskBytes={patch_disk_bytes} schedulerDiskBytes={scheduler_disk_bytes} completedPatches={} preservedPages={} fittedEntries={} fontSubsetBytes={} deltaObjects={} appendedBytes={} outputBytes={} baselineWorkingSet={} maxPipelineWorkingSet={} finalWorkingSet={} processPeakWorkingSet={} baselinePrivate={} maxPipelinePrivate={} finalPrivate={}",
         fixture_elapsed.as_millis(),
         pipeline_elapsed.as_millis(),
         extraction_elapsed.as_millis(),
@@ -307,6 +307,7 @@ async fn run_long_document_acceptance(page_count: u32, preserve_every: u32) {
         processor_timing.render_stage_us,
         page_snapshot.uncompressed_bytes,
         page_snapshot.compressed_bytes,
+        translation.uncompressed_patch_bytes,
         translation.patch_bytes,
         summary.completed_pages,
         summary.preserved_pages,
@@ -673,6 +674,9 @@ fn accumulate_translation(
         .scheduler_commit_us
         .saturating_add(batch.scheduler_commit_us);
     total.patch_bytes = total.patch_bytes.saturating_add(batch.patch_bytes);
+    total.uncompressed_patch_bytes = total
+        .uncompressed_patch_bytes
+        .saturating_add(batch.uncompressed_patch_bytes);
 }
 
 fn next_timestamp(timestamp: &mut u64) -> u64 {
