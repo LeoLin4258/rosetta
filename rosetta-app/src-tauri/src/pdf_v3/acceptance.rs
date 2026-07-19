@@ -220,6 +220,7 @@ async fn run_long_document_acceptance(page_count: u32, preserve_every: u32) {
 
     let expected_translations = std::mem::take(&mut processor.expected_translations);
     let renderer_decisions = std::mem::take(&mut processor.renderer_decisions);
+    let processor_timing = processor.timing;
     drop(processor);
     println!("pdf-v3 acceptance renderer decisions: {renderer_decisions:?}");
     let page_snapshot = page_graph_store
@@ -288,7 +289,7 @@ async fn run_long_document_acceptance(page_count: u32, preserve_every: u32) {
     let patch_disk_bytes = directory_file_bytes(&patch_dir);
     let scheduler_disk_bytes = directory_file_bytes(&scheduler_dir);
     println!(
-        "pdf-v3 long-e2e pages={page_count} sourceBytes={source_bytes} fixtureMs={} pipelineMs={} extractionWallMs={} translationWallMs={} exportMs={} extractionReconciliationUs={} pageGraphStoreUs={} pageGraphSerializeCompressUs={} translationProcessorUs={} patchStoreUs={} pageGraphUncompressedBytes={} pageGraphCompressedBytes={} pageGraphDiskBytes={page_graph_disk_bytes} patchLogicalBytes={} patchDiskBytes={patch_disk_bytes} schedulerDiskBytes={scheduler_disk_bytes} completedPatches={} preservedPages={} fittedEntries={} fontSubsetBytes={} deltaObjects={} appendedBytes={} outputBytes={} baselineWorkingSet={} maxPipelineWorkingSet={} finalWorkingSet={} processPeakWorkingSet={} baselinePrivate={} maxPipelinePrivate={} finalPrivate={}",
+        "pdf-v3 long-e2e pages={page_count} sourceBytes={source_bytes} fixtureMs={} pipelineMs={} extractionWallMs={} translationWallMs={} exportMs={} extractionReconciliationUs={} pageGraphStoreUs={} pageGraphSerializeCompressUs={} translationProcessorUs={} patchStoreUs={} processorPlanPatchUs={} processorFontPlanUs={} processorFontPrepareUs={} processorFontStageUs={} processorRenderStageUs={} pageGraphUncompressedBytes={} pageGraphCompressedBytes={} pageGraphDiskBytes={page_graph_disk_bytes} patchLogicalBytes={} patchDiskBytes={patch_disk_bytes} schedulerDiskBytes={scheduler_disk_bytes} completedPatches={} preservedPages={} fittedEntries={} fontSubsetBytes={} deltaObjects={} appendedBytes={} outputBytes={} baselineWorkingSet={} maxPipelineWorkingSet={} finalWorkingSet={} processPeakWorkingSet={} baselinePrivate={} maxPipelinePrivate={} finalPrivate={}",
         fixture_elapsed.as_millis(),
         pipeline_elapsed.as_millis(),
         extraction_elapsed.as_millis(),
@@ -299,6 +300,11 @@ async fn run_long_document_acceptance(page_count: u32, preserve_every: u32) {
         extraction.page_graph_serialize_compress_us,
         translation.processor_us,
         translation.patch_store_us,
+        processor_timing.plan_patch_us,
+        processor_timing.font_plan_us,
+        processor_timing.font_prepare_us,
+        processor_timing.font_stage_us,
+        processor_timing.render_stage_us,
         page_snapshot.uncompressed_bytes,
         page_snapshot.compressed_bytes,
         translation.patch_bytes,
@@ -327,6 +333,16 @@ struct ScriptedPageProcessor<'a> {
     preserve_every: u32,
     expected_translations: BTreeMap<u32, Vec<String>>,
     renderer_decisions: BTreeMap<String, u32>,
+    timing: ScriptedProcessorTiming,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct ScriptedProcessorTiming {
+    plan_patch_us: u64,
+    font_plan_us: u64,
+    font_prepare_us: u64,
+    font_stage_us: u64,
+    render_stage_us: u64,
 }
 
 impl<'a> ScriptedPageProcessor<'a> {
@@ -351,6 +367,7 @@ impl<'a> ScriptedPageProcessor<'a> {
             preserve_every,
             expected_translations: BTreeMap::new(),
             renderer_decisions: BTreeMap::new(),
+            timing: ScriptedProcessorTiming::default(),
         }
     }
 
@@ -364,6 +381,7 @@ impl<'a> ScriptedPageProcessor<'a> {
                 reason_code: "pdf-v3-acceptance-preserved-page",
             });
         }
+        let plan_started = Instant::now();
         let plan = build_translation_page_plan(page).map_err(|_| translation_failure())?;
         let results = plan
             .units
@@ -386,15 +404,35 @@ impl<'a> ScriptedPageProcessor<'a> {
             },
         )
         .map_err(|_| translation_failure())?;
+        self.timing.plan_patch_us = self
+            .timing
+            .plan_patch_us
+            .saturating_add(elapsed_us(plan_started.elapsed()));
+        let font_plan_started = Instant::now();
         let font_plan = TranslationFontCharacterPlan::for_pending_patch(page, &pending)
             .map_err(|_| translation_failure())?;
+        self.timing.font_plan_us = self
+            .timing
+            .font_plan_us
+            .saturating_add(elapsed_us(font_plan_started.elapsed()));
+        let font_prepare_started = Instant::now();
         let prepared_fonts = font_plan
             .prepare_available_fonts(&self.regular_font, None)
             .map_err(|_| translation_failure())?;
+        self.timing.font_prepare_us = self
+            .timing
+            .font_prepare_us
+            .saturating_add(elapsed_us(font_prepare_started.elapsed()));
         let fonts = prepared_fonts.iter().collect::<Vec<_>>();
+        let font_stage_started = Instant::now();
         let staged_fonts = stage_document_translation_font_registry(self.source_objects, &fonts)
             .map_err(|_| translation_failure())?;
+        self.timing.font_stage_us = self
+            .timing
+            .font_stage_us
+            .saturating_add(elapsed_us(font_stage_started.elapsed()));
         let overlay = PdfObjectOverlay::new(self.source_objects, &staged_fonts.object_delta);
+        let render_stage_started = Instant::now();
         let staged = stage_translation_patch_with_font_registry(
             self.source_objects,
             &overlay,
@@ -407,6 +445,10 @@ impl<'a> ScriptedPageProcessor<'a> {
             &staged_fonts.registry,
         )
         .map_err(|_| translation_failure())?;
+        self.timing.render_stage_us = self
+            .timing
+            .render_stage_us
+            .saturating_add(elapsed_us(render_stage_started.elapsed()));
         for entry in &staged.render.resolved_patch.entries {
             let decision = match &entry.renderer_decision {
                 super::types::TranslationPatchRendererDecision::Fitted { .. } => "fitted",
@@ -636,6 +678,10 @@ fn accumulate_translation(
 fn next_timestamp(timestamp: &mut u64) -> u64 {
     *timestamp = timestamp.saturating_add(1);
     *timestamp
+}
+
+fn elapsed_us(duration: Duration) -> u64 {
+    duration.as_micros().min(u128::from(u64::MAX)) as u64
 }
 
 fn directory_file_bytes(root: &Path) -> u64 {

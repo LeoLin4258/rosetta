@@ -365,6 +365,155 @@ impl Default for TextState {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+enum TextPositionBoundary {
+    Valid,
+    CrossTextObject,
+    InvalidReset,
+    LaterTextShow,
+}
+
+struct TextShowOperationIndex {
+    states: BTreeMap<usize, TextState>,
+    text_object_bounds: BTreeMap<usize, (usize, usize)>,
+    position_boundaries: BTreeMap<usize, TextPositionBoundary>,
+}
+
+impl TextShowOperationIndex {
+    fn resolve(
+        content: &Content,
+        operation_indices: &BTreeSet<usize>,
+    ) -> Result<Self, TextShowReplacementError> {
+        if operation_indices
+            .iter()
+            .any(|index| *index >= content.operations.len())
+        {
+            return Err(TextShowReplacementError::OperationMissing);
+        }
+
+        let mut states = BTreeMap::new();
+        let mut text_object_bounds = BTreeMap::new();
+        let mut state = TextState::default();
+        let mut text_object_start = None;
+        let mut pending_bounds = Vec::new();
+        for (index, operation) in content.operations.iter().enumerate() {
+            if operation_indices.contains(&index) {
+                if text_object_start.is_none() {
+                    return Err(TextShowReplacementError::CrossTextObjectTransaction);
+                }
+                states.insert(index, state.clone());
+                pending_bounds.push(index);
+            }
+            match operation.operator.as_str() {
+                "BT" => {
+                    if text_object_start.is_some() {
+                        return Err(TextShowReplacementError::CrossTextObjectTransaction);
+                    }
+                    text_object_start = Some(index);
+                }
+                "ET" => {
+                    let Some(start) = text_object_start.take() else {
+                        return Err(TextShowReplacementError::CrossTextObjectTransaction);
+                    };
+                    for operation_index in pending_bounds.drain(..) {
+                        text_object_bounds.insert(operation_index, (start, index));
+                    }
+                }
+                _ => {}
+            }
+            apply_text_state_operation(&mut state, operation);
+        }
+        if !pending_bounds.is_empty()
+            || states.len() != operation_indices.len()
+            || text_object_bounds.len() != operation_indices.len()
+        {
+            return Err(TextShowReplacementError::CrossTextObjectTransaction);
+        }
+
+        let mut position_boundaries = BTreeMap::new();
+        let mut without_reset = TextPositionBoundary::CrossTextObject;
+        let mut with_reset = TextPositionBoundary::CrossTextObject;
+        for (index, operation) in content.operations.iter().enumerate().rev() {
+            if operation_indices.contains(&index) {
+                position_boundaries.insert(index, without_reset);
+            }
+            match operation.operator.as_str() {
+                "ET" => {
+                    without_reset = TextPositionBoundary::Valid;
+                    with_reset = TextPositionBoundary::Valid;
+                }
+                "BT" => {
+                    without_reset = TextPositionBoundary::CrossTextObject;
+                    with_reset = TextPositionBoundary::CrossTextObject;
+                }
+                "Tm" | "Td" | "TD" | "T*" => {
+                    if valid_text_position_reset(operation) {
+                        without_reset = with_reset;
+                    } else {
+                        without_reset = TextPositionBoundary::InvalidReset;
+                        with_reset = TextPositionBoundary::InvalidReset;
+                    }
+                }
+                "'" | "\"" => {
+                    let outcome = if valid_anchored_show(operation) {
+                        TextPositionBoundary::Valid
+                    } else {
+                        TextPositionBoundary::InvalidReset
+                    };
+                    without_reset = outcome;
+                    with_reset = outcome;
+                }
+                "Tj" | "TJ" => {
+                    without_reset = TextPositionBoundary::LaterTextShow;
+                    with_reset = TextPositionBoundary::Valid;
+                }
+                _ => {}
+            }
+        }
+
+        Ok(Self {
+            states,
+            text_object_bounds,
+            position_boundaries,
+        })
+    }
+
+    fn state(&self, operation_index: usize) -> Result<&TextState, TextShowReplacementError> {
+        self.states
+            .get(&operation_index)
+            .ok_or(TextShowReplacementError::OperationMissing)
+    }
+
+    fn text_object_bounds(
+        &self,
+        operation_index: usize,
+    ) -> Result<(usize, usize), TextShowReplacementError> {
+        self.text_object_bounds
+            .get(&operation_index)
+            .copied()
+            .ok_or(TextShowReplacementError::CrossTextObjectTransaction)
+    }
+
+    fn validate_position_boundary(
+        &self,
+        operation_index: usize,
+    ) -> Result<(), TextShowReplacementError> {
+        match self.position_boundaries.get(&operation_index).copied() {
+            Some(TextPositionBoundary::Valid) => Ok(()),
+            Some(TextPositionBoundary::CrossTextObject) => {
+                Err(TextShowReplacementError::CrossTextObjectTransaction)
+            }
+            Some(TextPositionBoundary::InvalidReset) => {
+                Err(TextShowReplacementError::InvalidTextPositionReset)
+            }
+            Some(TextPositionBoundary::LaterTextShow) => {
+                Err(TextShowReplacementError::LaterTextShowInTextObject)
+            }
+            None => Err(TextShowReplacementError::OperationMissing),
+        }
+    }
+}
+
 pub(crate) fn apply_single_text_show_replacement(
     document: &mut Document,
     page_graph: &PageGraph,
@@ -388,14 +537,47 @@ pub(crate) fn text_show_replacement_target_identity(
     source_objects: &dyn PdfObjectView,
     request: &TextShowReplacementRequest,
 ) -> Result<TextShowReplacementTargetIdentity, TextShowReplacementError> {
-    let stream_id = request.stream_id();
-    let stream = source_stream(source_objects, stream_id)?;
-    let content = Content::decode(
-        &stream
-            .get_plain_content()
-            .map_err(|error| TextShowReplacementError::StreamRead(error.to_string()))?,
-    )
-    .map_err(|error| TextShowReplacementError::ContentDecode(error.to_string()))?;
+    let mut cache = TextShowReplacementContentCache::default();
+    text_show_replacement_target_identity_with_cache(source_objects, request, &mut cache)
+}
+
+#[derive(Default)]
+pub(crate) struct TextShowReplacementContentCache {
+    contents: BTreeMap<(ObjectId, Vec<FormInvocationStep>), Content>,
+}
+
+impl TextShowReplacementContentCache {
+    fn content<'a>(
+        &'a mut self,
+        source_objects: &dyn PdfObjectView,
+        request: &TextShowReplacementRequest,
+    ) -> Result<&'a Content, TextShowReplacementError> {
+        let key = (
+            request.stream_id(),
+            request.geometry.form_invocation_path.clone(),
+        );
+        if !self.contents.contains_key(&key) {
+            let stream = source_stream(source_objects, request.stream_id())?;
+            let content = Content::decode(
+                &stream
+                    .get_plain_content()
+                    .map_err(|error| TextShowReplacementError::StreamRead(error.to_string()))?,
+            )
+            .map_err(|error| TextShowReplacementError::ContentDecode(error.to_string()))?;
+            self.contents.insert(key.clone(), content);
+        }
+        self.contents
+            .get(&key)
+            .ok_or(TextShowReplacementError::OperationMissing)
+    }
+}
+
+pub(crate) fn text_show_replacement_target_identity_with_cache(
+    source_objects: &dyn PdfObjectView,
+    request: &TextShowReplacementRequest,
+    cache: &mut TextShowReplacementContentCache,
+) -> Result<TextShowReplacementTargetIdentity, TextShowReplacementError> {
+    let content = cache.content(source_objects, request)?;
     let (text_object_start, text_object_end) =
         find_text_object_bounds(&content, request.geometry.operation_index)?;
     Ok(TextShowReplacementTargetIdentity {
@@ -986,10 +1168,15 @@ fn plan_replacement_target(
         .map_err(|error| TextShowReplacementError::StreamRead(error.to_string()))?;
     let content = Content::decode(&source_content)
         .map_err(|error| TextShowReplacementError::ContentDecode(error.to_string()))?;
+    let operation_indices = requests
+        .iter()
+        .map(|request| request.geometry.operation_index)
+        .collect::<BTreeSet<_>>();
+    let operation_index = TextShowOperationIndex::resolve(&content, &operation_indices)?;
     let mut text_object_bounds = None;
     let mut planned = Vec::with_capacity(requests.len());
     for request in requests {
-        let bounds = find_text_object_bounds(&content, request.geometry.operation_index)?;
+        let bounds = operation_index.text_object_bounds(request.geometry.operation_index)?;
         match text_object_bounds {
             Some(expected) if expected != bounds => {
                 return Err(TextShowReplacementError::CrossTextObjectTransaction);
@@ -1002,6 +1189,8 @@ fn plan_replacement_target(
             page_graph,
             request,
             fonts_by_weight,
+            operation_index.state(request.geometry.operation_index)?,
+            &operation_index,
         )?);
     }
     planned.sort_by_key(|replacement| replacement.operation_index);
@@ -1095,10 +1284,11 @@ fn plan_text_show_replacement(
     page_graph: &PageGraph,
     request: &TextShowReplacementRequest,
     fonts_by_weight: &BTreeMap<TranslationFontWeight, &PreparedTranslationFont>,
+    source_state: &TextState,
+    operation_index: &TextShowOperationIndex,
 ) -> Result<PlannedTextShowReplacement, TextShowReplacementError> {
-    let source_state = state_before_operation(content, request.geometry.operation_index)?;
     validate_source_state(request, &source_state)?;
-    validate_text_position_boundary(content, request.geometry.operation_index)?;
+    operation_index.validate_position_boundary(request.geometry.operation_index)?;
     let operation = content
         .operations
         .get(request.geometry.operation_index)
@@ -1200,74 +1390,78 @@ fn state_before_operation(
     }
     let mut state = TextState::default();
     for operation in &content.operations[..operation_index] {
-        match operation.operator.as_str() {
-            "q" => state.saved.push(SavedTextState {
-                font_resource: state.font_resource.clone(),
-                font_size: state.font_size,
-                horizontal_scaling: state.horizontal_scaling,
-                fill_color: state.fill_color,
-                stroke_color: state.stroke_color,
-                render_mode: state.render_mode,
-                paint_supported: state.paint_supported,
-            }),
-            "Q" => {
-                if let Some(saved) = state.saved.pop() {
-                    state.font_resource = saved.font_resource;
-                    state.font_size = saved.font_size;
-                    state.horizontal_scaling = saved.horizontal_scaling;
-                    state.fill_color = saved.fill_color;
-                    state.stroke_color = saved.stroke_color;
-                    state.render_mode = saved.render_mode;
-                    state.paint_supported = saved.paint_supported;
-                }
-            }
-            "BT" => state.inside_text_object = true,
-            "ET" => state.inside_text_object = false,
-            "Tf" => {
-                state.font_resource = operation
-                    .operands
-                    .first()
-                    .and_then(|operand| operand.as_name().ok())
-                    .map(ToOwned::to_owned);
-                state.font_size = operation.operands.get(1).and_then(numeric_operand_f32);
-            }
-            "Tz" => {
-                if let Some(value) = operation.operands.first().and_then(numeric_operand_f32) {
-                    state.horizontal_scaling = value;
-                }
-            }
-            "Tr" => {
-                if let Some(value) = operation.operands.first().and_then(numeric_operand_i32) {
-                    state.render_mode = value;
-                } else {
-                    state.paint_supported = false;
-                }
-            }
-            "g" => set_device_gray(operation, &mut state.fill_color, &mut state.paint_supported),
-            "G" => set_device_gray(
-                operation,
-                &mut state.stroke_color,
-                &mut state.paint_supported,
-            ),
-            "rg" => set_device_rgb(operation, &mut state.fill_color, &mut state.paint_supported),
-            "RG" => set_device_rgb(
-                operation,
-                &mut state.stroke_color,
-                &mut state.paint_supported,
-            ),
-            "k" => set_device_cmyk(operation, &mut state.fill_color, &mut state.paint_supported),
-            "K" => set_device_cmyk(
-                operation,
-                &mut state.stroke_color,
-                &mut state.paint_supported,
-            ),
-            "cs" | "CS" | "sc" | "SC" | "scn" | "SCN" | "gs" => {
-                state.paint_supported = false;
-            }
-            _ => {}
-        }
+        apply_text_state_operation(&mut state, operation);
     }
     Ok(state)
+}
+
+fn apply_text_state_operation(state: &mut TextState, operation: &lopdf::content::Operation) {
+    match operation.operator.as_str() {
+        "q" => state.saved.push(SavedTextState {
+            font_resource: state.font_resource.clone(),
+            font_size: state.font_size,
+            horizontal_scaling: state.horizontal_scaling,
+            fill_color: state.fill_color,
+            stroke_color: state.stroke_color,
+            render_mode: state.render_mode,
+            paint_supported: state.paint_supported,
+        }),
+        "Q" => {
+            if let Some(saved) = state.saved.pop() {
+                state.font_resource = saved.font_resource;
+                state.font_size = saved.font_size;
+                state.horizontal_scaling = saved.horizontal_scaling;
+                state.fill_color = saved.fill_color;
+                state.stroke_color = saved.stroke_color;
+                state.render_mode = saved.render_mode;
+                state.paint_supported = saved.paint_supported;
+            }
+        }
+        "BT" => state.inside_text_object = true,
+        "ET" => state.inside_text_object = false,
+        "Tf" => {
+            state.font_resource = operation
+                .operands
+                .first()
+                .and_then(|operand| operand.as_name().ok())
+                .map(ToOwned::to_owned);
+            state.font_size = operation.operands.get(1).and_then(numeric_operand_f32);
+        }
+        "Tz" => {
+            if let Some(value) = operation.operands.first().and_then(numeric_operand_f32) {
+                state.horizontal_scaling = value;
+            }
+        }
+        "Tr" => {
+            if let Some(value) = operation.operands.first().and_then(numeric_operand_i32) {
+                state.render_mode = value;
+            } else {
+                state.paint_supported = false;
+            }
+        }
+        "g" => set_device_gray(operation, &mut state.fill_color, &mut state.paint_supported),
+        "G" => set_device_gray(
+            operation,
+            &mut state.stroke_color,
+            &mut state.paint_supported,
+        ),
+        "rg" => set_device_rgb(operation, &mut state.fill_color, &mut state.paint_supported),
+        "RG" => set_device_rgb(
+            operation,
+            &mut state.stroke_color,
+            &mut state.paint_supported,
+        ),
+        "k" => set_device_cmyk(operation, &mut state.fill_color, &mut state.paint_supported),
+        "K" => set_device_cmyk(
+            operation,
+            &mut state.stroke_color,
+            &mut state.paint_supported,
+        ),
+        "cs" | "CS" | "sc" | "SC" | "scn" | "SCN" | "gs" => {
+            state.paint_supported = false;
+        }
+        _ => {}
+    }
 }
 
 fn validate_source_style(

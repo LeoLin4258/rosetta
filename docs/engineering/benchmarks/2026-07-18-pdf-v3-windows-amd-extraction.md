@@ -262,3 +262,32 @@ workflow and investigate a compact patch/PageGraph disk schema without
 weakening durable authority. The equivalent 1,000-page harness exists but has
 not yet been recorded, and a varied complex real-world 500/1,000-page corpus
 remains required.
+
+## Follow-Up: Replacement Planning De-duplication
+
+The replacement renderer now builds one page-local operation index for all
+targets in a physical content stream. The index resolves text state before
+each target, `BT`/`ET` ownership and the later-position boundary in one forward
+and one reverse pass. The renderer also caches decoded content streams for the
+duration of one page render, keyed by stream identity and Form invocation path.
+The cache is intentionally not retained across pages or jobs.
+
+The 20-page deterministic smoke acceptance was rerun on the same Windows AMD
+machine in the Rust debug profile:
+
+| Stage | Previous baseline | After de-duplication |
+| --- | ---: | ---: |
+| Complete pipeline | 12,100 ms | 11,786 ms |
+| Translation processor | 6,970 ms | 6,552 ms |
+| Planning + patch assembly | not split | 1,053 ms |
+| Font planning | not split | 1,090 ms |
+| Font preparation | not split | 18 ms |
+| Font staging | not split | 69 ms |
+| Replacement render stage | 4,590 ms | 4,318 ms |
+| Export | not split | 7,775 ms |
+
+The measured change is a small improvement at this scale and is subject to
+debug-run noise; it is not a claim about 500-page throughput. Its durable
+benefit is removing repeated scans and repeated stream decoding from the
+renderer hot path while retaining the existing conservative validation rules.
+The full PDF v3 test suite remains green after the change.

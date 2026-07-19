@@ -19,8 +19,9 @@ use super::{
     replacement::{
         preflight_text_show_replacement_transaction_with_page_index,
         stage_text_show_replacement_batch_with_font_registry,
-        stage_text_show_replacement_batch_with_page_index, text_show_replacement_target_identity,
-        TextShowReplacementBatchResult, TextShowReplacementError, TextShowReplacementRequest,
+        stage_text_show_replacement_batch_with_page_index,
+        text_show_replacement_target_identity_with_cache, TextShowReplacementBatchResult,
+        TextShowReplacementContentCache, TextShowReplacementError, TextShowReplacementRequest,
         TextShowReplacementTargetIdentity, TextShowReplacementTargetRequest,
     },
     source_object::PdfObjectView,
@@ -338,6 +339,7 @@ fn stage_translation_patch_internal(
 
     let mut decisions = BTreeMap::<String, TranslationPatchRendererDecision>::new();
     let mut grouped = BTreeMap::<TextShowReplacementTargetIdentity, Vec<RenderableEntry>>::new();
+    let mut content_cache = TextShowReplacementContentCache::default();
     for entry in &patch.entries {
         let request = match request_for_entry(page, entry, policy.minimum_fit_scale) {
             Ok(request) => request,
@@ -355,21 +357,24 @@ fn stage_translation_patch_internal(
             entry_id: entry.entry_id.clone(),
             request,
         };
-        let identity =
-            match text_show_replacement_target_identity(source_objects, &renderable.request) {
-                Ok(identity) => identity,
-                Err(error) => {
-                    if let Some(reason_code) = preservation_reason(&error) {
-                        preserve_entries(
-                            &mut decisions,
-                            std::slice::from_ref(&renderable),
-                            reason_code,
-                        );
-                        continue;
-                    }
-                    return Err(error.into());
+        let identity = match text_show_replacement_target_identity_with_cache(
+            source_objects,
+            &renderable.request,
+            &mut content_cache,
+        ) {
+            Ok(identity) => identity,
+            Err(error) => {
+                if let Some(reason_code) = preservation_reason(&error) {
+                    preserve_entries(
+                        &mut decisions,
+                        std::slice::from_ref(&renderable),
+                        reason_code,
+                    );
+                    continue;
                 }
-            };
+                return Err(error.into());
+            }
+        };
         grouped.entry(identity).or_default().push(renderable);
     }
 
