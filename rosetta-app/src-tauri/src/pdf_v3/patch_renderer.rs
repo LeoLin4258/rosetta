@@ -17,9 +17,9 @@ use super::{
         RenderCacheOptions, RenderCacheOutputKind,
     },
     replacement::{
-        preflight_text_show_replacement_transaction_with_page_index,
-        stage_text_show_replacement_batch_with_font_registry,
-        stage_text_show_replacement_batch_with_page_index,
+        preflight_text_show_replacement_transaction_with_page_index_and_cache,
+        stage_text_show_replacement_batch_with_font_registry_and_cache,
+        stage_text_show_replacement_batch_with_page_index_and_cache,
         text_show_replacement_target_identity_with_cache, TextShowReplacementBatchResult,
         TextShowReplacementContentCache, TextShowReplacementError, TextShowReplacementRequest,
         TextShowReplacementTargetIdentity, TextShowReplacementTargetRequest,
@@ -392,12 +392,13 @@ fn stage_translation_patch_internal(
             .iter()
             .map(|entry| entry.request.clone())
             .collect::<Vec<_>>();
-        let preflight = match preflight_text_show_replacement_transaction_with_page_index(
+        let preflight = match preflight_text_show_replacement_transaction_with_page_index_and_cache(
             source_objects,
             page_index,
             page,
             &requests,
             decision_fonts,
+            Some(&mut content_cache),
         ) {
             Ok(preflight) => preflight,
             Err(error) => {
@@ -488,7 +489,7 @@ fn stage_translation_patch_internal(
             }
         };
         let staged = if let Some(registry) = font_registry {
-            stage_text_show_replacement_batch_with_font_registry(
+            stage_text_show_replacement_batch_with_font_registry_and_cache(
                 source_objects,
                 accumulated_objects,
                 page_index,
@@ -497,9 +498,10 @@ fn stage_translation_patch_internal(
                 &targets,
                 output_fonts,
                 registry,
+                Some(&mut content_cache),
             )?
         } else {
-            stage_text_show_replacement_batch_with_page_index(
+            stage_text_show_replacement_batch_with_page_index_and_cache(
                 source_objects,
                 accumulated_objects,
                 page_index,
@@ -507,6 +509,7 @@ fn stage_translation_patch_internal(
                 page,
                 &targets,
                 output_fonts,
+                Some(&mut content_cache),
             )?
         };
         (Some(staged.result), staged.object_delta)

@@ -292,6 +292,26 @@ benefit is removing repeated scans and repeated stream decoding from the
 renderer hot path while retaining the existing conservative validation rules.
 The full PDF v3 test suite remains green after the change.
 
+## Follow-Up: Shared Page Content Decode Cache
+
+The page renderer now shares one bounded content-stream cache between target
+identity resolution, replacement preflight and final stream staging. Cache keys
+include the physical stream ID and Form invocation path. The cache is created
+for one page render and released before the next page.
+
+Two consecutive 20-page deterministic smoke runs on the same Windows AMD debug
+machine measured:
+
+| Stage | Previous smoke | Shared-cache run 1 | Shared-cache run 2 |
+| --- | ---: | ---: | ---: |
+| Complete pipeline | 11,411 ms | 11,803 ms | 10,921 ms |
+| Translation processor | 6,455 ms | 5,979 ms | 5,687 ms |
+| Replacement render stage | 4,234 ms | 3,638 ms | 3,468 ms |
+
+The renderer stage fell by roughly 14%-18% across the two runs. Complete
+pipeline timing still varies with debug file durability and is not treated as a
+product throughput claim. No cache state crosses page or job boundaries.
+
 ## Follow-Up: Compressed TranslationPatch Artifacts
 
 TranslationPatch keeps canonical compact JSON as its logical representation,

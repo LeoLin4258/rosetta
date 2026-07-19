@@ -20,6 +20,9 @@ Date: 2026-07-19
   content streams without retaining cache state across pages or jobs.
 - TranslationPatch files now use bounded gzip storage while preserving the
   canonical JSON identity and renderer validation contract.
+- Page-local content streams are now shared between replacement identity,
+  preflight and final staging, keyed by stream identity plus Form invocation
+  path and released after each page render.
 
 ## Validation
 
@@ -35,6 +38,10 @@ Date: 2026-07-19
 - A subsequent 20-page rerun measured 1,306,935 B of logical patch JSON,
   455,253 B of compressed patch payloads and 462,586 B for the complete patch
   directory, a 65.2% reduction in patch payload bytes.
+- Two smoke reruns after the shared content cache measured 3,638 ms and
+  3,468 ms for replacement rendering, versus 4,234 ms before this change.
+  The measured renderer-stage reduction is roughly 14%-18%; full pipeline time
+  remains a debug diagnostic.
 
 This change updates native replacement planning, TranslationPatch storage
 representation and acceptance measurement only. It does not change runtime

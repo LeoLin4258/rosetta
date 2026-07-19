@@ -552,12 +552,22 @@ impl TextShowReplacementContentCache {
         source_objects: &dyn PdfObjectView,
         request: &TextShowReplacementRequest,
     ) -> Result<&'a Content, TextShowReplacementError> {
-        let key = (
+        self.content_for_key(
+            source_objects,
             request.stream_id(),
-            request.geometry.form_invocation_path.clone(),
-        );
+            &request.geometry.form_invocation_path,
+        )
+    }
+
+    fn content_for_key<'a>(
+        &'a mut self,
+        source_objects: &dyn PdfObjectView,
+        stream_id: ObjectId,
+        form_invocation_path: &[FormInvocationStep],
+    ) -> Result<&'a Content, TextShowReplacementError> {
+        let key = (stream_id, form_invocation_path.to_vec());
         if !self.contents.contains_key(&key) {
-            let stream = source_stream(source_objects, request.stream_id())?;
+            let stream = source_stream(source_objects, stream_id)?;
             let content = Content::decode(
                 &stream
                     .get_plain_content()
@@ -615,6 +625,24 @@ pub(crate) fn preflight_text_show_replacement_transaction_with_page_index(
     requests: &[TextShowReplacementRequest],
     fonts: &[&PreparedTranslationFont],
 ) -> Result<Vec<TextShowReplacementPreflight>, TextShowReplacementError> {
+    preflight_text_show_replacement_transaction_with_page_index_and_cache(
+        source_objects,
+        page_index,
+        page_graph,
+        requests,
+        fonts,
+        None,
+    )
+}
+
+pub(crate) fn preflight_text_show_replacement_transaction_with_page_index_and_cache(
+    source_objects: &dyn PdfObjectView,
+    page_index: &PdfPageIndex,
+    page_graph: &PageGraph,
+    requests: &[TextShowReplacementRequest],
+    fonts: &[&PreparedTranslationFont],
+    mut content_cache: Option<&mut TextShowReplacementContentCache>,
+) -> Result<Vec<TextShowReplacementPreflight>, TextShowReplacementError> {
     let first = requests
         .first()
         .ok_or(TextShowReplacementError::EmptyTransaction)?;
@@ -634,6 +662,7 @@ pub(crate) fn preflight_text_show_replacement_transaction_with_page_index(
         page_graph,
         requests,
         &fonts_by_weight,
+        content_cache.as_deref_mut(),
     )?;
     Ok(planned
         .planned
@@ -696,6 +725,7 @@ pub(crate) fn apply_text_show_replacement_batch(
         target_requests,
         fonts,
         None,
+        None,
     )?;
     staged.object_delta.apply_to(document);
     Ok(staged.result)
@@ -718,6 +748,7 @@ pub(crate) fn apply_text_show_replacement_batch_with_font_registry(
         target_requests,
         fonts,
         Some(font_registry),
+        None,
     )?;
     staged.object_delta.apply_to(document);
     Ok(staged.result)
@@ -733,6 +764,30 @@ pub(crate) fn stage_text_show_replacement_batch_with_font_registry(
     fonts: &[&PreparedTranslationFont],
     font_registry: &DocumentTranslationFontRegistry,
 ) -> Result<StagedTextShowReplacementBatch, TextShowReplacementError> {
+    stage_text_show_replacement_batch_with_font_registry_and_cache(
+        source_objects,
+        accumulated_objects,
+        page_index,
+        ownership_index,
+        page_graph,
+        target_requests,
+        fonts,
+        font_registry,
+        None,
+    )
+}
+
+pub(crate) fn stage_text_show_replacement_batch_with_font_registry_and_cache(
+    source_objects: &dyn PdfObjectView,
+    accumulated_objects: &dyn PdfObjectView,
+    page_index: &PdfPageIndex,
+    ownership_index: &PdfStreamOwnershipIndex,
+    page_graph: &PageGraph,
+    target_requests: &[TextShowReplacementTargetRequest],
+    fonts: &[&PreparedTranslationFont],
+    font_registry: &DocumentTranslationFontRegistry,
+    content_cache: Option<&mut TextShowReplacementContentCache>,
+) -> Result<StagedTextShowReplacementBatch, TextShowReplacementError> {
     stage_text_show_replacement_batch_internal(
         source_objects,
         accumulated_objects,
@@ -742,6 +797,7 @@ pub(crate) fn stage_text_show_replacement_batch_with_font_registry(
         target_requests,
         fonts,
         Some(font_registry),
+        content_cache,
     )
 }
 
@@ -761,6 +817,7 @@ pub(crate) fn stage_text_show_replacement_batch(
         target_requests,
         fonts,
         None,
+        None,
     )
 }
 
@@ -773,6 +830,28 @@ pub(crate) fn stage_text_show_replacement_batch_with_page_index(
     target_requests: &[TextShowReplacementTargetRequest],
     fonts: &[&PreparedTranslationFont],
 ) -> Result<StagedTextShowReplacementBatch, TextShowReplacementError> {
+    stage_text_show_replacement_batch_with_page_index_and_cache(
+        source_objects,
+        accumulated_objects,
+        page_index,
+        ownership_index,
+        page_graph,
+        target_requests,
+        fonts,
+        None,
+    )
+}
+
+pub(crate) fn stage_text_show_replacement_batch_with_page_index_and_cache(
+    source_objects: &dyn PdfObjectView,
+    accumulated_objects: &dyn PdfObjectView,
+    page_index: &PdfPageIndex,
+    ownership_index: &PdfStreamOwnershipIndex,
+    page_graph: &PageGraph,
+    target_requests: &[TextShowReplacementTargetRequest],
+    fonts: &[&PreparedTranslationFont],
+    content_cache: Option<&mut TextShowReplacementContentCache>,
+) -> Result<StagedTextShowReplacementBatch, TextShowReplacementError> {
     stage_text_show_replacement_batch_internal(
         source_objects,
         accumulated_objects,
@@ -782,6 +861,7 @@ pub(crate) fn stage_text_show_replacement_batch_with_page_index(
         target_requests,
         fonts,
         None,
+        content_cache,
     )
 }
 
@@ -807,6 +887,7 @@ fn stage_text_show_replacement_batch_internal(
     target_requests: &[TextShowReplacementTargetRequest],
     fonts: &[&PreparedTranslationFont],
     font_registry: Option<&DocumentTranslationFontRegistry>,
+    mut content_cache: Option<&mut TextShowReplacementContentCache>,
 ) -> Result<StagedTextShowReplacementBatch, TextShowReplacementError> {
     let started = Instant::now();
     let first_request = target_requests
@@ -857,6 +938,7 @@ fn stage_text_show_replacement_batch_internal(
             page_graph,
             &target_request.replacements,
             &fonts_by_weight,
+            content_cache.as_deref_mut(),
         )?;
         if target.page_number != page_number {
             return Err(TextShowReplacementError::BatchPageMismatch);
@@ -915,7 +997,11 @@ fn stage_text_show_replacement_batch_internal(
         });
     }
     let staged_font_object_count = staged_fonts.iter().map(|font| font.objects.len()).sum();
-    let mut staged_targets = stage_replacement_streams(source_objects, &planned_targets)?;
+    let mut staged_targets = stage_replacement_streams(
+        source_objects,
+        &planned_targets,
+        content_cache.as_deref_mut(),
+    )?;
     let page_context = PdfPageObjectContext::resolve(source_objects, indexed_page)?;
     let requires_copy_on_write = staged_targets
         .iter()
@@ -1109,6 +1195,7 @@ fn plan_replacement_target(
     page_graph: &PageGraph,
     requests: &[TextShowReplacementRequest],
     fonts_by_weight: &BTreeMap<TranslationFontWeight, &PreparedTranslationFont>,
+    content_cache: Option<&mut TextShowReplacementContentCache>,
 ) -> Result<PlannedReplacementTarget, TextShowReplacementError> {
     let first_request = requests
         .first()
@@ -1162,12 +1249,18 @@ fn plan_replacement_target(
         }
     };
 
-    let source_stream = source_stream(source_objects, stream_id)?;
-    let source_content = source_stream
-        .get_plain_content()
-        .map_err(|error| TextShowReplacementError::StreamRead(error.to_string()))?;
-    let content = Content::decode(&source_content)
-        .map_err(|error| TextShowReplacementError::ContentDecode(error.to_string()))?;
+    let content = if let Some(content_cache) = content_cache {
+        content_cache
+            .content_for_key(source_objects, stream_id, form_invocation_path)?
+            .clone()
+    } else {
+        let source_stream = source_stream(source_objects, stream_id)?;
+        let source_content = source_stream
+            .get_plain_content()
+            .map_err(|error| TextShowReplacementError::StreamRead(error.to_string()))?;
+        Content::decode(&source_content)
+            .map_err(|error| TextShowReplacementError::ContentDecode(error.to_string()))?
+    };
     let operation_indices = requests
         .iter()
         .map(|request| request.geometry.operation_index)
@@ -1210,6 +1303,7 @@ fn plan_replacement_target(
 fn stage_replacement_streams(
     source_objects: &dyn PdfObjectView,
     planned_targets: &[PlannedReplacementTarget],
+    mut content_cache: Option<&mut TextShowReplacementContentCache>,
 ) -> Result<Vec<StagedReplacementTarget>, TextShowReplacementError> {
     let mut grouped = BTreeMap::<ReplacementTargetKey, Vec<&PlannedReplacementTarget>>::new();
     for target in planned_targets {
@@ -1219,11 +1313,17 @@ fn stage_replacement_streams(
     let mut staged_targets = Vec::with_capacity(grouped.len());
     for (key, targets) in grouped {
         let source_stream = source_stream(source_objects, key.stream_id)?;
-        let source_content = source_stream
-            .get_plain_content()
-            .map_err(|error| TextShowReplacementError::StreamRead(error.to_string()))?;
-        let mut content = Content::decode(&source_content)
-            .map_err(|error| TextShowReplacementError::ContentDecode(error.to_string()))?;
+        let mut content = if let Some(content_cache) = content_cache.as_deref_mut() {
+            content_cache
+                .content_for_key(source_objects, key.stream_id, &key.form_invocation_path)?
+                .clone()
+        } else {
+            let source_content = source_stream
+                .get_plain_content()
+                .map_err(|error| TextShowReplacementError::StreamRead(error.to_string()))?;
+            Content::decode(&source_content)
+                .map_err(|error| TextShowReplacementError::ContentDecode(error.to_string()))?
+        };
         let mut operation_indices = BTreeSet::new();
         let mut replacements = targets
             .iter()
