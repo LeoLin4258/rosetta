@@ -16,7 +16,7 @@ import {
   countRosettaPdfPages,
   createRosettaTranslationRevision,
   ensureRosettaTranslationFile,
-  exportRosettaTranslatedPdf,
+  exportRosettaPdfV3Run,
   exportRosettaTranslationFile,
   importRosettaDocumentFromPath,
   importRosettaProjectFromDirectory,
@@ -102,6 +102,7 @@ export function WorkspacePage() {
   const [isEditingSource, setIsEditingSource] = useState(false);
   const [sourceDraft, setSourceDraft] = useState("");
   const [isSavingSource, setIsSavingSource] = useState(false);
+  const [isPdfV3Exporting, setIsPdfV3Exporting] = useState(false);
   const cancelRef = useRef<(() => void) | null>(null);
 
   // Per-job language selections, with fallback to document default / global default
@@ -784,10 +785,6 @@ export function WorkspacePage() {
 
     const file = activeDocument.files.find((f) => f.id === activeSourceFileId);
     if (!file) return;
-    if (file.format === "pdf" && pdfV3Control.status) {
-      setPageError("PDF v3 导出尚未接入，当前不会回退到旧版 PDF 产物。");
-      return;
-    }
 
     const exportFmt = exportFormatForSource(file.format);
     const defaultName = defaultExportFilename(
@@ -801,18 +798,17 @@ export function WorkspacePage() {
       const targetPath = await pickRosettaExportPath(defaultName, exportFmt);
       if (!targetPath) return;
       if (file.format === "pdf") {
-        // PDF v1 only ships single-language ("translation") export — the
-        // translated PDF on disk is exactly what we'd hand the user. There's
-        // no bilingual side-by-side renderer yet.
         if (kind === "bilingual") {
           setPageError("PDF 暂不支持双语对照导出。");
           return;
         }
-        await exportRosettaTranslatedPdf(
-          activeJobId,
-          targetPath,
-          activeTranslationFile?.targetLang ?? targetLang
-        );
+        const run = pdfV3Control.status;
+        if (!run || run.state !== "completed") {
+          setPageError("PDF v3 运行尚未完成，暂不能导出。");
+          return;
+        }
+        setIsPdfV3Exporting(true);
+        await exportRosettaPdfV3Run(activeJobId, run.runId, targetPath);
       } else {
         await exportRosettaTranslationFile(
           activeJobId,
@@ -823,6 +819,8 @@ export function WorkspacePage() {
       }
     } catch (err) {
       setPageError(errorMessage(err, "导出失败。"));
+    } finally {
+      setIsPdfV3Exporting(false);
     }
   }
 
@@ -901,6 +899,7 @@ export function WorkspacePage() {
             pdfV3CanRecover={pdfV3Control.canRecover}
             pdfV3IsDiscovering={pdfV3Control.isDiscovering}
             pdfV3DiscoveryError={pdfV3Control.discoveryError}
+            isPdfV3Exporting={isPdfV3Exporting}
             sourceLang={sourceLang}
             targetLang={targetLang}
             selectedBlockCount={selectedBlockIds.length}

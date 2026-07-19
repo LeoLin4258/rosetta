@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   PdfV3RunControlStatus,
+  PdfV3RunExportResult,
   PdfV3RunList,
   PdfV3RunRecoveryResult,
   RosettaExportKind,
@@ -241,6 +242,18 @@ export function recoverRosettaPdfV3Run(jobId: string, runId: string) {
   return invoke<PdfV3RunRecoveryResult>("recover_rosetta_pdf_v3_run", {
     jobId,
     runId,
+  });
+}
+
+export function exportRosettaPdfV3Run(
+  jobId: string,
+  runId: string,
+  targetPath: string,
+) {
+  return invoke<PdfV3RunExportResult>("export_rosetta_pdf_v3_run", {
+    jobId,
+    runId,
+    targetPath,
   });
 }
 

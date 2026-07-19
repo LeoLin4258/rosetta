@@ -1219,3 +1219,18 @@ PDF v3 translated preview 是 durable scheduler、PageGraph 和 TranslationPatch
   `rosetta-pdf-v3-text-show-replacement-batch-target/1`。batch 负责全局 target/replacement、
   font object、clone、page rewiring 和 timing 计数；target 只记录自身 stream/path depth、
   replacement count、weights 与 per-show diagnostics，不得记录文本 payload。
+## PDF v3 Native Export Result
+
+The public PDF v3 export command is `export_rosetta_pdf_v3_run` and accepts
+only `jobId`, safe `runId`, and a user-selected `targetPath`. Source identity,
+target language, requested PageSet, runtime revision, renderer policy, provider,
+model and font bindings are derived from native durable authority.
+
+Its result schema is `rosetta-pdf-v3-run-export/1` and contains the run ID,
+target language, requested/completed/preserved page counts and the existing
+`rosetta-pdf-v3-translation-export/1` byte/object metrics. It does not contain
+source or destination paths, document text, credentials, endpoints or owner
+session IDs. Nonterminal runs, active leases and any scheduler, runtime,
+PageGraph, patch or source identity mismatch are rejected before atomic
+destination replacement. Preserved pages remain source content; a run with no
+translated pages uses verified atomic source copy.

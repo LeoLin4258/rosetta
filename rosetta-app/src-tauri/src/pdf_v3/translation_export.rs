@@ -56,7 +56,6 @@ pub(crate) struct PdfV3TranslationExportResult {
 
 #[derive(Debug)]
 pub(crate) enum PdfV3TranslationExportError {
-    EmptyPageSet,
     Cancelled,
     SourceIdentityMismatch,
     SourcePageCountMismatch { source: u32, store: u32 },
@@ -76,7 +75,6 @@ pub(crate) enum PdfV3TranslationExportError {
 impl fmt::Display for PdfV3TranslationExportError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::EmptyPageSet => formatter.write_str("PDF v3 translation export PageSet is empty"),
             Self::Cancelled => formatter.write_str("PDF v3 translation export was cancelled"),
             Self::SourceIdentityMismatch => formatter.write_str(
                 "PDF v3 translation export stores do not share the requested source identity",
@@ -165,6 +163,34 @@ pub(crate) fn export_translation_pdf_atomic(
     validate_request(source, &request)?;
     let base = IncrementalExportBase::from_source_object_store(request.source_fingerprint, source)?;
     ensure_active(request.cancellation)?;
+
+    // A completed run may legitimately contain only preserved pages. There is
+    // no TranslationPatch to replay in that case, so keep the verified
+    // atomic source copy as the export authority.
+    if request.pages.is_empty() {
+        let result = export_source_pdf_atomic(
+            source.source_path(),
+            request.destination_path,
+            &base,
+            request.cancellation,
+        )?;
+        return Ok(PdfV3TranslationExportResult {
+            schema: "rosetta-pdf-v3-translation-export/1",
+            commit_kind: PdfV3TranslationExportCommitKind::SourceCopy,
+            selected_page_count: 0,
+            fitted_entry_count: 0,
+            preserved_entry_count: 0,
+            regular_character_count: 0,
+            bold_character_count: 0,
+            prepared_font_count: 0,
+            font_subset_bytes: 0,
+            font_object_count: 0,
+            delta_object_count: 0,
+            source_bytes: result.source_bytes,
+            appended_bytes: 0,
+            output_bytes: result.output_bytes,
+        });
+    }
 
     let font_plan = plan_document_translation_fonts_with_cancel(
         request.page_graph_store,
@@ -280,9 +306,6 @@ fn validate_request(
     source: &PdfSourceObjectStore,
     request: &PdfV3TranslationExportRequest<'_>,
 ) -> Result<(), PdfV3TranslationExportError> {
-    if request.pages.is_empty() {
-        return Err(PdfV3TranslationExportError::EmptyPageSet);
-    }
     if request.page_graph_store.source_fingerprint() != request.source_fingerprint
         || request.patch_store.source_fingerprint() != request.source_fingerprint
     {
@@ -581,6 +604,54 @@ mod tests {
             fs::read(&destination).expect("preserved output"),
             source_bytes
         );
+    }
+
+    #[test]
+    fn empty_patch_page_set_is_a_verified_byte_exact_source_copy() {
+        let source_path = fixture_path("002-trivial-libre-office-writer.pdf");
+        let source_bytes = fs::read(&source_path).expect("source PDF");
+        let source_fingerprint = fingerprint(&source_bytes);
+        let source = PdfSourceObjectStore::open(&source_path).expect("lazy source");
+        let temp = TestDirectory::new("empty-patch-set");
+        let page_store = PageGraphStore::new(
+            &temp.path().join("pages"),
+            &source_fingerprint,
+            source.page_count(),
+            "pdf-v3-translation-export-test",
+        )
+        .expect("PageGraph store");
+        let patch_store = TranslationPatchStore::new(
+            &temp.path().join("translations"),
+            &source_fingerprint,
+            "en",
+        )
+        .expect("TranslationPatch store");
+        let destination = temp.path().join("preserved-only.pdf");
+
+        let result = export_translation_pdf_atomic(
+            &source,
+            PdfV3TranslationExportRequest {
+                source_fingerprint: &source_fingerprint,
+                destination_path: &destination,
+                pages: &PageSet::empty(),
+                page_graph_store: &page_store,
+                patch_store: &patch_store,
+                regular_font: &arial_asset(),
+                bold_font: None,
+                render_policy: TranslationPatchRenderPolicy::default(),
+                cancellation: &IncrementalExportCancellation::default(),
+            },
+        )
+        .expect("preserved-only export");
+
+        assert_eq!(
+            result.commit_kind,
+            PdfV3TranslationExportCommitKind::SourceCopy
+        );
+        assert_eq!(result.selected_page_count, 0);
+        assert_eq!(result.delta_object_count, 0);
+        assert_eq!(result.appended_bytes, 0);
+        assert_eq!(fs::read(destination).expect("output"), source_bytes);
     }
 
     fn resolved_renderable_patch(

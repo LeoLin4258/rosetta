@@ -765,8 +765,11 @@ fake frontend segment run. The workbench exposes owner-gated
 pause/resume/cancel, stale-owner recovery and exact failed-page retry. Native
 run state drives the topbar and page selection remains locked for nonterminal
 runs. Legacy progress events, page state and translated-PDF paths are no longer
-workbench authorities. Native export command integration and a real complex
-500/1,000-page end-to-end translation/export run remain pending.
+workbench authorities. A trusted native export command now accepts only the
+selected job, run and destination path, validates completed scheduler/runtime/
+store authorities, and routes completed patches through the atomic coordinator.
+Preserved-only runs use verified source copy and never manufacture patches. A
+real complex 500/1,000-page end-to-end translation/export run remains pending.
 
 ### Phase 7 — Component control plane
 

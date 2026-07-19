@@ -305,6 +305,31 @@ export type PdfV3RunRecoveryResult = {
   status: PdfV3RunControlStatus;
 };
 
+export type PdfV3RunExportResult = {
+  schema: "rosetta-pdf-v3-run-export/1";
+  runId: string;
+  targetLanguage: string;
+  requestedPageCount: number;
+  translatedPageCount: number;
+  preservedPageCount: number;
+  export: {
+    schema: "rosetta-pdf-v3-translation-export/1";
+    commitKind: "incremental" | "source-copy";
+    selectedPageCount: number;
+    fittedEntryCount: number;
+    preservedEntryCount: number;
+    regularCharacterCount: number;
+    boldCharacterCount: number;
+    preparedFontCount: number;
+    fontSubsetBytes: number;
+    fontObjectCount: number;
+    deltaObjectCount: number;
+    sourceBytes: number;
+    appendedBytes: number;
+    outputBytes: number;
+  };
+};
+
 export type RosettaJobBundle = {
   schemaVersion: number;
   job: RosettaJobSummary;

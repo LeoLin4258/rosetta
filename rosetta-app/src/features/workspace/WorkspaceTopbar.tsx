@@ -71,6 +71,7 @@ type WorkspaceTopbarProps = {
   pdfV3CanRecover?: boolean;
   pdfV3IsDiscovering?: boolean;
   pdfV3DiscoveryError?: string | null;
+  isPdfV3Exporting?: boolean;
   sourceLang: string;
   targetLang: string;
   selectedBlockCount: number;
@@ -295,6 +296,7 @@ export function WorkspaceTopbar({
   pdfV3CanRecover = false,
   pdfV3IsDiscovering = false,
   pdfV3DiscoveryError = null,
+  isPdfV3Exporting = false,
   sourceLang,
   targetLang,
   selectedBlockCount,
@@ -327,16 +329,15 @@ export function WorkspaceTopbar({
   }, [isTranslating, job.id, pdfV3RunStatus?.runId, pdfV3RunStatus?.state]);
 
   const isPdf = job.format === "pdf";
-  const hasTranslation =
-    activeTranslationFile &&
-    !isPdf &&
-    activeTranslationFile.completedSegments > 0;
   const allTranslated =
     isPdf
       ? pdfV3RunStatus?.state === "completed"
       : !!activeTranslationFile &&
         activeTranslationFile.segmentCount > 0 &&
         activeTranslationFile.completedSegments >= activeTranslationFile.segmentCount;
+  const hasTranslation = isPdf
+    ? allTranslated
+    : activeTranslationFile && activeTranslationFile.completedSegments > 0;
   const pdfV3HasOpenRun =
     !!pdfV3RunStatus &&
     pdfV3RunStatus.state !== "cancelled" &&
@@ -605,9 +606,14 @@ export function WorkspaceTopbar({
                     size="sm"
                     variant="outline"
                     onClick={() => onExport("translation")}
+                    disabled={isPdfV3Exporting}
                     className={cn(topbarButtonClass, "border-border/60 bg-card/80")}
                   >
-                    <Download className="size-3" /> 导出译文
+                    {isPdfV3Exporting ? (
+                      <Loader2 className="size-3 animate-spin" />
+                    ) : (
+                      <Download className="size-3" />
+                    )} {isPdfV3Exporting ? "正在导出" : "导出译文"}
                   </Button>
                 </AnimatedWidth>
               )}

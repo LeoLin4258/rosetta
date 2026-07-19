@@ -428,6 +428,52 @@ pub async fn render_rosetta_pdf_v3_translated_page_as_png(
     Ok(tauri::ipc::Response::new(png))
 }
 
+#[tauri::command]
+pub async fn export_rosetta_pdf_v3_run(
+    app: AppHandle,
+    component_state: State<'_, PdfV3ComponentState>,
+    job_id: String,
+    run_id: String,
+    target_path: String,
+) -> Result<formats::pdf::v3_export::PdfV3RunExportResult, String> {
+    let root = path::jobs_root(&app)?;
+    let job_directory = path::checked_job_dir(&root, &job_id)?;
+    if !job_directory.is_dir() {
+        return Err("PDF v3 项目不存在。".to_string());
+    }
+    let source_path = store::cached_pdf_source_path(&app, &job_id)?;
+    let destination_path = std::path::PathBuf::from(target_path.trim());
+    if target_path.trim().is_empty() {
+        return Err("PDF v3 导出目标无效。".to_string());
+    }
+
+    let target_job_directory = job_directory.clone();
+    let target_run_id = run_id.clone();
+    let target_language = tokio::task::spawn_blocking(move || {
+        formats::pdf::v3_export::export_target_language(&target_job_directory, &target_run_id)
+    })
+    .await
+    .map_err(|_| "PDF v3 导出准备任务异常结束。".to_string())?
+    .map_err(|error| error.to_string())?;
+    let assets = component_state
+        .resolve_render_assets(&app, &target_language)
+        .await
+        .map_err(|_| "PDF v3 导出字体不可用。".to_string())?;
+
+    tokio::task::spawn_blocking(move || {
+        formats::pdf::v3_export::export_pdf_v3_run(
+            &job_directory,
+            &source_path,
+            &run_id,
+            &destination_path,
+            assets,
+        )
+    })
+    .await
+    .map_err(|_| "PDF v3 导出任务异常结束。".to_string())?
+    .map_err(|error| error.to_string())
+}
+
 struct PreparedPdfV3RunJob {
     source_identity: crate::pdf_v3::document::VerifiedDocumentIdentity,
     source_fingerprint: String,

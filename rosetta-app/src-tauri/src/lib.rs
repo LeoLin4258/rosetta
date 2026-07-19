@@ -233,6 +233,7 @@ pub fn run() {
             rosetta_jobs::ensure_rosetta_translation_file,
             rosetta_jobs::export_rosetta_job_file,
             rosetta_jobs::export_rosetta_translated_pdf,
+            rosetta_jobs::export_rosetta_pdf_v3_run,
             rosetta_jobs::export_rosetta_translation_file,
             rosetta_jobs::create_welcome_document,
             rosetta_jobs::import_rosetta_document_from_path,

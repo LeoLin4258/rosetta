@@ -212,7 +212,7 @@ PDF progress events, page state or translated-PDF paths.
 
 Still pending as beta gates:
 
-- final native export command integration;
+- complex 500/1,000-page native export acceptance evidence;
 - real managed-runtime validation on complex 500/1,000-page documents;
 - measured performance, peak-memory, cancellation/recovery and disk-size
   acceptance evidence on the Windows AMD test platform.
