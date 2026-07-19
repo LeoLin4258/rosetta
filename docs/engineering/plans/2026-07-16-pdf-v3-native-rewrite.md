@@ -725,9 +725,13 @@ typed Tauri run-control surface now exposes bounded paginated status plus
 owner-gated pause, resume and cancellation without exposing paths, owner IDs,
 credentials or document text. Native stale-owner recovery now validates the
 runtime binding and complete PageGraph/TranslationPatch inventory in a blocking
-worker before releasing leases or promoting durable authority; a conservative
-five-minute lease window remains until the lifecycle manager owns heartbeat and
-process identity. Frontend control integration, run creation, verified
+worker before releasing leases or promoting durable authority. A dedicated
+native lifecycle now supplies an independent process session and one bounded
+10-second heartbeat per active run, performs recurring heartbeat I/O in
+blocking workers, and unloads on terminal state, owner loss or app exit. Typed
+status exposes only bounded heartbeat health. The conservative five-minute
+stale window remains until native old-process verification can justify a
+different policy. Frontend control integration, trusted run creation, verified
 component launch/model health and a real complex 500/1,000-page end-to-end
 translation/export remain pending.
 

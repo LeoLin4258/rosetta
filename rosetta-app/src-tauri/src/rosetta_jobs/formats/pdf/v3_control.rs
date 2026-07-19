@@ -18,6 +18,7 @@ use crate::{
     rosetta_jobs::path::is_safe_job_id,
 };
 
+use super::v3_lifecycle::PdfV3LeaseHeartbeatStatus;
 use super::v3_runtime::{
     load_translation_runtime_manifest, validate_runtime_manifest_binding,
     PdfV3RuntimeManifestError, PdfV3TranslationFontBinding,
@@ -81,6 +82,7 @@ pub(crate) struct PdfV3RunControlStatus {
     pub owned_by_current_session: bool,
     pub owner_lease_updated_at_ms: u64,
     pub owner_recovery_eligible_at_ms: u64,
+    pub owner_heartbeat: PdfV3LeaseHeartbeatStatus,
     pub cancellation: Option<PdfV3Cancellation>,
     pub summary: PdfV3SchedulerSummary,
     pub runtime: PdfV3RuntimeIdentityStatus,
@@ -366,7 +368,7 @@ fn build_status(
     let component = &manifest.component;
 
     Ok(PdfV3RunControlStatus {
-        schema: "rosetta-pdf-v3-run-control-status/2",
+        schema: "rosetta-pdf-v3-run-control-status/3",
         run_id: snapshot.run_id,
         state: snapshot.run_state,
         source_fingerprint: manifest.source_fingerprint,
@@ -380,6 +382,7 @@ fn build_status(
             .owner_lease_updated_at_ms
             .saturating_add(PDF_V3_OWNER_LEASE_TIMEOUT_MS)
             .saturating_add(1),
+        owner_heartbeat: PdfV3LeaseHeartbeatStatus::inactive(),
         cancellation: snapshot.cancellation,
         summary: snapshot.summary,
         runtime: PdfV3RuntimeIdentityStatus {
@@ -440,13 +443,14 @@ mod tests {
 
         let first = pdf_v3_run_status(run.job_dir(), "run-test", "owner-a", None, 2)
             .expect("first status window");
-        assert_eq!(first.schema, "rosetta-pdf-v3-run-control-status/2");
+        assert_eq!(first.schema, "rosetta-pdf-v3-run-control-status/3");
         assert_eq!(first.state, PdfV3RunState::Running);
         assert_eq!(first.requested_page_set, "1-3,9");
         assert_eq!(first.pages.len(), 2);
         assert_eq!(first.next_start_after, Some(2));
         assert!(first.has_more);
         assert!(first.owned_by_current_session);
+        assert!(!first.owner_heartbeat.active);
         assert_eq!(
             first.owner_recovery_eligible_at_ms,
             2 + PDF_V3_OWNER_LEASE_TIMEOUT_MS

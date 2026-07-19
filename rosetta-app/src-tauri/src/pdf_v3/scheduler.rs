@@ -676,13 +676,20 @@ impl DurablePdfV3Scheduler {
         &self,
         owner_session_id: &str,
         now_ms: u64,
-    ) -> Result<(), PdfV3SchedulerError> {
+    ) -> Result<bool, PdfV3SchedulerError> {
         let _guard = self.lock()?;
         let mut manifest = self.read_manifest()?;
         ensure_owner(&manifest, owner_session_id)?;
+        if matches!(
+            manifest.run_state,
+            PdfV3RunState::Cancelled | PdfV3RunState::Completed
+        ) {
+            return Ok(false);
+        }
         manifest.owner_lease_updated_at_ms = now_ms;
         bump_manifest_generation(&mut manifest)?;
-        self.write_manifest(&manifest)
+        self.write_manifest(&manifest)?;
+        Ok(true)
     }
 
     pub(crate) fn pause(
@@ -2245,6 +2252,16 @@ mod tests {
         assert_eq!(state, PdfV3RunState::Completed);
         assert_eq!(summary.completed_pages, 1);
         assert_eq!(summary.preserved_pages, 1);
+        assert!(!scheduler
+            .renew_owner("owner-a", 42)
+            .expect("terminal renewal is ignored"));
+        assert_eq!(
+            scheduler
+                .status_snapshot()
+                .expect("terminal snapshot")
+                .owner_lease_updated_at_ms,
+            41
+        );
     }
 
     #[test]
