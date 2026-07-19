@@ -38,6 +38,7 @@ pub fn run() {
         .manage(managed_pdf2zh::InstallStateRegistry::default())
         .manage(managed_pdf2zh::Pdf2zhWorkerState::default())
         .manage(rosetta_jobs::PdfTranslationCancelState::default())
+        .manage(rosetta_jobs::PdfV3ComponentState::default())
         .manage(rosetta_jobs::PdfV3RunLifecycleState::default())
         .manage(rosetta_jobs::PdfPngCache::default())
         .plugin(tauri_plugin_dialog::init())
@@ -251,6 +252,7 @@ pub fn run() {
             rosetta_jobs::pick_rosetta_export_path,
             rosetta_jobs::pick_rosetta_import_directory,
             rosetta_jobs::pick_rosetta_import_path,
+            rosetta_jobs::probe_rosetta_pdf_v3_component,
             rosetta_jobs::probe_pdf_runtime,
             rosetta_jobs::read_rosetta_pdf_bytes,
             rosetta_jobs::recover_rosetta_pdf_v3_run,

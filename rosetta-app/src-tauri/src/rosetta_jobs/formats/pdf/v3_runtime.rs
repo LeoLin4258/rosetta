@@ -50,7 +50,9 @@ pub(crate) struct PdfV3TranslationFontBinding {
 }
 
 impl PdfV3TranslationFontBinding {
-    fn from_asset(asset: &TranslationFontAsset) -> Result<Self, PdfV3RuntimeManifestError> {
+    pub(crate) fn from_asset(
+        asset: &TranslationFontAsset,
+    ) -> Result<Self, PdfV3RuntimeManifestError> {
         Ok(Self {
             asset_id: asset.asset_id().to_string(),
             weight: asset.weight(),

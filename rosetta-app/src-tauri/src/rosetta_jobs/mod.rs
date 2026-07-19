@@ -223,11 +223,29 @@ impl Default for PdfTranslationCancelState {
 }
 
 pub use formats::pdf::runtime::PngCache as PdfPngCache;
+pub use formats::pdf::v3_component::PdfV3ComponentState;
 pub use formats::pdf::v3_lifecycle::PdfV3RunLifecycleState;
 
 #[tauri::command]
 pub fn cancel_rosetta_translated_pdf(cancel_state: State<'_, PdfTranslationCancelState>) {
     cancel_state.request_cancel();
+}
+
+#[tauri::command]
+pub async fn probe_rosetta_pdf_v3_component(
+    app: AppHandle,
+    registry: State<'_, crate::managed_rwkv::Registry>,
+    component_state: State<'_, PdfV3ComponentState>,
+    target_language: String,
+) -> Result<formats::pdf::v3_component::PdfV3ComponentStatus, String> {
+    let target_language = target_language.trim();
+    if target_language.is_empty() || target_language.len() > 64 {
+        return Err("PDF v3 目标语言无效。".to_string());
+    }
+    component_state
+        .status(&app, &registry, target_language)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]

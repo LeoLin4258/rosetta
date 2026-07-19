@@ -740,6 +740,21 @@ translation/export remain pending.
 - Add signed manifests, install/repair/update/remove, self-test, capabilities and typed health events.
 - Move all process lifecycle ownership into the native Tauri manager.
 
+Current Phase 7 boundary: a native trusted translation-component resolver now
+accepts only a target language and derives provider, model, executable and
+unified Regular/optional Bold font identity from managed profiles and actual
+installed bytes. It requires an exact managed install manifest, healthy
+platform-matching process and stable profile/PID/loopback endpoint across
+verification. Direct files use a stamp-keyed digest cache; extracted model
+directories use deterministic content hashing; font bytes are cached
+immutably and checked against exact Source Han/GoNoto fingerprints. The
+content-derived component manifest and typed status expose no paths,
+credentials, endpoints, process identity or raw errors. Only the font assets
+and release manifest are reused from the legacy PDF pack; Python and doclayout
+readiness are not required. Trusted run creation, signed standalone manifests,
+native install/repair/update/remove, capability events and component self-test
+remain pending.
+
 ### Phase 8 — Optional complex-page fallback
 
 - Adapt the legacy or advanced engine behind the PageGraph/PageResult contract only where native coverage is insufficient.

@@ -16,6 +16,7 @@ pub(crate) mod run_state;
 pub(crate) mod runtime;
 pub(crate) mod source_state;
 pub(crate) mod unit_translation;
+pub(crate) mod v3_component;
 pub(crate) mod v3_control;
 pub(crate) mod v3_lifecycle;
 pub(crate) mod v3_processor;

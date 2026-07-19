@@ -962,6 +962,35 @@ PDF v3 translation runtime manifest 是每个 scheduler run 的不可变 runtime
 - manifest 大小与页数无关。它不能保存 prepared font subset、pending patch、PageGraph、
   page object delta 或 export delta。
 
+## PDF v3 Trusted Translation Component Status
+
+PDF v3 translation component status 是 native component resolver 对当前可用 provider、model
+与统一译文字体 identity 的隐私安全投影，不是 install manifest、provider 配置或 run authority。
+
+约定：
+
+- resolver 输入只能包含目标语言；component/provider/model/font identity 必须由 native 当前
+  platform profile、已安装 manifest、实际 artifact bytes 和 live process state 推导，前端不得
+  提供或覆盖。
+- managed runtime 必须为 `Ready`、匹配当前 OS/architecture、install plan 完整且 health probe
+  成功。profile、PID 与 loopback base URL 在 probe 前后以及 blocking artifact hash 完成后必须
+  完全一致；发生切换必须 fail closed。
+- model/runtime install manifest 必须精确匹配 compile-time profile。直接 model 与 sidecar 必须
+  hash 实际文件；extracted model directory 必须按 normalized relative path 确定性排序、拒绝
+  symlink，并 hash 路径、byte count 与完整内容。
+- 译文统一字体由目标语言选择，只允许受管 Source Han Sans CN Regular/Bold 或 Go Noto
+  Kurrent Regular；完整 font bytes 必须匹配固定 SHA-256。缓存后的 immutable bytes 是 live
+  renderer binding，不能在 run 内重新从 mutable path 推导 identity。
+- component manifest ID 必须由 component version、runtime profile/release、实际 sidecar/model、
+  provider/model profile、PDF asset release 与实际 Regular/optional Bold font identity 共同导出。
+- status schema 当前为 `rosetta-pdf-v3-component-status/1`，只允许返回 `ready`、verification
+  timestamp、component/build/platform、runtime release、provider/model 与 font byte descriptors。
+  不得返回 path、base URL、endpoint、PID、token、password、credential、raw error 或文档文本。
+- native v3 只复用 legacy PDF pack 的固定 font files 与 release manifest；不得把 Python worker、
+  doclayout model 或 legacy process readiness 作为 native component resolver 的依赖。
+- trusted run creation 必须直接消费 resolved live binding 并生成 immutable runtime manifest；不得
+  接受前端声明的 component/provider/model/font identity。
+
 ## PDF v3 Text-Show Replacement Transactions and Batches
 
 当前 PDF v3 回填开放同一 selected page、底层 stream、结构化 invocation path 和
