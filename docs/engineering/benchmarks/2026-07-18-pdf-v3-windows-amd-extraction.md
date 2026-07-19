@@ -183,3 +183,82 @@ now the largest stage. Gzip level 6 was rejected after it reduced payloads to
 The current result is still a debug diagnostic with synchronous file durability.
 A compact PageGraph disk schema should be evaluated only if release-profile
 corpus measurements show that the 2.36-second store stage remains material.
+
+## Follow-Up: Durable 500-Page Translation and Export
+
+An ignored Windows acceptance test now exercises the complete deterministic
+path without using AppData or the local model service. It repeats the
+renderable page from `002-trivial-libre-office-writer.pdf` 500 times in a
+temporary source PDF. The repeated pages deliberately share the template's
+content streams, fonts and resources, so export must apply cross-page ownership
+and copy-on-write rules rather than relying on independent synthetic streams.
+
+The scheduler runs with the production-shaped `2 / 4 / 1` extraction,
+extracted-page and translation limits. Every hundredth page is explicitly
+preserved. Other pages pass through native extraction, compressed PageGraph
+storage, translation planning, deterministic scripted provider results,
+page-local unified-font fit resolution, sharded patch storage and shared-font
+atomic incremental export. The test verifies output page count, sampled
+translated text, a preserved page, source-prefix retention, destination
+replacement and absence of atomic temp residue.
+
+Command:
+
+```powershell
+cargo test --locked pdf_v3::acceptance::manual_windows_five_hundred_page_end_to_end_acceptance --lib -- --ignored --exact --nocapture
+```
+
+Environment and interpretation:
+
+- Windows on the current AMD development machine;
+- Rust debug test profile (`unoptimized + debuginfo`);
+- Arial is the one acceptance translation font, representing the production
+  unified-font policy without reading managed AppData resources;
+- deterministic scripted translation excludes local model throughput;
+- the fixture repeats one real renderable page and is a structural stress
+  test, not a varied 500-page corpus quality measurement.
+
+| Measurement | Result |
+| --- | ---: |
+| Pages | 500 |
+| Completed / preserved pages | 495 / 5 |
+| Fitted translation entries | 3,465 |
+| Complete pipeline | 355,253 ms |
+| Extraction worker wall time | 58,568 ms |
+| Translation worker wall time | 295,703 ms |
+| Export | 213,678 ms |
+| Native reconciliation | 4,738,551 us |
+| PageGraph store | 25,191,936 us |
+| PageGraph JSON + gzip | 18,598,344 us |
+| Scripted planning + fit renderer | 188,236,804 us |
+| Patch store | 36,561,329 us |
+| Peak process working set | 39,612,416 B |
+| Final private bytes | 14,311,424 B |
+
+| Disk measurement | Result |
+| --- | ---: |
+| Source PDF | 103,679 B |
+| Logical PageGraphs | 310,374,392 B |
+| Compressed PageGraph payloads | 23,972,299 B |
+| Complete PageGraph store | 24,156,807 B |
+| Logical patch payloads | 35,941,347 B |
+| Complete patch store | 36,130,664 B |
+| Scheduler | 219,438 B |
+| Unified font subset | 23,336 B |
+| Incremental PDF append | 325,926 B |
+| Final translated PDF | 429,605 B |
+
+The run closes the repeated-real-page 500-page bounded pipeline gate. Memory
+remained below 40 MB despite more than 346 MB of logical PageGraph and patch
+data being streamed through the process. Final PDF growth was about 652 bytes
+per translated page plus one shared 23 KB font subset; it did not embed a font
+or full source copy per page.
+
+Debug throughput is not yet acceptable as a product performance claim. The
+largest measured stage is page-local planning and renderer fit resolution,
+followed by patch persistence and PageGraph persistence. The next performance
+work should profile these boundaries in a non-production optimized benchmark
+workflow and investigate a compact patch/PageGraph disk schema without
+weakening durable authority. The equivalent 1,000-page harness exists but has
+not yet been recorded, and a varied complex real-world 500/1,000-page corpus
+remains required.

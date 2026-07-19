@@ -768,8 +768,13 @@ runs. Legacy progress events, page state and translated-PDF paths are no longer
 workbench authorities. A trusted native export command now accepts only the
 selected job, run and destination path, validates completed scheduler/runtime/
 store authorities, and routes completed patches through the atomic coordinator.
-Preserved-only runs use verified source copy and never manufacture patches. A
-real complex 500/1,000-page end-to-end translation/export run remains pending.
+Preserved-only runs use verified source copy and never manufacture patches. An
+isolated repeated-real-page 500-page Windows acceptance now runs the bounded
+scheduler through durable PageGraph/patch storage and shared-font atomic export
+with less than 40 MB peak working set. It verifies 3,465 fitted entries, explicit
+preservation, sampled output text and atomic replacement without touching user
+AppData. The equivalent 1,000-page entry point and a varied complex real-world
+500/1,000-page corpus run remain pending.
 
 ### Phase 7 — Component control plane
 

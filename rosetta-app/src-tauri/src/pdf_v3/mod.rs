@@ -1,5 +1,8 @@
 #![allow(dead_code)]
 
+#[cfg(all(test, target_os = "windows"))]
+mod acceptance;
+
 pub(crate) mod content_stream;
 pub(crate) mod document;
 pub(crate) mod extract;
