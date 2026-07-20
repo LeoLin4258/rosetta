@@ -827,6 +827,7 @@ pub async fn recover_rosetta_pdf_v3_run(
     if !matches!(
         result.status.state,
         crate::pdf_v3::scheduler::PdfV3RunState::Cancelled
+            | crate::pdf_v3::scheduler::PdfV3RunState::Failed
             | crate::pdf_v3::scheduler::PdfV3RunState::Completed
     ) && result.status.owned_by_current_session
     {
@@ -903,6 +904,7 @@ fn synchronize_pdf_v3_run_lifecycle(
     if matches!(
         status.state,
         crate::pdf_v3::scheduler::PdfV3RunState::Cancelled
+            | crate::pdf_v3::scheduler::PdfV3RunState::Failed
             | crate::pdf_v3::scheduler::PdfV3RunState::Completed
     ) || !status.owned_by_current_session
     {
@@ -941,6 +943,7 @@ fn synchronize_pdf_v3_run_lifecycle(
     refreshed.owner_heartbeat = if matches!(
         refreshed.state,
         crate::pdf_v3::scheduler::PdfV3RunState::Cancelled
+            | crate::pdf_v3::scheduler::PdfV3RunState::Failed
             | crate::pdf_v3::scheduler::PdfV3RunState::Completed
     ) || !refreshed.owned_by_current_session
     {

@@ -341,7 +341,11 @@ export function WorkspaceTopbar({
   const pdfV3HasOpenRun =
     !!pdfV3RunStatus &&
     pdfV3RunStatus.state !== "cancelled" &&
+    pdfV3RunStatus.state !== "failed" &&
     pdfV3RunStatus.state !== "completed";
+  const pdfV3FailedRunNeedsRecovery =
+    pdfV3RunStatus?.state === "failed" &&
+    !pdfV3RunStatus.ownedByCurrentSession;
   const pdfSelectionLocked =
     isTranslating || pdfV3HasOpenRun || pdfV3ControlOperation === "creating";
   const sameLanguage = sourceLang === targetLang;
@@ -471,17 +475,22 @@ export function WorkspaceTopbar({
         </div>
 
         <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
-          {isPdf && (pdfV3HasOpenRun || pdfV3ControlOperation != null) ? (
+          {isPdf &&
+          (pdfV3HasOpenRun ||
+            pdfV3FailedRunNeedsRecovery ||
+            pdfV3ControlOperation != null) ? (
             <>
-              <AnimatedWidth>
-                <TranslationRunIndicator
-                  phaseLabel={runPhaseLabel}
-                  pageLabel={runPageLabel}
-                  countValue={runCountValue}
-                  countTitle="页面进度"
-                  elapsedLabel={pdfV3RunStatus?.state === "paused" ? null : elapsedLabel}
-                />
-              </AnimatedWidth>
+              {pdfV3HasOpenRun ? (
+                <AnimatedWidth>
+                  <TranslationRunIndicator
+                    phaseLabel={runPhaseLabel}
+                    pageLabel={runPageLabel}
+                    countValue={runCountValue}
+                    countTitle="页面进度"
+                    elapsedLabel={pdfV3RunStatus?.state === "paused" ? null : elapsedLabel}
+                  />
+                </AnimatedWidth>
+              ) : null}
               <AnimatedWidth>
                 {pdfV3ControlOperation ? (
                   <Button
@@ -769,6 +778,7 @@ function pdfV3WorkerLabel(status: PdfV3RunControlStatus | null) {
   if (status.state === "paused") return "已暂停";
   if (status.state === "cancelling") return "正在停止";
   if (status.state === "cancelled") return "已停止";
+  if (status.state === "failed") return "处理失败";
   if (status.state === "completed") return "已完成";
 
   switch (status.worker.stage) {

@@ -127,8 +127,12 @@ impl fmt::Display for PdfV3PreviewError {
             Self::FontPlan(_) => {
                 formatter.write_str("PDF v3 preview font preparation failed")
             }
-            Self::Render(_) => formatter.write_str("PDF v3 preview page rendering failed"),
-            Self::Raster(_) => formatter.write_str("PDF v3 preview rasterization failed"),
+            Self::Render(error) => {
+                write!(formatter, "PDF v3 preview page rendering failed: {error}")
+            }
+            Self::Raster(error) => {
+                write!(formatter, "PDF v3 preview rasterization failed: {error}")
+            }
             Self::Pdfium => formatter.write_str("PDF v3 preview rasterizer is unavailable"),
         }
     }
@@ -411,6 +415,18 @@ mod tests {
 
     const RUN_ID: &str = "run-preview-test";
     const TARGET_LANGUAGE: &str = "zh-CN";
+
+    #[test]
+    fn preview_error_display_preserves_render_failure_detail() {
+        let error = PdfV3PreviewError::Render(
+            crate::pdf_v3::patch_renderer::TranslationPatchRenderError::InvalidPolicy,
+        );
+
+        assert_eq!(
+            error.to_string(),
+            "PDF v3 preview page rendering failed: TranslationPatch render policy is invalid"
+        );
+    }
 
     #[test]
     fn preview_state_gate_accepts_only_unleased_completed_pages() {

@@ -1016,7 +1016,11 @@ fn validate_identity(value: &str, field: &'static str) -> Result<(), Translation
 }
 
 fn language_directory_name(target_language: &str) -> String {
-    format!("language-{}", sha256(target_language.as_bytes()))
+    format!(
+        "language-v{}-{}",
+        PATCH_STORE_SCHEMA_VERSION,
+        sha256(target_language.as_bytes())
+    )
 }
 
 fn shard_index(page_number: u32) -> u32 {
@@ -1311,8 +1315,9 @@ mod tests {
     };
 
     use super::{
-        decompress_patch, encode_index, is_patch_filename, shard_filename, shard_id,
-        TranslationPatchCommitKind, TranslationPatchStore, TranslationPatchStoreError,
+        decompress_patch, encode_index, is_patch_filename, language_directory_name, sha256,
+        shard_filename, shard_id, TranslationPatchCommitKind, TranslationPatchStore,
+        TranslationPatchStoreError, PATCH_STORE_SCHEMA_VERSION,
     };
     use crate::pdf_v3::{
         translation_patch::{
@@ -1325,6 +1330,40 @@ mod tests {
             PAGE_GRAPH_SCHEMA_VERSION,
         },
     };
+
+    #[test]
+    fn schema_version_isolates_compressed_store_from_legacy_language_directory() {
+        let temp = TestDirectory::new("schema-namespace");
+        let legacy_directory = temp.path().join(format!("language-{}", sha256(b"zh-CN")));
+        fs::create_dir_all(&legacy_directory).expect("create legacy directory");
+        fs::write(legacy_directory.join("manifest.json"), b"legacy-v1")
+            .expect("write legacy manifest");
+
+        let store = patch_store(temp.path());
+        assert_eq!(
+            store
+                .language_dir()
+                .file_name()
+                .and_then(|name| name.to_str()),
+            Some(language_directory_name("zh-CN").as_str())
+        );
+        assert!(store
+            .language_dir()
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("language directory name")
+            .starts_with(&format!("language-v{PATCH_STORE_SCHEMA_VERSION}-")));
+        assert_ne!(store.language_dir(), legacy_directory);
+        assert!(store
+            .snapshot()
+            .expect("fresh v2 snapshot")
+            .pages
+            .is_empty());
+        assert_eq!(
+            fs::read(legacy_directory.join("manifest.json")).expect("legacy manifest remains"),
+            b"legacy-v1"
+        );
+    }
 
     #[test]
     fn commits_and_loads_compact_page_authority() {

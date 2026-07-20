@@ -4,6 +4,8 @@ Date: 2026-07-18
 
 Status: Accepted
 
+Refined by ADR 0075.
+
 ## Context
 
 The legacy PDF run model exposes a fixed ten-page chunk as durable state and

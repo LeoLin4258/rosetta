@@ -11,6 +11,7 @@ use ::pdf::{
     file::{File as PdfFile, FileOptions, NoCache, NoLog},
     object::{PlainRef, Resolve},
     primitive::{PdfString, Primitive},
+    PdfError,
 };
 use lopdf::{Dictionary, Object, ObjectId, Stream, StringFormat};
 use lru::LruCache;
@@ -269,12 +270,10 @@ impl PdfSourceObjectStore {
         }
 
         let resolver = self.file.resolver();
-        let primitive = resolver
-            .resolve(PlainRef {
-                id: u64::from(object_id.0),
-                gen: u64::from(object_id.1),
-            })
-            .map_err(|error| PdfSourceObjectError::Parse(error.to_string()))?;
+        let primitive = resolve_indirect_primitive(resolver.resolve(PlainRef {
+            id: u64::from(object_id.0),
+            gen: u64::from(object_id.1),
+        }))?;
         let object = primitive_to_lopdf(primitive, &resolver)?;
         let estimated_bytes = estimate_object_bytes(&object);
 
@@ -284,6 +283,17 @@ impl PdfSourceObjectStore {
             .map_err(|_| PdfSourceObjectError::CachePoisoned)?;
         cache.insert(object_id, object.clone(), estimated_bytes);
         Ok(object)
+    }
+}
+
+fn resolve_indirect_primitive(
+    result: Result<Primitive, PdfError>,
+) -> Result<Primitive, PdfSourceObjectError> {
+    match result {
+        Ok(primitive) => Ok(primitive),
+        // ISO 32000 treats references to free or missing xref entries as null.
+        Err(PdfError::FreeObject { .. } | PdfError::NullRef { .. }) => Ok(Primitive::Null),
+        Err(error) => Err(PdfSourceObjectError::Parse(error.to_string())),
     }
 }
 
@@ -512,10 +522,12 @@ fn estimate_dictionary_bytes(dictionary: &Dictionary) -> usize {
 mod tests {
     use std::{collections::BTreeMap, time::Instant};
 
+    use ::pdf::{primitive::Primitive, PdfError};
     use lopdf::{xref::XrefEntry, Document, Object, ObjectStream};
 
     use super::{
-        PdfObjectOverlay, PdfObjectView, PdfSourceObjectCachePolicy, PdfSourceObjectStore,
+        resolve_indirect_primitive, PdfObjectOverlay, PdfObjectView, PdfSourceObjectCachePolicy,
+        PdfSourceObjectStore,
     };
     use crate::{
         pdf_v3::object_delta::PdfObjectDelta,
@@ -628,6 +640,19 @@ mod tests {
             .and_then(Object::as_reference)
             .is_ok());
         assert!(source.previous_xref_offset() < source.source_bytes());
+    }
+
+    #[test]
+    fn free_and_missing_indirect_objects_resolve_as_pdf_null() {
+        for error in [
+            PdfError::FreeObject { obj_nr: 27 },
+            PdfError::NullRef { obj_nr: 28 },
+        ] {
+            assert_eq!(
+                resolve_indirect_primitive(Err(error)).expect("null indirect object"),
+                Primitive::Null
+            );
+        }
     }
 
     #[test]

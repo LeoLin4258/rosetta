@@ -525,9 +525,10 @@ fn run_extraction_loop(
                 set_stage(&health, PdfV3RunWorkerStage::Waiting);
                 thread::sleep(QUIESCENT_POLL_INTERVAL);
             }
-            PdfV3RunState::Cancelling | PdfV3RunState::Cancelled | PdfV3RunState::Completed => {
-                break
-            }
+            PdfV3RunState::Cancelling
+            | PdfV3RunState::Cancelled
+            | PdfV3RunState::Failed
+            | PdfV3RunState::Completed => break,
         }
     }
     let _closing_guard = lock_pdfium();
@@ -658,7 +659,7 @@ fn run_translation_loop(
                 cancel.store(true, Ordering::SeqCst);
                 break;
             }
-            PdfV3RunState::Cancelled | PdfV3RunState::Completed => break,
+            PdfV3RunState::Cancelled | PdfV3RunState::Failed | PdfV3RunState::Completed => break,
         }
     }
 }

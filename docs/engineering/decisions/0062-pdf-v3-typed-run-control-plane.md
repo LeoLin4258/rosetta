@@ -6,6 +6,8 @@ Status: Accepted
 
 Refines ADR 0055 and ADR 0061.
 
+Refined by ADR 0075.
+
 ## Context
 
 The durable scheduler already supported exact PageSets, page-local leases,

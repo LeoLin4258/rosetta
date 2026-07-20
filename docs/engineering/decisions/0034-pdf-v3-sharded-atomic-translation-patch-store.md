@@ -6,6 +6,8 @@ Status: Accepted
 
 Amends ADR 0015 and ADR 0033.
 
+Refined by ADR 0075.
+
 ## Context
 
 ADR 0033 fixed the durable page-patch schema but deliberately left file

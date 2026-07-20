@@ -56,6 +56,7 @@ export function usePdfV3RunControl({
   const [discoveryErrorState, setDiscoveryErrorState] = useState<
     ContextualValue<string | null>
   >({ contextKey, value: null });
+  const [recoveryNowMs, setRecoveryNowMs] = useState(() => Date.now());
 
   const status = statusState.contextKey === contextKey ? statusState.value : null;
   const operation =
@@ -138,7 +139,34 @@ export function usePdfV3RunControl({
   }, [applyStatus, contextKey, enabled, jobId, targetLanguage]);
 
   const runIsTerminal =
-    status?.state === "cancelled" || status?.state === "completed";
+    status?.state === "cancelled" ||
+    status?.state === "failed" ||
+    status?.state === "completed";
+
+  useEffect(() => {
+    if (
+      !status ||
+      status.ownedByCurrentSession ||
+      status.state === "cancelled" ||
+      status.state === "completed"
+    ) {
+      return;
+    }
+    const remainingMs = status.ownerRecoveryEligibleAtMs - Date.now();
+    if (remainingMs <= 0) {
+      setRecoveryNowMs(Date.now());
+      return;
+    }
+    const timeout = window.setTimeout(
+      () => setRecoveryNowMs(Date.now()),
+      remainingMs + 50,
+    );
+    return () => window.clearTimeout(timeout);
+  }, [
+    status?.ownedByCurrentSession,
+    status?.ownerRecoveryEligibleAtMs,
+    status?.state,
+  ]);
 
   useEffect(() => {
     if (!enabled || !jobId || !status || runIsTerminal || operation) return;
@@ -285,9 +313,10 @@ export function usePdfV3RunControl({
   const isOwned = status?.ownedByCurrentSession ?? false;
   const canRecover =
     !!status &&
-    !runIsTerminal &&
+    status.state !== "cancelled" &&
+    status.state !== "completed" &&
     !isOwned &&
-    Date.now() >= status.ownerRecoveryEligibleAtMs;
+    recoveryNowMs >= status.ownerRecoveryEligibleAtMs;
   const completedPages = status
     ? status.summary.completedPages + status.summary.preservedPages
     : 0;

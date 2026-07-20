@@ -6,6 +6,8 @@ Status: Accepted
 
 Refines ADR 0055, ADR 0061, ADR 0064, ADR 0065 and ADR 0066.
 
+Refined by ADR 0075.
+
 ## Context
 
 Trusted PDF v3 runs could be created atomically and kept alive by a native

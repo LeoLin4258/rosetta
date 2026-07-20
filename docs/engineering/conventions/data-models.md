@@ -461,8 +461,10 @@ PDF v3 patch store 是 source document + target language 隔离的页级译文�
 
 约定：
 
-- target-language 目录使用 exact language identity 的 SHA-256，不允许用户输入直接成为
-  相对路径；store root 必须是 native orchestrator 提供的绝对路径。
+- target-language 目录 identity 必须同时包含 patch-store schema version 和 exact language
+  identity 的 SHA-256，当前格式为 `language-v2-<sha256>`。schema 变化不得复用旧目录；beta
+  旧 `language-<sha256>` store 不迁移、不读取，也不允许用户输入直接成为相对路径。store root
+  必须是 native orchestrator 提供的绝对路径。
 - 根 `manifest.json` 只保存 schema、source fingerprint、exact target language、固定
   `pagesPerShard = 64` 和 deterministic manifest ID，不随每一页提交增长。
 - 页索引使用 `shard-XXXXXXXX.json`。每个 shard 最多覆盖 64 个连续页号，并保存独立
@@ -894,6 +896,12 @@ Render Cache。beta 阶段不迁移 v1/v2 PDF 派生状态。
   结果不得超过调用者 limit 或剩余容量；不得把固定 10 页写入持久化或公开调度语义。
 - pause/cancelling 阻止新 claim，但允许已租赁工作显式 commit/fail。取消只有在 active
   page lease 清零后才能进入 `cancelled`。failed page 只有 `retryable=true` 才能恢复。
+- run state 包含 `running`、`paused`、`cancelling`、`cancelled`、`failed` 和 `completed`。
+  当全部 requested pages 都收敛到 completed/preserved/failed 且至少一页 failed 时，run 必须
+  原子收敛到 `failed`；worker、owner heartbeat 和前端 active polling 必须停止。打开旧的全失败
+  `running` manifest 时必须从 shard summary 自动归一化。重试一个 retryable failed page 会把
+  run 重新切回 `running`；non-retryable page、pause/resume/cancel 和 export 不得把 failed run
+  伪装成成功。跨 session 的 failed run 可以在 owner lease 过期后接管，但接管本身不启动 worker。
 - status API 默认使用 page-number ordered window，单次最多 256 records；不得默认返回
   整个长文档页状态数组。
 - manifest 和 shard 使用 unique temp、file `sync_all`、backup/rename 替换和支持平台上的

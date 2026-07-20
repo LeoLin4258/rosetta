@@ -6,6 +6,8 @@ Status: Accepted
 
 Refines ADR 0055, ADR 0063, ADR 0065 and ADR 0067.
 
+Refined by ADR 0075.
+
 ## Context
 
 The durable scheduler retained retryable extraction and translation failures,
@@ -28,7 +30,7 @@ native lifecycle supplies the owner session and timestamp.
 The command first verifies that:
 
 - the current native session owns the run;
-- the run is `running` or `paused`;
+- the run is `running`, `paused` or terminal `failed`;
 - the page belongs to the run's exact PageSet; and
 - its durable state is `failed` with `retryable=true`.
 
@@ -36,7 +38,8 @@ The scheduler remains the state authority. An extraction failure returns to
 `pending`; a translation failure retaining valid extraction authority returns
 to `extracted`. Attempts and durable artifacts are not erased. Cancelled and
 completed runs, foreign owners, non-requested pages and non-retryable failures
-are rejected.
+are rejected. Retrying from `failed` changes the run to `running` before worker
+registration.
 
 If the run supervisor is inactive, the command resolves the current trusted
 component and hashes the cached source before changing the page state. A

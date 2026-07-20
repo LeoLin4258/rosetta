@@ -94,6 +94,7 @@ pub(crate) enum PdfV3RunState {
     Paused,
     Cancelling,
     Cancelled,
+    Failed,
     Completed,
 }
 
@@ -557,16 +558,9 @@ impl DurablePdfV3Scheduler {
         let summary = scheduler.scan_summary(&manifest)?;
         let mut changed = summary != manifest.summary;
         manifest.summary = summary;
-        if manifest.run_state == PdfV3RunState::Completed && !summary_is_complete(&manifest.summary)
-        {
-            manifest.run_state = PdfV3RunState::Running;
-            changed = true;
-        } else if matches!(
-            manifest.run_state,
-            PdfV3RunState::Running | PdfV3RunState::Paused
-        ) && summary_is_complete(&manifest.summary)
-        {
-            manifest.run_state = PdfV3RunState::Completed;
+        let reconciled_state = reconcile_run_state(manifest.run_state, &manifest.summary);
+        if reconciled_state != manifest.run_state {
+            manifest.run_state = reconciled_state;
             changed = true;
         }
         if changed {
@@ -682,7 +676,7 @@ impl DurablePdfV3Scheduler {
         ensure_owner(&manifest, owner_session_id)?;
         if matches!(
             manifest.run_state,
-            PdfV3RunState::Cancelled | PdfV3RunState::Completed
+            PdfV3RunState::Cancelled | PdfV3RunState::Failed | PdfV3RunState::Completed
         ) {
             return Ok(false);
         }
@@ -1095,7 +1089,7 @@ impl DurablePdfV3Scheduler {
         ensure_owner(&manifest, owner_session_id)?;
         if !matches!(
             manifest.run_state,
-            PdfV3RunState::Running | PdfV3RunState::Paused
+            PdfV3RunState::Running | PdfV3RunState::Paused | PdfV3RunState::Failed
         ) {
             return Err(PdfV3SchedulerError::RunNotRetryable(manifest.run_state));
         }
@@ -1114,6 +1108,9 @@ impl DurablePdfV3Scheduler {
             .map(|extraction| PdfV3PageState::Extracted { extraction })
             .unwrap_or(PdfV3PageState::Pending);
         record.updated_at_ms = now_ms;
+        if manifest.run_state == PdfV3RunState::Failed {
+            manifest.run_state = PdfV3RunState::Running;
+        }
         self.commit_shard_and_refresh(&mut manifest, &mut shard, now_ms)
     }
 
@@ -1277,17 +1274,7 @@ impl DurablePdfV3Scheduler {
         manifest.owner_session_id = new_owner_session_id;
         manifest.owner_lease_updated_at_ms = now_ms;
         manifest.summary = self.scan_summary(&manifest)?;
-        if manifest.run_state == PdfV3RunState::Completed && !summary_is_complete(&manifest.summary)
-        {
-            manifest.run_state = PdfV3RunState::Running;
-        }
-        if matches!(
-            manifest.run_state,
-            PdfV3RunState::Running | PdfV3RunState::Paused
-        ) && summary_is_complete(&manifest.summary)
-        {
-            manifest.run_state = PdfV3RunState::Completed;
-        }
+        manifest.run_state = reconcile_run_state(manifest.run_state, &manifest.summary);
         bump_manifest_generation(&mut manifest)?;
         self.write_manifest(&manifest)?;
         Ok(report)
@@ -1302,9 +1289,7 @@ impl DurablePdfV3Scheduler {
         bump_shard_generation(shard)?;
         self.write_shard(shard)?;
         manifest.summary = self.scan_summary(manifest)?;
-        if manifest.run_state == PdfV3RunState::Running && summary_is_complete(&manifest.summary) {
-            manifest.run_state = PdfV3RunState::Completed;
-        }
+        manifest.run_state = reconcile_run_state(manifest.run_state, &manifest.summary);
         manifest.owner_lease_updated_at_ms = now_ms;
         bump_manifest_generation(manifest)?;
         self.write_manifest(manifest)
@@ -1833,6 +1818,35 @@ fn summary_is_complete(summary: &PdfV3SchedulerSummary) -> bool {
         && summary.translating_pages == 0
 }
 
+fn summary_is_failed(summary: &PdfV3SchedulerSummary) -> bool {
+    summary.failed_pages > 0
+        && summary.requested_pages
+            == summary.completed_pages + summary.preserved_pages + summary.failed_pages
+        && summary.pending_pages == 0
+        && summary.extracting_pages == 0
+        && summary.extracted_pages == 0
+        && summary.translating_pages == 0
+}
+
+fn reconcile_run_state(current: PdfV3RunState, summary: &PdfV3SchedulerSummary) -> PdfV3RunState {
+    if matches!(
+        current,
+        PdfV3RunState::Cancelling | PdfV3RunState::Cancelled
+    ) {
+        return current;
+    }
+    if summary_is_complete(summary) {
+        return PdfV3RunState::Completed;
+    }
+    if summary_is_failed(summary) {
+        return PdfV3RunState::Failed;
+    }
+    match current {
+        PdfV3RunState::Completed | PdfV3RunState::Failed => PdfV3RunState::Running,
+        _ => current,
+    }
+}
+
 fn bump_manifest_generation(
     manifest: &mut PdfV3SchedulerManifest,
 ) -> Result<(), PdfV3SchedulerError> {
@@ -2341,7 +2355,7 @@ mod tests {
     }
 
     #[test]
-    fn pause_retry_and_cancellation_keep_transitions_explicit() {
+    fn failed_terminal_can_restart_only_for_a_retryable_page() {
         let run = TempRun::new("control");
         let scheduler = create(&run, 1);
         scheduler.pause("owner-a", 2).expect("pause");
@@ -2357,36 +2371,124 @@ mod tests {
         scheduler
             .fail_claim("owner-a", &first, "extract-transient", true, 6)
             .expect("fail retryable claim");
+        assert_eq!(
+            scheduler.manifest_snapshot().expect("failed snapshot").0,
+            PdfV3RunState::Failed
+        );
+        assert!(!scheduler
+            .renew_owner("owner-a", 7)
+            .expect("failed run is terminal"));
         scheduler
-            .retry_failed("owner-a", 1, 7)
+            .retry_failed("owner-a", 1, 8)
             .expect("retry failure");
+        assert_eq!(
+            scheduler.manifest_snapshot().expect("restarted snapshot").0,
+            PdfV3RunState::Running
+        );
         let second = scheduler
-            .claim_extraction("owner-a", 1, 8)
+            .claim_extraction("owner-a", 1, 9)
             .expect("reclaim")
             .remove(0);
         scheduler
-            .fail_claim("owner-a", &second, "extract-permanent", false, 9)
+            .fail_claim("owner-a", &second, "extract-permanent", false, 10)
             .expect("fail permanent claim");
         assert!(matches!(
-            scheduler.retry_failed("owner-a", 1, 10),
+            scheduler.retry_failed("owner-a", 1, 11),
             Err(PdfV3SchedulerError::InvalidTransition { page_number: 1 })
         ));
-        scheduler
-            .request_cancel("owner-a", 11, "user-requested")
-            .expect("request cancellation");
-        scheduler
-            .finish_cancellation("owner-a", 12)
-            .expect("finish cancellation");
-        assert_eq!(
-            scheduler.manifest_snapshot().expect("snapshot").0,
-            PdfV3RunState::Cancelled
-        );
         assert!(matches!(
-            scheduler.retry_failed("owner-a", 1, 13),
-            Err(PdfV3SchedulerError::RunNotRetryable(
-                PdfV3RunState::Cancelled
+            scheduler.request_cancel("owner-a", 12, "user-requested"),
+            Err(PdfV3SchedulerError::RunNotCancellable(
+                PdfV3RunState::Failed
             ))
         ));
+    }
+
+    #[test]
+    fn mixed_settled_pages_with_any_failure_finish_as_failed() {
+        let run = TempRun::new("mixed-failure");
+        let scheduler = create(&run, 3);
+        let extraction_claims = scheduler
+            .claim_extraction("owner-a", 3, 10)
+            .expect("claim extraction");
+        for claim in &extraction_claims {
+            scheduler
+                .commit_extraction("owner-a", claim, extraction(claim.page_number), 20)
+                .expect("commit extraction");
+        }
+
+        let first_translations = scheduler
+            .claim_translation("owner-a", 3, 30)
+            .expect("claim first translations");
+        scheduler
+            .commit_translation(
+                "owner-a",
+                &first_translations[0],
+                PdfV3TranslationCommit::Patch(patch(1)),
+                40,
+            )
+            .expect("commit patch");
+        scheduler
+            .commit_translation(
+                "owner-a",
+                &first_translations[1],
+                PdfV3TranslationCommit::Preserved {
+                    reason_code: "unsupported-complex-page".to_string(),
+                },
+                41,
+            )
+            .expect("commit preservation");
+        let failed_translation = scheduler
+            .claim_translation("owner-a", 1, 42)
+            .expect("claim failed translation")
+            .remove(0);
+        scheduler
+            .fail_claim(
+                "owner-a",
+                &failed_translation,
+                "patch-store-failed",
+                false,
+                43,
+            )
+            .expect("commit failure");
+
+        let (state, summary) = scheduler.manifest_snapshot().expect("snapshot");
+        assert_eq!(state, PdfV3RunState::Failed);
+        assert_eq!(summary.completed_pages, 1);
+        assert_eq!(summary.preserved_pages, 1);
+        assert_eq!(summary.failed_pages, 1);
+    }
+
+    #[test]
+    fn open_normalizes_a_settled_running_manifest_to_failed() {
+        let run = TempRun::new("failed-open-repair");
+        let scheduler = create(&run, 1);
+        let claim = scheduler
+            .claim_extraction("owner-a", 1, 10)
+            .expect("claim")
+            .remove(0);
+        scheduler
+            .fail_claim("owner-a", &claim, "legacy-failure", false, 20)
+            .expect("fail claim");
+        drop(scheduler);
+
+        let manifest_path = run.path.join("manifest.json");
+        let mut manifest: PdfV3SchedulerManifest =
+            serde_json::from_slice(&fs::read(&manifest_path).expect("read manifest"))
+                .expect("decode manifest");
+        manifest.run_state = PdfV3RunState::Running;
+        manifest.generation += 1;
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec(&manifest).expect("encode manifest"),
+        )
+        .expect("write legacy running manifest");
+
+        let reopened = DurablePdfV3Scheduler::open(&run.path).expect("reopen scheduler");
+        assert_eq!(
+            reopened.manifest_snapshot().expect("snapshot").0,
+            PdfV3RunState::Failed
+        );
     }
 
     #[test]

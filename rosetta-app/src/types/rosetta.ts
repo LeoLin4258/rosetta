@@ -151,6 +151,7 @@ export type PdfV3RunState =
   | "paused"
   | "cancelling"
   | "cancelled"
+  | "failed"
   | "completed";
 
 export type PdfV3SchedulerSummary = {

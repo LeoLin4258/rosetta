@@ -119,6 +119,7 @@ export function PdfDocumentPreview({
   const pdfV3SelectionLocked =
     pdfV3RunStatus != null &&
     pdfV3RunStatus.state !== "cancelled" &&
+    pdfV3RunStatus.state !== "failed" &&
     pdfV3RunStatus.state !== "completed";
 
   const renderPdfV3TranslatedPage = useCallback(
@@ -175,6 +176,7 @@ export function PdfDocumentPreview({
     if (pdfError) return `PDF v3：${pdfError}`;
     if (isTranslating) return "PDF v3 正在按页处理...";
     if (pdfV3RunStatus?.state === "paused") return "PDF v3 翻译已暂停。";
+    if (pdfV3RunStatus?.state === "failed") return "PDF v3 处理失败，请重试失败页面或新建翻译。";
     return "等待翻译。选择页面后即可创建新的 PDF v3 运行。";
   })();
 
@@ -428,6 +430,7 @@ function pdfV3TranslatedPageLabel({
       if (runState === "paused") return "本次 PDF 翻译已暂停";
       if (runState === "cancelling") return "正在停止本次 PDF 翻译";
       if (runState === "cancelled") return "本次 PDF 翻译已停止";
+      if (runState === "failed") return "本次 PDF 翻译处理失败";
       return `等待处理第 ${pageNumber} 页`;
   }
 }

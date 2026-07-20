@@ -240,7 +240,7 @@ pub(crate) fn cancel_pdf_v3_run(
             scheduler.request_cancel(owner_session_id, now_ms, USER_CANCEL_REASON)?;
         }
         PdfV3RunState::Cancelling => {}
-        PdfV3RunState::Cancelled => {
+        PdfV3RunState::Cancelled | PdfV3RunState::Failed => {
             return build_status(
                 &scheduler,
                 &run_directory,
@@ -280,7 +280,7 @@ pub(crate) fn preflight_pdf_v3_page_retry(
     }
     if !matches!(
         snapshot.run_state,
-        PdfV3RunState::Running | PdfV3RunState::Paused
+        PdfV3RunState::Running | PdfV3RunState::Paused | PdfV3RunState::Failed
     ) {
         return Err(PdfV3SchedulerError::RunNotRetryable(snapshot.run_state).into());
     }

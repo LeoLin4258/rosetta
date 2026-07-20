@@ -58,7 +58,9 @@ export function usePdfV3Preview({
       ].join(":")
     : null;
   const runIsTerminal =
-    runState === "cancelled" || runState === "completed";
+    runState === "cancelled" ||
+    runState === "failed" ||
+    runState === "completed";
 
   useEffect(() => {
     if (!runStatus) return;
