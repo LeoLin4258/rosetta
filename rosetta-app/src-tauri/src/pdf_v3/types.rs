@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 pub(crate) const PDF_V3_CONTRACT_VERSION: u32 = 1;
 pub(crate) const PDF_V3_ENGINE_VERSION: &str = "rosetta-pdf-v3-native-engine/1";
-pub(crate) const PAGE_GRAPH_SCHEMA_VERSION: u32 = 5;
+pub(crate) const PAGE_GRAPH_SCHEMA_VERSION: u32 = 6;
 pub(crate) const TRANSLATION_PATCH_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -176,6 +176,7 @@ pub(crate) struct PageGroup {
     pub group_id: String,
     pub kind: PageGroupKind,
     pub atom_ids: Vec<String>,
+    pub bounds: [f32; 4],
     pub confidence: f32,
 }
 
@@ -184,6 +185,7 @@ pub(crate) struct PageGroup {
 pub(crate) enum PageGroupKind {
     Line,
     Paragraph,
+    FlowContainer,
     Column,
     Table,
     TableCell,

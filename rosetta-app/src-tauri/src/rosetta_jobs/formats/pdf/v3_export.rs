@@ -8,10 +8,12 @@ use crate::pdf_v3::{
     page_graph_store::PageGraphStore,
     page_set::PageSet,
     patch_store::TranslationPatchStore,
+    region_layout::RegionLayoutPolicy,
     scheduler::{DurablePdfV3Scheduler, PdfV3PageState, PdfV3RunState},
     source_object::PdfSourceObjectStore,
     translation_export::{
-        export_translation_pdf_atomic, PdfV3TranslationExportRequest, PdfV3TranslationExportResult,
+        export_region_translation_pdf_atomic, PdfV3RegionTranslationExportRequest,
+        PdfV3RegionTranslationExportResult,
     },
 };
 
@@ -33,7 +35,7 @@ pub(crate) struct PdfV3RunExportResult {
     pub requested_page_count: usize,
     pub translated_page_count: usize,
     pub preserved_page_count: usize,
-    pub export: PdfV3TranslationExportResult,
+    pub export: PdfV3RegionTranslationExportResult,
 }
 
 #[derive(Debug)]
@@ -202,7 +204,7 @@ pub(crate) fn export_pdf_v3_run(
                         return Err(PdfV3RunExportError::Authority);
                     }
                     let stored_patch = patch_store
-                        .load(&stored_page.page)
+                        .load_region(&stored_page.page)
                         .map_err(|_| PdfV3RunExportError::Patch)?
                         .ok_or(PdfV3RunExportError::Patch)?;
                     if stored_patch.patch.patch_id != patch.patch_id
@@ -240,9 +242,9 @@ pub(crate) fn export_pdf_v3_run(
 
     let pages =
         PageSet::from_pages(translated_pages).map_err(|_| PdfV3RunExportError::Authority)?;
-    let export = export_translation_pdf_atomic(
+    let export = export_region_translation_pdf_atomic(
         &source,
-        PdfV3TranslationExportRequest {
+        PdfV3RegionTranslationExportRequest {
             source_fingerprint: &binding.source_fingerprint,
             destination_path,
             pages: &pages,
@@ -250,7 +252,7 @@ pub(crate) fn export_pdf_v3_run(
             patch_store: &patch_store,
             regular_font: &assets.regular_font,
             bold_font: assets.bold_font.as_ref(),
-            render_policy: runtime.render_policy.into(),
+            layout_policy: RegionLayoutPolicy::default(),
             cancellation: &IncrementalExportCancellation::default(),
         },
     )
@@ -277,11 +279,10 @@ mod tests {
 
     use crate::pdf_v3::{
         page_set::PageSet,
-        patch_renderer::TRANSLATION_PATCH_RENDERER_VERSION,
+        region_renderer::REGION_TRANSLATION_RENDERER_VERSION,
+        region_translation_patch::REGION_TRANSLATION_PATCH_SCHEMA_VERSION,
         scheduler::{DurablePdfV3Scheduler, PdfV3RunSpec, PdfV3SchedulerCapacity},
-        types::{
-            PAGE_GRAPH_SCHEMA_VERSION, PDF_V3_ENGINE_VERSION, TRANSLATION_PATCH_SCHEMA_VERSION,
-        },
+        types::{PAGE_GRAPH_SCHEMA_VERSION, PDF_V3_ENGINE_VERSION},
     };
 
     use super::{export_target_language, PdfV3RunExportError};
@@ -339,8 +340,8 @@ mod tests {
                 target_language: "zh-CN".to_string(),
                 engine_version: PDF_V3_ENGINE_VERSION.to_string(),
                 page_graph_schema_version: PAGE_GRAPH_SCHEMA_VERSION,
-                translation_patch_schema_version: TRANSLATION_PATCH_SCHEMA_VERSION,
-                renderer_version: TRANSLATION_PATCH_RENDERER_VERSION.to_string(),
+                translation_patch_schema_version: REGION_TRANSLATION_PATCH_SCHEMA_VERSION,
+                renderer_version: REGION_TRANSLATION_RENDERER_VERSION.to_string(),
             },
             PdfV3SchedulerCapacity {
                 max_extracting_pages: 1,

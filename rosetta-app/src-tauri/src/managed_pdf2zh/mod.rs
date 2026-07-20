@@ -40,17 +40,6 @@ pub fn get_pdf2zh_prepare_cache_status(
     Ok(state.prepare_cache_status_snapshot())
 }
 
-/// Kick off prewarm in the background. Called once from lib.rs setup after
-/// the main window is shown so the user never waits for the import.
-pub fn prewarm_in_background(app: &AppHandle) {
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        if let Err(error) = worker::prewarm_worker(&app).await {
-            eprintln!("[pdf2zh-worker] background prewarm failed: {error}");
-        }
-    });
-}
-
 pub fn suspend_worker(app: &AppHandle) {
     if let Some(state) = app.try_state::<Pdf2zhWorkerState>() {
         state.request_shutdown();

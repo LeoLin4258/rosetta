@@ -6,9 +6,11 @@ use std::{
 
 use crate::pdf_v3::{
     page_set::{PageSet, PageSetError},
-    patch_renderer::{TranslationPatchRenderPolicy, TRANSLATION_PATCH_RENDERER_VERSION},
+    patch_renderer::TranslationPatchRenderPolicy,
+    region_renderer::REGION_TRANSLATION_RENDERER_VERSION,
+    region_translation_patch::REGION_TRANSLATION_PATCH_SCHEMA_VERSION,
     scheduler::{DurablePdfV3Scheduler, PdfV3RunSpec, PdfV3SchedulerCapacity},
-    types::{PAGE_GRAPH_SCHEMA_VERSION, PDF_V3_ENGINE_VERSION, TRANSLATION_PATCH_SCHEMA_VERSION},
+    types::{PAGE_GRAPH_SCHEMA_VERSION, PDF_V3_ENGINE_VERSION},
 };
 
 use super::{
@@ -152,8 +154,8 @@ fn create_staged_run(
             target_language: request.target_language.to_string(),
             engine_version: PDF_V3_ENGINE_VERSION.to_string(),
             page_graph_schema_version: PAGE_GRAPH_SCHEMA_VERSION,
-            translation_patch_schema_version: TRANSLATION_PATCH_SCHEMA_VERSION,
-            renderer_version: TRANSLATION_PATCH_RENDERER_VERSION.to_string(),
+            translation_patch_schema_version: REGION_TRANSLATION_PATCH_SCHEMA_VERSION,
+            renderer_version: REGION_TRANSLATION_RENDERER_VERSION.to_string(),
         },
         PdfV3SchedulerCapacity {
             max_extracting_pages: DEFAULT_MAX_EXTRACTING_PAGES,
@@ -321,7 +323,9 @@ mod tests {
         },
         rosetta_jobs::formats::pdf::{
             unit_translation::{LlamaCppPdfApiConfig, PdfUnitProviderConfig},
-            v3_component::ResolvedPdfV3TranslationComponent,
+            v3_component::{
+                PdfV3ComponentResolutionDiagnostics, ResolvedPdfV3TranslationComponent,
+            },
             v3_runtime::PdfV3TranslationComponentBinding,
         },
     };
@@ -463,6 +467,7 @@ mod tests {
             bold_font: None,
             runtime_release_sha256: None,
             supported_directions: &["en-zh", "zh-en"],
+            resolution_diagnostics: PdfV3ComponentResolutionDiagnostics::default(),
         }
     }
 

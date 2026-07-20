@@ -250,7 +250,9 @@ mod tests {
         pdf_v3::font::{TranslationFontAsset, TranslationFontWeight},
         rosetta_jobs::formats::pdf::{
             unit_translation::{LlamaCppPdfApiConfig, PdfUnitProviderConfig},
-            v3_component::ResolvedPdfV3TranslationComponent,
+            v3_component::{
+                PdfV3ComponentResolutionDiagnostics, ResolvedPdfV3TranslationComponent,
+            },
             v3_run_creation::{create_pdf_v3_run, PdfV3RunCreationRequest},
             v3_runtime::PdfV3TranslationComponentBinding,
         },
@@ -491,6 +493,7 @@ mod tests {
             bold_font: None,
             runtime_release_sha256: None,
             supported_directions: &["en-zh", "zh-en"],
+            resolution_diagnostics: PdfV3ComponentResolutionDiagnostics::default(),
         }
     }
 }

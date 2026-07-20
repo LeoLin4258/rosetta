@@ -39,13 +39,16 @@ The managed RWKV binding is accepted only when:
 - profile, PID and base URL are unchanged across the health probe and again
   after artifact hashing completes.
 
-Blocking verification hashes the actual sidecar and model bytes. Direct model
-files use a path, byte-count and modification-time digest cache. Extracted
-model directories use a deterministic sorted content digest, reject symlinks
-and include relative paths and byte counts. The component manifest ID is a
-content-derived SHA-256 over the runtime profile/release, actual sidecar and
-model identities, provider/model profile identity, PDF asset-pack release and
-actual translation-font identities.
+Blocking verification hashes the actual sidecar bytes. Model content is
+verified once by the managed installer before its atomic final rename; the
+installer then writes a profile-bound manifest containing the exact filename,
+byte count and SHA-256. Normal runtime resolution validates that manifest plus
+the live model file kind and byte count, and reuses the installed SHA-256
+without reading the complete model. Install, update and repair remain the only
+full model-digest boundaries. The component manifest ID is a content-derived
+SHA-256 over the runtime profile/release, actual sidecar identity, trusted
+installed model identity, provider/model profile identity, PDF asset-pack
+release and actual translation-font identities.
 
 The resolver reads only the three bundled BabelDOC font files from the legacy
 PDF component pack. It requires the pack release manifest and verifies the
@@ -63,12 +66,26 @@ passwords, raw probe errors or document text.
 Trusted PDF v3 run creation must consume this resolver directly. It must not
 accept component, provider, model, font or process identity from the frontend.
 
+After the selected managed translation runtime becomes `Ready`, the app shell
+probes the resolver once in the background for the active target-language font
+family. This pre-populates the process-local artifact digest and immutable font
+caches without blocking window startup. A target-language or runtime-profile
+change gets a distinct warmup key. Failure remains non-authoritative and is
+retried by actual run creation; the frontend does not persist a false ready
+state across app processes.
+
+The app no longer starts the legacy Python/doclayout worker during process
+startup. Native PDF v3 does not consume that worker, and prewarming it adds an
+unrelated process, memory use and several seconds of background work. Legacy
+commands may still start it explicitly while those commands remain in the
+codebase.
+
 ## Evidence
 
 Automated Windows tests cover:
 
 - exact managed model/runtime manifest matching and tamper rejection;
-- file-digest cache invalidation after artifact stamp changes;
+- installed-model receipt reuse with bounded file-kind and byte-count checks;
 - deterministic extracted-directory hashing and content-drift detection;
 - component manifest identity drift when runtime content identity changes;
 - a strict serialized status field set without machine-local or credential
@@ -82,17 +99,16 @@ Automated Windows tests cover:
 - PDF v3 runtime manifests can be built from native-verified identity instead
   of frontend assertions.
 - Runtime switches during expensive verification fail closed.
-- Repeated probes avoid re-reading large direct model files when their artifact
-  stamp is unchanged.
+- App startup and repeated probes never re-read a correctly installed model;
+  model verification cost stays at the install/update/repair boundary.
 - PDF v3 no longer treats legacy Python/doclayout readiness as a dependency.
 - Unified translation fonts provide stable rendering and bounded font choices
   across a run.
 
 ### Costs
 
-- The first probe hashes the complete direct model or extracted model tree.
-- Extracted model directories are content-hashed on each resolution until a
-  stronger immutable install receipt is introduced.
+- A same-size model mutation outside Rosetta is not detected at ordinary
+  startup. Explicit repair/reinstall is the integrity revalidation path.
 - The current status probe reports only ready or a sanitized typed failure; a
   richer install/repair/capability event surface remains pending.
 - Signed standalone PDF component manifests and native install/update/remove
@@ -102,6 +118,6 @@ Automated Windows tests cover:
 
 - Accept provider/model/font identity from React or a run-creation payload.
 - Trust provider response metadata as model identity.
-- Treat a matching install manifest as proof without hashing live artifacts.
+- Re-hash the complete model at every App process start.
 - Require the legacy Python worker and doclayout model for native PDF v3.
 - Return endpoints, paths, PIDs, credentials or raw errors for diagnostics.

@@ -333,7 +333,8 @@ PDF v3 的 `PageGraph` 是独立于当前 PDF v2 page-state 的 native 页面 IR
 - run discovery 未完成或失败时必须 fail closed，不能创建并发 run、显示 legacy 译文或开放 legacy PDF 导出。nonterminal run 的页面选择必须锁定。
 - 顶栏状态与 pause/resume/cancel/recover/retry 只由 native run status 和 owner eligibility 驱动。`completed + preserved` 是完成页计数；failed page retry 只在 `retryable=true` 且当前 session 拥有 run 时开放。
 
-- `PageGraph.schemaVersion` 当前为 `5`。
+- `PageGraph.schemaVersion` 当前为 `6`。schema v6 是 beta reset：旧提取 artifact
+  不迁移并由当前 source authority 逐页重建。
 - 一个 `PageAtom` 只在 reconciliation 全部对象级检查通过后，才能从
   `pdfium-unverified` 变为 `pdfium-verified` 或 `to-unicode-corrected`。
 - atom 的低层来源使用稳定的 mapping ID、text-show ID、operand ID、operand
@@ -365,6 +366,18 @@ PDF v3 的 `PageGraph` 是独立于当前 PDF v2 page-state 的 native 页面 IR
 - schema v5 的 atom source provenance 还必须保存 exact text-show operator 和完整 text
   operand SHA-256。`TranslationPatch` renderer 只能从这份已 reconciliation 的 provenance
   构造低层 request，不得重新按 Unicode 文本搜索 content stream。
+- schema v6 在 reconciliation 后派生 page-local `line -> paragraph -> flow-container`
+  hierarchy。每个 group 保存稳定 ID、按阅读顺序排列的 atom ID、PDF page-space
+  `[left, bottom, right, top]` bounds 与有限 `0..=1` confidence；不得复制 source text。
+- visual hierarchy 只接纳 finite、近水平且已经 `pdfium-verified`、
+  `to-unicode-corrected` 或 synthetic whitespace 的 atom。每个 atom 在同一结构层最多归属
+  一个 group，line/paragraph/flow-container 三层覆盖集合必须完全一致。
+- 分组必须逐页、确定性且有硬上限：最多 200,000 个 eligible atoms、50,000 条 line、
+  25,000 个 paragraph 和 10,000 个 flow container。超过 atom 或派生 group 上限时整页不写
+  部分 hierarchy，只记录不含正文的 typed warning。
+- visual line 先按 baseline 与水平 gutter 拆分，paragraph 再按垂直节奏、水平重叠、缩进和
+  emphasis transition 组合；flow container 要求稳定列边界，不能因错开的段落或页尾横向
+  文本跨越双栏 gutter。低置信度区域在 region renderer 开放后必须整容器 preserve。
 - 同一 Form stream 的多次视觉调用不能伪装成独立 operand。`SharedContentStream`
   只有在 decode、font identity 和 atom coverage 等基础 gate 全部通过后才可作为
   可映射能力标记，不能覆盖更具体的 typed fallback。reconciliation 可以保留完整
@@ -413,11 +426,11 @@ authority，也不能进入 job cache、scheduler shard 或前端持久状态。
 - provider/model identity 不由 plan 或 bridge 猜测。renderer-owning page processor 必须从选中
   runtime/component manifest 获取并写入 `TranslationPatchDraftMetadata`。
 
-## PDF v3 TranslationPatch
+## PDF v3 Legacy Text-Show TranslationPatch
 
-PDF v3 的 `TranslationPatch` 是页级译文的持久化权威数据，不是 PDF 文件，也不同于
-renderer 内部瞬时使用的 `ContentOperandRangePatch`。当前逻辑 schema 为 `1`；它仍在
-隔离 native 模块中，尚未接入正式 job store，因此不迁移 v1/v2 PDF 派生 artifact。
+text-show `TranslationPatch` schema `1` 是 PDF v3 旧 renderer 的页级译文模型。它保留给
+低层回归和 beta 基线，不再是新建生产 run 的 authority；新 run 使用下一节的 region patch。
+它不是 PDF 文件，也不同于 renderer 内部瞬时使用的 `ContentOperandRangePatch`。
 
 约定：
 
@@ -454,6 +467,26 @@ renderer 内部瞬时使用的 `ContentOperandRangePatch`。当前逻辑 schema 
 - compact JSON patch 本身不负责文件所有权；原子 revisioned 文件与索引由下述
   TranslationPatch Store 管理。render-cache quota 和 streaming export 仍属于后续 Phase 4。
 
+## PDF v3 Region TranslationPatch
+
+生产 PDF v3 页级译文 authority 是 `RegionTranslationPatch` schema `2`。translation unit 是
+完整视觉段落，render unit 是完整 flow container；不得按字符数把段落译文拆回 source
+text-show。
+
+约定：
+
+- patch 必须绑定 page/source hash、目标语言、positive revision、provider/model identity 和
+  exact `rosetta-pdf-v3-region-translation-renderer/2`。
+- container 必须保存 flow-container group ID、ordered source atom identity/hash、ordered
+  paragraph results、protected-span placement 和唯一 renderer decision。普通 source text、
+  shaped glyph、layout line 和 PDF object delta 不得进入 durable patch。
+- renderer decision 只允许 `pending`、带 finite fit scale/line count 的 `reflowed`，或带稳定
+  reason code 的 `preserved`。只有所有 container resolved 的 patch 可以写入 store。
+- cache/restart/export replay 必须重新验证 PageGraph、source provenance、布局和 stored decision；
+  任何 line count、fit scale、preservation 或 patch identity 漂移必须 fail closed。
+- 一个 unsafe container 必须整体保留。不得只清除其中部分 source show，也不得用不透明矩形
+  遮盖原文。
+
 ## PDF v3 TranslationPatch Store
 
 PDF v3 patch store 是 source document + target language 隔离的页级译文磁盘权威。它不
@@ -462,7 +495,7 @@ PDF v3 patch store 是 source document + target language 隔离的页级译文�
 约定：
 
 - target-language 目录 identity 必须同时包含 patch-store schema version 和 exact language
-  identity 的 SHA-256，当前格式为 `language-v2-<sha256>`。schema 变化不得复用旧目录；beta
+  identity 的 SHA-256，当前格式为 `language-v3-<sha256>`。schema 变化不得复用旧目录；beta
   旧 `language-<sha256>` store 不迁移、不读取，也不允许用户输入直接成为相对路径。store root
   必须是 native orchestrator 提供的绝对路径。
 - 根 `manifest.json` 只保存 schema、source fingerprint、exact target language、固定
@@ -479,8 +512,10 @@ PDF v3 patch store 是 source document + target language 隔离的页级译文�
   temp + backup + rename 原子替换。新 shard durable 后才能删除被替换的旧 revision。
 - 同 revision + 同 patch ID 是幂等写；同 revision + 不同内容是 conflict；低 revision
   必须拒绝。source page hash 在同一 store/page 内变化也必须拒绝。
-- commit、load 和 repair 都必须拒绝含 `pending` entry 的 patch。store 不提供同 revision
-  pending-to-resolved 更新，也不保存第二套 draft authority。
+- gzip body 使用 envelope schema `1`，payload kind 必须显式为 `text-show` 或 `region`。
+  production commit/load 使用 region typed API；kind 不匹配必须拒绝，不能交叉解码。
+- commit、load 和 repair 都必须拒绝含 `pending` entry/container 的 patch。store 不提供同
+  revision pending-to-resolved 更新，也不保存第二套 draft authority。
 - 每个进程/store 首次访问执行完整 repair。canonical/temp/backup shard 选择最高有效
   generation，generation 相同优先 canonical。普通后续提交只读取 owning shard，不得
   重新读取所有历史 page patch。
@@ -547,7 +582,7 @@ cache miss。它不复用 v1/v2 PDF page cache。
 - explicit repair 在 active lease 存在时必须拒绝。删除整个 render cache 不得影响 patch
   store、source PDF 或已导出的文件。
 
-## PDF v3 TranslationPatch Renderer
+## PDF v3 Legacy TranslationPatch Renderer
 
 `TranslationPatch` renderer 是 durable page translation 与低层 content-stream renderer
 之间的唯一桥接层。它接收 unchanged source document、reconciled PageGraph、全 pending
@@ -556,7 +591,7 @@ cache miss。它不复用 v1/v2 PDF page cache。
 
 约定：
 
-- 一个 entry 当前必须完整覆盖一个 source text object，并由 PageGraph v5 provenance 解析到
+- 一个 entry 当前必须完整覆盖一个 source text object，并由 PageGraph v6 provenance 解析到
   唯一 stream、Form invocation path、operation、operator、operand hash 和 `BT/ET` target。
   不完整、跨 object 或 provenance 不足的 entry 使用稳定 reason code 保留原文。
 - entry 先按 physical stream/path 和 logical `BT/ET` target 聚合。全部 target 必须针对同一
@@ -596,6 +631,27 @@ cache miss。它不复用 v1/v2 PDF page cache。
   staging 也已消费 lazy source/accumulated views。跨页 stream/Form ownership 由可复用的
   `PdfStreamOwnershipIndex` 从同一个 lazy source view 解析；production registry render 不得
   接收完整 `lopdf::Document`。
+
+## PDF v3 Region Translation Renderer
+
+生产 renderer contract 是 `rosetta-pdf-v3-region-translation-renderer/2`。它消费 resolved
+region patch，以 flow container 为原子边界清除 owned source text shows，并使用统一
+Regular/Bold 字体一次绘制完整 translated layout。
+
+约定：
+
+- pending render 可以生成 container decisions；durable resolved replay 只能复现相同 decision
+  和 patch identity，不得重新解释后静默改写。
+- source neutralization、Form/top-level stream COW、page resource/contents 更新、opacity state、
+  font objects 和 translated overlay 必须合并为一个 object delta。任何 ownership 或 provenance
+  不完整都整体 preserve 或 typed fail。
+- preview 单页 PDF/cache key 必须绑定 source fingerprint、page、region patch ID/revision 和
+  region renderer version；旧 text-show artifact 不得命中。
+- 文档导出先收集全部 reflowed container 字符，创建一份 document-wide font registry，再逐页
+  replay region delta。每个实际使用的 Regular/Bold subset 只允许一套 6-object Type0 资源，
+  禁止按页重复嵌入字体。
+- 全 preserved patch 不需要 prepared font，也不得产生空字体对象；最终导出可退化为 byte-exact
+  verified source copy。
 
 ## PDF v3 Incremental Export Delta
 
@@ -1038,14 +1094,14 @@ PDF v3 translation component status 是 native component resolver 对当前可�
 约定：
 
 - resolver 输入只能包含目标语言；component/provider/model/font identity 必须由 native 当前
-  platform profile、已安装 manifest、实际 artifact bytes 和 live process state 推导，前端不得
-  提供或覆盖。
+  platform profile、已安装 manifest、受管 sidecar/font bytes 和 live process state 推导，前端不得
+  提供或覆盖。模型完整 bytes 只在 install/update/repair 时校验，正常 App 启动复用安装 manifest
+  中的 SHA-256，并仅检查文件类型与 byte count。
 - managed runtime 必须为 `Ready`、匹配当前 OS/architecture、install plan 完整且 health probe
   成功。profile、PID 与 loopback base URL 在 probe 前后以及 blocking artifact hash 完成后必须
   完全一致；发生切换必须 fail closed。
-- model/runtime install manifest 必须精确匹配 compile-time profile。直接 model 与 sidecar 必须
-  hash 实际文件；extracted model directory 必须按 normalized relative path 确定性排序、拒绝
-  symlink，并 hash 路径、byte count 与完整内容。
+- model/runtime install manifest 必须精确匹配 compile-time profile。sidecar 必须 hash 实际文件；
+  model identity 使用安装时已经完整校验的 manifest SHA-256，正常启动不得重新读取完整 GGUF。
 - 译文统一字体由目标语言选择，只允许受管 Source Han Sans CN Regular/Bold 或 Go Noto
   Kurrent Regular；完整 font bytes 必须匹配固定 SHA-256。缓存后的 immutable bytes 是 live
   renderer binding，不能在 run 内重新从 mutable path 推导 identity。
@@ -1126,7 +1182,7 @@ run index，也不是 lifecycle 或 worker 状态权威。
 
 ## PDF v3 Lazy Translated-Page Preview
 
-PDF v3 translated preview 是 durable scheduler、PageGraph 和 TranslationPatch authority
+PDF v3 translated preview 是 durable scheduler、PageGraph 和 region TranslationPatch authority
 的按需二进制投影，不是完整译文 PDF、第二份 page state 或导出权威。
 
 约定：
@@ -1239,8 +1295,8 @@ target language, requested PageSet, runtime revision, renderer policy, provider,
 model and font bindings are derived from native durable authority.
 
 Its result schema is `rosetta-pdf-v3-run-export/1` and contains the run ID,
-target language, requested/completed/preserved page counts and the existing
-`rosetta-pdf-v3-translation-export/1` byte/object metrics. It does not contain
+target language, requested/completed/preserved page counts and
+`rosetta-pdf-v3-region-translation-export/2` container/line/font/byte/object metrics. It does not contain
 source or destination paths, document text, credentials, endpoints or owner
 session IDs. Nonterminal runs, active leases and any scheduler, runtime,
 PageGraph, patch or source identity mismatch are rejected before atomic

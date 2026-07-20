@@ -314,11 +314,12 @@ export type PdfV3RunExportResult = {
   translatedPageCount: number;
   preservedPageCount: number;
   export: {
-    schema: "rosetta-pdf-v3-translation-export/1";
+    schema: "rosetta-pdf-v3-region-translation-export/2";
     commitKind: "incremental" | "source-copy";
     selectedPageCount: number;
-    fittedEntryCount: number;
-    preservedEntryCount: number;
+    renderedContainerCount: number;
+    renderedLineCount: number;
+    preservedContainerCount: number;
     regularCharacterCount: number;
     boldCharacterCount: number;
     preparedFontCount: number;

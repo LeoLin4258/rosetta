@@ -14,7 +14,8 @@ use sha2::{Digest, Sha256};
 use crate::pdf_v3::{
     font::{TranslationFontAsset, TranslationFontWeight},
     page_set::{PageSet, PageSetError},
-    patch_renderer::{TranslationPatchRenderPolicy, TRANSLATION_PATCH_RENDERER_VERSION},
+    patch_renderer::TranslationPatchRenderPolicy,
+    region_renderer::REGION_TRANSLATION_RENDERER_VERSION,
     scheduler::PdfV3TranslationBinding,
 };
 
@@ -478,7 +479,7 @@ fn validate_translation_runtime_manifest(
             "translationPatchSchemaVersion",
         ));
     }
-    if manifest.renderer_version != TRANSLATION_PATCH_RENDERER_VERSION {
+    if manifest.renderer_version != REGION_TRANSLATION_RENDERER_VERSION {
         return Err(PdfV3RuntimeManifestError::InvalidIdentity(
             "rendererVersion",
         ));
@@ -669,9 +670,11 @@ mod tests {
         pdf_v3::{
             font::{TranslationFontAsset, TranslationFontWeight},
             page_set::PageSet,
-            patch_renderer::{TranslationPatchRenderPolicy, TRANSLATION_PATCH_RENDERER_VERSION},
+            patch_renderer::TranslationPatchRenderPolicy,
+            region_renderer::REGION_TRANSLATION_RENDERER_VERSION,
+            region_translation_patch::REGION_TRANSLATION_PATCH_SCHEMA_VERSION,
             scheduler::PdfV3TranslationBinding,
-            types::{PAGE_GRAPH_SCHEMA_VERSION, TRANSLATION_PATCH_SCHEMA_VERSION},
+            types::PAGE_GRAPH_SCHEMA_VERSION,
         },
         rosetta_jobs::formats::pdf::unit_translation::PdfUnitProviderConfig,
     };
@@ -797,8 +800,8 @@ mod tests {
             target_language: "zh-CN".to_string(),
             engine_version: "pdf-v3-test".to_string(),
             page_graph_schema_version: PAGE_GRAPH_SCHEMA_VERSION,
-            translation_patch_schema_version: TRANSLATION_PATCH_SCHEMA_VERSION,
-            renderer_version: TRANSLATION_PATCH_RENDERER_VERSION.to_string(),
+            translation_patch_schema_version: REGION_TRANSLATION_PATCH_SCHEMA_VERSION,
+            renderer_version: REGION_TRANSLATION_RENDERER_VERSION.to_string(),
         }
     }
 

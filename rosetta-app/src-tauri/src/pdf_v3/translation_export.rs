@@ -8,6 +8,7 @@ use super::{
         TranslationFontWeight,
     },
     font_plan::{
+        plan_document_region_translation_fonts_with_cancel,
         plan_document_translation_fonts_with_cancel, TranslationFontCharacterPlan,
         TranslationFontPlanError,
     },
@@ -25,6 +26,10 @@ use super::{
         TranslationPatchRenderPolicy,
     },
     patch_store::{TranslationPatchStore, TranslationPatchStoreError},
+    region_layout::RegionLayoutPolicy,
+    region_renderer::{
+        stage_resolved_region_translation_patch_with_font_registry, RegionTranslationRenderError,
+    },
     source_object::{PdfObjectOverlay, PdfSourceObjectStore},
 };
 
@@ -54,6 +59,26 @@ pub(crate) struct PdfV3TranslationExportResult {
     pub output_bytes: u64,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PdfV3RegionTranslationExportResult {
+    pub schema: &'static str,
+    pub commit_kind: PdfV3TranslationExportCommitKind,
+    pub selected_page_count: usize,
+    pub rendered_container_count: usize,
+    pub rendered_line_count: usize,
+    pub preserved_container_count: usize,
+    pub regular_character_count: usize,
+    pub bold_character_count: usize,
+    pub prepared_font_count: usize,
+    pub font_subset_bytes: usize,
+    pub font_object_count: usize,
+    pub delta_object_count: usize,
+    pub source_bytes: u64,
+    pub appended_bytes: u64,
+    pub output_bytes: u64,
+}
+
 #[derive(Debug)]
 pub(crate) enum PdfV3TranslationExportError {
     Cancelled,
@@ -68,6 +93,7 @@ pub(crate) enum PdfV3TranslationExportError {
     PageIndex(PdfPageIndexError),
     Ownership(PdfStreamOwnershipError),
     Render(TranslationPatchRenderError),
+    RegionRender(RegionTranslationRenderError),
     ObjectDelta(PdfObjectDeltaError),
     Commit(IncrementalExportError),
 }
@@ -100,6 +126,7 @@ impl fmt::Display for PdfV3TranslationExportError {
             Self::PageIndex(error) => error.fmt(formatter),
             Self::Ownership(error) => error.fmt(formatter),
             Self::Render(error) => error.fmt(formatter),
+            Self::RegionRender(error) => error.fmt(formatter),
             Self::ObjectDelta(error) => error.fmt(formatter),
             Self::Commit(error) => error.fmt(formatter),
         }
@@ -124,6 +151,7 @@ export_error_from!(TranslationPatchStoreError, PatchStore);
 export_error_from!(PdfPageIndexError, PageIndex);
 export_error_from!(PdfStreamOwnershipError, Ownership);
 export_error_from!(TranslationPatchRenderError, Render);
+export_error_from!(RegionTranslationRenderError, RegionRender);
 export_error_from!(PdfObjectDeltaError, ObjectDelta);
 
 impl From<TranslationFontPlanError> for PdfV3TranslationExportError {
@@ -154,6 +182,168 @@ pub(crate) struct PdfV3TranslationExportRequest<'a> {
     pub bold_font: Option<&'a TranslationFontAsset>,
     pub render_policy: TranslationPatchRenderPolicy,
     pub cancellation: &'a IncrementalExportCancellation,
+}
+
+pub(crate) struct PdfV3RegionTranslationExportRequest<'a> {
+    pub source_fingerprint: &'a str,
+    pub destination_path: &'a Path,
+    pub pages: &'a PageSet,
+    pub page_graph_store: &'a PageGraphStore,
+    pub patch_store: &'a TranslationPatchStore,
+    pub regular_font: &'a TranslationFontAsset,
+    pub bold_font: Option<&'a TranslationFontAsset>,
+    pub layout_policy: RegionLayoutPolicy,
+    pub cancellation: &'a IncrementalExportCancellation,
+}
+
+pub(crate) fn export_region_translation_pdf_atomic(
+    source: &PdfSourceObjectStore,
+    request: PdfV3RegionTranslationExportRequest<'_>,
+) -> Result<PdfV3RegionTranslationExportResult, PdfV3TranslationExportError> {
+    validate_region_request(source, &request)?;
+    let base = IncrementalExportBase::from_source_object_store(request.source_fingerprint, source)?;
+    ensure_active(request.cancellation)?;
+    if request.pages.is_empty() {
+        let result = export_source_pdf_atomic(
+            source.source_path(),
+            request.destination_path,
+            &base,
+            request.cancellation,
+        )?;
+        return Ok(PdfV3RegionTranslationExportResult {
+            schema: "rosetta-pdf-v3-region-translation-export/2",
+            commit_kind: PdfV3TranslationExportCommitKind::SourceCopy,
+            selected_page_count: 0,
+            rendered_container_count: 0,
+            rendered_line_count: 0,
+            preserved_container_count: 0,
+            regular_character_count: 0,
+            bold_character_count: 0,
+            prepared_font_count: 0,
+            font_subset_bytes: 0,
+            font_object_count: 0,
+            delta_object_count: 0,
+            source_bytes: result.source_bytes,
+            appended_bytes: 0,
+            output_bytes: result.output_bytes,
+        });
+    }
+
+    let font_plan = plan_document_region_translation_fonts_with_cancel(
+        request.page_graph_store,
+        request.patch_store,
+        request.pages,
+        || request.cancellation.is_cancelled(),
+    )?;
+    let prepared_fonts =
+        font_plan.prepare_document_fonts(request.regular_font, request.bold_font)?;
+    let regular_character_count = font_plan.character_count(TranslationFontWeight::Regular);
+    let bold_character_count = font_plan.character_count(TranslationFontWeight::Bold);
+    let font_subset_bytes = prepared_fonts
+        .iter()
+        .map(|font| font.subset_bytes.len())
+        .sum();
+    let fonts = prepared_fonts.iter().collect::<Vec<_>>();
+
+    ensure_active(request.cancellation)?;
+    let page_index = PdfPageIndex::resolve(source, request.pages)?;
+    let ownership_index =
+        PdfStreamOwnershipIndex::resolve(source, &page_index.selected_content_stream_ids())?;
+    let staged_fonts = stage_document_translation_font_registry(source, &fonts)?;
+    let font_object_count = staged_fonts.object_delta.object_count();
+    let mut export_delta = staged_fonts.object_delta;
+    let mut rendered_container_count = 0usize;
+    let mut rendered_line_count = 0usize;
+    let mut preserved_container_count = 0usize;
+
+    for &page_number in request.pages.pages() {
+        ensure_active(request.cancellation)?;
+        let stored_page = request
+            .page_graph_store
+            .load(page_number)?
+            .ok_or(PdfV3TranslationExportError::MissingPageGraph(page_number))?;
+        let stored_patch = request.patch_store.load_region(&stored_page.page)?.ok_or(
+            PdfV3TranslationExportError::MissingTranslationPatch(page_number),
+        )?;
+        let replay_font_plan = TranslationFontCharacterPlan::for_resolved_region_replay(
+            &stored_page.page,
+            &stored_patch.patch,
+        )?;
+        let replay_fonts =
+            replay_font_plan.prepare_available_fonts(request.regular_font, request.bold_font)?;
+        let replay_font_refs = replay_fonts.iter().collect::<Vec<_>>();
+        let overlay = PdfObjectOverlay::new(source, &export_delta);
+        let staged = stage_resolved_region_translation_patch_with_font_registry(
+            source,
+            &overlay,
+            &page_index,
+            &ownership_index,
+            &stored_page.page,
+            &stored_patch.patch,
+            &replay_font_refs,
+            &fonts,
+            request.layout_policy,
+            &staged_fonts.registry,
+        )?;
+        if staged.resolved_patch != stored_patch.patch {
+            return Err(PdfV3TranslationExportError::SourceIdentityMismatch);
+        }
+        rendered_container_count =
+            rendered_container_count.saturating_add(staged.rendered_container_count);
+        rendered_line_count = rendered_line_count.saturating_add(staged.rendered_line_count);
+        preserved_container_count =
+            preserved_container_count.saturating_add(staged.preserved_container_count);
+        export_delta.merge(staged.object_delta)?;
+    }
+    ensure_active(request.cancellation)?;
+
+    let delta_object_count = export_delta.object_count();
+    let (commit_kind, source_bytes, appended_bytes, output_bytes) = if delta_object_count == 0 {
+        let result = export_source_pdf_atomic(
+            source.source_path(),
+            request.destination_path,
+            &base,
+            request.cancellation,
+        )?;
+        (
+            PdfV3TranslationExportCommitKind::SourceCopy,
+            result.source_bytes,
+            0,
+            result.output_bytes,
+        )
+    } else {
+        let result = export_incremental_pdf_atomic(
+            source.source_path(),
+            request.destination_path,
+            &base,
+            &export_delta,
+            request.cancellation,
+        )?;
+        (
+            PdfV3TranslationExportCommitKind::Incremental,
+            result.source_bytes,
+            result.appended_bytes,
+            result.output_bytes,
+        )
+    };
+
+    Ok(PdfV3RegionTranslationExportResult {
+        schema: "rosetta-pdf-v3-region-translation-export/2",
+        commit_kind,
+        selected_page_count: request.pages.pages().len(),
+        rendered_container_count,
+        rendered_line_count,
+        preserved_container_count,
+        regular_character_count,
+        bold_character_count,
+        prepared_font_count: prepared_fonts.len(),
+        font_subset_bytes,
+        font_object_count,
+        delta_object_count,
+        source_bytes,
+        appended_bytes,
+        output_bytes,
+    })
 }
 
 pub(crate) fn export_translation_pdf_atomic(
@@ -320,6 +510,24 @@ fn validate_request(
     ensure_active(request.cancellation)
 }
 
+fn validate_region_request(
+    source: &PdfSourceObjectStore,
+    request: &PdfV3RegionTranslationExportRequest<'_>,
+) -> Result<(), PdfV3TranslationExportError> {
+    if request.page_graph_store.source_fingerprint() != request.source_fingerprint
+        || request.patch_store.source_fingerprint() != request.source_fingerprint
+    {
+        return Err(PdfV3TranslationExportError::SourceIdentityMismatch);
+    }
+    if source.page_count() != request.page_graph_store.source_page_count() {
+        return Err(PdfV3TranslationExportError::SourcePageCountMismatch {
+            source: source.page_count(),
+            store: request.page_graph_store.source_page_count(),
+        });
+    }
+    ensure_active(request.cancellation)
+}
+
 fn ensure_active(
     cancellation: &IncrementalExportCancellation,
 ) -> Result<(), PdfV3TranslationExportError> {
@@ -363,32 +571,197 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     use super::{
-        export_translation_pdf_atomic, PdfV3TranslationExportCommitKind,
+        export_region_translation_pdf_atomic, export_translation_pdf_atomic,
+        PdfV3RegionTranslationExportRequest, PdfV3TranslationExportCommitKind,
         PdfV3TranslationExportRequest,
     };
     use crate::{
         pdf_v3::{
             font::{TranslationFontAsset, TranslationFontWeight, UnifiedTranslationFontPlan},
+            font_plan::{
+                plan_document_region_translation_fonts_with_cancel, TranslationFontCharacterPlan,
+            },
             identity::{compare_images, render_page},
             incremental_export::IncrementalExportCancellation,
             page_graph_store::PageGraphStore,
             page_set::PageSet,
+            paragraph_translation_plan::{
+                build_visual_paragraph_page_plan, resolve_visual_paragraph_results,
+            },
             patch_renderer::{
                 render_translation_patch, TranslationPatchRenderPolicy,
                 TRANSLATION_PATCH_RENDERER_VERSION,
             },
             patch_store::TranslationPatchStore,
             reconcile::build_reconciled_page_graph,
+            region_layout::RegionLayoutPolicy,
+            region_renderer::{
+                stage_region_translation_patch, REGION_TRANSLATION_RENDERER_VERSION,
+            },
+            region_translation_patch::{
+                build_region_translation_patch, RegionTranslationPatchDraft,
+            },
             source_object::PdfSourceObjectStore,
             translation_patch::{
                 build_translation_patch, TranslationPatchDraft, TranslationPatchEntryDraft,
             },
+            translation_plan::{TranslationPatchDraftMetadata, TranslationUnitResult},
             types::{
                 PageAtomSourceKind, PageGraph, TranslationPatch, TranslationPatchRendererDecision,
             },
         },
         rosetta_jobs::formats::pdf::test_helpers::{fixture_path, pdfium_test_lock, shared_pdfium},
     };
+
+    #[test]
+    fn region_export_reuses_one_document_font_registry_across_pages() {
+        let _guard = pdfium_test_lock();
+        let source_path = fixture_path("2305.13048v2.pdf");
+        let source_bytes = fs::read(&source_path).expect("source PDF");
+        let source_fingerprint = fingerprint(&source_bytes);
+        let source = PdfSourceObjectStore::open(&source_path).expect("lazy source");
+        let regular_asset = microsoft_yahei_asset(TranslationFontWeight::Regular);
+        let bold_asset = microsoft_yahei_asset(TranslationFontWeight::Bold);
+        let pages = [
+            build_reconciled_page_graph(shared_pdfium(), &source_path, 1).expect("page one graph"),
+            build_reconciled_page_graph(shared_pdfium(), &source_path, 2).expect("page two graph"),
+        ];
+        let temp = TestDirectory::new("region-incremental");
+        let page_store = PageGraphStore::new(
+            &temp.path().join("pages"),
+            &source_fingerprint,
+            source.page_count(),
+            "pdf-v3-region-export-test",
+        )
+        .expect("PageGraph store");
+        let patch_store = TranslationPatchStore::new(
+            &temp.path().join("translations"),
+            &source_fingerprint,
+            "zh-CN",
+        )
+        .expect("region patch store");
+
+        for page in &pages {
+            let plan = build_visual_paragraph_page_plan(page).expect("visual paragraph plan");
+            let results = plan
+                .units
+                .iter()
+                .map(|unit| {
+                    let protected = unit
+                        .protected_spans
+                        .iter()
+                        .map(|span| span.token.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    TranslationUnitResult {
+                        unit_id: unit.unit_id.clone(),
+                        translated_text: format!(
+                            "{}{}",
+                            "译".repeat((unit.source_text.chars().count() * 25 / 100).max(2)),
+                            protected
+                        ),
+                    }
+                })
+                .collect::<Vec<_>>();
+            let translations =
+                resolve_visual_paragraph_results(&plan, results, "zh-CN").expect("translations");
+            let pending = build_region_translation_patch(
+                page,
+                RegionTranslationPatchDraft {
+                    plan,
+                    translations,
+                    metadata: TranslationPatchDraftMetadata {
+                        target_language: "zh-CN".to_string(),
+                        translation_revision: 1,
+                        provider_id: "region-export-test".to_string(),
+                        model_id: "synthetic-test".to_string(),
+                        renderer_version: REGION_TRANSLATION_RENDERER_VERSION.to_string(),
+                    },
+                },
+            )
+            .expect("pending region patch");
+            let page_font_plan =
+                TranslationFontCharacterPlan::for_pending_region_patch(page, &pending)
+                    .expect("page font plan");
+            let prepared = page_font_plan
+                .prepare_available_fonts(&regular_asset, Some(&bold_asset))
+                .expect("page fonts");
+            let font_refs = prepared.iter().collect::<Vec<_>>();
+            let staged = stage_region_translation_patch(
+                &source,
+                page,
+                &pending,
+                &font_refs,
+                RegionLayoutPolicy::default(),
+            )
+            .expect("resolved region patch");
+            page_store.commit(page).expect("committed PageGraph");
+            patch_store
+                .commit_region(page, &staged.resolved_patch)
+                .expect("committed region patch");
+        }
+
+        let selected_pages = PageSet::from_pages([1, 2]).expect("selected pages");
+        let document_font_plan = plan_document_region_translation_fonts_with_cancel(
+            &page_store,
+            &patch_store,
+            &selected_pages,
+            || false,
+        )
+        .expect("document font plan");
+        let expected_fonts = document_font_plan
+            .prepare_document_fonts(&regular_asset, Some(&bold_asset))
+            .expect("document fonts");
+        let destination = temp.path().join("region-translated.pdf");
+        let result = export_region_translation_pdf_atomic(
+            &source,
+            PdfV3RegionTranslationExportRequest {
+                source_fingerprint: &source_fingerprint,
+                destination_path: &destination,
+                pages: &selected_pages,
+                page_graph_store: &page_store,
+                patch_store: &patch_store,
+                regular_font: &regular_asset,
+                bold_font: Some(&bold_asset),
+                layout_policy: RegionLayoutPolicy::default(),
+                cancellation: &IncrementalExportCancellation::default(),
+            },
+        )
+        .expect("region translation export");
+
+        assert_eq!(
+            result.commit_kind,
+            PdfV3TranslationExportCommitKind::Incremental
+        );
+        assert_eq!(result.selected_page_count, 2);
+        assert!(result.rendered_container_count > 0);
+        assert!(result.rendered_line_count > 0);
+        assert_eq!(result.prepared_font_count, expected_fonts.len());
+        assert_eq!(result.font_object_count, expected_fonts.len() * 6);
+        assert!(result.appended_bytes < source_bytes.len() as u64 / 2);
+        let output_bytes = fs::read(&destination).expect("region output");
+        assert!(output_bytes.starts_with(&source_bytes));
+        let output = Document::load_mem(&output_bytes).expect("region output document");
+        for font in &expected_fonts {
+            let count = output
+                .objects
+                .values()
+                .filter(|object| {
+                    object.as_dict().is_ok_and(|dictionary| {
+                        dictionary
+                            .get(b"Subtype")
+                            .and_then(Object::as_name)
+                            .is_ok_and(|name| name == b"Type0")
+                            && dictionary
+                                .get(b"BaseFont")
+                                .and_then(Object::as_name)
+                                .is_ok_and(|name| name == font.subset_name.as_bytes())
+                    })
+                })
+                .count();
+            assert_eq!(count, 1, "document font subset must be embedded once");
+        }
+    }
 
     #[test]
     fn streams_resolved_pages_into_one_shared_font_incremental_export() {
@@ -760,6 +1133,21 @@ mod tests {
             0,
         )
         .expect("Windows Arial font")
+    }
+
+    fn microsoft_yahei_asset(weight: TranslationFontWeight) -> TranslationFontAsset {
+        let (asset_id, path) = match weight {
+            TranslationFontWeight::Regular => (
+                "MicrosoftYaHeiRegular",
+                Path::new(r"C:\Windows\Fonts\msyh.ttc"),
+            ),
+            TranslationFontWeight::Bold => (
+                "MicrosoftYaHeiBold",
+                Path::new(r"C:\Windows\Fonts\msyhbd.ttc"),
+            ),
+        };
+        TranslationFontAsset::open_weighted(asset_id, weight, path, 0)
+            .expect("Windows Microsoft YaHei font")
     }
 
     fn fingerprint(bytes: &[u8]) -> String {

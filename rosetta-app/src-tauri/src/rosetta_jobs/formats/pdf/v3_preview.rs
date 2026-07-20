@@ -5,23 +5,26 @@ use tauri::AppHandle;
 use crate::pdf_v3::{
     font_plan::{TranslationFontCharacterPlan, TranslationFontPlanError},
     page_graph_store::PageGraphStore,
-    patch_renderer::{
-        insert_translation_patch_page_pdf_cache, open_translation_patch_page_pdf_cache,
-        render_resolved_translation_patch_page_pdf_from_view, restore_translation_patch_page_pdf,
-        TranslationPatchPagePdf, TranslationPatchRenderError,
-    },
     patch_store::TranslationPatchStore,
     preview::{
-        insert_translation_patch_preview_png_cache, open_translation_patch_preview_png_cache,
-        render_translation_patch_preview_png, TranslationPatchPreviewError,
+        insert_translation_patch_preview_png_cache, open_region_translation_preview_png_cache,
+        render_region_translation_preview_png, TranslationPatchPreviewError,
         MAX_PREVIEW_PIXEL_WIDTH, MIN_PREVIEW_PIXEL_WIDTH,
     },
+    region_layout::RegionLayoutPolicy,
+    region_renderer::{
+        insert_region_translation_page_pdf_cache, open_region_translation_page_pdf_cache,
+        render_resolved_region_translation_patch_page_pdf_from_view,
+        restore_region_translation_page_pdf, RegionTranslationPagePdf,
+        RegionTranslationRenderError,
+    },
+    region_translation_patch::RegionTranslationPatch,
     render_cache::{RenderCache, RenderCacheConfig, RenderCacheError},
     scheduler::{
         DurablePdfV3Scheduler, PdfV3ExtractionAuthority, PdfV3PageState, PdfV3PatchAuthority,
     },
     source_object::PdfSourceObjectStore,
-    types::{PageGraph, TranslationPatch},
+    types::PageGraph,
 };
 
 use super::{
@@ -39,11 +42,11 @@ pub(crate) struct PdfV3PreviewAuthority {
     binding: crate::pdf_v3::scheduler::PdfV3TranslationBinding,
     runtime: PdfV3TranslationRuntimeManifest,
     page: PageGraph,
-    patch: TranslationPatch,
+    patch: RegionTranslationPatch,
     cache: RenderCache,
     pixel_width: u32,
     cached_png: Option<Vec<u8>>,
-    cached_page_pdf: Option<TranslationPatchPagePdf>,
+    cached_page_pdf: Option<RegionTranslationPagePdf>,
 }
 
 impl PdfV3PreviewAuthority {
@@ -82,7 +85,7 @@ pub(crate) enum PdfV3PreviewError {
     Cache(RenderCacheError),
     Source,
     FontPlan(TranslationFontPlanError),
-    Render(TranslationPatchRenderError),
+    Render(RegionTranslationRenderError),
     Raster(TranslationPatchPreviewError),
     Pdfium,
 }
@@ -156,8 +159,8 @@ impl From<TranslationFontPlanError> for PdfV3PreviewError {
     }
 }
 
-impl From<TranslationPatchRenderError> for PdfV3PreviewError {
-    fn from(value: TranslationPatchRenderError) -> Self {
+impl From<RegionTranslationRenderError> for PdfV3PreviewError {
+    fn from(value: RegionTranslationRenderError) -> Self {
         Self::Render(value)
     }
 }
@@ -238,7 +241,7 @@ pub(crate) fn load_pdf_v3_preview_authority(
     )
     .map_err(|_| PdfV3PreviewError::PatchStore)?;
     let stored_patch = patch_store
-        .load(&stored_page.page)
+        .load_region(&stored_page.page)
         .map_err(|_| PdfV3PreviewError::PatchStore)?
         .ok_or(PdfV3PreviewError::MissingTranslationPatch(page_number))?;
     if stored_patch.patch.patch_id != patch_authority.patch_id
@@ -252,20 +255,20 @@ pub(crate) fn load_pdf_v3_preview_authority(
         &pdf_v3_directory.join("render-cache"),
         RenderCacheConfig::default(),
     )?;
-    let cached_png = open_translation_patch_preview_png_cache(
+    let cached_png = open_region_translation_preview_png_cache(
         &cache,
         &binding.source_fingerprint,
         &stored_patch.patch,
         pixel_width,
     )?;
     let cached_page_pdf = if cached_png.is_none() {
-        open_translation_patch_page_pdf_cache(
+        open_region_translation_page_pdf_cache(
             &cache,
             &binding.source_fingerprint,
             &stored_patch.patch,
         )?
         .map(|bytes| {
-            restore_translation_patch_page_pdf(
+            restore_region_translation_page_pdf(
                 &binding.source_fingerprint,
                 &stored_patch.patch,
                 bytes,
@@ -333,37 +336,39 @@ pub(crate) fn render_pdf_v3_preview(
     if source.page_count() != authority.binding.source_page_count {
         return Err(PdfV3PreviewError::Source);
     }
-    let font_plan =
-        TranslationFontCharacterPlan::for_resolved_replay(&authority.page, &authority.patch)?;
+    let font_plan = TranslationFontCharacterPlan::for_resolved_region_replay(
+        &authority.page,
+        &authority.patch,
+    )?;
     let prepared =
         font_plan.prepare_available_fonts(&assets.regular_font, assets.bold_font.as_ref())?;
     let fonts = prepared.iter().collect::<Vec<_>>();
-    let page_pdf = render_resolved_translation_patch_page_pdf_from_view(
+    let page_pdf = render_resolved_region_translation_patch_page_pdf_from_view(
         &source,
         &authority.binding.source_fingerprint,
         &authority.page,
         &authority.patch,
         &fonts,
-        authority.runtime.render_policy.into(),
+        RegionLayoutPolicy::default(),
     )?;
-    if page_pdf.render().resolved_patch != authority.patch {
+    if page_pdf.patch() != &authority.patch {
         return Err(PdfV3PreviewError::AuthorityMismatch(
             authority.page.page_number,
         ));
     }
-    let _ = insert_translation_patch_page_pdf_cache(&authority.cache, &page_pdf);
+    let _ = insert_region_translation_page_pdf_cache(&authority.cache, &page_pdf);
     rasterize_and_cache(app, &authority, &page_pdf)
 }
 
 fn rasterize_and_cache(
     app: &AppHandle,
     authority: &PdfV3PreviewAuthority,
-    page_pdf: &TranslationPatchPagePdf,
+    page_pdf: &RegionTranslationPagePdf,
 ) -> Result<Vec<u8>, PdfV3PreviewError> {
     let preview = {
         let _guard = lock_pdfium();
         let pdfium = get_pdfium(app).map_err(|_| PdfV3PreviewError::Pdfium)?;
-        render_translation_patch_preview_png(pdfium, page_pdf, authority.pixel_width)?
+        render_region_translation_preview_png(pdfium, page_pdf, authority.pixel_width)?
     };
     let _ = insert_translation_patch_preview_png_cache(&authority.cache, &preview);
     Ok(preview.into_png_bytes())
@@ -384,22 +389,29 @@ mod tests {
             font::{TranslationFontAsset, TranslationFontWeight},
             page_graph_store::PageGraphStore,
             page_set::PageSet,
-            patch_renderer::{
-                translation_patch_page_pdf_cache_key, TranslationPatchRenderPolicy,
-                TRANSLATION_PATCH_RENDERER_VERSION,
+            paragraph_translation_plan::{
+                build_visual_paragraph_page_plan, resolve_visual_paragraph_results,
             },
+            patch_renderer::TranslationPatchRenderPolicy,
             patch_store::TranslationPatchStore,
-            preview::translation_patch_preview_png_cache_key,
+            preview::region_translation_preview_png_cache_key,
+            region_renderer::{
+                region_translation_page_pdf_cache_key, REGION_TRANSLATION_RENDERER_VERSION,
+            },
+            region_translation_patch::{
+                build_region_translation_patch, RegionTranslationPatch,
+                RegionTranslationPatchDraft, REGION_TRANSLATION_PATCH_SCHEMA_VERSION,
+            },
             render_cache::{RenderCache, RenderCacheConfig},
             scheduler::{
                 DurablePdfV3Scheduler, PdfV3ExtractionAuthority, PdfV3PageState,
                 PdfV3PatchAuthority, PdfV3RunSpec, PdfV3SchedulerCapacity, PdfV3SchedulerStage,
                 PdfV3TranslationCommit,
             },
-            translation_patch::{build_translation_patch, TranslationPatchDraft},
+            translation_plan::TranslationPatchDraftMetadata,
             types::{
-                PageGraph, PageReconciliationStatus, PageReconciliationSummary,
-                PAGE_GRAPH_SCHEMA_VERSION, TRANSLATION_PATCH_SCHEMA_VERSION,
+                PageAtom, PageAtomKind, PageAtomSourceKind, PageGraph, PageGroup, PageGroupKind,
+                PageReconciliationStatus, PageReconciliationSummary, PAGE_GRAPH_SCHEMA_VERSION,
             },
         },
         rosetta_jobs::formats::pdf::{
@@ -419,12 +431,12 @@ mod tests {
     #[test]
     fn preview_error_display_preserves_render_failure_detail() {
         let error = PdfV3PreviewError::Render(
-            crate::pdf_v3::patch_renderer::TranslationPatchRenderError::InvalidPolicy,
+            crate::pdf_v3::region_renderer::RegionTranslationRenderError::MissingRegularFont,
         );
 
         assert_eq!(
             error.to_string(),
-            "PDF v3 preview page rendering failed: TranslationPatch render policy is invalid"
+            "PDF v3 preview page rendering failed: region renderer requires a regular translation font"
         );
     }
 
@@ -475,8 +487,9 @@ mod tests {
         let run = TestPreviewRun::new(false);
         let png = b"\x89PNG\r\n\x1a\npreview-cache".to_vec();
         let cache = run.cache();
-        let key = translation_patch_preview_png_cache_key(&run.source_fingerprint, &run.patch, 900)
-            .expect("preview cache key");
+        let key =
+            region_translation_preview_png_cache_key(&run.source_fingerprint, &run.patch, 900)
+                .expect("preview cache key");
         cache.insert(&key, &png).expect("cached PNG");
 
         let authority = run.load(900).expect("preview authority");
@@ -489,7 +502,7 @@ mod tests {
     fn completed_authority_falls_back_to_cached_single_page_pdf() {
         let run = TestPreviewRun::new(false);
         let cache = run.cache();
-        let key = translation_patch_page_pdf_cache_key(&run.source_fingerprint, &run.patch)
+        let key = region_translation_page_pdf_cache_key(&run.source_fingerprint, &run.patch)
             .expect("page PDF cache key");
         cache
             .insert(&key, &fs::read(&run.source_path).expect("source PDF"))
@@ -555,7 +568,7 @@ mod tests {
         job_directory: PathBuf,
         source_path: PathBuf,
         source_fingerprint: String,
-        patch: crate::pdf_v3::types::TranslationPatch,
+        patch: RegionTranslationPatch,
     }
 
     impl TestPreviewRun {
@@ -586,8 +599,8 @@ mod tests {
                     target_language: TARGET_LANGUAGE.to_string(),
                     engine_version: "pdf-v3-preview-test".to_string(),
                     page_graph_schema_version: PAGE_GRAPH_SCHEMA_VERSION,
-                    translation_patch_schema_version: TRANSLATION_PATCH_SCHEMA_VERSION,
-                    renderer_version: TRANSLATION_PATCH_RENDERER_VERSION.to_string(),
+                    translation_patch_schema_version: REGION_TRANSLATION_PATCH_SCHEMA_VERSION,
+                    renderer_version: REGION_TRANSLATION_RENDERER_VERSION.to_string(),
                 },
                 PdfV3SchedulerCapacity {
                     max_extracting_pages: 1,
@@ -609,15 +622,21 @@ mod tests {
             )
             .expect("page store");
             let page_commit = page_store.commit(&page).expect("page commit");
-            let patch = build_translation_patch(
+            let plan = build_visual_paragraph_page_plan(&page).expect("empty paragraph plan");
+            let translations = resolve_visual_paragraph_results(&plan, Vec::new(), TARGET_LANGUAGE)
+                .expect("empty translations");
+            let patch = build_region_translation_patch(
                 &page,
-                TranslationPatchDraft {
-                    target_language: TARGET_LANGUAGE.to_string(),
-                    translation_revision: 1,
-                    provider_id: "provider-test".to_string(),
-                    model_id: "model-test".to_string(),
-                    renderer_version: TRANSLATION_PATCH_RENDERER_VERSION.to_string(),
-                    entries: Vec::new(),
+                RegionTranslationPatchDraft {
+                    plan,
+                    translations,
+                    metadata: TranslationPatchDraftMetadata {
+                        target_language: TARGET_LANGUAGE.to_string(),
+                        translation_revision: 1,
+                        provider_id: "provider-test".to_string(),
+                        model_id: "model-test".to_string(),
+                        renderer_version: REGION_TRANSLATION_RENDERER_VERSION.to_string(),
+                    },
                 },
             )
             .expect("empty resolved patch");
@@ -627,7 +646,7 @@ mod tests {
                 TARGET_LANGUAGE,
             )
             .expect("patch store")
-            .commit(&page, &patch)
+            .commit_region(&page, &patch)
             .expect("patch commit");
 
             let extraction_claim = scheduler
@@ -729,6 +748,7 @@ mod tests {
     }
 
     fn empty_page(source_fingerprint: &str) -> PageGraph {
+        let atom_id = "atom-preserved".to_string();
         PageGraph {
             schema_version: PAGE_GRAPH_SCHEMA_VERSION,
             page_number: 1,
@@ -736,9 +756,48 @@ mod tests {
             page_width: 612.0,
             page_height: 792.0,
             rotation_degrees: 0,
-            atoms: Vec::new(),
+            atoms: vec![PageAtom {
+                atom_id: atom_id.clone(),
+                source_text: "Preserved source".to_string(),
+                source_object_id: None,
+                kind: PageAtomKind::Body,
+                style_id: None,
+                bounds: [40.0, 700.0, 140.0, 720.0],
+                loose_bounds: None,
+                origin: Some([40.0, 700.0]),
+                text_matrix: None,
+                angle_degrees: Some(0.0),
+                order: 0,
+                generated: false,
+                hyphen: false,
+                requires_translation: true,
+                source_kind: PageAtomSourceKind::PreservedUnmapped,
+                source_provenance: None,
+            }],
             styles: Vec::new(),
-            groups: Vec::new(),
+            groups: vec![
+                PageGroup {
+                    group_id: "line-preserved".to_string(),
+                    kind: PageGroupKind::Line,
+                    atom_ids: vec![atom_id.clone()],
+                    bounds: [40.0, 700.0, 140.0, 720.0],
+                    confidence: 0.99,
+                },
+                PageGroup {
+                    group_id: "paragraph-preserved".to_string(),
+                    kind: PageGroupKind::Paragraph,
+                    atom_ids: vec![atom_id.clone()],
+                    bounds: [40.0, 700.0, 140.0, 720.0],
+                    confidence: 0.99,
+                },
+                PageGroup {
+                    group_id: "container-preserved".to_string(),
+                    kind: PageGroupKind::FlowContainer,
+                    atom_ids: vec![atom_id],
+                    bounds: [40.0, 700.0, 140.0, 720.0],
+                    confidence: 0.99,
+                },
+            ],
             protected_spans: Vec::new(),
             reconciliation: PageReconciliationSummary {
                 status: PageReconciliationStatus::Complete,

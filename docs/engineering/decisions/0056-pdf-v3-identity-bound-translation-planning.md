@@ -2,7 +2,7 @@
 
 Date: 2026-07-18
 
-Status: Accepted
+Status: Superseded by ADR 0076
 
 Refines ADR 0034, ADR 0036, ADR 0055 and the PDF v3 data-model conventions.
 

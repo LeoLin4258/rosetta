@@ -745,7 +745,7 @@ fn validate_renderer_decision(
     }
 }
 
-fn source_atom_hash(atom: &PageAtom) -> Result<String, TranslationPatchError> {
+pub(crate) fn source_atom_hash(atom: &PageAtom) -> Result<String, TranslationPatchError> {
     let bytes = serde_json::to_vec(atom).map_err(|error| {
         TranslationPatchError::Serialization(format!("failed to hash PageGraph atom: {error}"))
     })?;

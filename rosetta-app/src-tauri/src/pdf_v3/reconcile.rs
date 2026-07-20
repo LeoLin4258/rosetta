@@ -19,6 +19,7 @@ use super::{
         PageAtomSourceKind, PageAtomSourceProvenance, PageGraph, PageReconciliationStatus,
         PageReconciliationSummary,
     },
+    visual_grouping::derive_visual_groups,
 };
 
 #[derive(Debug)]
@@ -225,6 +226,18 @@ fn reconcile_page_graph(mut page: PageGraph, mapping: PageOperandMappingResult) 
         fallback_reasons: fallback_reasons.into_iter().collect(),
     };
 
+    let grouping = derive_visual_groups(&mut page);
+    eprintln!(
+        "[pdf-v3-visual-grouping] page={} eligibleAtoms={} lines={} paragraphs={} flowContainers={} elapsedUs={} limited={}",
+        page.page_number,
+        grouping.eligible_atom_count,
+        grouping.line_count,
+        grouping.paragraph_count,
+        grouping.flow_container_count,
+        grouping.elapsed_us,
+        grouping.limit_exceeded,
+    );
+
     page
 }
 
@@ -386,6 +399,7 @@ fn count_atoms(page: &PageGraph, source_kind: PageAtomSourceKind) -> usize {
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::BTreeSet,
         fs,
         path::{Path, PathBuf},
         sync::atomic::{AtomicU64, Ordering},
@@ -417,7 +431,8 @@ mod tests {
                 PageOperandMappingError, PageOperandMappingIndex,
             },
             page_set::PageSet,
-            types::{PageAtomSourceKind, PageReconciliationStatus},
+            paragraph_translation_plan::build_visual_paragraph_page_plan,
+            types::{PageAtomSourceKind, PageGroupKind, PageReconciliationStatus},
         },
         rosetta_jobs::formats::pdf::test_helpers::{fixture_path, pdfium_test_lock, shared_pdfium},
     };
@@ -1079,5 +1094,77 @@ mod tests {
             summary.fallback_reasons,
             started.elapsed().as_millis()
         );
+    }
+
+    #[test]
+    #[ignore = "manual Windows external PDF visual-grouping probe"]
+    fn manual_windows_external_visual_grouping_probe() {
+        let _guard = pdfium_test_lock();
+        let source = std::env::var_os("ROSETTA_PDF_V3_GROUPING_PROBE")
+            .map(PathBuf::from)
+            .expect("ROSETTA_PDF_V3_GROUPING_PROBE");
+        let handle = DocumentHandle::open(shared_pdfium(), &source).expect("document handle");
+
+        for page_number in 1..=handle.page_count() {
+            let started = Instant::now();
+            let page = build_reconciled_page_graph_from_handle(&handle, page_number)
+                .unwrap_or_else(|error| panic!("page {page_number}: {error}"));
+            let lines = page
+                .groups
+                .iter()
+                .filter(|group| group.kind == PageGroupKind::Line)
+                .count();
+            let paragraphs = page
+                .groups
+                .iter()
+                .filter(|group| group.kind == PageGroupKind::Paragraph)
+                .count();
+            let containers = page
+                .groups
+                .iter()
+                .filter(|group| group.kind == PageGroupKind::FlowContainer)
+                .count();
+            let grouped_atoms = page
+                .groups
+                .iter()
+                .filter(|group| group.kind == PageGroupKind::Line)
+                .flat_map(|group| group.atom_ids.iter())
+                .collect::<BTreeSet<_>>()
+                .len();
+            let paragraph_plan = build_visual_paragraph_page_plan(&page)
+                .unwrap_or_else(|error| panic!("page {page_number} paragraph plan: {error}"));
+            let paragraph_source_chars = paragraph_plan
+                .units
+                .iter()
+                .map(|unit| unit.source_text.chars().count())
+                .sum::<usize>();
+            let paragraph_provider_chars = paragraph_plan
+                .units
+                .iter()
+                .map(|unit| unit.provider_text.chars().count())
+                .sum::<usize>();
+            println!(
+                "pdf-v3 visual-grouping-probe page={page_number} atoms={} groupedAtoms={grouped_atoms} lines={lines} paragraphs={paragraphs} flowContainers={containers} paragraphUnits={} preservedContainers={} paragraphSourceChars={paragraph_source_chars} paragraphProviderChars={paragraph_provider_chars} elapsedMs={}",
+                page.atoms.len(),
+                paragraph_plan.units.len(),
+                paragraph_plan.preserved_containers.len(),
+                started.elapsed().as_millis(),
+            );
+            for group in page.groups.iter().filter(|group| {
+                matches!(
+                    group.kind,
+                    PageGroupKind::Paragraph | PageGroupKind::FlowContainer
+                )
+            }) {
+                println!(
+                    "pdf-v3 visual-grouping-region page={page_number} kind={:?} id={} bounds={:?} atoms={} confidence={:.3}",
+                    group.kind,
+                    group.group_id,
+                    group.bounds,
+                    group.atom_ids.len(),
+                    group.confidence,
+                );
+            }
+        }
     }
 }

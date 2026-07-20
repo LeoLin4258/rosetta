@@ -10,6 +10,11 @@ use super::{
     patch_renderer::{
         translation_patch_page_pdf_cache_key, TranslationPatchPagePdf, TranslationPatchRenderError,
     },
+    region_renderer::{
+        region_translation_page_pdf_cache_key, RegionTranslationPagePdf,
+        RegionTranslationRenderError,
+    },
+    region_translation_patch::RegionTranslationPatch,
     render_cache::{
         RenderCache, RenderCacheError, RenderCacheInsertOutcome, RenderCacheKey,
         RenderCacheOptions, RenderCacheOutputKind,
@@ -52,6 +57,7 @@ impl TranslationPatchPreviewPng {
 pub(crate) enum TranslationPatchPreviewError {
     InvalidPixelWidth { requested: u32 },
     PagePdf(TranslationPatchRenderError),
+    RegionPagePdf(RegionTranslationRenderError),
     PdfiumLoad(String),
     InvalidPageCount(u32),
     PageRead(String),
@@ -69,6 +75,7 @@ impl fmt::Display for TranslationPatchPreviewError {
                 "PDF preview width {requested} is outside {MIN_PREVIEW_PIXEL_WIDTH}..={MAX_PREVIEW_PIXEL_WIDTH}"
             ),
             Self::PagePdf(error) => error.fmt(formatter),
+            Self::RegionPagePdf(error) => error.fmt(formatter),
             Self::PdfiumLoad(message) => {
                 write!(formatter, "failed to load translated page PDF in PDFium: {message}")
             }
@@ -93,11 +100,26 @@ impl fmt::Display for TranslationPatchPreviewError {
     }
 }
 
-impl std::error::Error for TranslationPatchPreviewError {}
+impl std::error::Error for TranslationPatchPreviewError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::PagePdf(error) => Some(error),
+            Self::RegionPagePdf(error) => Some(error),
+            Self::Cache(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 impl From<TranslationPatchRenderError> for TranslationPatchPreviewError {
     fn from(value: TranslationPatchRenderError) -> Self {
         Self::PagePdf(value)
+    }
+}
+
+impl From<RegionTranslationRenderError> for TranslationPatchPreviewError {
+    fn from(value: RegionTranslationRenderError) -> Self {
+        Self::RegionPagePdf(value)
     }
 }
 
@@ -136,8 +158,49 @@ pub(crate) fn render_translation_patch_preview_png(
         &page_pdf.render().resolved_patch,
         pixel_width,
     )?;
+    render_page_pdf_png(pdfium, cache_key, page_pdf.pdf_bytes(), pixel_width)
+}
+
+pub(crate) fn region_translation_preview_png_cache_key(
+    source_fingerprint: &str,
+    patch: &RegionTranslationPatch,
+    pixel_width: u32,
+) -> Result<RenderCacheKey, TranslationPatchPreviewError> {
+    validate_pixel_width(pixel_width)?;
+    let mut key = region_translation_page_pdf_cache_key(source_fingerprint, patch)?;
+    key.renderer_version = format!(
+        "{}+{TRANSLATION_PATCH_PREVIEW_RASTERIZER_VERSION}",
+        key.renderer_version
+    );
+    key.options = RenderCacheOptions {
+        output_kind: RenderCacheOutputKind::PreviewPng,
+        pixel_width: Some(pixel_width),
+        scale_milli: None,
+    };
+    Ok(key)
+}
+
+pub(crate) fn render_region_translation_preview_png(
+    pdfium: &Pdfium,
+    page_pdf: &RegionTranslationPagePdf,
+    pixel_width: u32,
+) -> Result<TranslationPatchPreviewPng, TranslationPatchPreviewError> {
+    let cache_key = region_translation_preview_png_cache_key(
+        page_pdf.source_fingerprint(),
+        page_pdf.patch(),
+        pixel_width,
+    )?;
+    render_page_pdf_png(pdfium, cache_key, page_pdf.pdf_bytes(), pixel_width)
+}
+
+fn render_page_pdf_png(
+    pdfium: &Pdfium,
+    cache_key: RenderCacheKey,
+    pdf_bytes: &[u8],
+    pixel_width: u32,
+) -> Result<TranslationPatchPreviewPng, TranslationPatchPreviewError> {
     let document = pdfium
-        .load_pdf_from_byte_slice(page_pdf.pdf_bytes(), None)
+        .load_pdf_from_byte_slice(pdf_bytes, None)
         .map_err(|error| TranslationPatchPreviewError::PdfiumLoad(error.to_string()))?;
     let page_count = u32::try_from(document.pages().len()).unwrap_or(u32::MAX);
     if page_count != 1 {
@@ -197,6 +260,23 @@ pub(crate) fn open_translation_patch_preview_png_cache(
     pixel_width: u32,
 ) -> Result<Option<Vec<u8>>, TranslationPatchPreviewError> {
     let key = translation_patch_preview_png_cache_key(source_fingerprint, patch, pixel_width)?;
+    let Some(lease) = cache.open(&key)? else {
+        return Ok(None);
+    };
+    match lease.read_bytes() {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(RenderCacheError::CorruptArtifact { .. }) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+pub(crate) fn open_region_translation_preview_png_cache(
+    cache: &RenderCache,
+    source_fingerprint: &str,
+    patch: &RegionTranslationPatch,
+    pixel_width: u32,
+) -> Result<Option<Vec<u8>>, TranslationPatchPreviewError> {
+    let key = region_translation_preview_png_cache_key(source_fingerprint, patch, pixel_width)?;
     let Some(lease) = cache.open(&key)? else {
         return Ok(None);
     };

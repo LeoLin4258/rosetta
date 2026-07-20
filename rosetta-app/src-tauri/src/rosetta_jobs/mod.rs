@@ -7,6 +7,7 @@ use std::{
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         Arc, Mutex,
     },
+    time::Instant,
 };
 
 use serde::{Deserialize, Serialize};
@@ -263,6 +264,7 @@ pub async fn create_rosetta_pdf_v3_run(
     target_language: String,
     preferred_page_number: Option<u32>,
 ) -> Result<formats::pdf::v3_control::PdfV3RunControlStatus, String> {
+    let total_started = Instant::now();
     let target_language = target_language.trim().to_string();
     if target_language.is_empty() || target_language.len() > 64 {
         return Err("PDF v3 目标语言无效。".to_string());
@@ -277,23 +279,33 @@ pub async fn create_rosetta_pdf_v3_run(
     let preparation_job_id = job_id.clone();
     let preparation_target = target_language.clone();
     let preparation = tokio::task::spawn_blocking(move || {
-        prepare_pdf_v3_run_job(&preparation_app, &preparation_job_id, &preparation_target)
+        let started = Instant::now();
+        let result =
+            prepare_pdf_v3_run_job(&preparation_app, &preparation_job_id, &preparation_target);
+        (result, elapsed_ms(started))
     });
-    let (component, prepared) = tokio::join!(
-        component_state.resolve(&app, &registry, &target_language),
-        preparation
-    );
+    let component_resolution = async {
+        let started = Instant::now();
+        let result = component_state
+            .resolve(&app, &registry, &target_language)
+            .await;
+        (result, elapsed_ms(started))
+    };
+    let ((component, component_resolve_ms), prepared) =
+        tokio::join!(component_resolution, preparation);
     let component = component.map_err(|error| error.to_string())?;
+    let component_diagnostics = component.resolution_diagnostics;
     let worker_component = component.clone();
-    let prepared = prepared
-        .map_err(|_| "PDF v3 源文件验证任务异常结束。".to_string())?
-        .map_err(|_| "PDF v3 源文件或语言设置无效。".to_string())?;
+    let (prepared, source_prepare_ms) =
+        prepared.map_err(|_| "PDF v3 源文件验证任务异常结束。".to_string())?;
+    let prepared = prepared.map_err(|_| "PDF v3 源文件或语言设置无效。".to_string())?;
     let now_ms = path::timestamp_ms_string()
         .parse::<u64>()
         .map_err(|_| "无法读取当前时间。".to_string())?;
     let owner_session_id = lifecycle.session_id().to_string();
     let creation_directory = job_directory.clone();
     let creation_target = target_language.clone();
+    let authority_commit_started = Instant::now();
     let status = tokio::task::spawn_blocking(move || {
         formats::pdf::v3_run_creation::create_pdf_v3_run(
             formats::pdf::v3_run_creation::PdfV3RunCreationRequest {
@@ -313,9 +325,11 @@ pub async fn create_rosetta_pdf_v3_run(
     })
     .await
     .map_err(|_| "PDF v3 run 创建任务异常结束。".to_string())??;
+    let authority_commit_ms = elapsed_ms(authority_commit_started);
     let run_id = status.run_id.clone();
     let run_directory = formats::pdf::v3_control::pdf_v3_run_directory(&job_directory, &run_id)
         .map_err(|error| error.to_string())?;
+    let worker_attach_started = Instant::now();
     worker_state.ensure_worker(
         app.clone(),
         lifecycle.inner().clone(),
@@ -323,7 +337,9 @@ pub async fn create_rosetta_pdf_v3_run(
         prepared.source_identity,
         worker_component,
     )?;
-    synchronize_pdf_v3_run_lifecycle(
+    let worker_attach_ms = elapsed_ms(worker_attach_started);
+    let status_sync_started = Instant::now();
+    let final_status = synchronize_pdf_v3_run_lifecycle(
         &lifecycle,
         &worker_state,
         &job_directory,
@@ -331,7 +347,43 @@ pub async fn create_rosetta_pdf_v3_run(
         status,
         None,
         formats::pdf::v3_control::DEFAULT_PDF_V3_STATUS_WINDOW,
-    )
+    )?;
+    let status_sync_ms = elapsed_ms(status_sync_started);
+    let total_ms = elapsed_ms(total_started);
+    formats::pdf::diagnostics::append_timeline_event(
+        &job_directory,
+        formats::pdf::diagnostics::PdfTimelineEvent::new(
+            &job_id,
+            "pdf-v3-run-creation",
+            "run.creation.completed",
+        )
+        .run_id(&run_id)
+        .target_lang(&target_language)
+        .duration_ms(total_ms)
+        .details(json!({
+            "componentResolveMs": component_resolve_ms,
+            "componentRuntimeBindingMs": component_diagnostics.runtime_binding_ms,
+            "componentPdfAssetLookupMs": component_diagnostics.pdf_asset_lookup_ms,
+            "componentBlockingMs": component_diagnostics.blocking_total_ms,
+            "componentSidecarDigestMs": component_diagnostics.sidecar_digest_ms,
+            "componentSidecarDigestCacheHit": component_diagnostics.sidecar_digest_cache_hit,
+            "componentModelDigestMs": component_diagnostics.model_digest_ms,
+            "componentModelDigestCacheHit": component_diagnostics.model_digest_cache_hit,
+            "componentFontAssetsMs": component_diagnostics.font_assets_ms,
+            "componentFontAssetsCacheHit": component_diagnostics.font_assets_cache_hit,
+            "componentManifestMs": component_diagnostics.manifest_ms,
+            "componentRuntimeRecheckMs": component_diagnostics.runtime_recheck_ms,
+            "sourcePrepareMs": source_prepare_ms,
+            "authorityCommitMs": authority_commit_ms,
+            "workerAttachMs": worker_attach_ms,
+            "statusSyncMs": status_sync_ms,
+        })),
+    );
+    Ok(final_status)
+}
+
+fn elapsed_ms(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 #[tauri::command]

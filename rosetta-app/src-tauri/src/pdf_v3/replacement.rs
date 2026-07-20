@@ -383,6 +383,7 @@ impl TextShowOperationIndex {
     fn resolve(
         content: &Content,
         operation_indices: &BTreeSet<usize>,
+        neutralized_indices: &BTreeSet<usize>,
     ) -> Result<Self, TextShowReplacementError> {
         if operation_indices
             .iter()
@@ -464,8 +465,10 @@ impl TextShowOperationIndex {
                     with_reset = outcome;
                 }
                 "Tj" | "TJ" => {
-                    without_reset = TextPositionBoundary::LaterTextShow;
-                    with_reset = TextPositionBoundary::Valid;
+                    if !neutralized_indices.contains(&index) {
+                        without_reset = TextPositionBoundary::LaterTextShow;
+                        with_reset = TextPositionBoundary::Valid;
+                    }
                 }
                 _ => {}
             }
@@ -960,6 +963,7 @@ fn stage_text_show_replacement_batch_internal(
             target
                 .planned
                 .iter()
+                .filter(|replacement| replacement.uses_translation_font)
                 .map(|replacement| replacement.translation_font_weight)
         })
         .collect::<BTreeSet<_>>()
@@ -1095,6 +1099,7 @@ fn stage_text_show_replacement_batch_internal(
             let target_weights = target
                 .planned
                 .iter()
+                .filter(|replacement| replacement.uses_translation_font)
                 .map(|replacement| replacement.translation_font_weight)
                 .collect::<BTreeSet<_>>()
                 .into_iter()
@@ -1212,9 +1217,6 @@ fn plan_replacement_target(
         if !operation_indices.insert(request.geometry.operation_index) {
             return Err(TextShowReplacementError::DuplicateTransactionOperation);
         }
-        if request.translated_text.is_empty() {
-            return Err(TextShowReplacementError::EmptyTranslation);
-        }
         if !request.minimum_fit_scale.is_finite()
             || !(0.0..=1.0).contains(&request.minimum_fit_scale)
         {
@@ -1265,7 +1267,13 @@ fn plan_replacement_target(
         .iter()
         .map(|request| request.geometry.operation_index)
         .collect::<BTreeSet<_>>();
-    let operation_index = TextShowOperationIndex::resolve(&content, &operation_indices)?;
+    let neutralized_indices = requests
+        .iter()
+        .filter(|request| request.translated_text.is_empty())
+        .map(|request| request.geometry.operation_index)
+        .collect::<BTreeSet<_>>();
+    let operation_index =
+        TextShowOperationIndex::resolve(&content, &operation_indices, &neutralized_indices)?;
     let mut text_object_bounds = None;
     let mut planned = Vec::with_capacity(requests.len());
     for request in requests {
@@ -1373,6 +1381,7 @@ struct PlannedTextShowReplacement {
     geometry_atom_count: usize,
     style_id: String,
     translation_font_weight: TranslationFontWeight,
+    uses_translation_font: bool,
     source_font_weight: u16,
     source_fill_color: [f32; 4],
     source_opacity: f32,
@@ -1415,6 +1424,28 @@ fn plan_text_show_replacement(
     let fit_bounds = derive_text_show_fit_bounds(page_graph, &request.geometry)?;
     let style_plan = plan_text_show_style(page_graph, &fit_bounds.style_id)?;
     validate_source_style(&style_plan, &source_state)?;
+    if request.translated_text.is_empty() {
+        let replacement_operation = replacement_operation(operation, Vec::new())?;
+        return Ok(PlannedTextShowReplacement {
+            text_show_id: request.geometry.text_show_id.clone(),
+            operation_index: request.geometry.operation_index,
+            operations: vec![replacement_operation],
+            fit_scale: 1.0,
+            max_advance: fit_bounds.max_advance,
+            page_advance: fit_bounds.page_advance,
+            baseline_scale: fit_bounds.baseline_scale,
+            natural_advance: 0.0,
+            fitted_advance: 0.0,
+            geometry_atom_count: fit_bounds.atom_count,
+            style_id: fit_bounds.style_id,
+            translation_font_weight: style_plan.translation_font_weight,
+            uses_translation_font: false,
+            source_font_weight: style_plan.source_font_weight,
+            source_fill_color: style_plan.fill_color,
+            source_opacity: style_plan.opacity,
+            source_render_mode: style_plan.render_mode,
+        });
+    }
     let font = fonts_by_weight
         .get(&style_plan.translation_font_weight)
         .copied()
@@ -1474,6 +1505,7 @@ fn plan_text_show_replacement(
         geometry_atom_count: fit_bounds.atom_count,
         style_id: style_plan.style_id,
         translation_font_weight: style_plan.translation_font_weight,
+        uses_translation_font: true,
         source_font_weight: style_plan.source_font_weight,
         source_fill_color: style_plan.fill_color,
         source_opacity: style_plan.opacity,
@@ -1879,7 +1911,8 @@ mod tests {
         apply_text_show_replacement_transaction, find_text_object_bounds,
         stage_text_show_replacement_batch_with_font_registry, state_before_operation,
         validate_source_style, validate_text_position_boundary, ContentPatchError,
-        TextShowReplacementError, TextShowReplacementRequest, TextShowReplacementTargetRequest,
+        TextShowOperationIndex, TextShowReplacementError, TextShowReplacementRequest,
+        TextShowReplacementTargetRequest,
     };
     use crate::{
         pdf_v3::{
@@ -1937,6 +1970,31 @@ mod tests {
         ));
         assert_eq!(find_text_object_bounds(&anchored, 1).unwrap(), (0, 4));
         assert_eq!(find_text_object_bounds(&anchored, 3).unwrap(), (0, 4));
+    }
+
+    #[test]
+    fn consecutive_shows_are_safe_only_when_every_later_show_is_neutralized() {
+        let content = Content {
+            operations: vec![
+                Operation::new("BT", Vec::new()),
+                text_show(b"first"),
+                text_show(b"second"),
+                Operation::new("ET", Vec::new()),
+            ],
+        };
+        let targets = BTreeSet::from([1, 2]);
+        let fully_neutralized = TextShowOperationIndex::resolve(&content, &targets, &targets)
+            .expect("fully neutralized text object");
+        assert!(fully_neutralized.validate_position_boundary(1).is_ok());
+        assert!(fully_neutralized.validate_position_boundary(2).is_ok());
+
+        let partially_neutralized =
+            TextShowOperationIndex::resolve(&content, &targets, &BTreeSet::from([1]))
+                .expect("partial neutralization index");
+        assert!(matches!(
+            partially_neutralized.validate_position_boundary(1),
+            Err(TextShowReplacementError::LaterTextShowInTextObject)
+        ));
     }
 
     fn text_show(text: &[u8]) -> Operation {
@@ -2393,6 +2451,98 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
+    fn empty_text_show_replacement_neutralizes_source_atomically() {
+        let _guard = pdfium_test_lock();
+        let source_path = fixture_path("002-trivial-libre-office-writer.pdf");
+        let mapping = map_page_atoms_to_content_operands(shared_pdfium(), &source_path, 1)
+            .expect("source mapping");
+        let page_graph =
+            build_reconciled_page_graph(shared_pdfium(), &source_path, 1).expect("reconciled page");
+        let target = mapping
+            .mappings
+            .iter()
+            .find(|mapping| {
+                mapping.form_invocation_path.is_empty()
+                    && mapping.source_font_resource.is_some()
+                    && mapping.source_font_size.is_some()
+                    && mapping
+                        .decoded_units
+                        .iter()
+                        .any(|unit| !unit.text.trim().is_empty())
+            })
+            .expect("neutralizable mapping");
+        let source_text = target
+            .decoded_units
+            .iter()
+            .map(|unit| unit.text.as_str())
+            .collect::<String>();
+        let text_show = mapping
+            .text_shows
+            .iter()
+            .find(|show| show.text_show_id == target.text_show_id)
+            .expect("target text show");
+        let request = TextShowReplacementRequest {
+            geometry: TextShowGeometryKey {
+                page_number: 1,
+                text_show_id: target.text_show_id.clone(),
+                form_invocation_path: target.form_invocation_path.clone(),
+                stream_object_number: target.stream_object_number,
+                stream_generation: target.stream_generation,
+                operation_index: target.operation_index,
+                source_font_resource: target
+                    .source_font_resource
+                    .clone()
+                    .expect("source font resource"),
+                source_font_size: target.source_font_size.expect("source font size"),
+                source_horizontal_scaling: target.source_horizontal_scaling,
+            },
+            expected_operator: text_show.operator.clone(),
+            expected_operand_hash: text_show.encoded_byte_hash.clone(),
+            translated_text: String::new(),
+            minimum_fit_scale: 1.0,
+        };
+        let asset = TranslationFontAsset::open(
+            "ArialRegular",
+            PathBuf::from(r"C:\Windows\Fonts\arial.ttf").as_path(),
+            0,
+        )
+        .expect("Arial font");
+        let mut plan = UnifiedTranslationFontPlan::default();
+        plan.add_text("font registry sentinel");
+        let prepared = asset.prepare(&plan).expect("prepared font");
+        let source = fs::read(&source_path).expect("source PDF");
+        let mut document = Document::load_mem(&source).expect("source document");
+
+        let result = apply_text_show_replacement_transaction(
+            &mut document,
+            &page_graph,
+            &[request],
+            &[&prepared],
+        )
+        .expect("neutralize text show");
+
+        assert_eq!(result.replacement_count, 1);
+        assert_eq!(result.replacements[0].natural_advance, 0.0);
+        assert_eq!(result.replacements[0].fitted_advance, 0.0);
+        let mut output = Vec::new();
+        document.save_to(&mut output).expect("save neutralized PDF");
+        let output_text = shared_pdfium()
+            .load_pdf_from_byte_slice(&output, None)
+            .expect("PDFium output")
+            .pages()
+            .get(0)
+            .expect("output page")
+            .text()
+            .expect("output text")
+            .all();
+        assert!(
+            !output_text.contains(source_text.trim()),
+            "neutralized source text remained searchable: {source_text:?}"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
     fn anchored_multi_show_transaction_is_atomic_and_searchable() {
         let _guard = pdfium_test_lock();
         let source_path = fixture_path("2305.13048v2.pdf");
@@ -2728,6 +2878,26 @@ mod tests {
         .expect("Arial Bold font")
         .prepare(&bold_plan)
         .expect("prepared Bold font");
+
+        let neutralization_requests = requests
+            .iter()
+            .cloned()
+            .map(|mut request| {
+                request.translated_text.clear();
+                request
+            })
+            .collect::<Vec<_>>();
+        let mut neutralized_document = document.clone();
+        let neutralized = apply_text_show_replacement_transaction(
+            &mut neutralized_document,
+            &page_graph,
+            &neutralization_requests,
+            &[&regular],
+        )
+        .expect("neutralization must not require the source Bold face");
+        assert!(neutralized.translation_font_weights.is_empty());
+        assert_eq!(neutralized.staged_font_object_count, 0);
+
         let before = document.clone();
         let missing_bold_error = apply_text_show_replacement_transaction(
             &mut document,

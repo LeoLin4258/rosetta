@@ -8,6 +8,11 @@ use super::{
     page_graph_store::{PageGraphStore, PageGraphStoreError},
     page_set::PageSet,
     patch_store::{TranslationPatchStore, TranslationPatchStoreError},
+    region_translation_patch::{
+        ensure_region_translation_patch_resolved, validate_region_translation_patch,
+        RegionTranslationPatch, RegionTranslationPatchError,
+        RegionTranslationPatchRendererDecision,
+    },
     style::{plan_text_show_style, TextShowStyleError},
     translation_patch::{
         ensure_translation_patch_renderer_resolved, validate_translation_patch,
@@ -45,6 +50,7 @@ pub(crate) enum TranslationFontPlanError {
         actual: TranslationFontWeight,
     },
     Patch(TranslationPatchError),
+    RegionPatch(RegionTranslationPatchError),
     Style(TextShowStyleError),
     PageGraphStore(PageGraphStoreError),
     PatchStore(TranslationPatchStoreError),
@@ -97,6 +103,7 @@ impl fmt::Display for TranslationFontPlanError {
                 "PDF v3 font asset has weight {actual:?}; expected {expected:?}"
             ),
             Self::Patch(error) => error.fmt(formatter),
+            Self::RegionPatch(error) => error.fmt(formatter),
             Self::Style(error) => error.fmt(formatter),
             Self::PageGraphStore(error) => error.fmt(formatter),
             Self::PatchStore(error) => error.fmt(formatter),
@@ -110,6 +117,12 @@ impl std::error::Error for TranslationFontPlanError {}
 impl From<TranslationPatchError> for TranslationFontPlanError {
     fn from(value: TranslationPatchError) -> Self {
         Self::Patch(value)
+    }
+}
+
+impl From<RegionTranslationPatchError> for TranslationFontPlanError {
+    fn from(value: RegionTranslationPatchError) -> Self {
+        Self::RegionPatch(value)
     }
 }
 
@@ -138,6 +151,132 @@ impl From<TranslationFontError> for TranslationFontPlanError {
 }
 
 impl TranslationFontCharacterPlan {
+    pub(crate) fn for_pending_region_patch(
+        page: &PageGraph,
+        patch: &RegionTranslationPatch,
+    ) -> Result<Self, TranslationFontPlanError> {
+        validate_region_translation_patch(page, patch)?;
+        let atoms_by_id = page
+            .atoms
+            .iter()
+            .map(|atom| (atom.atom_id.as_str(), atom))
+            .collect::<BTreeMap<_, _>>();
+        let styles_by_id = page
+            .styles
+            .iter()
+            .map(|style| (style.style_id.as_str(), style))
+            .collect::<BTreeMap<_, _>>();
+        let mut plan = Self::default();
+        for container in &patch.containers {
+            if !matches!(
+                container.renderer_decision,
+                RegionTranslationPatchRendererDecision::Pending
+                    | RegionTranslationPatchRendererDecision::Preserved { .. }
+            ) {
+                return Err(TranslationFontPlanError::UnexpectedRendererDecision(
+                    container.container_id.clone(),
+                ));
+            }
+            for paragraph in &container.paragraphs {
+                // Regular is the deterministic fallback for every paragraph.
+                plan.try_add_text(TranslationFontWeight::Regular, &paragraph.translated_text)?;
+                let mut weights = BTreeMap::<&str, usize>::new();
+                for atom_ref in &paragraph.atoms {
+                    let Some(atom) = atoms_by_id.get(atom_ref.atom_id.as_str()).copied() else {
+                        continue;
+                    };
+                    let Some(style_id) = atom.style_id.as_deref() else {
+                        continue;
+                    };
+                    let weight = atom
+                        .source_text
+                        .chars()
+                        .filter(|character| !character.is_whitespace())
+                        .count()
+                        .max(1);
+                    *weights.entry(style_id).or_default() += weight;
+                }
+                let is_bold = weights
+                    .into_iter()
+                    .max_by(|left, right| left.1.cmp(&right.1).then_with(|| right.0.cmp(left.0)))
+                    .and_then(|(style_id, _)| styles_by_id.get(style_id).copied())
+                    .and_then(|style| style.font_weight)
+                    .is_some_and(|weight| weight >= 600);
+                if is_bold {
+                    plan.try_add_text(TranslationFontWeight::Bold, &paragraph.translated_text)?;
+                }
+            }
+        }
+        Ok(plan)
+    }
+
+    pub(crate) fn for_resolved_region_replay(
+        page: &PageGraph,
+        patch: &RegionTranslationPatch,
+    ) -> Result<Self, TranslationFontPlanError> {
+        let mut plan = Self::default();
+        plan.absorb_resolved_region_patch(page, patch)?;
+        Ok(plan)
+    }
+
+    pub(crate) fn absorb_resolved_region_patch(
+        &mut self,
+        page: &PageGraph,
+        patch: &RegionTranslationPatch,
+    ) -> Result<(), TranslationFontPlanError> {
+        validate_region_translation_patch(page, patch)?;
+        ensure_region_translation_patch_resolved(patch)?;
+        let atoms_by_id = page
+            .atoms
+            .iter()
+            .map(|atom| (atom.atom_id.as_str(), atom))
+            .collect::<BTreeMap<_, _>>();
+        let styles_by_id = page
+            .styles
+            .iter()
+            .map(|style| (style.style_id.as_str(), style))
+            .collect::<BTreeMap<_, _>>();
+        let mut next = self.clone();
+        for container in &patch.containers {
+            if !matches!(
+                container.renderer_decision,
+                RegionTranslationPatchRendererDecision::Reflowed { .. }
+            ) {
+                continue;
+            }
+            for paragraph in &container.paragraphs {
+                next.try_add_text(TranslationFontWeight::Regular, &paragraph.translated_text)?;
+                let mut weights = BTreeMap::<&str, usize>::new();
+                for atom_ref in &paragraph.atoms {
+                    let Some(atom) = atoms_by_id.get(atom_ref.atom_id.as_str()).copied() else {
+                        continue;
+                    };
+                    let Some(style_id) = atom.style_id.as_deref() else {
+                        continue;
+                    };
+                    let weight = atom
+                        .source_text
+                        .chars()
+                        .filter(|character| !character.is_whitespace())
+                        .count()
+                        .max(1);
+                    *weights.entry(style_id).or_default() += weight;
+                }
+                let is_bold = weights
+                    .into_iter()
+                    .max_by(|left, right| left.1.cmp(&right.1).then_with(|| right.0.cmp(left.0)))
+                    .and_then(|(style_id, _)| styles_by_id.get(style_id).copied())
+                    .and_then(|style| style.font_weight)
+                    .is_some_and(|weight| weight >= 600);
+                if is_bold {
+                    next.try_add_text(TranslationFontWeight::Bold, &paragraph.translated_text)?;
+                }
+            }
+        }
+        *self = next;
+        Ok(())
+    }
+
     pub(crate) fn for_pending_patch(
         page: &PageGraph,
         patch: &TranslationPatch,
@@ -219,10 +358,10 @@ impl TranslationFontCharacterPlan {
     ) -> Result<Vec<PreparedTranslationFont>, TranslationFontPlanError> {
         let mut prepared = Vec::with_capacity(2);
         if let Some(plan) = self.plan_for(TranslationFontWeight::Regular) {
-            prepared.push(regular.prepare(plan)?);
+            prepared.push(regular.prepare_supported_characters(plan)?);
         }
         if let (Some(plan), Some(asset)) = (self.plan_for(TranslationFontWeight::Bold), bold) {
-            prepared.push(asset.prepare(plan)?);
+            prepared.push(asset.prepare_supported_characters(plan)?);
         }
         Ok(prepared)
     }
@@ -307,6 +446,41 @@ pub(crate) fn plan_document_translation_fonts_with_cancel(
             TranslationFontPlanError::MissingTranslationPatch(page_number),
         )?;
         plan.absorb_resolved_patch(&stored_page.page, &stored_patch.patch)?;
+    }
+    if is_cancelled() {
+        return Err(TranslationFontPlanError::Cancelled);
+    }
+    Ok(plan)
+}
+
+pub(crate) fn plan_document_region_translation_fonts_with_cancel(
+    page_graph_store: &PageGraphStore,
+    patch_store: &TranslationPatchStore,
+    pages: &PageSet,
+    is_cancelled: impl Fn() -> bool,
+) -> Result<TranslationFontCharacterPlan, TranslationFontPlanError> {
+    if page_graph_store.source_fingerprint() != patch_store.source_fingerprint() {
+        return Err(TranslationFontPlanError::SourceIdentityMismatch);
+    }
+    let page_count = page_graph_store.source_page_count();
+    let mut plan = TranslationFontCharacterPlan::default();
+    for &page_number in pages.pages() {
+        if is_cancelled() {
+            return Err(TranslationFontPlanError::Cancelled);
+        }
+        if page_number == 0 || page_number > page_count {
+            return Err(TranslationFontPlanError::PageOutOfBounds {
+                page_number,
+                page_count,
+            });
+        }
+        let stored_page = page_graph_store
+            .load(page_number)?
+            .ok_or(TranslationFontPlanError::MissingPageGraph(page_number))?;
+        let stored_patch = patch_store.load_region(&stored_page.page)?.ok_or(
+            TranslationFontPlanError::MissingTranslationPatch(page_number),
+        )?;
+        plan.absorb_resolved_region_patch(&stored_page.page, &stored_patch.patch)?;
     }
     if is_cancelled() {
         return Err(TranslationFontPlanError::Cancelled);

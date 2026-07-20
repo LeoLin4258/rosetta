@@ -90,6 +90,12 @@ export type PdfRepairResult = {
   warnings: string[];
 };
 
+export type PdfV3ComponentStatus = {
+  schema: string;
+  ready: boolean;
+  verifiedAtMs: number;
+};
+
 export type LocalDataResetItem = {
   label: string;
   path: string;
@@ -159,6 +165,12 @@ export function pickRosettaExportPath(
 
 export function listRosettaJobs() {
   return invoke<RosettaJobSummary[]>("list_rosetta_jobs");
+}
+
+export function probeRosettaPdfV3Component(targetLanguage: string) {
+  return invoke<PdfV3ComponentStatus>("probe_rosetta_pdf_v3_component", {
+    targetLanguage,
+  });
 }
 
 export function listRosettaPdfV3Runs(

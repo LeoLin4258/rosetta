@@ -6,6 +6,10 @@ use super::{
     page_graph_store::{PageGraphStore, PageGraphStoreError},
     patch_store::{TranslationPatchStore, TranslationPatchStoreError},
     reconcile::build_reconciled_page_graph_from_handle_with_index,
+    region_translation_patch::{
+        ensure_region_translation_patch_resolved, validate_region_translation_patch,
+        RegionTranslationPatch, REGION_TRANSLATION_PATCH_SCHEMA_VERSION,
+    },
     scheduler::{
         DurablePdfV3Scheduler, PdfV3ExtractionAuthority, PdfV3PageClaim, PdfV3PatchAuthority,
         PdfV3RecoveryInventory, PdfV3SchedulerError, PdfV3TranslationBinding,
@@ -266,6 +270,7 @@ impl<'a, 'pdfium> PdfV3ExtractionWorker<'a, 'pdfium> {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum PdfV3TranslationPageResult {
     Patch(TranslationPatch),
+    RegionPatch(RegionTranslationPatch),
     Preserved { reason_code: &'static str },
 }
 
@@ -490,54 +495,51 @@ impl<'a> PdfV3TranslationWorker<'a> {
                     outcome.patch_store_us = outcome
                         .patch_store_us
                         .saturating_add(elapsed_us(store_started.elapsed()));
-                    match committed {
-                        Ok(committed) => {
-                            let authority = PdfV3PatchAuthority {
-                                patch_id: patch.patch_id,
-                                translation_revision: committed.translation_revision,
-                            };
-                            let scheduler_started = Instant::now();
-                            self.scheduler.commit_translation(
-                                &self.owner_session_id,
-                                &claim,
-                                PdfV3TranslationCommit::Patch(authority.clone()),
-                                now_ms(),
-                            )?;
-                            outcome.scheduler_commit_us = outcome
-                                .scheduler_commit_us
-                                .saturating_add(elapsed_us(scheduler_started.elapsed()));
-                            outcome.committed_pages = outcome.committed_pages.saturating_add(1);
-                            if outcome.first_committed_page_us.is_none() {
-                                outcome.first_committed_page_number = Some(claim.page_number);
-                                outcome.first_committed_page_us =
-                                    Some(elapsed_us(batch_started.elapsed()));
-                            }
-                            outcome.patch_bytes =
-                                outcome.patch_bytes.saturating_add(committed.patch_bytes);
-                            outcome.uncompressed_patch_bytes = outcome
-                                .uncompressed_patch_bytes
-                                .saturating_add(committed.uncompressed_patch_bytes);
-                            outcome.pages.push(PdfV3TranslationPageOutcome::Committed {
-                                page_number: claim.page_number,
-                                authority,
-                            });
-                        }
-                        Err(error) => {
-                            let retryable = matches!(
-                                error,
-                                TranslationPatchStoreError::Io { .. }
-                                    | TranslationPatchStoreError::LockPoisoned
-                            );
-                            self.fail_claim(
-                                &claim,
-                                TRANSLATION_PATCH_STORE_FAILURE_REASON,
-                                retryable,
-                                PdfV3TranslationFailureKind::PatchStore,
-                                now_ms(),
-                                &mut outcome,
-                            )?;
-                        }
+                    self.commit_patch_claim(
+                        &claim,
+                        patch.patch_id,
+                        committed,
+                        batch_started,
+                        now_ms(),
+                        &mut outcome,
+                    )?;
+                }
+                Ok(PdfV3TranslationPageResult::RegionPatch(patch)) => {
+                    if processor.is_cancelled() {
+                        self.fail_claim(
+                            &claim,
+                            "pdf-v3-translation-cancelled",
+                            true,
+                            PdfV3TranslationFailureKind::Processor,
+                            now_ms(),
+                            &mut outcome,
+                        )?;
+                        continue;
                     }
+                    if !self.region_patch_matches_binding(&stored_page.page, &patch) {
+                        self.fail_claim(
+                            &claim,
+                            INVALID_TRANSLATION_PATCH_REASON,
+                            false,
+                            PdfV3TranslationFailureKind::InvalidPatch,
+                            now_ms(),
+                            &mut outcome,
+                        )?;
+                        continue;
+                    }
+                    let store_started = Instant::now();
+                    let committed = self.patch_store.commit_region(&stored_page.page, &patch);
+                    outcome.patch_store_us = outcome
+                        .patch_store_us
+                        .saturating_add(elapsed_us(store_started.elapsed()));
+                    self.commit_patch_claim(
+                        &claim,
+                        patch.patch_id,
+                        committed,
+                        batch_started,
+                        now_ms(),
+                        &mut outcome,
+                    )?;
                 }
                 Ok(PdfV3TranslationPageResult::Preserved { reason_code }) => {
                     let scheduler_started = Instant::now();
@@ -583,6 +585,81 @@ impl<'a> PdfV3TranslationWorker<'a> {
             && patch.renderer_version == self.binding.renderer_version
             && validate_translation_patch(page, patch).is_ok()
             && ensure_translation_patch_renderer_resolved(patch).is_ok()
+    }
+
+    fn region_patch_matches_binding(
+        &self,
+        page: &super::types::PageGraph,
+        patch: &RegionTranslationPatch,
+    ) -> bool {
+        patch.schema_version == REGION_TRANSLATION_PATCH_SCHEMA_VERSION
+            && self.binding.translation_patch_schema_version
+                == REGION_TRANSLATION_PATCH_SCHEMA_VERSION
+            && patch.target_language == self.binding.target_language
+            && patch.renderer_version == self.binding.renderer_version
+            && validate_region_translation_patch(page, patch).is_ok()
+            && ensure_region_translation_patch_resolved(patch).is_ok()
+    }
+
+    fn commit_patch_claim(
+        &self,
+        claim: &PdfV3PageClaim,
+        patch_id: String,
+        committed: Result<
+            super::patch_store::TranslationPatchCommitOutcome,
+            TranslationPatchStoreError,
+        >,
+        batch_started: Instant,
+        commit_now_ms: u64,
+        outcome: &mut PdfV3TranslationBatchOutcome,
+    ) -> Result<(), PdfV3TranslationWorkerError> {
+        match committed {
+            Ok(committed) => {
+                let authority = PdfV3PatchAuthority {
+                    patch_id,
+                    translation_revision: committed.translation_revision,
+                };
+                let scheduler_started = Instant::now();
+                self.scheduler.commit_translation(
+                    &self.owner_session_id,
+                    claim,
+                    PdfV3TranslationCommit::Patch(authority.clone()),
+                    commit_now_ms,
+                )?;
+                outcome.scheduler_commit_us = outcome
+                    .scheduler_commit_us
+                    .saturating_add(elapsed_us(scheduler_started.elapsed()));
+                outcome.committed_pages = outcome.committed_pages.saturating_add(1);
+                if outcome.first_committed_page_us.is_none() {
+                    outcome.first_committed_page_number = Some(claim.page_number);
+                    outcome.first_committed_page_us = Some(elapsed_us(batch_started.elapsed()));
+                }
+                outcome.patch_bytes = outcome.patch_bytes.saturating_add(committed.patch_bytes);
+                outcome.uncompressed_patch_bytes = outcome
+                    .uncompressed_patch_bytes
+                    .saturating_add(committed.uncompressed_patch_bytes);
+                outcome.pages.push(PdfV3TranslationPageOutcome::Committed {
+                    page_number: claim.page_number,
+                    authority,
+                });
+            }
+            Err(error) => {
+                let retryable = matches!(
+                    error,
+                    TranslationPatchStoreError::Io { .. }
+                        | TranslationPatchStoreError::LockPoisoned
+                );
+                self.fail_claim(
+                    claim,
+                    TRANSLATION_PATCH_STORE_FAILURE_REASON,
+                    retryable,
+                    PdfV3TranslationFailureKind::PatchStore,
+                    commit_now_ms,
+                    outcome,
+                )?;
+            }
+        }
+        Ok(())
     }
 
     fn fail_claim(
@@ -683,12 +760,21 @@ pub(crate) fn validated_recovery_inventory(
         {
             continue;
         }
-        let Some(stored_patch) = patch_store.load(&stored_page.page)? else {
+        let stored_identity = if binding.translation_patch_schema_version
+            == REGION_TRANSLATION_PATCH_SCHEMA_VERSION
+        {
+            patch_store
+                .load_region(&stored_page.page)?
+                .map(|stored| (stored.patch.patch_id, stored.patch.translation_revision))
+        } else {
+            patch_store
+                .load(&stored_page.page)?
+                .map(|stored| (stored.patch.patch_id, stored.patch.translation_revision))
+        };
+        let Some((patch_id, translation_revision)) = stored_identity else {
             continue;
         };
-        if stored_patch.patch.patch_id != entry.patch_id
-            || stored_patch.patch.translation_revision != entry.translation_revision
-        {
+        if patch_id != entry.patch_id || translation_revision != entry.translation_revision {
             continue;
         }
         patches.insert(
@@ -715,7 +801,10 @@ fn validate_translation_binding(
             "pageGraphSchemaVersion",
         ));
     }
-    if binding.translation_patch_schema_version != TRANSLATION_PATCH_SCHEMA_VERSION {
+    if !matches!(
+        binding.translation_patch_schema_version,
+        TRANSLATION_PATCH_SCHEMA_VERSION | REGION_TRANSLATION_PATCH_SCHEMA_VERSION
+    ) {
         return Err(PdfV3TranslationWorkerError::BindingMismatch(
             "translationPatchSchemaVersion",
         ));

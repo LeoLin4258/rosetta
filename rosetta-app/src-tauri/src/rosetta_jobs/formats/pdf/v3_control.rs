@@ -485,12 +485,14 @@ mod tests {
         pdf_v3::{
             font::{TranslationFontAsset, TranslationFontWeight},
             page_set::PageSet,
-            patch_renderer::{TranslationPatchRenderPolicy, TRANSLATION_PATCH_RENDERER_VERSION},
+            patch_renderer::TranslationPatchRenderPolicy,
+            region_renderer::REGION_TRANSLATION_RENDERER_VERSION,
+            region_translation_patch::REGION_TRANSLATION_PATCH_SCHEMA_VERSION,
             scheduler::{
                 DurablePdfV3Scheduler, PdfV3ExtractionAuthority, PdfV3PageState, PdfV3RunSpec,
                 PdfV3RunState, PdfV3SchedulerCapacity, PdfV3SchedulerError,
             },
-            types::{PAGE_GRAPH_SCHEMA_VERSION, TRANSLATION_PATCH_SCHEMA_VERSION},
+            types::PAGE_GRAPH_SCHEMA_VERSION,
         },
         rosetta_jobs::formats::pdf::v3_runtime::{
             build_translation_runtime_manifest, commit_translation_runtime_manifest,
@@ -818,8 +820,8 @@ mod tests {
                 target_language: "zh-CN".to_string(),
                 engine_version: "pdf-v3-control-test".to_string(),
                 page_graph_schema_version: PAGE_GRAPH_SCHEMA_VERSION,
-                translation_patch_schema_version: TRANSLATION_PATCH_SCHEMA_VERSION,
-                renderer_version: TRANSLATION_PATCH_RENDERER_VERSION.to_string(),
+                translation_patch_schema_version: REGION_TRANSLATION_PATCH_SCHEMA_VERSION,
+                renderer_version: REGION_TRANSLATION_RENDERER_VERSION.to_string(),
             };
             let scheduler = DurablePdfV3Scheduler::create(
                 &run_dir,

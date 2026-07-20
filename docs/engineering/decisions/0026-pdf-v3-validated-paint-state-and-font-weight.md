@@ -26,13 +26,13 @@ content stream could apply a stale or incorrect style.
 Single text-show replacement now requires one validated `PageStyle` shared by
 all PageGraph atoms in the source object. The style gate accepts only:
 
-- a unique style with a valid source font weight;
+- a unique style whose Regular/Bold intent can be classified;
 - non-italic text;
 - `FilledUnstroked` render mode;
 - finite normalized fill color and opacity whose alpha values agree.
 
-Italic, stroked, clipping, missing-weight and inconsistent-style source objects
-remain original with typed errors.
+Italic, stroked, clipping and inconsistent-style source objects remain original
+with typed errors.
 
 Translation font assets and prepared subsets carry an explicit `Regular` or
 `Bold` face intent. The renderer must use the face selected by the style plan;
@@ -41,6 +41,13 @@ numeric weight of at least 600 or an explicit bold-family marker such as
 `bold`, `black`, `heavy`, `demi`, `semi`, `cmbx` or `-medi` after removing a PDF
 subset prefix. This is a controlled classification policy, not source-font
 reuse.
+
+PDFium may return a missing value or `Custom(0)` for otherwise ordinary fonts.
+Because PDF v3 uses a controlled unified translation family, an unavailable or
+out-of-range numeric weight now falls back to Regular unless the source font
+name has an explicit bold marker. Variable-font names with `600wght` through
+`900wght` are explicit bold markers. The effective diagnostic weight is 400 or
+700 for this inferred path; no source font is reused.
 
 Before replacement, the renderer replays graphics and text state up to the
 target operation. It tracks `q`/`Q`, `Tf`, `Tz`, `Tr`, DeviceGray, DeviceRGB and

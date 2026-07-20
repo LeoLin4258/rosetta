@@ -11,28 +11,35 @@ use std::{
 };
 
 use crate::pdf_v3::{
-    font::{stage_document_translation_font_registry, TranslationFontAsset, TranslationFontWeight},
-    font_plan::TranslationFontCharacterPlan,
+    font::{TranslationFontAsset, TranslationFontError, TranslationFontWeight},
+    font_plan::{TranslationFontCharacterPlan, TranslationFontPlanError},
     ownership::{PdfStreamOwnershipError, PdfStreamOwnershipIndex},
     page_index::{PdfPageIndex, PdfPageIndexError},
-    patch_renderer::{
-        stage_translation_patch_with_font_registry, TranslationPatchRenderPolicy,
-        TRANSLATION_PATCH_RENDERER_VERSION,
+    paragraph_translation_plan::{
+        build_visual_paragraph_page_plan,
+        resolve_visual_paragraph_results_preserving_invalid_containers,
     },
+    patch_renderer::{TranslationPatchRenderError, TranslationPatchRenderPolicy},
     pipeline::{
         PdfV3TranslationPageProcessor, PdfV3TranslationPageResult, PdfV3TranslationProcessFailure,
     },
-    scheduler::PdfV3TranslationBinding,
-    source_object::{PdfObjectOverlay, PdfSourceObjectStore},
-    translation_plan::{
-        build_translation_page_plan, build_translation_patch_from_plan,
-        TranslationPatchDraftMetadata, TranslationPlanError,
+    region_layout::RegionLayoutPolicy,
+    region_renderer::{
+        stage_region_translation_patch_with_context, RegionTranslationRenderError,
+        REGION_TRANSLATION_RENDERER_VERSION,
     },
+    region_translation_patch::{
+        build_region_translation_patch_preserving_containers, RegionTranslationPatchDraft,
+    },
+    replacement::TextShowReplacementError,
+    scheduler::PdfV3TranslationBinding,
+    source_object::PdfSourceObjectStore,
+    translation_plan::TranslationPatchDraftMetadata,
     types::PageGraph,
 };
 
 use super::unit_translation::{
-    translate_pdf_v3_page_plan, PdfUnitProviderConfig, PdfV3ProviderFailureKind,
+    translate_pdf_v3_visual_paragraph_plan, PdfUnitProviderConfig, PdfV3ProviderFailureKind,
 };
 use super::v3_runtime::BoundPdfV3TranslationRuntime;
 
@@ -41,7 +48,27 @@ const INVALID_RUNTIME_IDENTITY_REASON: &str = "pdf-v3-runtime-identity-mismatch"
 const INVALID_TRANSLATION_PLAN_REASON: &str = "pdf-v3-translation-plan-invalid";
 const PROVIDER_FAILURE_REASON: &str = "pdf-v3-translation-provider-failed";
 const CANCELLED_REASON: &str = "pdf-v3-translation-cancelled";
-const RENDERER_FAILURE_REASON: &str = "pdf-v3-translation-renderer-failed";
+const RENDERER_FONT_PLAN_FAILURE_REASON: &str = "pdf-v3-renderer-font-plan-failed";
+const RENDERER_FONT_PREPARE_FAILURE_REASON: &str = "pdf-v3-renderer-font-prepare-failed";
+const RENDERER_FONT_MISSING_GLYPHS_REASON: &str = "pdf-v3-renderer-font-missing-glyphs";
+const RENDERER_FONT_CHARACTER_LIMIT_REASON: &str = "pdf-v3-renderer-font-character-limit";
+const RENDERER_FONT_ASSET_FAILURE_REASON: &str = "pdf-v3-renderer-font-asset-failed";
+const RENDERER_FONT_STAGE_FAILURE_REASON: &str = "pdf-v3-renderer-font-stage-failed";
+const RENDERER_FONT_PREPARED_GLYPH_REASON: &str = "pdf-v3-renderer-font-prepared-glyph-missing";
+const RENDERER_FONT_DUPLICATE_WEIGHT_REASON: &str = "pdf-v3-renderer-font-duplicate-weight";
+const RENDERER_FONT_DOCUMENT_FACE_REASON: &str = "pdf-v3-renderer-font-document-face-missing";
+const RENDERER_FONT_DOCUMENT_IDENTITY_REASON: &str =
+    "pdf-v3-renderer-font-document-identity-mismatch";
+const RENDERER_FONT_DOCUMENT_OBJECT_REASON: &str = "pdf-v3-renderer-font-document-object-invalid";
+const RENDERER_FONT_PAGE_RESOURCES_REASON: &str = "pdf-v3-renderer-font-page-resources-invalid";
+const RENDERER_GEOMETRY_FAILURE_REASON: &str = "pdf-v3-renderer-geometry-failed";
+const RENDERER_STYLE_FAILURE_REASON: &str = "pdf-v3-renderer-style-failed";
+const RENDERER_OWNERSHIP_FAILURE_REASON: &str = "pdf-v3-renderer-ownership-failed";
+const RENDERER_CONTENT_FAILURE_REASON: &str = "pdf-v3-renderer-content-failed";
+const RENDERER_TRANSACTION_FAILURE_REASON: &str = "pdf-v3-renderer-transaction-failed";
+const RENDERER_PATCH_FAILURE_REASON: &str = "pdf-v3-renderer-patch-invalid";
+const RENDERER_CACHE_FAILURE_REASON: &str = "pdf-v3-renderer-cache-failed";
+const RENDERER_REGION_FAILURE_REASON: &str = "pdf-v3-region-renderer-failed";
 
 #[derive(Clone)]
 pub(crate) struct PdfV3LocalPageProcessorConfig {
@@ -182,22 +209,17 @@ impl<'a> PdfV3LocalPageProcessor<'a> {
             return Err(process_failure(CANCELLED_REASON, true));
         }
 
-        let plan = match build_translation_page_plan(page) {
-            Ok(plan) => plan,
-            Err(TranslationPlanError::NoTranslatableUnits) => {
-                return Ok(PdfV3TranslationPageResult::Preserved {
-                    reason_code: NO_SAFE_UNITS_REASON,
-                });
-            }
-            Err(_) => return Err(process_failure(INVALID_TRANSLATION_PLAN_REASON, false)),
-        };
+        let plan = build_visual_paragraph_page_plan(page).map_err(|error| {
+            log_page_stage_failure(page.page_number, "plan", &error);
+            process_failure(INVALID_TRANSLATION_PLAN_REASON, false)
+        })?;
         if plan.units.is_empty() {
             return Ok(PdfV3TranslationPageResult::Preserved {
                 reason_code: NO_SAFE_UNITS_REASON,
             });
         }
 
-        let translated = translate_pdf_v3_page_plan(
+        let translated = translate_pdf_v3_visual_paragraph_plan(
             &self.config.provider,
             &self.config.source_language,
             &self.config.target_language,
@@ -221,47 +243,63 @@ impl<'a> PdfV3LocalPageProcessor<'a> {
             return Err(process_failure(CANCELLED_REASON, true));
         }
 
-        let pending_patch = build_translation_patch_from_plan(
-            page,
+        let resolved = resolve_visual_paragraph_results_preserving_invalid_containers(
             &plan,
             translated.results,
-            TranslationPatchDraftMetadata {
-                target_language: self.config.target_language.clone(),
-                translation_revision: self.config.translation_revision,
-                provider_id: self.config.provider_id.clone(),
-                model_id: self.config.model_id.clone(),
-                renderer_version: self.config.renderer_version.clone(),
-            },
+            &self.config.target_language,
         )
-        .map_err(|_| process_failure(INVALID_TRANSLATION_PLAN_REASON, false))?;
+        .map_err(|error| {
+            log_page_stage_failure(page.page_number, "provider-result-resolution", &error);
+            process_failure(INVALID_TRANSLATION_PLAN_REASON, false)
+        })?;
+        let pending_patch = build_region_translation_patch_preserving_containers(
+            page,
+            RegionTranslationPatchDraft {
+                plan,
+                translations: resolved.translations,
+                metadata: TranslationPatchDraftMetadata {
+                    target_language: self.config.target_language.clone(),
+                    translation_revision: self.config.translation_revision,
+                    provider_id: self.config.provider_id.clone(),
+                    model_id: self.config.model_id.clone(),
+                    renderer_version: self.config.renderer_version.clone(),
+                },
+            },
+            &resolved.preserved_containers,
+        )
+        .map_err(|error| {
+            log_page_stage_failure(page.page_number, "region-patch", &error);
+            process_failure(INVALID_TRANSLATION_PLAN_REASON, false)
+        })?;
 
-        let font_plan = TranslationFontCharacterPlan::for_pending_patch(page, &pending_patch)
-            .map_err(|_| process_failure(RENDERER_FAILURE_REASON, false))?;
+        let font_plan =
+            TranslationFontCharacterPlan::for_pending_region_patch(page, &pending_patch)
+                .map_err(|_| process_failure(RENDERER_FONT_PLAN_FAILURE_REASON, false))?;
         let prepared_fonts = font_plan
             .prepare_available_fonts(&self.config.regular_font, self.config.bold_font.as_ref())
-            .map_err(|_| process_failure(RENDERER_FAILURE_REASON, false))?;
+            .map_err(|error| {
+                log_font_prepare_failure(&error);
+                process_failure(font_prepare_failure_reason(&error), false)
+            })?;
         let fonts = prepared_fonts.iter().collect::<Vec<_>>();
-        let staged_fonts = stage_document_translation_font_registry(self.source_objects, &fonts)
-            .map_err(|_| process_failure(RENDERER_FAILURE_REASON, false))?;
-        let page_font_overlay =
-            PdfObjectOverlay::new(self.source_objects, &staged_fonts.object_delta);
-        let staged = stage_translation_patch_with_font_registry(
+        let staged = stage_region_translation_patch_with_context(
             self.source_objects,
-            &page_font_overlay,
             &self.page_index,
             &self.ownership_index,
             page,
             &pending_patch,
             &fonts,
-            self.config.render_policy,
-            &staged_fonts.registry,
+            RegionLayoutPolicy::default(),
         )
-        .map_err(|_| process_failure(RENDERER_FAILURE_REASON, false))?;
+        .map_err(|error| {
+            log_page_stage_failure(page.page_number, "region-renderer", &error);
+            process_failure(region_renderer_failure_reason(&error), false)
+        })?;
         if self.is_cancelled() {
             return Err(process_failure(CANCELLED_REASON, true));
         }
-        Ok(PdfV3TranslationPageResult::Patch(
-            staged.render.resolved_patch,
+        Ok(PdfV3TranslationPageResult::RegionPatch(
+            staged.resolved_patch,
         ))
     }
 
@@ -270,7 +308,7 @@ impl<'a> PdfV3LocalPageProcessor<'a> {
             && self.config.source_language == binding.source_language
             && self.config.target_language == binding.target_language
             && self.config.renderer_version == binding.renderer_version
-            && binding.renderer_version == TRANSLATION_PATCH_RENDERER_VERSION
+            && binding.renderer_version == REGION_TRANSLATION_RENDERER_VERSION
             && self.source_objects.page_count() == binding.source_page_count
     }
 
@@ -351,7 +389,7 @@ fn validate_config(
         ),
         (
             config.renderer_version == binding.renderer_version
-                && config.renderer_version == TRANSLATION_PATCH_RENDERER_VERSION,
+                && config.renderer_version == REGION_TRANSLATION_RENDERER_VERSION,
             "rendererVersion",
         ),
     ] {
@@ -391,6 +429,158 @@ fn process_failure(reason_code: &'static str, retryable: bool) -> PdfV3Translati
     }
 }
 
+fn log_page_stage_failure(page_number: u32, stage: &str, error: &impl fmt::Display) {
+    eprintln!("[pdf-v3-processor] page={page_number} stage={stage} error={error}");
+}
+
+fn renderer_failure_reason(error: &TranslationPatchRenderError) -> &'static str {
+    match error {
+        TranslationPatchRenderError::InvalidPolicy
+        | TranslationPatchRenderError::RendererVersionMismatch { .. }
+        | TranslationPatchRenderError::MixedRendererDecisionState
+        | TranslationPatchRenderError::ResolvedRendererDecisionMismatch(_)
+        | TranslationPatchRenderError::Patch(_) => RENDERER_PATCH_FAILURE_REASON,
+        TranslationPatchRenderError::PageOutOfBounds { .. }
+        | TranslationPatchRenderError::SinglePage(_)
+        | TranslationPatchRenderError::PagePdfSerialization(_)
+        | TranslationPatchRenderError::InvalidPagePdf(_) => RENDERER_CONTENT_FAILURE_REASON,
+        TranslationPatchRenderError::Replacement(error) => replacement_failure_reason(error),
+        TranslationPatchRenderError::Cache(_) => RENDERER_CACHE_FAILURE_REASON,
+    }
+}
+
+fn region_renderer_failure_reason(error: &RegionTranslationRenderError) -> &'static str {
+    match error {
+        RegionTranslationRenderError::MissingRegularFont
+        | RegionTranslationRenderError::MissingFontWeight(_) => RENDERER_FONT_STAGE_FAILURE_REASON,
+        RegionTranslationRenderError::DuplicateFontWeight(_) => {
+            RENDERER_FONT_DUPLICATE_WEIGHT_REASON
+        }
+        RegionTranslationRenderError::Font(error) => translation_font_failure_reason(error),
+        RegionTranslationRenderError::InvalidProvenance(_)
+        | RegionTranslationRenderError::ContainerOwnershipIncomplete(_)
+        | RegionTranslationRenderError::SharedTextShow(_)
+        | RegionTranslationRenderError::Ownership(_) => RENDERER_OWNERSHIP_FAILURE_REASON,
+        RegionTranslationRenderError::Layout(_) => RENDERER_GEOMETRY_FAILURE_REASON,
+        RegionTranslationRenderError::Patch(_) => RENDERER_PATCH_FAILURE_REASON,
+        RegionTranslationRenderError::Replacement(error) => replacement_failure_reason(error),
+        RegionTranslationRenderError::PageContentsInvalid
+        | RegionTranslationRenderError::ResourceConflict(_)
+        | RegionTranslationRenderError::ObjectNumberOverflow
+        | RegionTranslationRenderError::ContentEncode(_)
+        | RegionTranslationRenderError::StreamWrite(_)
+        | RegionTranslationRenderError::ObjectDelta(_)
+        | RegionTranslationRenderError::PageIndex(_)
+        | RegionTranslationRenderError::PageContext(_)
+        | RegionTranslationRenderError::SinglePage(_)
+        | RegionTranslationRenderError::Cache(_)
+        | RegionTranslationRenderError::InvalidPagePdf(_)
+        | RegionTranslationRenderError::PagePdfSerialization(_)
+        | RegionTranslationRenderError::RendererVersionMismatch => RENDERER_REGION_FAILURE_REASON,
+    }
+}
+
+fn font_prepare_failure_reason(error: &TranslationFontPlanError) -> &'static str {
+    match error {
+        TranslationFontPlanError::CharacterLimit { .. } => RENDERER_FONT_CHARACTER_LIMIT_REASON,
+        TranslationFontPlanError::MissingFontAsset(_)
+        | TranslationFontPlanError::FontAssetWeightMismatch { .. } => {
+            RENDERER_FONT_ASSET_FAILURE_REASON
+        }
+        TranslationFontPlanError::Font(TranslationFontError::MissingGlyphs(_)) => {
+            RENDERER_FONT_MISSING_GLYPHS_REASON
+        }
+        _ => RENDERER_FONT_PREPARE_FAILURE_REASON,
+    }
+}
+
+fn log_font_prepare_failure(error: &TranslationFontPlanError) {
+    let TranslationFontPlanError::Font(TranslationFontError::MissingGlyphs(codepoints)) = error
+    else {
+        return;
+    };
+    let diagnostic = codepoints
+        .iter()
+        .take(32)
+        .map(|codepoint| format!("U+{codepoint:04X}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    eprintln!(
+        "[pdf-v3-renderer] font prepare missingGlyphCount={} codepoints={}",
+        codepoints.len(),
+        diagnostic,
+    );
+}
+
+fn replacement_failure_reason(error: &TextShowReplacementError) -> &'static str {
+    match error {
+        TextShowReplacementError::Font(error) => translation_font_failure_reason(error),
+        TextShowReplacementError::MissingTranslationFontFace(_) => {
+            RENDERER_FONT_DOCUMENT_FACE_REASON
+        }
+        TextShowReplacementError::DuplicateTranslationFontFace(_) => {
+            RENDERER_FONT_DUPLICATE_WEIGHT_REASON
+        }
+        TextShowReplacementError::FitBounds(_)
+        | TextShowReplacementError::InvalidFitBounds
+        | TextShowReplacementError::Overflow { .. } => RENDERER_GEOMETRY_FAILURE_REASON,
+        TextShowReplacementError::Style(_)
+        | TextShowReplacementError::MissingSourceFontState
+        | TextShowReplacementError::SourcePaintStateUnsupported
+        | TextShowReplacementError::SourceStyleMismatch => RENDERER_STYLE_FAILURE_REASON,
+        TextShowReplacementError::PageContext(_)
+        | TextShowReplacementError::PageIndex(_)
+        | TextShowReplacementError::Ownership(_)
+        | TextShowReplacementError::PageOutOfBounds { .. }
+        | TextShowReplacementError::StreamOutsidePage
+        | TextShowReplacementError::RepeatedPageStream => RENDERER_OWNERSHIP_FAILURE_REASON,
+        TextShowReplacementError::EmptyBatch
+        | TextShowReplacementError::BatchPageMismatch
+        | TextShowReplacementError::DuplicateBatchTarget
+        | TextShowReplacementError::EmptyTransaction
+        | TextShowReplacementError::TransactionTargetMismatch
+        | TextShowReplacementError::DuplicateTransactionOperation
+        | TextShowReplacementError::CrossTextObjectTransaction
+        | TextShowReplacementError::EmptyTranslation
+        | TextShowReplacementError::LaterTextShowInTextObject
+        | TextShowReplacementError::InvalidTextPositionReset => RENDERER_TRANSACTION_FAILURE_REASON,
+        TextShowReplacementError::Patch(_)
+        | TextShowReplacementError::OperationMissing
+        | TextShowReplacementError::UnsupportedOperator(_)
+        | TextShowReplacementError::SourceIdentityMismatch(_) => RENDERER_PATCH_FAILURE_REASON,
+        TextShowReplacementError::ObjectDelta(_)
+        | TextShowReplacementError::SourceObject(_)
+        | TextShowReplacementError::StreamRead(_)
+        | TextShowReplacementError::ContentDecode(_)
+        | TextShowReplacementError::ContentEncode(_)
+        | TextShowReplacementError::StreamWrite(_) => RENDERER_CONTENT_FAILURE_REASON,
+    }
+}
+
+fn translation_font_failure_reason(error: &TranslationFontError) -> &'static str {
+    match error {
+        TranslationFontError::MissingGlyphs(_) => RENDERER_FONT_MISSING_GLYPHS_REASON,
+        TranslationFontError::MissingPreparedGlyph(_) => RENDERER_FONT_PREPARED_GLYPH_REASON,
+        TranslationFontError::DuplicatePreparedWeight(_) => RENDERER_FONT_DUPLICATE_WEIGHT_REASON,
+        TranslationFontError::MissingDocumentFont(_) => RENDERER_FONT_DOCUMENT_FACE_REASON,
+        TranslationFontError::DocumentFontIdentityMismatch(_) => {
+            RENDERER_FONT_DOCUMENT_IDENTITY_REASON
+        }
+        TranslationFontError::DocumentFontObjectInvalid(_) => RENDERER_FONT_DOCUMENT_OBJECT_REASON,
+        TranslationFontError::PageResources(_) => RENDERER_FONT_PAGE_RESOURCES_REASON,
+        TranslationFontError::Read(_)
+        | TranslationFontError::Parse(_)
+        | TranslationFontError::EmbeddingRestricted
+        | TranslationFontError::SubsettingRestricted
+        | TranslationFontError::UnsupportedOutline
+        | TranslationFontError::Subset(_) => RENDERER_FONT_ASSET_FAILURE_REASON,
+        TranslationFontError::ObjectIdOverflow
+        | TranslationFontError::Content(_)
+        | TranslationFontError::ObjectDelta(_)
+        | TranslationFontError::SourceObject(_) => RENDERER_FONT_STAGE_FAILURE_REASON,
+    }
+}
+
 #[cfg(all(test, target_os = "windows"))]
 mod tests {
     use std::{
@@ -407,16 +597,17 @@ mod tests {
             document::DocumentHandle,
             font::{TranslationFontAsset, TranslationFontWeight},
             page_set::PageSet,
-            patch_renderer::{TranslationPatchRenderPolicy, TRANSLATION_PATCH_RENDERER_VERSION},
+            paragraph_translation_plan::build_visual_paragraph_page_plan,
+            patch_renderer::TranslationPatchRenderPolicy,
             pipeline::PdfV3TranslationPageResult,
             reconcile::build_reconciled_page_graph_from_handle,
+            region_renderer::REGION_TRANSLATION_RENDERER_VERSION,
+            region_translation_patch::{
+                RegionTranslationPatchRendererDecision, REGION_TRANSLATION_PATCH_SCHEMA_VERSION,
+            },
             scheduler::PdfV3TranslationBinding,
             source_object::PdfSourceObjectStore,
-            translation_plan::build_translation_page_plan,
-            types::{
-                TranslationPatchRendererDecision, PAGE_GRAPH_SCHEMA_VERSION,
-                TRANSLATION_PATCH_SCHEMA_VERSION,
-            },
+            types::{PageGroupKind, PAGE_GRAPH_SCHEMA_VERSION},
         },
         rosetta_jobs::formats::pdf::{
             test_helpers::{fixture_path, pdfium_test_lock, shared_pdfium},
@@ -431,7 +622,7 @@ mod tests {
 
     use super::{
         PdfV3LocalPageProcessor, PdfV3LocalPageProcessorConfig, PdfV3LocalPageProcessorConfigError,
-        CANCELLED_REASON, NO_SAFE_UNITS_REASON, RENDERER_FAILURE_REASON,
+        CANCELLED_REASON, NO_SAFE_UNITS_REASON,
     };
 
     fn binding(handle: &DocumentHandle<'_>) -> PdfV3TranslationBinding {
@@ -443,15 +634,15 @@ mod tests {
             target_language: "zh-CN".to_string(),
             engine_version: "pdf-v3-test".to_string(),
             page_graph_schema_version: PAGE_GRAPH_SCHEMA_VERSION,
-            translation_patch_schema_version: TRANSLATION_PATCH_SCHEMA_VERSION,
-            renderer_version: TRANSLATION_PATCH_RENDERER_VERSION.to_string(),
+            translation_patch_schema_version: REGION_TRANSLATION_PATCH_SCHEMA_VERSION,
+            renderer_version: REGION_TRANSLATION_RENDERER_VERSION.to_string(),
         }
     }
 
     fn font_asset(weight: TranslationFontWeight) -> TranslationFontAsset {
         let path = match weight {
-            TranslationFontWeight::Regular => PathBuf::from(r"C:\Windows\Fonts\arial.ttf"),
-            TranslationFontWeight::Bold => PathBuf::from(r"C:\Windows\Fonts\arialbd.ttf"),
+            TranslationFontWeight::Regular => PathBuf::from(r"C:\Windows\Fonts\msyh.ttc"),
+            TranslationFontWeight::Bold => PathBuf::from(r"C:\Windows\Fonts\msyhbd.ttc"),
         };
         TranslationFontAsset::open_weighted(format!("Arial{weight:?}"), weight, &path, 0)
             .expect("Windows Arial font")
@@ -517,10 +708,9 @@ mod tests {
         let source = fixture_path("002-trivial-libre-office-writer.pdf");
         let handle = DocumentHandle::open(shared_pdfium(), &source).expect("document handle");
         let page = build_reconciled_page_graph_from_handle(&handle, 1).expect("PageGraph");
-        let plan = build_translation_page_plan(&page).expect("translation plan");
+        let plan = build_visual_paragraph_page_plan(&page).expect("translation plan");
         assert!(!plan.units.is_empty());
-        let translated = "Translated";
-        let translations = vec![translated.to_string(); plan.units.len()];
+        let translations = visual_translations(&plan, "");
         let source_objects = PdfSourceObjectStore::open(&source).expect("lazy source");
         let binding = binding(&handle);
         let (config, _) = config(&handle, translations);
@@ -531,18 +721,19 @@ mod tests {
             .process(&page, &binding)
             .await
             .expect("processed page");
-        let PdfV3TranslationPageResult::Patch(patch) = result else {
+        let PdfV3TranslationPageResult::RegionPatch(patch) = result else {
             panic!("safe page must produce a patch");
         };
-        assert!(!patch.entries.is_empty());
-        assert!(patch.entries.iter().all(|entry| !matches!(
-            entry.renderer_decision,
-            TranslationPatchRendererDecision::Pending
+        assert!(!patch.containers.is_empty());
+        assert!(patch.containers.iter().all(|container| !matches!(
+            container.renderer_decision,
+            RegionTranslationPatchRendererDecision::Pending
         )));
-        assert!(patch.entries.iter().any(|entry| matches!(
-            entry.renderer_decision,
-            TranslationPatchRendererDecision::Fitted { .. }
-        )));
+        assert!(patch
+            .containers
+            .iter()
+            .flat_map(|container| container.paragraphs.iter())
+            .all(|paragraph| paragraph.translated_text.contains("这是完整中文译文")));
     }
 
     #[tokio::test]
@@ -596,14 +787,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn overflow_is_resolved_as_entry_preservation() {
+    async fn overflow_is_resolved_as_container_preservation() {
         let _guard = pdfium_test_lock();
         let source = fixture_path("002-trivial-libre-office-writer.pdf");
         let handle = DocumentHandle::open(shared_pdfium(), &source).expect("document handle");
-        let page = build_reconciled_page_graph_from_handle(&handle, 1).expect("PageGraph");
-        let plan = build_translation_page_plan(&page).expect("translation plan");
-        let translated = "W".repeat(4_096);
-        let translations = vec![translated.clone(); plan.units.len()];
+        let mut page = build_reconciled_page_graph_from_handle(&handle, 1).expect("PageGraph");
+        for group in &mut page.groups {
+            if group.kind == PageGroupKind::FlowContainer {
+                group.bounds[2] = group.bounds[0] + 8.0;
+                group.bounds[3] = group.bounds[1] + 8.0;
+            }
+        }
+        let plan = build_visual_paragraph_page_plan(&page).expect("translation plan");
+        let translations = visual_translations(&plan, "");
         let source_objects = PdfSourceObjectStore::open(&source).expect("lazy source");
         let binding = binding(&handle);
         let (config, _) = config(&handle, translations);
@@ -614,40 +810,50 @@ mod tests {
             .process(&page, &binding)
             .await
             .expect("processed page");
-        let PdfV3TranslationPageResult::Patch(patch) = result else {
+        let PdfV3TranslationPageResult::RegionPatch(patch) = result else {
             panic!("overflow is represented by resolved patch decisions");
         };
-        assert!(patch.entries.iter().all(|entry| matches!(
-            entry.renderer_decision,
-            TranslationPatchRendererDecision::Preserved { .. }
+        assert!(patch.containers.iter().all(|container| matches!(
+            container.renderer_decision,
+            RegionTranslationPatchRendererDecision::Preserved { .. }
         )));
-        assert!(patch.entries.iter().any(|entry| matches!(
-            &entry.renderer_decision,
-            TranslationPatchRendererDecision::Preserved { reason_code }
-                if reason_code == "translation-overflow"
+        assert!(patch.containers.iter().any(|container| matches!(
+            &container.renderer_decision,
+            RegionTranslationPatchRendererDecision::Preserved { reason_code }
+                if reason_code == "region-layout-overflow"
         )));
     }
 
     #[tokio::test]
-    async fn missing_asset_glyph_is_renderer_failure_not_a_patch() {
+    async fn missing_asset_glyph_preserves_affected_entries() {
         let _guard = pdfium_test_lock();
         let source = fixture_path("002-trivial-libre-office-writer.pdf");
         let handle = DocumentHandle::open(shared_pdfium(), &source).expect("document handle");
         let page = build_reconciled_page_graph_from_handle(&handle, 1).expect("PageGraph");
-        let plan = build_translation_page_plan(&page).expect("translation plan");
-        let translations = vec!["译".to_string(); plan.units.len()];
+        let plan = build_visual_paragraph_page_plan(&page).expect("translation plan");
+        let translations = visual_translations(&plan, "🧪");
         let source_objects = PdfSourceObjectStore::open(&source).expect("lazy source");
         let binding = binding(&handle);
         let (config, _) = config(&handle, translations);
         let mut processor =
             PdfV3LocalPageProcessor::new(&source_objects, &binding, config).expect("processor");
 
-        let failure = processor
+        let result = processor
             .process(&page, &binding)
             .await
-            .expect_err("missing asset glyph must fail rendering");
-        assert_eq!(failure.reason_code, RENDERER_FAILURE_REASON);
-        assert!(!failure.retryable);
+            .expect("missing asset glyph must resolve conservatively");
+        let PdfV3TranslationPageResult::RegionPatch(patch) = result else {
+            panic!("missing asset glyph must produce resolved preservation decisions");
+        };
+        assert!(patch.containers.iter().all(|container| matches!(
+            container.renderer_decision,
+            RegionTranslationPatchRendererDecision::Preserved { .. }
+        )));
+        assert!(patch.containers.iter().any(|container| matches!(
+            &container.renderer_decision,
+            RegionTranslationPatchRendererDecision::Preserved { reason_code }
+                if reason_code == "region-font-glyph-unavailable"
+        )));
     }
 
     #[test]
@@ -668,5 +874,21 @@ mod tests {
             error,
             PdfV3LocalPageProcessorConfigError::InvalidIdentity("modelId")
         ));
+    }
+
+    fn visual_translations(
+        plan: &crate::pdf_v3::paragraph_translation_plan::VisualParagraphPagePlan,
+        suffix: &str,
+    ) -> Vec<String> {
+        plan.units
+            .iter()
+            .map(|unit| {
+                format!(
+                    "这是完整中文译文。{}{}",
+                    "译".repeat((unit.source_text.chars().count() * 45 / 100).max(8)),
+                    suffix,
+                )
+            })
+            .collect()
     }
 }

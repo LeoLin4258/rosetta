@@ -18,7 +18,10 @@ use sha2::{Digest, Sha256};
 
 use super::{
     extract::page_source_hash,
-    types::{PageGraph, PageReconciliationStatus, PAGE_GRAPH_SCHEMA_VERSION},
+    types::{PageGraph, PageGroupKind, PageReconciliationStatus, PAGE_GRAPH_SCHEMA_VERSION},
+    visual_grouping::{
+        MAX_FLOW_CONTAINERS_PER_PAGE, MAX_VISUAL_LINES_PER_PAGE, MAX_VISUAL_PARAGRAPHS_PER_PAGE,
+    },
 };
 
 const STORE_SCHEMA_VERSION: u32 = 1;
@@ -560,6 +563,77 @@ impl PageGraphStore {
         {
             return Err(PageGraphStoreError::InvalidPageGraph("styles"));
         }
+        let mut group_ids = BTreeSet::new();
+        let mut line_atoms = BTreeSet::new();
+        let mut paragraph_atoms = BTreeSet::new();
+        let mut container_atoms = BTreeSet::new();
+        let mut line_count = 0usize;
+        let mut paragraph_count = 0usize;
+        let mut container_count = 0usize;
+        for group in &page.groups {
+            if group.group_id.is_empty()
+                || !group_ids.insert(group.group_id.as_str())
+                || !group.confidence.is_finite()
+                || !(0.0..=1.0).contains(&group.confidence)
+                || group.bounds.iter().any(|value| !value.is_finite())
+                || group.bounds[2] <= group.bounds[0]
+                || group.bounds[3] <= group.bounds[1]
+            {
+                return Err(PageGraphStoreError::InvalidPageGraph("groups"));
+            }
+            let structured_atoms = match group.kind {
+                PageGroupKind::Line => {
+                    line_count = line_count.saturating_add(1);
+                    Some(&mut line_atoms)
+                }
+                PageGroupKind::Paragraph => {
+                    paragraph_count = paragraph_count.saturating_add(1);
+                    Some(&mut paragraph_atoms)
+                }
+                PageGroupKind::FlowContainer => {
+                    container_count = container_count.saturating_add(1);
+                    Some(&mut container_atoms)
+                }
+                PageGroupKind::Column
+                | PageGroupKind::Table
+                | PageGroupKind::TableCell
+                | PageGroupKind::Caption
+                | PageGroupKind::VisualRegion
+                | PageGroupKind::Unknown => None,
+            };
+            let mut local_atoms = BTreeSet::new();
+            if group.atom_ids.iter().any(|atom_id| {
+                !atom_ids.contains(atom_id.as_str()) || !local_atoms.insert(atom_id.as_str())
+            }) {
+                return Err(PageGraphStoreError::InvalidPageGraph("groupAtoms"));
+            }
+            if let Some(owned_atoms) = structured_atoms {
+                if group.atom_ids.is_empty()
+                    || group
+                        .atom_ids
+                        .iter()
+                        .any(|atom_id| !owned_atoms.insert(atom_id.as_str()))
+                {
+                    return Err(PageGraphStoreError::InvalidPageGraph("groupOwnership"));
+                }
+            }
+        }
+        if line_count > MAX_VISUAL_LINES_PER_PAGE
+            || paragraph_count > MAX_VISUAL_PARAGRAPHS_PER_PAGE
+            || container_count > MAX_FLOW_CONTAINERS_PER_PAGE
+        {
+            return Err(PageGraphStoreError::InvalidPageGraph("groupLimits"));
+        }
+        let has_visual_hierarchy = line_count > 0 || paragraph_count > 0 || container_count > 0;
+        if has_visual_hierarchy
+            && (line_count == 0
+                || paragraph_count == 0
+                || container_count == 0
+                || line_atoms != paragraph_atoms
+                || line_atoms != container_atoms)
+        {
+            return Err(PageGraphStoreError::InvalidPageGraph("groupHierarchy"));
+        }
         Ok(())
     }
 
@@ -1075,8 +1149,8 @@ mod tests {
     use crate::pdf_v3::{
         extract::page_source_hash,
         types::{
-            PageAtom, PageAtomKind, PageAtomSourceKind, PageGraph, PageReconciliationStatus,
-            PageReconciliationSummary, PAGE_GRAPH_SCHEMA_VERSION,
+            PageAtom, PageAtomKind, PageAtomSourceKind, PageGraph, PageGroup, PageGroupKind,
+            PageReconciliationStatus, PageReconciliationSummary, PAGE_GRAPH_SCHEMA_VERSION,
         },
     };
 
@@ -1214,6 +1288,47 @@ mod tests {
             store.load(1).expect("load").expect("stored page").page,
             page
         );
+    }
+
+    #[test]
+    fn rejects_invalid_visual_group_references_and_overlapping_ownership() {
+        let temp = TempStore::new("invalid-groups");
+        let store = store(&temp);
+        let mut invalid_reference = page(1, 2);
+        invalid_reference.groups = vec![PageGroup {
+            group_id: "line-1".to_string(),
+            kind: PageGroupKind::Line,
+            atom_ids: vec!["missing-atom".to_string()],
+            bounds: [10.0, 20.0, 30.0, 40.0],
+            confidence: 0.9,
+        }];
+        assert!(matches!(
+            store.commit(&invalid_reference),
+            Err(PageGraphStoreError::InvalidPageGraph("groupAtoms"))
+        ));
+
+        let mut overlapping = page(1, 2);
+        let first_atom = overlapping.atoms[0].atom_id.clone();
+        overlapping.groups = vec![
+            PageGroup {
+                group_id: "line-1".to_string(),
+                kind: PageGroupKind::Line,
+                atom_ids: vec![first_atom.clone()],
+                bounds: [10.0, 20.0, 30.0, 40.0],
+                confidence: 0.9,
+            },
+            PageGroup {
+                group_id: "line-2".to_string(),
+                kind: PageGroupKind::Line,
+                atom_ids: vec![first_atom],
+                bounds: [10.0, 20.0, 30.0, 40.0],
+                confidence: 0.9,
+            },
+        ];
+        assert!(matches!(
+            store.commit(&overlapping),
+            Err(PageGraphStoreError::InvalidPageGraph("groupOwnership"))
+        ));
     }
 
     #[test]

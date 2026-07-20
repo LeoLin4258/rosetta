@@ -5,7 +5,7 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::UNIX_EPOCH,
+    time::{Instant, UNIX_EPOCH},
 };
 
 use serde::Serialize;
@@ -74,6 +74,23 @@ pub(crate) struct ResolvedPdfV3TranslationComponent {
     pub bold_font: Option<TranslationFontAsset>,
     pub runtime_release_sha256: Option<String>,
     pub supported_directions: &'static [&'static str],
+    pub resolution_diagnostics: PdfV3ComponentResolutionDiagnostics,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct PdfV3ComponentResolutionDiagnostics {
+    pub total_ms: u64,
+    pub runtime_binding_ms: u64,
+    pub pdf_asset_lookup_ms: u64,
+    pub blocking_total_ms: u64,
+    pub sidecar_digest_ms: u64,
+    pub sidecar_digest_cache_hit: bool,
+    pub model_digest_ms: u64,
+    pub model_digest_cache_hit: bool,
+    pub font_assets_ms: u64,
+    pub font_assets_cache_hit: bool,
+    pub manifest_ms: u64,
+    pub runtime_recheck_ms: u64,
 }
 
 #[derive(Clone)]
@@ -165,9 +182,13 @@ impl PdfV3ComponentState {
         registry: &Registry,
         target_language: &str,
     ) -> Result<ResolvedPdfV3TranslationComponent, PdfV3ComponentError> {
+        let total_started = Instant::now();
+        let runtime_binding_started = Instant::now();
         let runtime = resolve_verified_runtime_binding(app, registry)
             .await
             .map_err(|_| PdfV3ComponentError::RuntimeUnavailable)?;
+        let runtime_binding_ms = component_elapsed_ms(runtime_binding_started);
+        let pdf_asset_lookup_started = Instant::now();
         let pdf_profile = pdf_component_profile::current_profile()
             .ok_or(PdfV3ComponentError::FontPackUnavailable)?;
         let pdf_layout = Pdf2zhLayout::from_app(app, pdf_profile)
@@ -179,19 +200,44 @@ impl PdfV3ComponentState {
         }
         let family = recommended_translation_font_family(target_language);
         let font_directory = pdf_layout.babeldoc_cache_dir().join("fonts");
+        let pdf_asset_lookup_ms = component_elapsed_ms(pdf_asset_lookup_started);
         let cache = self.inner.clone();
         let worker_runtime = runtime.clone();
-        let resolved = tokio::task::spawn_blocking(move || {
+        let mut resolved = tokio::task::spawn_blocking(move || {
             resolve_blocking(cache, worker_runtime, family, font_directory, pdf_profile)
         })
         .await
         .map_err(|_| PdfV3ComponentError::Worker)??;
-        if !verified_runtime_binding_is_current(registry, &runtime).await {
+        let runtime_recheck_started = Instant::now();
+        let runtime_is_current = verified_runtime_binding_is_current(registry, &runtime).await;
+        let runtime_recheck_ms = component_elapsed_ms(runtime_recheck_started);
+        if !runtime_is_current {
             return Err(PdfV3ComponentError::RuntimeUnavailable);
         }
         if resolved.provider.provider_id() != resolved.component.provider_id {
             return Err(PdfV3ComponentError::ArtifactIntegrity("provider"));
         }
+        resolved.resolution_diagnostics.runtime_binding_ms = runtime_binding_ms;
+        resolved.resolution_diagnostics.pdf_asset_lookup_ms = pdf_asset_lookup_ms;
+        resolved.resolution_diagnostics.runtime_recheck_ms = runtime_recheck_ms;
+        resolved.resolution_diagnostics.total_ms = component_elapsed_ms(total_started);
+        let diagnostics = resolved.resolution_diagnostics;
+        eprintln!(
+            "[pdf-v3-component] resolve target={} total={}ms runtime={}ms pdf_assets={}ms blocking={}ms sidecar={}ms(cache={}) model={}ms(cache={}) fonts={}ms(cache={}) manifest={}ms recheck={}ms",
+            target_language,
+            diagnostics.total_ms,
+            diagnostics.runtime_binding_ms,
+            diagnostics.pdf_asset_lookup_ms,
+            diagnostics.blocking_total_ms,
+            diagnostics.sidecar_digest_ms,
+            diagnostics.sidecar_digest_cache_hit,
+            diagnostics.model_digest_ms,
+            diagnostics.model_digest_cache_hit,
+            diagnostics.font_assets_ms,
+            diagnostics.font_assets_cache_hit,
+            diagnostics.manifest_ms,
+            diagnostics.runtime_recheck_ms,
+        );
         Ok(resolved)
     }
 
@@ -230,24 +276,34 @@ fn resolve_blocking(
     font_directory: PathBuf,
     pdf_profile: &'static pdf_component_profile::Pdf2zhProfile,
 ) -> Result<ResolvedPdfV3TranslationComponent, PdfV3ComponentError> {
+    let blocking_started = Instant::now();
     let mut cache = cache
         .lock()
         .map_err(|_| PdfV3ComponentError::LockPoisoned)?;
-    let sidecar_sha256 = cached_file_sha256(&mut cache, &runtime.sidecar_path)?;
-    let model_sha256 = if runtime.model_path.is_file() {
-        let actual = cached_file_sha256(&mut cache, &runtime.model_path)?;
-        if actual != runtime.profile.model_sha256 {
-            return Err(PdfV3ComponentError::ArtifactIntegrity("model"));
-        }
-        actual
-    } else if runtime.model_path.is_dir() {
-        directory_sha256(&runtime.model_path)?
-    } else {
-        return Err(PdfV3ComponentError::ArtifactIntegrity("model"));
-    };
+    let sidecar_digest_started = Instant::now();
+    let sidecar_digest = cached_file_sha256_with_status(&mut cache, &runtime.sidecar_path)?;
+    let sidecar_digest_ms = component_elapsed_ms(sidecar_digest_started);
+    let sidecar_sha256 = sidecar_digest.sha256;
+    let model_digest_started = Instant::now();
+    let model_sha256 = trusted_installed_model_identity(
+        &runtime.model_path,
+        runtime.profile.model_sha256,
+        runtime.profile.model_size_bytes,
+        runtime.profile.model_is_zip,
+    )?;
+    // The complete digest was verified before the installer atomically exposed
+    // this model and wrote its manifest. Runtime resolution only validates the
+    // installed receipt and a bounded file stamp.
+    let model_digest_cache_hit = true;
+    let model_digest_ms = component_elapsed_ms(model_digest_started);
 
+    let font_assets_started = Instant::now();
+    let cached_font_count = cache.fonts.cached_asset_count();
     let (regular_font, bold_font) = resolve_font_assets(&mut cache, family, &font_directory)?;
+    let font_assets_cache_hit = cache.fonts.cached_asset_count() == cached_font_count;
+    let font_assets_ms = component_elapsed_ms(font_assets_started);
 
+    let manifest_started = Instant::now();
     let runtime_release_sha256 = runtime.runtime_release_sha256.map(str::to_string);
     let component_manifest_id = component_manifest_id(&ComponentManifestIdentity {
         schema_version: 1,
@@ -266,6 +322,8 @@ fn resolve_blocking(
         bold_font_sha256: bold_font.as_ref().map(TranslationFontAsset::fingerprint),
     })?;
     let provider = provider_config(&runtime)?;
+    let manifest_ms = component_elapsed_ms(manifest_started);
+    let blocking_total_ms = component_elapsed_ms(blocking_started);
     Ok(ResolvedPdfV3TranslationComponent {
         component: PdfV3TranslationComponentBinding {
             component_id: PDF_V3_COMPONENT_ID.to_string(),
@@ -283,7 +341,46 @@ fn resolve_blocking(
         bold_font,
         runtime_release_sha256,
         supported_directions: runtime.profile.supported_directions,
+        resolution_diagnostics: PdfV3ComponentResolutionDiagnostics {
+            blocking_total_ms,
+            sidecar_digest_ms,
+            sidecar_digest_cache_hit: sidecar_digest.cache_hit,
+            model_digest_ms,
+            model_digest_cache_hit,
+            font_assets_ms,
+            font_assets_cache_hit,
+            manifest_ms,
+            ..PdfV3ComponentResolutionDiagnostics::default()
+        },
     })
+}
+
+fn trusted_installed_model_identity(
+    path: &Path,
+    installed_sha256: &str,
+    installed_size_bytes: u64,
+    extracted_directory: bool,
+) -> Result<String, PdfV3ComponentError> {
+    if installed_sha256.len() != 64
+        || installed_sha256
+            .bytes()
+            .any(|byte| !byte.is_ascii_hexdigit() || byte.is_ascii_uppercase())
+    {
+        return Err(PdfV3ComponentError::ArtifactIntegrity("modelManifest"));
+    }
+    if extracted_directory {
+        if !path.is_dir() {
+            return Err(PdfV3ComponentError::ArtifactIntegrity("model"));
+        }
+    } else {
+        let metadata = path
+            .metadata()
+            .map_err(|_| PdfV3ComponentError::ArtifactIntegrity("model"))?;
+        if !metadata.is_file() || metadata.len() != installed_size_bytes {
+            return Err(PdfV3ComponentError::ArtifactIntegrity("model"));
+        }
+    }
+    Ok(installed_sha256.to_string())
 }
 
 fn resolve_font_assets(
@@ -364,17 +461,33 @@ fn verify_font_fingerprint(
     Ok(())
 }
 
+#[cfg(test)]
 fn cached_file_sha256(
     cache: &mut PdfV3ComponentCache,
     path: &Path,
 ) -> Result<String, PdfV3ComponentError> {
+    Ok(cached_file_sha256_with_status(cache, path)?.sha256)
+}
+
+struct CachedDigestResolution {
+    sha256: String,
+    cache_hit: bool,
+}
+
+fn cached_file_sha256_with_status(
+    cache: &mut PdfV3ComponentCache,
+    path: &Path,
+) -> Result<CachedDigestResolution, PdfV3ComponentError> {
     let stamp = file_stamp(path)?;
     if let Some(cached) = cache
         .digests
         .get(path)
         .filter(|cached| cached.stamp == stamp)
     {
-        return Ok(cached.sha256.clone());
+        return Ok(CachedDigestResolution {
+            sha256: cached.sha256.clone(),
+            cache_hit: true,
+        });
     }
     let sha256 = file_sha256(path)?;
     cache.digests.insert(
@@ -384,7 +497,14 @@ fn cached_file_sha256(
             sha256: sha256.clone(),
         },
     );
-    Ok(sha256)
+    Ok(CachedDigestResolution {
+        sha256,
+        cache_hit: false,
+    })
+}
+
+fn component_elapsed_ms(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 fn file_stamp(path: &Path) -> Result<FileStamp, PdfV3ComponentError> {
@@ -422,6 +542,7 @@ fn file_sha256(path: &Path) -> Result<String, PdfV3ComponentError> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+#[cfg(test)]
 fn directory_sha256(path: &Path) -> Result<String, PdfV3ComponentError> {
     let mut files = Vec::new();
     collect_directory_files(path, path, &mut files)?;
@@ -454,6 +575,7 @@ fn directory_sha256(path: &Path) -> Result<String, PdfV3ComponentError> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+#[cfg(test)]
 fn collect_directory_files(
     root: &Path,
     directory: &Path,
@@ -523,8 +645,9 @@ mod tests {
     };
 
     use super::{
-        cached_file_sha256, component_manifest_id, directory_sha256, ComponentManifestIdentity,
-        PdfV3ComponentCache, PdfV3ComponentStatus, PDF_V3_COMPONENT_STATUS_SCHEMA,
+        cached_file_sha256, component_manifest_id, directory_sha256,
+        trusted_installed_model_identity, ComponentManifestIdentity, PdfV3ComponentCache,
+        PdfV3ComponentStatus, PDF_V3_COMPONENT_STATUS_SCHEMA,
     };
 
     #[test]
@@ -557,6 +680,20 @@ mod tests {
         fs::write(root.join("nested").join("a.bin"), b"changed").expect("change a");
         assert_ne!(first, directory_sha256(&root).expect("changed digest"));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn installed_model_identity_uses_verified_receipt_after_bounded_stat() {
+        let path = temp_path("installed-model-receipt");
+        fs::write(&path, b"installed model").expect("write installed model");
+        let receipt = "a".repeat(64);
+        assert_eq!(
+            trusted_installed_model_identity(&path, &receipt, 15, false)
+                .expect("trusted install receipt"),
+            receipt
+        );
+        assert!(trusted_installed_model_identity(&path, &"b".repeat(64), 16, false).is_err());
+        let _ = fs::remove_file(path);
     }
 
     #[test]

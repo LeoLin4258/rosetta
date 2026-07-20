@@ -292,6 +292,21 @@ impl TranslationFontAsset {
         &self,
         plan: &UnifiedTranslationFontPlan,
     ) -> Result<PreparedTranslationFont, TranslationFontError> {
+        self.prepare_plan(plan, false)
+    }
+
+    pub(crate) fn prepare_supported_characters(
+        &self,
+        plan: &UnifiedTranslationFontPlan,
+    ) -> Result<PreparedTranslationFont, TranslationFontError> {
+        self.prepare_plan(plan, true)
+    }
+
+    fn prepare_plan(
+        &self,
+        plan: &UnifiedTranslationFontPlan,
+        preserve_missing: bool,
+    ) -> Result<PreparedTranslationFont, TranslationFontError> {
         let face = Face::parse(&self.bytes, self.face_index).map_err(|error| {
             TranslationFontError::Parse(format!("failed to parse translation font: {error:?}"))
         })?;
@@ -304,7 +319,7 @@ impl TranslationFontAsset {
                 missing.push(*character as u32);
             }
         }
-        if !missing.is_empty() {
+        if !preserve_missing && !missing.is_empty() {
             return Err(TranslationFontError::MissingGlyphs(missing));
         }
 

@@ -22,7 +22,6 @@ pub(crate) struct TextShowStylePlan {
 pub(crate) enum TextShowStyleError {
     StyleMissing,
     DuplicateStyle,
-    FontWeightUnavailable,
     UnsupportedItalic,
     UnsupportedRenderMode,
     FillColorUnavailable,
@@ -35,9 +34,6 @@ impl fmt::Display for TextShowStyleError {
         match self {
             Self::StyleMissing => formatter.write_str("replacement PageStyle is missing"),
             Self::DuplicateStyle => formatter.write_str("replacement PageStyle ID is not unique"),
-            Self::FontWeightUnavailable => {
-                formatter.write_str("replacement source font weight cannot be classified safely")
-            }
             Self::UnsupportedItalic => {
                 formatter.write_str("italic source text has no approved translation font face")
             }
@@ -84,10 +80,9 @@ fn plan_page_style(style: &PageStyle) -> Result<TextShowStylePlan, TextShowStyle
     if render_mode != "FilledUnstroked" {
         return Err(TextShowStyleError::UnsupportedRenderMode);
     }
-    let source_font_weight = style
+    let reported_font_weight = style
         .font_weight
-        .filter(|weight| (1..=1000).contains(weight))
-        .ok_or(TextShowStyleError::FontWeightUnavailable)?;
+        .filter(|weight| (1..=1000).contains(weight));
     let fill_color = style
         .fill_color
         .filter(|color| valid_color(*color))
@@ -103,16 +98,18 @@ fn plan_page_style(style: &PageStyle) -> Result<TextShowStylePlan, TextShowStyle
     if stroke_color.is_some_and(|color| !valid_color(color)) {
         return Err(TextShowStyleError::InvalidColor);
     }
-    let translation_font_weight = if source_font_weight >= 600
-        || style
-            .font_resource
-            .as_deref()
-            .is_some_and(font_name_has_bold_intent)
-    {
-        TranslationFontWeight::Bold
-    } else {
-        TranslationFontWeight::Regular
-    };
+    let has_bold_name = style
+        .font_resource
+        .as_deref()
+        .is_some_and(font_name_has_bold_intent);
+    let translation_font_weight =
+        if reported_font_weight.is_some_and(|weight| weight >= 600) || has_bold_name {
+            TranslationFontWeight::Bold
+        } else {
+            TranslationFontWeight::Regular
+        };
+    let source_font_weight =
+        reported_font_weight.unwrap_or_else(|| if has_bold_name { 700 } else { 400 });
 
     Ok(TextShowStylePlan {
         style_id: style.style_id.clone(),
@@ -130,9 +127,12 @@ fn font_name_has_bold_intent(font_name: &str) -> bool {
         .rsplit_once('+')
         .map_or(font_name, |(_, base)| base)
         .to_ascii_lowercase();
-    ["bold", "black", "heavy", "demi", "semi", "cmbx", "-medi"]
-        .iter()
-        .any(|marker| normalized.contains(marker))
+    [
+        "bold", "black", "heavy", "demi", "semi", "cmbx", "-medi", "600wght", "700wght", "800wght",
+        "900wght",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
 }
 
 fn valid_color(color: [f32; 4]) -> bool {
@@ -200,6 +200,40 @@ mod tests {
         let plan = plan_text_show_style(&page, "style-1").expect("bold style plan");
 
         assert_eq!(plan.translation_font_weight, TranslationFontWeight::Bold);
+    }
+
+    #[test]
+    fn unavailable_or_zero_numeric_weight_defaults_to_regular_unified_face() {
+        for weight in [None, Some(0)] {
+            let page = page_with_style(style(
+                Some("PdbpbbLato-Regular"),
+                weight,
+                false,
+                [0.0, 0.0, 0.0, 1.0],
+                "FilledUnstroked",
+            ));
+
+            let plan = plan_text_show_style(&page, "style-1").expect("regular style plan");
+
+            assert_eq!(plan.translation_font_weight, TranslationFontWeight::Regular);
+            assert_eq!(plan.source_font_weight, 400);
+        }
+    }
+
+    #[test]
+    fn variable_font_weight_name_recovers_bold_intent_from_zero_numeric_weight() {
+        let page = page_with_style(style(
+            Some("MontserratThin_700wght"),
+            Some(0),
+            false,
+            [1.0, 0.6627451, 0.22745098, 1.0],
+            "FilledUnstroked",
+        ));
+
+        let plan = plan_text_show_style(&page, "style-1").expect("bold style plan");
+
+        assert_eq!(plan.translation_font_weight, TranslationFontWeight::Bold);
+        assert_eq!(plan.source_font_weight, 700);
     }
 
     #[test]

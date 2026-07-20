@@ -6,7 +6,7 @@ use std::{
 use lopdf::{Document, Object};
 
 use super::{
-    font::{DocumentTranslationFontRegistry, PreparedTranslationFont},
+    font::{DocumentTranslationFontRegistry, PreparedTranslationFont, TranslationFontError},
     layout::TextShowGeometryKey,
     object_delta::PdfObjectDelta,
     ownership::PdfStreamOwnershipIndex,
@@ -856,6 +856,9 @@ fn preserve_entries(
 
 fn preservation_reason(error: &TextShowReplacementError) -> Option<&'static str> {
     match error {
+        TextShowReplacementError::Font(TranslationFontError::MissingPreparedGlyph(_)) => {
+            Some("translation-font-glyph-unavailable")
+        }
         TextShowReplacementError::FitBounds(_) => Some("fit-bounds-unsupported"),
         TextShowReplacementError::Style(_) => Some("source-style-unsupported"),
         TextShowReplacementError::MissingTranslationFontFace(_) => {

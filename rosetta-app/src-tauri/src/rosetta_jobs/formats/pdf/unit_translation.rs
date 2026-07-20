@@ -11,8 +11,13 @@ use serde::Serialize;
 
 use crate::{
     managed_pdf2zh::worker::PdfTranslationUnit,
-    pdf_v3::translation_plan::{
-        TranslationPagePlan, TranslationUnitResult, TRANSLATION_PLAN_SCHEMA_VERSION,
+    pdf_v3::{
+        paragraph_translation_plan::{
+            VisualParagraphPagePlan, VISUAL_PARAGRAPH_PLAN_SCHEMA_VERSION,
+        },
+        translation_plan::{
+            TranslationPagePlan, TranslationUnitResult, TRANSLATION_PLAN_SCHEMA_VERSION,
+        },
     },
     rwkv_providers::{
         llama_cpp_chat,
@@ -80,6 +85,13 @@ struct ProviderTranslationUnit {
     unit_id: String,
     source_text: String,
     requires_translation: bool,
+    chunking: ProviderUnitChunking,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProviderUnitChunking {
+    Semantic,
+    VisualParagraph,
 }
 
 impl From<&PdfTranslationUnit> for ProviderTranslationUnit {
@@ -88,6 +100,7 @@ impl From<&PdfTranslationUnit> for ProviderTranslationUnit {
             unit_id: unit.unit_id.clone(),
             source_text: unit.source_text.clone(),
             requires_translation: unit.requires_translation,
+            chunking: ProviderUnitChunking::Semantic,
         }
     }
 }
@@ -203,6 +216,40 @@ pub(crate) async fn translate_pdf_v3_page_plan(
     cancel: Option<Arc<AtomicBool>>,
 ) -> Result<PdfV3ProviderTranslationBatchResult, PdfV3ProviderFailure> {
     let units = provider_units_from_v3_plan(plan)?;
+    let mut noop = |_translation: PdfUnitTranslation| {};
+    let translated = translate_provider_units_with_events(
+        provider,
+        source_lang,
+        target_lang,
+        &units,
+        cancel.clone(),
+        &mut noop,
+    )
+    .await
+    .map_err(|message| provider_failure(message, cancel.as_ref()))?;
+    let results = translated
+        .translations
+        .into_iter()
+        .map(|translation| TranslationUnitResult {
+            unit_id: translation.unit_id,
+            translated_text: translation.text,
+        })
+        .collect();
+    Ok(PdfV3ProviderTranslationBatchResult {
+        results,
+        metrics: translated.metrics,
+    })
+}
+
+#[allow(dead_code)]
+pub(crate) async fn translate_pdf_v3_visual_paragraph_plan(
+    provider: &PdfUnitProviderConfig,
+    source_lang: &str,
+    target_lang: &str,
+    plan: &VisualParagraphPagePlan,
+    cancel: Option<Arc<AtomicBool>>,
+) -> Result<PdfV3ProviderTranslationBatchResult, PdfV3ProviderFailure> {
+    let units = provider_units_from_visual_paragraph_plan(plan)?;
     let mut noop = |_translation: PdfUnitTranslation| {};
     let translated = translate_provider_units_with_events(
         provider,
@@ -423,6 +470,53 @@ fn provider_units_from_v3_plan(
             unit_id: unit.unit_id.clone(),
             source_text: unit.provider_text.clone(),
             requires_translation: true,
+            chunking: ProviderUnitChunking::Semantic,
+        });
+    }
+    Ok(units)
+}
+
+#[allow(dead_code)]
+fn provider_units_from_visual_paragraph_plan(
+    plan: &VisualParagraphPagePlan,
+) -> Result<Vec<ProviderTranslationUnit>, PdfV3ProviderFailure> {
+    if plan.schema_version != VISUAL_PARAGRAPH_PLAN_SCHEMA_VERSION
+        || plan.page_number == 0
+        || plan.source_page_hash.is_empty()
+    {
+        return Err(PdfV3ProviderFailure {
+            kind: PdfV3ProviderFailureKind::InvalidPlan,
+            retryable: false,
+            message: "PDF v3 visual paragraph plan identity is invalid.".to_string(),
+        });
+    }
+    if plan.units.is_empty() {
+        return Err(PdfV3ProviderFailure {
+            kind: PdfV3ProviderFailureKind::NoTranslatableUnits,
+            retryable: false,
+            message: "PDF v3 visual paragraph plan has no safe units.".to_string(),
+        });
+    }
+    let mut unit_ids = BTreeSet::new();
+    let mut units = Vec::with_capacity(plan.units.len());
+    for unit in &plan.units {
+        if unit.unit_id.is_empty()
+            || unit.paragraph_group_id.is_empty()
+            || unit.flow_container_group_id.is_empty()
+            || unit.provider_text.trim().is_empty()
+            || !unit_ids.insert(unit.unit_id.as_str())
+        {
+            return Err(PdfV3ProviderFailure {
+                kind: PdfV3ProviderFailureKind::InvalidPlan,
+                retryable: false,
+                message: "PDF v3 visual paragraph unit identity is invalid.".to_string(),
+            });
+        }
+        units.push(ProviderTranslationUnit {
+            unit_id: unit.unit_id.clone(),
+            source_text: unit.provider_text.clone(),
+            requires_translation: true,
+            chunking: ProviderUnitChunking::VisualParagraph,
         });
     }
     Ok(units)
@@ -896,6 +990,24 @@ fn prepare_provider_chunks(
     let mut chunks = Vec::new();
     let mut unit_plans = BTreeMap::new();
     for unit in units {
+        if unit.chunking == ProviderUnitChunking::VisualParagraph {
+            let normalized = normalize_pdf_text(&unit.source_text);
+            let trimmed = normalized.trim();
+            let parts = if trimmed.is_empty() {
+                Vec::new()
+            } else if should_passthrough_pdf_fragment(trimmed) {
+                vec![UnitPlanPart::Literal(trimmed.to_string())]
+            } else {
+                let chunk_index = chunks.len();
+                chunks.push(PreparedChunk {
+                    chunk_index,
+                    text: trimmed.to_string(),
+                });
+                vec![UnitPlanPart::Text(vec![chunk_index])]
+            };
+            unit_plans.insert(unit.unit_id.clone(), UnitChunkPlan { parts });
+            continue;
+        }
         let mut parts = Vec::new();
         for part in split_pdf_placeholder_parts(&unit.source_text) {
             match part {
@@ -1395,6 +1507,37 @@ mod tests {
             unit_id: unit_id.to_string(),
             source_text: text.to_string(),
             requires_translation: true,
+            chunking: ProviderUnitChunking::Semantic,
+        }
+    }
+
+    #[test]
+    fn visual_paragraph_uses_one_provider_chunk_until_a_real_provider_limit_retry() {
+        let source = "A complete visual paragraph with several sentences. ".repeat(20);
+        let unit = ProviderTranslationUnit {
+            unit_id: "visual-paragraph".to_string(),
+            source_text: source.clone(),
+            requires_translation: true,
+            chunking: ProviderUnitChunking::VisualParagraph,
+        };
+        let prepared = prepare_non_lightning_chunks(&[unit]);
+        assert_eq!(prepared.chunks.len(), 1);
+        assert_eq!(prepared.chunks[0].text, source.trim());
+    }
+
+    fn visual_paragraph_unit(
+        unit_id: &str,
+        text: &str,
+    ) -> crate::pdf_v3::paragraph_translation_plan::VisualParagraphUnitPlan {
+        crate::pdf_v3::paragraph_translation_plan::VisualParagraphUnitPlan {
+            unit_id: unit_id.to_string(),
+            paragraph_group_id: format!("{unit_id}-group"),
+            flow_container_group_id: "container-1".to_string(),
+            order_on_page: 1,
+            atom_ids: vec![format!("{unit_id}-atom")],
+            source_text: text.to_string(),
+            provider_text: text.to_string(),
+            protected_spans: Vec::new(),
         }
     }
 
@@ -1613,6 +1756,42 @@ mod tests {
         assert_eq!(translated.results[1].translated_text, "2.");
         assert_eq!(translated.metrics.request_count, 1);
         assert_eq!(translated.metrics.total_input_chars, 10);
+        assert_eq!(scripted.lock().expect("scripted queue").len(), 0);
+    }
+
+    #[tokio::test]
+    async fn visual_paragraph_plan_batches_clean_paragraphs_instead_of_source_objects() {
+        let scripted = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::from(
+            vec![provider_success(vec![
+                "完整段落甲".to_string(),
+                "完整段落乙".to_string(),
+            ])],
+        )));
+        let provider = PdfUnitProviderConfig::Scripted {
+            results: Arc::clone(&scripted),
+            max_batch_size: 16,
+        };
+        let plan = VisualParagraphPagePlan {
+            schema_version: VISUAL_PARAGRAPH_PLAN_SCHEMA_VERSION,
+            page_number: 1,
+            source_page_hash: "sha256:visual-paragraph-provider".to_string(),
+            units: vec![
+                visual_paragraph_unit("paragraph-a", "Clean paragraph one."),
+                visual_paragraph_unit("paragraph-b", "Clean paragraph two."),
+            ],
+            preserved_containers: Vec::new(),
+        };
+
+        let translated =
+            translate_pdf_v3_visual_paragraph_plan(&provider, "en", "zh-CN", &plan, None)
+                .await
+                .expect("translate visual paragraph plan");
+
+        assert_eq!(translated.results.len(), 2);
+        assert_eq!(translated.results[0].translated_text, "完整段落甲");
+        assert_eq!(translated.results[1].translated_text, "完整段落乙");
+        assert_eq!(translated.metrics.request_count, 1);
+        assert_eq!(translated.metrics.total_input_chars, 40);
         assert_eq!(scripted.lock().expect("scripted queue").len(), 0);
     }
 

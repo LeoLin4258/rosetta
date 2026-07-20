@@ -16,15 +16,21 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::{
+    region_translation_patch::{
+        decode_and_validate_region_translation_patch_identity, encode_region_translation_patch,
+        ensure_region_translation_patch_resolved, validate_region_translation_patch,
+        RegionTranslationPatch, RegionTranslationPatchError,
+    },
     translation_patch::{
-        decode_and_validate_translation_patch, decode_and_validate_translation_patch_identity,
-        encode_translation_patch, ensure_translation_patch_renderer_resolved,
-        validate_translation_patch, TranslationPatchError,
+        decode_and_validate_translation_patch_identity, encode_translation_patch,
+        ensure_translation_patch_renderer_resolved, validate_translation_patch,
+        TranslationPatchError,
     },
     types::{PageGraph, TranslationPatch},
 };
 
-const PATCH_STORE_SCHEMA_VERSION: u32 = 2;
+const PATCH_STORE_SCHEMA_VERSION: u32 = 3;
+const PATCH_ENVELOPE_SCHEMA_VERSION: u32 = 1;
 const MANIFEST_FILENAME: &str = "manifest.json";
 const PAGES_PER_SHARD: u32 = 64;
 const MAX_INDEX_BYTES: u64 = 1024 * 1024;
@@ -119,6 +125,42 @@ pub(crate) struct StoredTranslationPatch {
     pub patch_bytes: u64,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct StoredRegionTranslationPatch {
+    pub patch: RegionTranslationPatch,
+    pub shard_generation: u64,
+    pub patch_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "patch", rename_all = "kebab-case")]
+enum DurableTranslationPatch {
+    TextShow(TranslationPatch),
+    Region(RegionTranslationPatch),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DurableTranslationPatchEnvelope {
+    schema_version: u32,
+    payload: DurableTranslationPatch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DurableTranslationPatchKind {
+    TextShow,
+    Region,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PatchCommitIdentity<'a> {
+    page_number: u32,
+    source_page_hash: &'a str,
+    translation_revision: u64,
+    patch_id: &'a str,
+    kind: DurableTranslationPatchKind,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct TranslationPatchStoreRepairReport {
     pub promoted_manifest: bool,
@@ -177,11 +219,13 @@ pub(crate) enum TranslationPatchStoreError {
         page_number: u32,
     },
     PatchCompression(String),
+    PatchEnvelope(String),
     PatchTooLarge {
         bytes: u64,
         maximum: u64,
     },
     Patch(TranslationPatchError),
+    RegionPatch(RegionTranslationPatchError),
 }
 
 impl fmt::Display for TranslationPatchStoreError {
@@ -239,12 +283,15 @@ impl fmt::Display for TranslationPatchStoreError {
                 formatter,
                 "TranslationPatch page {page_number} file does not match its index entry"
             ),
-            Self::PatchCompression(message) => formatter.write_str(message),
+            Self::PatchCompression(message) | Self::PatchEnvelope(message) => {
+                formatter.write_str(message)
+            }
             Self::PatchTooLarge { bytes, maximum } => write!(
                 formatter,
                 "TranslationPatch size {bytes} exceeds maximum {maximum}"
             ),
             Self::Patch(error) => error.fmt(formatter),
+            Self::RegionPatch(error) => error.fmt(formatter),
         }
     }
 }
@@ -254,6 +301,12 @@ impl std::error::Error for TranslationPatchStoreError {}
 impl From<TranslationPatchError> for TranslationPatchStoreError {
     fn from(error: TranslationPatchError) -> Self {
         Self::Patch(error)
+    }
+}
+
+impl From<RegionTranslationPatchError> for TranslationPatchStoreError {
+    fn from(error: RegionTranslationPatchError) -> Self {
+        Self::RegionPatch(error)
     }
 }
 
@@ -305,7 +358,51 @@ impl TranslationPatchStore {
         }
         validate_translation_patch(page, patch)?;
         ensure_translation_patch_renderer_resolved(patch)?;
-        let encoded_patch = encode_translation_patch(patch)?;
+        let encoded_patch =
+            encode_durable_patch(&DurableTranslationPatch::TextShow(patch.clone()))?;
+        self.commit_encoded(
+            page,
+            PatchCommitIdentity {
+                page_number: patch.page_number,
+                source_page_hash: &patch.source_page_hash,
+                translation_revision: patch.translation_revision,
+                patch_id: &patch.patch_id,
+                kind: DurableTranslationPatchKind::TextShow,
+            },
+            encoded_patch,
+        )
+    }
+
+    pub(crate) fn commit_region(
+        &self,
+        page: &PageGraph,
+        patch: &RegionTranslationPatch,
+    ) -> Result<TranslationPatchCommitOutcome, TranslationPatchStoreError> {
+        if patch.target_language != self.target_language {
+            return Err(TranslationPatchStoreError::TargetLanguageMismatch);
+        }
+        validate_region_translation_patch(page, patch)?;
+        ensure_region_translation_patch_resolved(patch)?;
+        let encoded_patch = encode_durable_patch(&DurableTranslationPatch::Region(patch.clone()))?;
+        self.commit_encoded(
+            page,
+            PatchCommitIdentity {
+                page_number: patch.page_number,
+                source_page_hash: &patch.source_page_hash,
+                translation_revision: patch.translation_revision,
+                patch_id: &patch.patch_id,
+                kind: DurableTranslationPatchKind::Region,
+            },
+            encoded_patch,
+        )
+    }
+
+    fn commit_encoded(
+        &self,
+        page: &PageGraph,
+        patch: PatchCommitIdentity<'_>,
+        encoded_patch: Vec<u8>,
+    ) -> Result<TranslationPatchCommitOutcome, TranslationPatchStoreError> {
         let uncompressed_patch_byte_count = u64::try_from(encoded_patch.len()).unwrap_or(u64::MAX);
         let patch_bytes = compress_patch(&encoded_patch)?;
         let patch_byte_count = u64::try_from(patch_bytes.len()).map_err(|_| {
@@ -352,8 +449,8 @@ impl TranslationPatchStore {
                             revision: patch.translation_revision,
                         });
                     }
-                    match self.load_entry(page, current) {
-                        Ok(_) => {
+                    match self.load_entry_envelope(page, current) {
+                        Ok(stored) if durable_patch_kind(&stored) == patch.kind => {
                             return Ok(TranslationPatchCommitOutcome {
                                 kind: TranslationPatchCommitKind::Unchanged,
                                 page_number: patch.page_number,
@@ -367,6 +464,7 @@ impl TranslationPatchStore {
                                 cleanup,
                             });
                         }
+                        Ok(_) => {}
                         Err(error @ TranslationPatchStoreError::Io { .. }) => return Err(error),
                         Err(_) => {}
                     }
@@ -383,7 +481,11 @@ impl TranslationPatchStore {
                 previous_patch_file = None;
             }
 
-            let patch_file = patch_filename(patch);
+            let patch_file = patch_filename(
+                patch.page_number,
+                patch.translation_revision,
+                patch.patch_id,
+            );
             self.write_immutable_patch(&patch_file, &patch_bytes, patch.page_number)?;
             let next_generation = shard
                 .as_ref()
@@ -397,9 +499,9 @@ impl TranslationPatchStore {
                 .retain(|entry| entry.page_number != patch.page_number);
             next.pages.push(TranslationPatchManifestPage {
                 page_number: patch.page_number,
-                source_page_hash: patch.source_page_hash.clone(),
+                source_page_hash: patch.source_page_hash.to_string(),
                 translation_revision: patch.translation_revision,
-                patch_id: patch.patch_id.clone(),
+                patch_id: patch.patch_id.to_string(),
                 patch_file,
                 patch_bytes: patch_byte_count,
             });
@@ -450,6 +552,31 @@ impl TranslationPatchStore {
                     self.repair_locked()?;
                     state.repaired = true;
                     self.load_from_shard(
+                        page,
+                        self.read_canonical_shard(shard_index(page.page_number))?,
+                    )
+                }
+            }
+        })
+    }
+
+    pub(crate) fn load_region(
+        &self,
+        page: &PageGraph,
+    ) -> Result<Option<StoredRegionTranslationPatch>, TranslationPatchStoreError> {
+        self.with_lock(|state| {
+            self.prepare_locked(state)?;
+            match self.load_region_from_shard(
+                page,
+                self.read_canonical_shard(shard_index(page.page_number))?,
+            ) {
+                Ok(stored) => Ok(stored),
+                Err(error @ TranslationPatchStoreError::Io { .. }) => Err(error),
+                Err(_) => {
+                    state.repaired = false;
+                    self.repair_locked()?;
+                    state.repaired = true;
+                    self.load_region_from_shard(
                         page,
                         self.read_canonical_shard(shard_index(page.page_number))?,
                     )
@@ -805,6 +932,51 @@ impl TranslationPatchStore {
         page: &PageGraph,
         entry: &TranslationPatchManifestPage,
     ) -> Result<TranslationPatch, TranslationPatchStoreError> {
+        match self.load_entry_envelope(page, entry)? {
+            DurableTranslationPatch::TextShow(patch) => Ok(patch),
+            DurableTranslationPatch::Region(_) => {
+                Err(TranslationPatchStoreError::PatchFileMismatch {
+                    page_number: entry.page_number,
+                })
+            }
+        }
+    }
+
+    fn load_region_from_shard(
+        &self,
+        page: &PageGraph,
+        shard: Option<TranslationPatchManifestShard>,
+    ) -> Result<Option<StoredRegionTranslationPatch>, TranslationPatchStoreError> {
+        let Some(shard) = shard else {
+            return Ok(None);
+        };
+        let Some(entry) = shard
+            .pages
+            .iter()
+            .find(|entry| entry.page_number == page.page_number)
+        else {
+            return Ok(None);
+        };
+        let patch = match self.load_entry_envelope(page, entry)? {
+            DurableTranslationPatch::Region(patch) => patch,
+            DurableTranslationPatch::TextShow(_) => {
+                return Err(TranslationPatchStoreError::PatchFileMismatch {
+                    page_number: entry.page_number,
+                })
+            }
+        };
+        Ok(Some(StoredRegionTranslationPatch {
+            patch,
+            shard_generation: shard.generation,
+            patch_bytes: entry.patch_bytes,
+        }))
+    }
+
+    fn load_entry_envelope(
+        &self,
+        page: &PageGraph,
+        entry: &TranslationPatchManifestPage,
+    ) -> Result<DurableTranslationPatch, TranslationPatchStoreError> {
         let path = self.language_dir.join(&entry.patch_file);
         if !try_exists(&path)? {
             return Err(TranslationPatchStoreError::PatchFileMismatch {
@@ -818,9 +990,8 @@ impl TranslationPatchStore {
             });
         }
         let bytes = decompress_patch(&compressed)?;
-        let patch = decode_and_validate_translation_patch(page, &bytes)?;
-        ensure_translation_patch_renderer_resolved(&patch)?;
-        if !entry_matches_patch(entry, &patch, &self.target_language) {
+        let patch = decode_and_validate_durable_patch(page, &bytes)?;
+        if !entry_matches_durable_patch(entry, &patch, &self.target_language) {
             return Err(TranslationPatchStoreError::PatchFileMismatch {
                 page_number: entry.page_number,
             });
@@ -845,12 +1016,8 @@ impl TranslationPatchStore {
             return Ok(false);
         }
         Ok(decompress_patch(&compressed)
-            .and_then(|patch| {
-                let patch = decode_and_validate_translation_patch_identity(&patch)?;
-                ensure_translation_patch_renderer_resolved(&patch)?;
-                Ok(patch)
-            })
-            .map(|patch| entry_matches_patch(entry, &patch, &self.target_language))
+            .and_then(|patch| decode_and_validate_durable_patch_identity(&patch))
+            .map(|patch| entry_matches_durable_patch(entry, &patch, &self.target_language))
             .unwrap_or(false))
     }
 
@@ -1052,17 +1219,18 @@ fn is_index_sidecar(name: &str, target_name: &str) -> bool {
         && (name.ends_with(".tmp") || name.ends_with(".bak"))
 }
 
-fn patch_filename(patch: &TranslationPatch) -> String {
+fn patch_filename(page_number: u32, translation_revision: u64, patch_id: &str) -> String {
     format!(
         "page-{:010}-revision-{:020}-{}.patch.json.gz",
-        patch.page_number, patch.translation_revision, patch.patch_id
+        page_number, translation_revision, patch_id
     )
 }
 
 fn patch_filename_from_entry(entry: &TranslationPatchManifestPage) -> String {
-    format!(
-        "page-{:010}-revision-{:020}-{}.patch.json.gz",
-        entry.page_number, entry.translation_revision, entry.patch_id
+    patch_filename(
+        entry.page_number,
+        entry.translation_revision,
+        &entry.patch_id,
     )
 }
 
@@ -1114,17 +1282,126 @@ fn is_safe_file_name(name: &str) -> bool {
         )
 }
 
-fn entry_matches_patch(
+fn entry_matches_durable_patch(
     entry: &TranslationPatchManifestPage,
-    patch: &TranslationPatch,
+    patch: &DurableTranslationPatch,
     target_language: &str,
 ) -> bool {
-    entry.page_number == patch.page_number
-        && entry.source_page_hash == patch.source_page_hash
-        && entry.translation_revision == patch.translation_revision
-        && entry.patch_id == patch.patch_id
-        && entry.patch_file == patch_filename(patch)
-        && patch.target_language == target_language
+    let identity = durable_patch_identity(patch);
+    entry.page_number == identity.page_number
+        && entry.source_page_hash == identity.source_page_hash
+        && entry.translation_revision == identity.translation_revision
+        && entry.patch_id == identity.patch_id
+        && entry.patch_file
+            == patch_filename(
+                identity.page_number,
+                identity.translation_revision,
+                identity.patch_id,
+            )
+        && identity.target_language == target_language
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DurablePatchIdentity<'a> {
+    page_number: u32,
+    source_page_hash: &'a str,
+    translation_revision: u64,
+    patch_id: &'a str,
+    target_language: &'a str,
+}
+
+fn durable_patch_identity(patch: &DurableTranslationPatch) -> DurablePatchIdentity<'_> {
+    match patch {
+        DurableTranslationPatch::TextShow(patch) => DurablePatchIdentity {
+            page_number: patch.page_number,
+            source_page_hash: &patch.source_page_hash,
+            translation_revision: patch.translation_revision,
+            patch_id: &patch.patch_id,
+            target_language: &patch.target_language,
+        },
+        DurableTranslationPatch::Region(patch) => DurablePatchIdentity {
+            page_number: patch.page_number,
+            source_page_hash: &patch.source_page_hash,
+            translation_revision: patch.translation_revision,
+            patch_id: &patch.patch_id,
+            target_language: &patch.target_language,
+        },
+    }
+}
+
+fn durable_patch_kind(patch: &DurableTranslationPatch) -> DurableTranslationPatchKind {
+    match patch {
+        DurableTranslationPatch::TextShow(_) => DurableTranslationPatchKind::TextShow,
+        DurableTranslationPatch::Region(_) => DurableTranslationPatchKind::Region,
+    }
+}
+
+fn encode_durable_patch(
+    patch: &DurableTranslationPatch,
+) -> Result<Vec<u8>, TranslationPatchStoreError> {
+    let envelope = DurableTranslationPatchEnvelope {
+        schema_version: PATCH_ENVELOPE_SCHEMA_VERSION,
+        payload: patch.clone(),
+    };
+    let bytes = serde_json::to_vec(&envelope)
+        .map_err(|error| TranslationPatchStoreError::PatchEnvelope(error.to_string()))?;
+    if bytes.len() > MAX_PATCH_BYTES as usize {
+        return Err(TranslationPatchStoreError::PatchTooLarge {
+            bytes: bytes.len() as u64,
+            maximum: MAX_PATCH_BYTES,
+        });
+    }
+    Ok(bytes)
+}
+
+fn decode_durable_patch_envelope(
+    bytes: &[u8],
+) -> Result<DurableTranslationPatch, TranslationPatchStoreError> {
+    let envelope = serde_json::from_slice::<DurableTranslationPatchEnvelope>(bytes)
+        .map_err(|error| TranslationPatchStoreError::PatchEnvelope(error.to_string()))?;
+    if envelope.schema_version != PATCH_ENVELOPE_SCHEMA_VERSION {
+        return Err(TranslationPatchStoreError::PatchEnvelope(
+            "unsupported durable TranslationPatch envelope schema".to_string(),
+        ));
+    }
+    Ok(envelope.payload)
+}
+
+fn decode_and_validate_durable_patch(
+    page: &PageGraph,
+    bytes: &[u8],
+) -> Result<DurableTranslationPatch, TranslationPatchStoreError> {
+    let patch = decode_durable_patch_envelope(bytes)?;
+    match &patch {
+        DurableTranslationPatch::TextShow(patch) => {
+            validate_translation_patch(page, patch)?;
+            ensure_translation_patch_renderer_resolved(patch)?;
+        }
+        DurableTranslationPatch::Region(patch) => {
+            validate_region_translation_patch(page, patch)?;
+            ensure_region_translation_patch_resolved(patch)?;
+        }
+    }
+    Ok(patch)
+}
+
+fn decode_and_validate_durable_patch_identity(
+    bytes: &[u8],
+) -> Result<DurableTranslationPatch, TranslationPatchStoreError> {
+    let patch = decode_durable_patch_envelope(bytes)?;
+    match &patch {
+        DurableTranslationPatch::TextShow(patch) => {
+            let bytes = encode_translation_patch(patch)?;
+            decode_and_validate_translation_patch_identity(&bytes)?;
+            ensure_translation_patch_renderer_resolved(patch)?;
+        }
+        DurableTranslationPatch::Region(patch) => {
+            let bytes = encode_region_translation_patch(patch)?;
+            decode_and_validate_region_translation_patch_identity(&bytes)?;
+            ensure_region_translation_patch_resolved(patch)?;
+        }
+    }
+    Ok(patch)
 }
 
 fn manifest_id(
@@ -1320,10 +1597,18 @@ mod tests {
         TranslationPatchStoreError, PATCH_STORE_SCHEMA_VERSION,
     };
     use crate::pdf_v3::{
+        paragraph_translation_plan::{
+            build_visual_paragraph_page_plan, resolve_visual_paragraph_results,
+        },
+        region_translation_patch::{
+            build_region_translation_patch, resolve_region_translation_patch_decisions,
+            RegionTranslationPatchDraft, RegionTranslationPatchRendererDecision,
+        },
         translation_patch::{
             build_translation_patch, resolve_translation_patch_renderer_decisions,
             TranslationPatchDraft, TranslationPatchEntryDraft,
         },
+        translation_plan::{TranslationPatchDraftMetadata, TranslationUnitResult},
         types::{
             PageAtom, PageAtomKind, PageAtomSourceKind, PageGraph, PageReconciliationSummary,
             PageStyle, TranslationPatch, TranslationPatchRendererDecision,
@@ -1415,6 +1700,66 @@ mod tests {
                 assert!(!contents.contains("secret source page one"));
             }
         }
+    }
+
+    #[test]
+    fn commits_and_loads_region_patch_authority() {
+        let temp = TestDirectory::new("region-patch");
+        let store = patch_store(temp.path());
+        let mut page = page_graph(1, "Complete source paragraph");
+        crate::pdf_v3::visual_grouping::derive_visual_groups(&mut page);
+        let plan = build_visual_paragraph_page_plan(&page).expect("visual paragraph plan");
+        let translations = resolve_visual_paragraph_results(
+            &plan,
+            plan.units
+                .iter()
+                .map(|unit| TranslationUnitResult {
+                    unit_id: unit.unit_id.clone(),
+                    translated_text: "完整译文".to_string(),
+                })
+                .collect(),
+            "zh-CN",
+        )
+        .expect("resolved visual translations");
+        let pending = build_region_translation_patch(
+            &page,
+            RegionTranslationPatchDraft {
+                plan,
+                translations,
+                metadata: TranslationPatchDraftMetadata {
+                    target_language: "zh-CN".to_string(),
+                    translation_revision: 1,
+                    provider_id: "rwkv-local".to_string(),
+                    model_id: "rwkv-test".to_string(),
+                    renderer_version: "pdf-v3-region-test".to_string(),
+                },
+            },
+        )
+        .expect("pending region patch");
+        let decisions = pending
+            .containers
+            .iter()
+            .map(|container| {
+                (
+                    container.container_id.clone(),
+                    RegionTranslationPatchRendererDecision::Preserved {
+                        reason_code: "store-test-resolved".to_string(),
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let patch = resolve_region_translation_patch_decisions(&page, &pending, &decisions)
+            .expect("resolved region patch");
+
+        let committed = store.commit_region(&page, &patch).expect("region commit");
+        assert_eq!(committed.kind, TranslationPatchCommitKind::Written);
+        let loaded = store
+            .load_region(&page)
+            .expect("load region patch")
+            .expect("stored region patch");
+        assert_eq!(loaded.patch, patch);
+        assert_eq!(loaded.shard_generation, 1);
+        assert!(store.load(&page).is_err(), "patch type must be explicit");
     }
 
     #[test]
