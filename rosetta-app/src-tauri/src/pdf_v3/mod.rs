@@ -11,6 +11,7 @@ pub(crate) mod font_plan;
 pub(crate) mod identity;
 pub(crate) mod incremental_export;
 pub(crate) mod layout;
+pub(crate) mod legacy_adapter;
 pub(crate) mod mapping;
 pub(crate) mod object_delta;
 pub(crate) mod ownership;

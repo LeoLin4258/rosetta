@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import ast
+import difflib
 import os
 import re
 import subprocess
@@ -11,10 +12,291 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PATCH_SCRIPT = SCRIPT_DIR / "patch-pdf2zh-color-preservation.py"
+DIRECTML_PATCH_SCRIPT = SCRIPT_DIR / "patch-pdf2zh-directml-layout.py"
 FONT_ASSETS_SCRIPT = SCRIPT_DIR / "stage-pdf2zh-font-assets.py"
 
 
 class Pdf2zhPatchTests(unittest.TestCase):
+    def test_directml_patch_is_bounded_and_has_cpu_fallback(self) -> None:
+        text = DIRECTML_PATCH_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn('return 5 if self._uses_directml else 1', text)
+        self.assertIn('min(5, int(requested))', text)
+        self.assertIn('falling back to CPU', text)
+        self.assertIn('["CPUExecutionProvider"]', text)
+        self.assertIn('grouped[pix.shape]', text)
+
+    def test_windows_pack_uses_directml_runtime_and_patch(self) -> None:
+        requirements = (
+            SCRIPT_DIR / "requirements-pdf2zh-windows-amd64.txt"
+        ).read_text(encoding="utf-8")
+        builder = (
+            SCRIPT_DIR / "build-pdf2zh-pack-windows-amd64.ps1"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("onnxruntime-directml==1.24.4", requirements)
+        self.assertNotRegex(requirements, r"(?m)^onnxruntime==")
+        self.assertIn("patch-pdf2zh-directml-layout.py", builder)
+
+    def test_duplicate_text_fast_match_preserves_exact_threshold_decisions(self) -> None:
+        module = ast.parse(PATCH_SCRIPT.read_text(encoding="utf-8"))
+        helper_factory = next(
+            node
+            for node in module.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "duplicate_text_layer_helper"
+        )
+        factory_namespace = {}
+        exec(
+            compile(
+                ast.Module(body=[helper_factory], type_ignores=[]),
+                str(PATCH_SCRIPT),
+                "exec",
+            ),
+            factory_namespace,
+        )
+
+        class TranslationUnit:
+            pass
+
+        namespace = {"difflib": difflib, "TranslationUnit": TranslationUnit}
+        exec(factory_namespace["duplicate_text_layer_helper"](), namespace)
+        canonical = namespace["canonical_duplicate_text"]
+        fast_match = namespace["duplicate_text_keys_match"]
+        samples = [
+            "",
+            "Alpha beta gamma",
+            "ALPHA, beta; gamma!",
+            "Alpha beta delta",
+            "a" * 78 + "b" * 22,
+            "a" * 77 + "c" * 23,
+            "completely unrelated text",
+            "公式 {v1} 与 {v2}",
+            "公式 {v1} 和 {v3}",
+        ]
+        for left in samples:
+            for right in samples:
+                left_key = canonical(left)
+                right_key = canonical(right)
+                expected = bool(left_key and right_key) and (
+                    difflib.SequenceMatcher(
+                        None, left_key, right_key, autojunk=False
+                    ).ratio()
+                    >= 0.78
+                )
+                self.assertEqual(fast_match(left_key, right_key), expected)
+
+        units = []
+        for index, text in enumerate(samples[:6] + samples[:6]):
+            unit = TranslationUnit()
+            unit.sourceText = text
+            unit.sourceChars = len(text)
+            unit.requiresTranslation = True
+            unit.kind = "body"
+            units.append(unit)
+        original_canonical = namespace["canonical_duplicate_text"]
+        canonical_calls = 0
+
+        def counted_canonical(text: str) -> str:
+            nonlocal canonical_calls
+            canonical_calls += 1
+            return original_canonical(text)
+
+        namespace["canonical_duplicate_text"] = counted_canonical
+        namespace["mark_duplicate_text_layer_units"](units)
+        self.assertEqual(canonical_calls, len(units))
+
+    def test_patch_uses_scalar_layout_coordinate_clamps(self) -> None:
+        module = ast.parse(PATCH_SCRIPT.read_text(encoding="utf-8"))
+        function = next(
+            node
+            for node in module.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "patch_converter_scalar_layout_clamp"
+        )
+        namespace = {}
+        exec(
+            compile(
+                ast.Module(body=[function], type_ignores=[]),
+                str(PATCH_SCRIPT),
+                "exec",
+            ),
+            namespace,
+        )
+        source = (
+            "                cx, cy = np.clip(int(child.x0), 0, w - 1), "
+            "np.clip(int(child.y0), 0, h - 1)\n"
+        ) * 2 + (
+            "                cx = np.clip(int(item.x0), 0, w - 1)\n"
+            "                cy = np.clip(int(item.y0), 0, h - 1)\n"
+        )
+
+        patched, changed = namespace["patch_converter_scalar_layout_clamp"](source)
+
+        self.assertTrue(changed)
+        self.assertEqual(patched.count("cx = min(max(int(child.x0), 0), w - 1)"), 2)
+        self.assertEqual(patched.count("cy = min(max(int(child.y0), 0), h - 1)"), 2)
+        self.assertIn("cx = min(max(int(item.x0), 0), w - 1)", patched)
+        self.assertIn("cy = min(max(int(item.y0), 0), h - 1)", patched)
+        self.assertNotIn("np.clip(int(child.x0)", patched)
+        self.assertNotIn("np.clip(int(item.x0)", patched)
+        self.assertFalse(namespace["patch_converter_scalar_layout_clamp"](patched)[1])
+
+    def test_patch_reuses_pdfminer_resource_manager_across_pages(self) -> None:
+        module = ast.parse(PATCH_SCRIPT.read_text(encoding="utf-8"))
+        function = next(
+            node
+            for node in module.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "patch_rosetta_engine_resource_manager_reuse"
+        )
+        namespace = {"Path": Path}
+        exec(
+            compile(
+                ast.Module(body=[function], type_ignores=[]),
+                str(PATCH_SCRIPT),
+                "exec",
+            ),
+            namespace,
+        )
+
+        fixture = """from pdfminer.pdfinterp import PDFResourceManager
+from typing import Any
+
+class _UnitCollectorTranslator:
+    pass
+
+class _PageCache:
+    pass
+
+def prepareRun():
+    page_caches: dict[int, _PageCache] = {}
+    with open('prepared.pdf', 'rb') as fp:
+        for page, page_number in zip([], []):
+            cache = collect_page_units(
+                page=page,
+                page_index=0,
+                page_number=page_number,
+                layout={},
+                translator=collector,
+                lang_in='en',
+                lang_out='zh',
+                thread=1,
+                noto_name='noto',
+                noto=None,
+            )
+
+def collect_page_units(
+    page,
+    page_index: int,
+    page_number: int,
+    layout: dict[int, Any],
+    translator: _UnitCollectorTranslator,
+    lang_in: str,
+    lang_out: str,
+    thread: int,
+    noto_name: str,
+    noto: Any,
+) -> _PageCache:
+    translator.set_page(page_number)
+    before_count = len(translator.units)
+    rsrcmgr = PDFResourceManager(caching=True)
+    return _PageCache()
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            engine = root / "rosetta_engine.py"
+            engine.write_text(fixture, encoding="utf-8")
+
+            changed = namespace["patch_rosetta_engine_resource_manager_reuse"](root)
+            self.assertTrue(changed)
+            patched = engine.read_text(encoding="utf-8")
+            self.assertIn("rsrcmgr = PDFResourceManager(caching=True)", patched)
+            self.assertIn("rsrcmgr=rsrcmgr", patched)
+            self.assertNotIn("    rsrcmgr = PDFResourceManager(caching=True)\n    return _PageCache()", patched)
+            self.assertFalse(
+                namespace["patch_rosetta_engine_resource_manager_reuse"](root)
+            )
+
+    def test_patch_shares_prepared_pdf_font_objects_across_pages(self) -> None:
+        module = ast.parse(PATCH_SCRIPT.read_text(encoding="utf-8"))
+        function = next(
+            node
+            for node in module.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "patch_rosetta_engine_shared_font_registration"
+        )
+        namespace = {"Path": Path}
+        exec(
+            compile(
+                ast.Module(body=[function], type_ignores=[]),
+                str(PATCH_SCRIPT),
+                "exec",
+            ),
+            namespace,
+        )
+        fixture = '''import re
+
+def prepare_pdf_document(input_path, font_path, noto_name):
+    doc = open_document(input_path)
+    font_list = [("tiro", None), (noto_name, font_path)]
+    font_id = {}
+    for page in doc:
+        for font_name, font_file in font_list:
+            font_id[font_name] = page.insert_font(font_name, font_file)
+    return doc
+'''
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "rosetta_engine.py"
+            target.write_text(fixture, encoding="utf-8")
+
+            self.assertTrue(namespace["patch_rosetta_engine_shared_font_registration"](root))
+            patched = target.read_text(encoding="utf-8")
+            self.assertIn("share prepared PDF font objects", patched)
+            self.assertIn("doc[0].insert_font(font_name, font_file)", patched)
+            self.assertIn("rosetta_pdf_register_page_fonts(doc, page.xref", patched)
+            self.assertIn('doc.xref_set_key(resource_xref, font_key, "<<>>")', patched)
+            self.assertFalse(namespace["patch_rosetta_engine_shared_font_registration"](root))
+
+    def test_patch_subsets_fonts_in_single_page_artifacts(self) -> None:
+        module = ast.parse(PATCH_SCRIPT.read_text(encoding="utf-8"))
+        function = next(
+            node
+            for node in module.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "patch_rosetta_engine_page_artifact_font_subsetting"
+        )
+        namespace = {"Path": Path}
+        exec(
+            compile(
+                ast.Module(body=[function], type_ignores=[]),
+                str(PATCH_SCRIPT),
+                "exec",
+            ),
+            namespace,
+        )
+        fixture = '''def render_one_page(state, cache, artifact_path):
+        single = pymupdf.open()
+        single.insert_pdf(state.doc, from_page=cache.page_index, to_page=cache.page_index)
+        single.save(
+            artifact_path,
+            deflate=bool(state.options.get("singlePageDeflate", False)),
+            deflate_images=bool(state.options.get("singlePageDeflateImages", True)),
+        )
+'''
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "rosetta_engine.py"
+            target.write_text(fixture, encoding="utf-8")
+
+            self.assertTrue(namespace["patch_rosetta_engine_page_artifact_font_subsetting"](root))
+            patched = target.read_text(encoding="utf-8")
+            self.assertIn("doc.subset_fonts(verbose=False)", patched)
+            self.assertIn('state.options.get("singlePageSubsetFonts", True)', patched)
+            self.assertIn("garbage=4 if subset_page_fonts else 0", patched)
+            self.assertFalse(namespace["patch_rosetta_engine_page_artifact_font_subsetting"](root))
+
     def test_patch_adds_versioned_durable_layout_cache_contract(self) -> None:
         module = ast.parse(PATCH_SCRIPT.read_text(encoding="utf-8"))
         function = next(
@@ -375,6 +657,16 @@ def record_translation(self, translated: str):
         self.assertNotIn("stroke_width = max(0.04, min(0.16, size * 0.006))", patched)
         self.assertNotIn("stroke_width = max(0.12, min(0.45, size * 0.018))", patched)
         self.assertNotIn("rosetta_pdf_is_bold_font(child.font)", patched)
+
+    def test_patch_caches_bold_font_across_page_converters(self) -> None:
+        patched = self.run_patch(self.converter_with_bold_helpers())
+
+        self.assertIn("def rosetta_pdf_cached_bold_font", patched)
+        self.assertIn(
+            "self.rosetta_noto_bold_name, self.rosetta_noto_bold = rosetta_pdf_cached_bold_font()",
+            patched,
+        )
+        self.assertEqual(patched.count('get_font_and_metadata("SourceHanSansCN-Bold.ttf")'), 1)
 
     def test_legacy_converter_patch_path_applies_render_order_drift_matching(self) -> None:
         files = self.run_patch_for_package(
@@ -1019,6 +1311,10 @@ def validate_translation_keys(units: list[TranslationUnit], translations: dict[s
         self.assertIn("is_rosetta_diagram_label_unit", patched)
         self.assertIn("text.casefold()", patched)
         self.assertIn("char.isalnum()", patched)
+        self.assertIn("matcher.real_quick_ratio()", patched)
+        self.assertIn("matcher.quick_ratio()", patched)
+        self.assertIn("canonical_keys = [canonical_duplicate_text", patched)
+        self.assertIn("pair_matches: dict[tuple[int, int], bool]", patched)
         self.assertIn("duplicate.requiresTranslation = False", patched)
         self.assertIn('duplicate.kind = "duplicate-layer"', patched)
         self.assertIn("unitCount=translatable_unit_count(collector.units)", patched)

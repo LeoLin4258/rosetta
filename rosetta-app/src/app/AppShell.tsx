@@ -21,12 +21,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import {
-  createWelcomeDocument,
-  listRosettaJobs,
-  loadRosettaJob,
-  probeRosettaPdfV3Component,
-} from "@/lib/rosettaJobs";
+import { createWelcomeDocument, listRosettaJobs, loadRosettaJob } from "@/lib/rosettaJobs";
 import {
   getPdf2zhPrepareCacheStatus,
   getPdf2zhWorkerStatus,
@@ -217,12 +212,6 @@ function MenuEventHandler() {
   return null;
 }
 
-type PdfV3WarmupState = {
-  state: "waiting" | "warming" | "ready" | "failed";
-  targetLanguage: string;
-  durationMs?: number;
-};
-
 /// Format the warmup label as "[N/M label · 12s]" when granular progress is
 /// available, falling back to a static string otherwise. Exported (via the
 /// re-export at the bottom of this file) so the workspace topbar can render
@@ -273,46 +262,55 @@ export function useWarmupElapsedSeconds(state: string | undefined): number {
 /// stale packs stay visible as a route into Settings; active translation state
 /// is still owned by the workspace page. Tooltip carries the long-form message
 /// + import wall time for debugging.
-function PdfV3ComponentBadge({
+function Pdf2zhWorkerBadge({
   status,
   onOpenSettings,
 }: {
-  status: PdfV3WarmupState;
+  status: Pdf2zhWorkerStatus | null;
   onOpenSettings: () => void;
 }) {
   const { contentRef, widthStyle } = useMeasuredContentWidth<HTMLSpanElement>();
+  const warmupElapsed = useWarmupElapsedSeconds(status?.state);
+  if (!status || status.state === "idle") {
+    return null;
+  }
 
   let dotClass = "";
   let label = "";
   let spinning = false;
   let actionLabel: string | null = null;
   switch (status.state) {
-    case "waiting":
+    case "not-installed":
       dotClass = "bg-amber-500";
-      label = "等待翻译引擎";
+      label = status.message?.includes("需要更新") ? "PDF 组件需更新" : "PDF 组件未安装";
+      actionLabel = "去设置";
       break;
-    case "warming":
+    case "starting":
       dotClass = "bg-amber-500";
-      label = "PDF 引擎预热中";
+      label = formatWarmupLabel(status, warmupElapsed);
       spinning = true;
       break;
     case "ready":
       dotClass = "bg-emerald-500";
       label = "PDF 引擎已就绪";
       break;
+    case "translating":
+      dotClass = "bg-blue-500";
+      label = "PDF 引擎工作中";
+      spinning = true;
+      break;
     case "failed":
       dotClass = "bg-rose-500";
-      label = "PDF 引擎不可用";
-      actionLabel = "去设置";
+      label = "PDF 引擎启动失败";
       break;
+    default:
+      return null;
   }
 
-  const tooltipLines = [label, `目标语言：${status.targetLanguage}`];
-  if (typeof status.durationMs === "number") {
-    tooltipLines.push(`组件验证耗时：${(status.durationMs / 1000).toFixed(1)} 秒`);
-  }
-  if (status.state === "failed") {
-    tooltipLines.push("请检查本地翻译运行时和 PDF 字体组件。实际翻译时会再次验证。");
+  const tooltipLines = [label];
+  if (status.message) tooltipLines.push(status.message);
+  if (typeof status.importMs === "number" && status.importMs > 0) {
+    tooltipLines.push(`预热耗时 ${(status.importMs / 1000).toFixed(1)} s`);
   }
   const [tooltipTitle, ...tooltipDetails] = tooltipLines;
 
@@ -377,18 +375,17 @@ function PdfV3ComponentBadge({
 function AppHeader({
   isMacPlatform,
   onMouseDown,
-  pdfV3Warmup,
   title,
 }: {
   isMacPlatform: boolean;
   onMouseDown: (event: React.MouseEvent<HTMLElement>) => void;
-  pdfV3Warmup: PdfV3WarmupState;
   title: string;
 }) {
   const { state } = useSidebar();
   const location = useLocation();
   const navigate = useNavigate();
   const shouldAvoidMacTrafficLights = isMacPlatform && state === "collapsed";
+  const pdf2zhWorker = useRosettaStore((s) => s.pdf2zhWorker);
   const activeDocument = useRosettaStore((s) => s.activeDocument);
   const activeSourceFileId = useRosettaStore((s) => s.activeSourceFileId);
   const activeSourceFile =
@@ -439,7 +436,7 @@ function AppHeader({
       </div>
       <div className="flex shrink-0 items-center gap-2">
         {isWorkspacePdfFile ? (
-          <PdfV3ComponentBadge status={pdfV3Warmup} onOpenSettings={openPdfSettings} />
+          <Pdf2zhWorkerBadge status={pdf2zhWorker} onOpenSettings={openPdfSettings} />
         ) : null}
       </div>
     </header>
@@ -452,25 +449,12 @@ export function AppShell() {
   const rwkv = useRosettaStore((state) => state.rwkv);
   const activeDocument = useRosettaStore((state) => state.activeDocument);
   const activeJobId = useRosettaStore((state) => state.activeJobId);
-  const defaultTargetLang = useRosettaStore((state) => state.defaultTargetLang);
-  const langByJobId = useRosettaStore((state) => state.langByJobId);
   const managedRuntimeStatus = useRosettaStore((state) => state.managedRuntime.status);
   const setManagedRuntimeStatus = useRosettaStore((state) => state.setManagedRuntimeStatus);
   const refreshJobBundle = useRosettaStore((state) => state.refreshJobBundle);
   // Tracks whether the one-shot auto-start has been attempted this session.
   // Prevents re-starting the runtime when the user explicitly stops it.
   const runtimeAutoStartedRef = useRef(false);
-  const warmedPdfV3TargetsRef = useRef(new Map<string, number>());
-  const warmingPdfV3TargetsRef = useRef(new Set<string>());
-  const latestPdfV3WarmupKeyRef = useRef("");
-  const pdfV3TargetLanguage =
-    (activeJobId ? langByJobId[activeJobId]?.targetLang : null) ??
-    activeDocument?.targetLang ??
-    defaultTargetLang;
-  const [pdfV3Warmup, setPdfV3Warmup] = useState<PdfV3WarmupState>({
-    state: "waiting",
-    targetLanguage: pdfV3TargetLanguage,
-  });
   const [systemPrefersDark, setSystemPrefersDark] = useState(
     () => window.matchMedia("(prefers-color-scheme: dark)").matches
   );
@@ -592,56 +576,6 @@ export function AppShell() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedRuntimeStatus?.profile.id, selectedRuntimeStatus?.state]);
 
-  // Resolve the native PDF component as soon as the selected model runtime is
-  // healthy. Hashing and font verification run in a native blocking worker, so
-  // the window remains interactive while the process cache is populated.
-  useEffect(() => {
-    const targetLanguage = pdfV3TargetLanguage.trim();
-    const profileId = selectedRuntimeStatus?.profile.id;
-    if (!profileId || !targetLanguage || selectedRuntimeStatus?.state !== "ready") {
-      setPdfV3Warmup({
-        state: "waiting",
-        targetLanguage: targetLanguage || defaultTargetLang,
-      });
-      return;
-    }
-
-    const key = `${profileId}\u0000${targetLanguage}`;
-    latestPdfV3WarmupKeyRef.current = key;
-    const completedDuration = warmedPdfV3TargetsRef.current.get(key);
-    if (completedDuration !== undefined) {
-      setPdfV3Warmup({ state: "ready", targetLanguage, durationMs: completedDuration });
-      return;
-    }
-    if (warmingPdfV3TargetsRef.current.has(key)) return;
-
-    warmingPdfV3TargetsRef.current.add(key);
-    setPdfV3Warmup({ state: "warming", targetLanguage });
-    const startedAt = performance.now();
-    void probeRosettaPdfV3Component(targetLanguage)
-      .then((status) => {
-        if (!status.ready) throw new Error("PDF v3 component did not become ready");
-        const durationMs = Math.max(0, Math.round(performance.now() - startedAt));
-        warmedPdfV3TargetsRef.current.set(key, durationMs);
-        if (latestPdfV3WarmupKeyRef.current === key) {
-          setPdfV3Warmup({ state: "ready", targetLanguage, durationMs });
-        }
-      })
-      .catch(() => {
-        if (latestPdfV3WarmupKeyRef.current === key) {
-          setPdfV3Warmup({ state: "failed", targetLanguage });
-        }
-      })
-      .finally(() => {
-        warmingPdfV3TargetsRef.current.delete(key);
-      });
-  }, [
-    defaultTargetLang,
-    pdfV3TargetLanguage,
-    selectedRuntimeStatus?.profile.id,
-    selectedRuntimeStatus?.state,
-  ]);
-
   return (
     <TooltipProvider>
       <WindowFrame
@@ -676,7 +610,6 @@ export function AppShell() {
             <AppHeader
               isMacPlatform={isMacPlatform}
               onMouseDown={startHeaderDrag}
-              pdfV3Warmup={pdfV3Warmup}
               title={title}
             />
 

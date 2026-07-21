@@ -118,6 +118,8 @@ else:
 
     Write-Host "[pdf2zh-pack] applying PDF color and bold preservation patch"
     Invoke-NativeChecked $PythonExe (Join-Path $ScriptDir "patch-pdf2zh-color-preservation.py")
+    Write-Host "[pdf2zh-pack] applying DirectML layout batching patch"
+    Invoke-NativeChecked $PythonExe (Join-Path $ScriptDir "patch-pdf2zh-directml-layout.py")
 
     $BabeldocCacheDir = Join-Path $PackDir "assets\babeldoc"
     Write-Host "[pdf2zh-pack] staging BabelDOC font assets"

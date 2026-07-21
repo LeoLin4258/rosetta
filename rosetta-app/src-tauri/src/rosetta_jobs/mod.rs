@@ -2576,6 +2576,8 @@ async fn translate_pdf_pages_inner(
                             "prepareTimingsMs": &output.prepare_timings_ms,
                             "renderMs": output.render_ms,
                             "renderCallCount": output.render_call_count,
+                            "pendingTranslationPeakUnits": output.pending_translation_peak_units,
+                            "pendingTranslationPeakChars": output.pending_translation_peak_chars,
                             "processMs": output.process_ms,
                             "rwkv": diagnostics::rwkv_snapshot_details(&output.rwkv_metrics),
                         })),

@@ -16,6 +16,30 @@ rosetta_bold_font_resource_name = "notobold"
 rosetta_bold_font_name = "SourceHanSansCN-Bold.ttf"
 
 
+def patch_converter_scalar_layout_clamp(text: str) -> tuple[str, bool]:
+    changed = False
+    for item_name in ("child", "item"):
+        combined = (
+            f"                cx, cy = np.clip(int({item_name}.x0), 0, w - 1), "
+            f"np.clip(int({item_name}.y0), 0, h - 1)\n"
+        )
+        split = (
+            f"                cx = np.clip(int({item_name}.x0), 0, w - 1)\n"
+            f"                cy = np.clip(int({item_name}.y0), 0, h - 1)\n"
+        )
+        replacement = (
+            f"                cx = min(max(int({item_name}.x0), 0), w - 1)\n"
+            f"                cy = min(max(int({item_name}.y0), 0), h - 1)\n"
+        )
+        if combined in text:
+            text = text.replace(combined, replacement)
+            changed = True
+        if split in text:
+            text = text.replace(split, replacement)
+            changed = True
+    return text, changed
+
+
 def normalize_text_mode_operator(text: str) -> tuple[str, bool]:
     pattern = re.compile(
         r'(?m)^(?P<indent>[ \t]*)def rosetta_pdf_text_mode_operator\(is_bold, color, size\):\n'
@@ -46,10 +70,30 @@ def patch_converter_bold_font_support(text: str) -> tuple[str, bool]:
 
     changed = False
 
+    cache_helper = f'''_rosetta_cached_bold_font = None
+
+
+def rosetta_pdf_cached_bold_font():
+    global _rosetta_cached_bold_font
+    if _rosetta_cached_bold_font is None:
+        from babeldoc.assets.assets import get_font_and_metadata
+        rosetta_bold_path, _ = get_font_and_metadata("{rosetta_bold_font_name}")
+        _rosetta_cached_bold_font = Font("{rosetta_bold_font_resource_name}", rosetta_bold_path.as_posix())
+    return "{rosetta_bold_font_resource_name}", _rosetta_cached_bold_font
+
+
+'''
+    if "def rosetta_pdf_cached_bold_font(" not in text:
+        class_anchor = "class TranslateConverter(PDFConverterEx):\n"
+        if class_anchor not in text:
+            raise SystemExit(f"::error::could not find expected pdf2zh converter class fragment in {target}")
+        text = text.replace(class_anchor, cache_helper + class_anchor, 1)
+        changed = True
+
     old_init = """        self.noto_name = noto_name
         self.noto = noto
 """
-    new_init = f"""        self.noto_name = noto_name
+    legacy_bold_init = f"""        self.noto_name = noto_name
         self.noto = noto
         self.rosetta_noto_bold_name = ""
         self.rosetta_noto_bold = None
@@ -63,10 +107,24 @@ def patch_converter_bold_font_support(text: str) -> tuple[str, bool]:
                 self.rosetta_noto_bold_name = ""
                 self.rosetta_noto_bold = None
 """
-    if "self.rosetta_noto_bold_name" not in text:
+    cached_bold_init = f"""        self.noto_name = noto_name
+        self.noto = noto
+        self.rosetta_noto_bold_name = ""
+        self.rosetta_noto_bold = None
+        if (lang_out or "").lower() in {{"zh", "zh-cn", "zh-hans"}}:
+            try:
+                self.rosetta_noto_bold_name, self.rosetta_noto_bold = rosetta_pdf_cached_bold_font()
+            except Exception:
+                self.rosetta_noto_bold_name = ""
+                self.rosetta_noto_bold = None
+"""
+    if legacy_bold_init in text:
+        text = text.replace(legacy_bold_init, cached_bold_init, 1)
+        changed = True
+    elif "self.rosetta_noto_bold_name" not in text:
         if old_init not in text:
             raise SystemExit(f"::error::could not find expected pdf2zh converter init fragment in {target}")
-        text = text.replace(old_init, new_init, 1)
+        text = text.replace(old_init, cached_bold_init, 1)
         changed = True
 
     old_raw_string = """            if fcur == self.noto_name:
@@ -950,6 +1008,50 @@ def patch_rosetta_engine_selected_page_window(root: Path) -> bool:
     if old_pdfminer_pages in text:
         text = text.replace(old_pdfminer_pages, new_pdfminer_pages, 1)
         changed = True
+    else:
+        old_batched_pdfminer_pages = """                [page - 1 for page in selected_pages],
+                maxpages=0,
+                password="",
+                caching=True,
+            )
+        )
+        batch_size = layout_batch_size(model, options)
+        page_pairs = list(zip(pdf_pages, selected_pages))
+        for start in range(0, len(page_pairs), batch_size):
+            batch = page_pairs[start : start + batch_size]
+            page_indices = [page_number - 1 for _page, page_number in batch]
+            layout.update(build_layout_masks(doc, page_indices, model, options))
+            for page, page_number in batch:
+                page_index = page_number - 1
+                page.pageno = page_index
+"""
+        new_batched_pdfminer_pages = """                list(range(len(selected_pages))),
+                maxpages=0,
+                password="",
+                caching=True,
+            )
+        )
+        batch_size = layout_batch_size(model, options)
+        page_pairs = [
+            (page, page_number, prepared_page_index)
+            for prepared_page_index, (page, page_number) in enumerate(
+                zip(pdf_pages, selected_pages)
+            )
+        ]
+        for start in range(0, len(page_pairs), batch_size):
+            batch = page_pairs[start : start + batch_size]
+            page_indices = [page_index for _page, _page_number, page_index in batch]
+            layout.update(build_layout_masks(doc, page_indices, model, options))
+            for page, page_number, page_index in batch:
+                page.pageno = page_index
+"""
+        if old_batched_pdfminer_pages in text:
+            text = text.replace(
+                old_batched_pdfminer_pages,
+                new_batched_pdfminer_pages,
+                1,
+            )
+            changed = True
 
     old_signature = "def prepare_pdf_document(input_path: Path, font_path: str, noto_name: str, bold_font_path: str | None = None):\n"
     new_signature = "def prepare_pdf_document(input_path: Path, font_path: str, noto_name: str, bold_font_path: str | None = None, selected_pages: list[int] | None = None):\n"
@@ -1210,6 +1312,84 @@ def patch_rosetta_engine_render_unit_matching(root: Path) -> bool:
     return changed
 
 
+def duplicate_text_layer_helper() -> str:
+    return '''def canonical_duplicate_text(text: str) -> str:
+    normalized = (
+        text.casefold()
+        .replace("“", '"')
+        .replace("”", '"')
+        .replace("‘", "'")
+        .replace("’", "'")
+    )
+    return "".join(char for char in normalized if char.isalnum() or char in "{}")
+
+
+def duplicate_text_similarity(left: str, right: str) -> float:
+    left_key = canonical_duplicate_text(left)
+    right_key = canonical_duplicate_text(right)
+    if not left_key or not right_key:
+        return 0.0
+    if left_key == right_key:
+        return 1.0
+    return difflib.SequenceMatcher(None, left_key, right_key, autojunk=False).ratio()
+
+
+def duplicate_text_keys_match(left_key: str, right_key: str, threshold: float = 0.78) -> bool:
+    if not left_key or not right_key:
+        return False
+    if left_key == right_key:
+        return True
+    matcher = difflib.SequenceMatcher(None, left_key, right_key, autojunk=False)
+    if matcher.real_quick_ratio() < threshold:
+        return False
+    if matcher.quick_ratio() < threshold:
+        return False
+    return matcher.ratio() >= threshold
+
+
+def mark_duplicate_text_layer_units(units: list[TranslationUnit]) -> None:
+    if len(units) < 6:
+        return
+    canonical_keys = [canonical_duplicate_text(unit.sourceText) for unit in units]
+    pair_matches: dict[tuple[int, int], bool] = {}
+    best: tuple[int, int, int] | None = None
+    for split in range(1, len(units)):
+        pair_count = min(split, len(units) - split)
+        if pair_count < 3:
+            continue
+        matched_pairs = 0
+        matched_chars = 0
+        compared_chars = 0
+        for index in range(pair_count):
+            duplicate_index = split + index
+            duplicate = units[duplicate_index]
+            compared_chars += max(1, duplicate.sourceChars)
+            pair_key = (index, duplicate_index)
+            if pair_key not in pair_matches:
+                pair_matches[pair_key] = duplicate_text_keys_match(
+                    canonical_keys[index], canonical_keys[duplicate_index]
+                )
+            if pair_matches[pair_key]:
+                matched_pairs += 1
+                matched_chars += max(1, duplicate.sourceChars)
+        if matched_pairs / pair_count < 0.75:
+            continue
+        if matched_chars / max(1, compared_chars) < 0.75:
+            continue
+        if best is None or matched_chars > best[2]:
+            best = (split, pair_count, matched_chars)
+    if best is None:
+        return
+    split, pair_count, _matched_chars = best
+    for index in range(pair_count):
+        duplicate_index = split + index
+        duplicate = units[duplicate_index]
+        if pair_matches[(index, duplicate_index)]:
+            duplicate.requiresTranslation = False
+            duplicate.kind = "duplicate-layer"
+'''
+
+
 def patch_rosetta_engine_duplicate_text_layer_filter(root: Path) -> bool:
     target = root / "rosetta_engine.py"
     if not target.is_file():
@@ -1219,27 +1399,20 @@ def patch_rosetta_engine_duplicate_text_layer_filter(root: Path) -> bool:
     marker = "Rosetta: suppress duplicate PDF text layers before translation."
     if marker in text:
         original = text
-        old_canonical = '''def canonical_duplicate_text(text: str) -> str:
-    normalized = (
-        text.lower()
-        .replace("“", '"')
-        .replace("”", '"')
-        .replace("‘", "'")
-        .replace("’", "'")
-    )
-    return re.sub(r"[^a-z0-9{}]+", "", normalized)
-'''
-        new_canonical = '''def canonical_duplicate_text(text: str) -> str:
-    normalized = (
-        text.casefold()
-        .replace("“", '"')
-        .replace("”", '"')
-        .replace("‘", "'")
-        .replace("’", "'")
-    )
-    return "".join(char for char in normalized if char.isalnum() or char in "{}")
-'''
-        text = text.replace(old_canonical, new_canonical, 1)
+        duplicate_helper_start = text.find("def canonical_duplicate_text(text: str) -> str:\n")
+        if duplicate_helper_start >= 0:
+            duplicate_helper_end = text.find(
+                "\ndef rosetta_placeholder_count(text: str) -> int:\n",
+                duplicate_helper_start,
+            )
+            if duplicate_helper_end < 0:
+                raise SystemExit(f"::error::could not find expected duplicate-layer helper end in {target}")
+            text = (
+                text[:duplicate_helper_start]
+                + duplicate_text_layer_helper()
+                + "\n"
+                + text[duplicate_helper_end + 1 :]
+            )
         text = text.replace(">= 0.82", ">= 0.78")
         old_sentence_count = '''def rosetta_sentence_punctuation_count(text: str) -> int:
     return sum(text.count(mark) for mark in ".;:!?")
@@ -1643,60 +1816,7 @@ def translatable_source_chars(units: list[TranslationUnit]) -> int:
     return sum(unit.sourceChars for unit in units if unit.requiresTranslation)
 
 
-def canonical_duplicate_text(text: str) -> str:
-    normalized = (
-        text.casefold()
-        .replace("“", '"')
-        .replace("”", '"')
-        .replace("‘", "'")
-        .replace("’", "'")
-    )
-    return "".join(char for char in normalized if char.isalnum() or char in "{{}}")
-
-
-def duplicate_text_similarity(left: str, right: str) -> float:
-    left_key = canonical_duplicate_text(left)
-    right_key = canonical_duplicate_text(right)
-    if not left_key or not right_key:
-        return 0.0
-    if left_key == right_key:
-        return 1.0
-    return difflib.SequenceMatcher(None, left_key, right_key, autojunk=False).ratio()
-
-
-def mark_duplicate_text_layer_units(units: list[TranslationUnit]) -> None:
-    if len(units) < 6:
-        return
-    best: tuple[int, int, int] | None = None
-    for split in range(1, len(units)):
-        pair_count = min(split, len(units) - split)
-        if pair_count < 3:
-            continue
-        matched_pairs = 0
-        matched_chars = 0
-        compared_chars = 0
-        for index in range(pair_count):
-            duplicate = units[split + index]
-            compared_chars += max(1, duplicate.sourceChars)
-            if duplicate_text_similarity(units[index].sourceText, duplicate.sourceText) >= 0.78:
-                matched_pairs += 1
-                matched_chars += max(1, duplicate.sourceChars)
-        if matched_pairs / pair_count < 0.75:
-            continue
-        if matched_chars / max(1, compared_chars) < 0.75:
-            continue
-        if best is None or matched_chars > best[2]:
-            best = (split, pair_count, matched_chars)
-    if best is None:
-        return
-    split, pair_count, _matched_chars = best
-    for index in range(pair_count):
-        duplicate = units[split + index]
-        if duplicate_text_similarity(units[index].sourceText, duplicate.sourceText) >= 0.78:
-            duplicate.requiresTranslation = False
-            duplicate.kind = "duplicate-layer"
-
-
+{duplicate_text_layer_helper()}
 '''
     if helper_anchor not in text:
         raise SystemExit(f"::error::could not find expected rosetta_engine helper anchor in {target}")
@@ -1818,7 +1938,10 @@ def patch_rosetta_engine_persistent_layout_cache(root: Path) -> bool:
         return False
     if (
         "selected_pages = normalize_pages(pages, page_count)" not in text
-        or "layout[page_index] = build_layout_mask" not in text
+        or (
+            "layout[page_index] = build_layout_mask" not in text
+            and "layout.update(build_layout_masks" not in text
+        )
         or "class EngineCapabilities:" not in text
     ):
         return False
@@ -2046,9 +2169,20 @@ def write_persistent_layout_cache(
             else:
                 layout[page_index] = persistent_layout[page_index]
 """
-    if layout_anchor not in text:
+    batched_layout_anchor = "            layout.update(build_layout_masks(doc, page_indices, model, options))\n"
+    batched_layout_replacement = """            if persistent_layout is None:
+                layout.update(build_layout_masks(doc, page_indices, model, options))
+            else:
+                layout.update(
+                    {page_index: persistent_layout[page_index] for page_index in page_indices}
+                )
+"""
+    if layout_anchor in text:
+        text = text.replace(layout_anchor, layout_replacement, 1)
+    elif batched_layout_anchor in text:
+        text = text.replace(batched_layout_anchor, batched_layout_replacement, 1)
+    else:
         raise SystemExit(f"::error::could not find layout inference anchor in {target}")
-    text = text.replace(layout_anchor, layout_replacement, 1)
 
     state_anchor = """    state = _PreparedState(
 """
@@ -2084,6 +2218,180 @@ def write_persistent_layout_cache(
     return True
 
 
+def patch_rosetta_engine_resource_manager_reuse(root: Path) -> bool:
+    target = root / "rosetta_engine.py"
+    if not target.is_file():
+        raise SystemExit(f"::error::could not find rosetta_engine.py in {root}")
+
+    text = target.read_text(encoding="utf-8")
+    if "rsrcmgr=rsrcmgr" in text:
+        return False
+    if "def prepareRun(" not in text or "def collect_page_units(" not in text:
+        return False
+
+    prepare_anchor = "    page_caches: dict[int, _PageCache] = {}\n"
+    if prepare_anchor not in text:
+        return False
+    text = text.replace(
+        prepare_anchor,
+        prepare_anchor + "    rsrcmgr = PDFResourceManager(caching=True)\n",
+        1,
+    )
+
+    call_anchor = "                translator=collector,\n"
+    if call_anchor not in text:
+        return False
+    text = text.replace(
+        call_anchor,
+        call_anchor + "                rsrcmgr=rsrcmgr,\n",
+        1,
+    )
+
+    signature_anchor = "    translator: _UnitCollectorTranslator,\n    lang_in: str,\n"
+    if signature_anchor not in text:
+        return False
+    text = text.replace(
+        signature_anchor,
+        "    translator: _UnitCollectorTranslator,\n    rsrcmgr: PDFResourceManager,\n    lang_in: str,\n",
+        1,
+    )
+
+    local_manager = "    before_count = len(translator.units)\n    rsrcmgr = PDFResourceManager(caching=True)\n"
+    if local_manager not in text:
+        return False
+    text = text.replace(
+        local_manager,
+        "    before_count = len(translator.units)\n",
+        1,
+    )
+
+    target.write_text(text, encoding="utf-8")
+    print(f"[pdf2zh-pack] reused pdfminer resource manager across prepared pages in {target}")
+    return True
+
+
+def patch_rosetta_engine_shared_font_registration(root: Path) -> bool:
+    target = root / "rosetta_engine.py"
+    if not target.is_file():
+        raise SystemExit(f"::error::could not find rosetta_engine.py in {root}")
+
+    text = target.read_text(encoding="utf-8")
+    marker = "Rosetta: share prepared PDF font objects across page resources."
+    if marker in text:
+        return False
+    if "def prepare_pdf_document(" not in text:
+        return False
+
+    old_registration = '''    font_id = {}
+    for page in doc:
+        for font_name, font_file in font_list:
+            font_id[font_name] = page.insert_font(font_name, font_file)
+'''
+    new_registration = '''    font_id = {}
+    if doc.page_count:
+        for font_name, font_file in font_list:
+            font_id[font_name] = doc[0].insert_font(font_name, font_file)
+        for page in doc:
+            rosetta_pdf_register_page_fonts(doc, page.xref, font_list, font_id)
+'''
+    if old_registration not in text:
+        return False
+    text = text.replace(old_registration, new_registration, 1)
+
+    helper = f'''# {marker}
+def rosetta_pdf_xref_id(value: str) -> int:
+    return int(re.search(r"(\\d+) 0 R", value).group(1))
+
+
+def rosetta_pdf_page_font_resource_target(doc, page_xref: int) -> tuple[int, str]:
+    resources = doc.xref_get_key(page_xref, "Resources")
+    if resources[0] == "xref":
+        resource_xref = rosetta_pdf_xref_id(resources[1])
+        font_key = "Font"
+    else:
+        resource_xref = page_xref
+        if resources[0] == "null":
+            doc.xref_set_key(page_xref, "Resources", "<<>>")
+        font_key = "Resources/Font"
+
+    fonts = doc.xref_get_key(resource_xref, font_key)
+    if fonts[0] == "xref":
+        return rosetta_pdf_xref_id(fonts[1]), ""
+    if fonts[0] == "null":
+        doc.xref_set_key(resource_xref, font_key, "<<>>")
+    return resource_xref, f"{{font_key}}/"
+
+
+def rosetta_pdf_register_page_fonts(doc, page_xref: int, font_list, font_id) -> None:
+    resource_xref, font_key_prefix = rosetta_pdf_page_font_resource_target(doc, page_xref)
+    for font_name, _font_file in font_list:
+        target_key = f"{{font_key_prefix}}{{font_name}}"
+        if doc.xref_get_key(resource_xref, target_key)[0] == "null":
+            doc.xref_set_key(resource_xref, target_key, f"{{font_id[font_name]}} 0 R")
+
+
+'''
+    prepare_anchor = "def prepare_pdf_document("
+    text = text.replace(prepare_anchor, helper + prepare_anchor, 1)
+    target.write_text(text, encoding="utf-8")
+    print(f"[pdf2zh-pack] shared prepared PDF font objects across pages in {target}")
+    return True
+
+
+def patch_rosetta_engine_page_artifact_font_subsetting(root: Path) -> bool:
+    target = root / "rosetta_engine.py"
+    if not target.is_file():
+        raise SystemExit(f"::error::could not find rosetta_engine.py in {root}")
+
+    text = target.read_text(encoding="utf-8")
+    marker = "Rosetta: subset fonts in durable single-page artifacts."
+    if marker in text:
+        return False
+    if "def render_one_page(" not in text:
+        return False
+
+    helper = f'''# {marker}
+def rosetta_pdf_subset_page_fonts(doc) -> bool:
+    try:
+        doc.subset_fonts(verbose=False)
+        return True
+    except Exception:
+        return False
+
+
+'''
+    render_anchor = "def render_one_page("
+    text = text.replace(render_anchor, helper + render_anchor, 1)
+
+    insert_anchor = '''        single = pymupdf.open()
+        single.insert_pdf(state.doc, from_page=cache.page_index, to_page=cache.page_index)
+        single.save(
+'''
+    insert_replacement = '''        single = pymupdf.open()
+        single.insert_pdf(state.doc, from_page=cache.page_index, to_page=cache.page_index)
+        subset_page_fonts = bool(state.options.get("singlePageSubsetFonts", True)) and rosetta_pdf_subset_page_fonts(single)
+        single.save(
+'''
+    if insert_anchor not in text:
+        return False
+    text = text.replace(insert_anchor, insert_replacement, 1)
+
+    save_anchor = '''            artifact_path,
+            deflate=bool(state.options.get("singlePageDeflate", False)),
+'''
+    save_replacement = '''            artifact_path,
+            garbage=4 if subset_page_fonts else 0,
+            deflate=bool(state.options.get("singlePageDeflate", False)),
+'''
+    if save_anchor not in text:
+        return False
+    text = text.replace(save_anchor, save_replacement, 1)
+
+    target.write_text(text, encoding="utf-8")
+    print(f"[pdf2zh-pack] subset fonts in durable single-page artifacts in {target}")
+    return True
+
+
 def clear_pycache(root: Path) -> None:
     for cache_dir in root.rglob("__pycache__"):
         for child in cache_dir.iterdir():
@@ -2093,16 +2401,19 @@ def clear_pycache(root: Path) -> None:
 
 if "def rosetta_pdf_is_bold_font(" in text and "rosetta_pdf_is_bold_font(child.font)" not in text:
     text, changed = normalize_text_mode_operator(text)
+    text, scalar_clamp_changed = patch_converter_scalar_layout_clamp(text)
     text, bold_font_changed = patch_converter_bold_font_support(text)
     text, cumulative_bold_changed = patch_cumulative_bold_marking(text)
     text, rendering_safety_changed = patch_converter_text_rendering_safety(text)
     text, centered_alignment_changed = patch_converter_centered_single_line_alignment(text)
     text, structural_line_breaks_changed = patch_converter_structural_line_breaks(text)
     text, formula_text_changed = patch_converter_formula_text_classification(text)
-    if changed or bold_font_changed or cumulative_bold_changed or rendering_safety_changed or centered_alignment_changed or structural_line_breaks_changed or formula_text_changed:
+    if changed or scalar_clamp_changed or bold_font_changed or cumulative_bold_changed or rendering_safety_changed or centered_alignment_changed or structural_line_breaks_changed or formula_text_changed:
         target.write_text(text, encoding="utf-8")
         if changed:
             print(f"[pdf2zh-pack] normalized PDF faux-bold text mode in {target}")
+        if scalar_clamp_changed:
+            print(f"[pdf2zh-pack] optimized scalar PDF layout coordinate clamps in {target}")
         if bold_font_changed:
             print(f"[pdf2zh-pack] enabled simplified Chinese bold font switching in {target}")
         if cumulative_bold_changed:
@@ -2124,8 +2435,12 @@ if "def rosetta_pdf_is_bold_font(" in text and "rosetta_pdf_is_bold_font(child.f
     engine_structural_line_breaks_changed = patch_rosetta_engine_structural_line_breaks(root)
     prepared_cache_changed = patch_rosetta_engine_prepared_cache(root)
     persistent_layout_cache_changed = patch_rosetta_engine_persistent_layout_cache(root)
+    resource_manager_changed = patch_rosetta_engine_resource_manager_reuse(root)
+    shared_font_registration_changed = patch_rosetta_engine_shared_font_registration(root)
+    page_artifact_subsetting_changed = patch_rosetta_engine_page_artifact_font_subsetting(root)
     any_changed = (
         changed
+        or scalar_clamp_changed
         or bold_font_changed
         or cumulative_bold_changed
         or rendering_safety_changed
@@ -2141,6 +2456,9 @@ if "def rosetta_pdf_is_bold_font(" in text and "rosetta_pdf_is_bold_font(child.f
         or engine_structural_line_breaks_changed
         or prepared_cache_changed
         or persistent_layout_cache_changed
+        or resource_manager_changed
+        or shared_font_registration_changed
+        or page_artifact_subsetting_changed
     )
     if any_changed:
         clear_pycache(root)
@@ -2456,6 +2774,7 @@ for old, new in replacements:
     text = text.replace(old, new)
 
 text, _ = normalize_text_mode_operator(text)
+text, _ = patch_converter_scalar_layout_clamp(text)
 text, _ = patch_converter_bold_font_support(text)
 text, _ = patch_cumulative_bold_marking(text)
 text, _ = patch_converter_text_rendering_safety(text)
@@ -2474,4 +2793,7 @@ patch_rosetta_engine_render_unit_matching(root)
 patch_rosetta_engine_structural_line_breaks(root)
 patch_rosetta_engine_prepared_cache(root)
 patch_rosetta_engine_persistent_layout_cache(root)
+patch_rosetta_engine_resource_manager_reuse(root)
+patch_rosetta_engine_shared_font_registration(root)
+patch_rosetta_engine_page_artifact_font_subsetting(root)
 clear_pycache(root)

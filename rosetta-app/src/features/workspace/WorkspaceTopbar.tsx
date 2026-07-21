@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type ReactNode,
@@ -10,7 +11,6 @@ import {
   Download,
   FileText,
   Loader2,
-  Pause,
   Play,
   RefreshCw,
   Square,
@@ -36,12 +36,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import type {
-  PdfV3RunControlStatus,
-  RosettaJobSummary,
-  RosettaTranslationFile,
-} from "@/types/rosetta";
-import type { PdfV3RunOperation } from "./usePdfV3RunControl";
+import type { RosettaJobSummary, RosettaTranslationFile } from "@/types/rosetta";
 
 const TARGET_LANGS = [
   { value: "zh-CN", label: "简体中文" },
@@ -57,26 +52,40 @@ type WorkspaceTopbarProps = {
   job: RosettaJobSummary;
   activeTranslationFile: RosettaTranslationFile | null;
   isTranslating: boolean;
+  isPausingTranslation?: boolean;
   isTranslationBusyElsewhere?: boolean;
   isRuntimeStarting: boolean;
   isRuntimeUnavailable?: boolean;
   runtimeUnavailableMessage?: string | null;
+  isPdfEngineInstalling?: boolean;
+  isPdfEngineUnavailable?: boolean;
+  /// True while the persistent pdf2zh worker is paying Python import and ONNX
+  /// layout warmup. Only meaningful for PDF jobs; disables the translate button
+  /// so the user can't click before the engine is warm. The granular warmup
+  /// progress is shown by the header badge, not here, to avoid duplication.
+  isPdfEngineWarming?: boolean;
+  pdfEngineProgressMessage?: string | null;
+  pdfEngineUnavailableMessage?: string | null;
   translatedCount: number;
   totalCount: number;
   /// Epoch ms when the active run started. Anchors the elapsed timer so it
   /// survives unmount/remount (file switches) during a long run.
   runStartedAtMs?: number | null;
-  pdfV3RunStatus?: PdfV3RunControlStatus | null;
-  pdfV3ControlOperation?: PdfV3RunOperation | null;
-  pdfV3CanRecover?: boolean;
-  pdfV3IsDiscovering?: boolean;
-  pdfV3DiscoveryError?: string | null;
-  isPdfV3Exporting?: boolean;
+  pdfProgress?: {
+    phase: string;
+    percent: number | null;
+    currentPage: number | null;
+    totalPages: number | null;
+    completedPages?: number | null;
+    translatedChars?: number | null;
+  } | null;
   sourceLang: string;
   targetLang: string;
   selectedBlockCount: number;
   pdfSelectedPageCount?: number;
   pdfPageCount?: number;
+  pdfForceRetranslate?: boolean;
+  onPdfForceRetranslateChange?: (force: boolean) => void;
   onSelectAllPages?: () => void;
   onSelectPreviewPages?: () => void;
   onDeselectAllPages?: () => void;
@@ -84,10 +93,6 @@ type WorkspaceTopbarProps = {
   onTargetLangChange: (lang: string) => void;
   onTranslate: (targetLang: string, sourceLang: string) => void;
   onCancelTranslation: () => void;
-  onPausePdfV3Run?: () => void;
-  onResumePdfV3Run?: () => void;
-  onCancelPdfV3Run?: () => void;
-  onRecoverPdfV3Run?: () => void;
   onExport: (kind: "translation" | "bilingual") => void;
   onRetranslateSelected: () => void;
   onClearSelection: () => void;
@@ -95,7 +100,23 @@ type WorkspaceTopbarProps = {
   onOpenRuntimeSettings?: () => void;
 };
 
-/// Format milliseconds as `mm:ss` for active translation runs.
+/// Map the backend's `phase` enum to a user-facing label. `warmup` is the
+/// new phase emitted before pdf2zh.py actually starts writing stdout —
+/// covers shim launch, role-set HTTP, and pdf2zh subprocess spawn. Without
+/// it the UI used to sit silently on "翻译中" for the whole startup gap,
+/// which is the biggest contributor to the "feels frozen" perception.
+const PDF_PHASE_LABELS: Record<string, string> = {
+  split: "正在准备页面",
+  warmup: "准备翻译引擎",
+  parse: "解析版面",
+  translate: "翻译中",
+  render: "生成 PDF",
+};
+
+/// Format milliseconds as `mm:ss`. Used by the topbar's "翻译中 · 00:23"
+/// elapsed timer — even when pdf2zh.py is silent for tens of seconds (Python
+/// multiprocessing pool startup, first MLX batch's prefill, etc.), this
+/// counter keeps moving so the UI never looks frozen.
 function formatElapsed(ms: number): string {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
   const minutes = Math.floor(totalSeconds / 60);
@@ -228,7 +249,7 @@ function TranslationRunIndicator({
   pageLabel: string | null;
   countValue: ReactNode | null;
   countTitle: string;
-  elapsedLabel: string | null;
+  elapsedLabel: string;
 }) {
   return (
     <div className={cn(topbarPanelClass, "max-w-[min(38rem,64vw)] gap-2 px-2.5")}>
@@ -250,11 +271,9 @@ function TranslationRunIndicator({
             {countValue}
           </RunMetric>
         ) : null}
-        {elapsedLabel ? (
-          <RunMetric title="已用时间" icon={<Timer className="size-3" />}>
-            <span className="rosetta-run-time-value">{elapsedLabel}</span>
-          </RunMetric>
-        ) : null}
+        <RunMetric title="已用时间" icon={<Timer className="size-3" />}>
+          <span className="rosetta-run-time-value">{elapsedLabel}</span>
+        </RunMetric>
       </div>
     </div>
   );
@@ -280,28 +299,111 @@ function RunMetric({
   );
 }
 
+function RollingTranslatedChars({ value }: { value: number }) {
+  const formatted = Math.max(0, Math.floor(value)).toLocaleString();
+  const contentRef = useRef<HTMLSpanElement | null>(null);
+  const [contentWidth, setContentWidth] = useState<number | null>(null);
+
+  useLayoutEffect(() => {
+    const nextWidth = contentRef.current?.getBoundingClientRect().width ?? null;
+    if (nextWidth == null) {
+      return;
+    }
+    setContentWidth((current) => {
+      const rounded = Math.ceil(nextWidth);
+      return current === rounded ? current : rounded;
+    });
+  }, [formatted]);
+
+  return (
+    <span
+      aria-label={`${formatted} 字`}
+      className="rosetta-run-count-value"
+      style={contentWidth == null ? undefined : { width: contentWidth }}
+    >
+      <span
+        className="rosetta-run-count-content"
+        aria-hidden="true"
+        ref={contentRef}
+      >
+        <span className="rosetta-run-count-number">
+          {formatted.split("").map((char, index) =>
+            /\d/.test(char) ? (
+              <RollingDigit digit={Number(char)} key={`${index}:digit`} />
+            ) : (
+              <span className="rosetta-run-count-separator" key={`${index}:${char}`}>
+                {char}
+              </span>
+            )
+          )}
+        </span>
+        <span className="rosetta-run-count-unit">字</span>
+      </span>
+    </span>
+  );
+}
+
+function RollingDigit({ digit }: { digit: number }) {
+  const previousDigitRef = useRef(digit);
+  const [previousDigit, setPreviousDigit] = useState<number | null>(null);
+
+  useLayoutEffect(() => {
+    if (previousDigitRef.current === digit) {
+      return;
+    }
+
+    setPreviousDigit(previousDigitRef.current);
+    previousDigitRef.current = digit;
+
+    const timeout = window.setTimeout(() => {
+      setPreviousDigit(null);
+    }, 220);
+
+    return () => window.clearTimeout(timeout);
+  }, [digit]);
+
+  return (
+    <span
+      className="rosetta-run-count-digit"
+      data-rolling={previousDigit == null ? undefined : "true"}
+    >
+      {previousDigit == null ? null : (
+        <span className="rosetta-run-count-digit-previous">
+          {previousDigit}
+        </span>
+      )}
+      <span className="rosetta-run-count-digit-current" key={digit}>
+        {digit}
+      </span>
+    </span>
+  );
+}
+
 export function WorkspaceTopbar({
   job,
   activeTranslationFile,
   isTranslating,
+  isPausingTranslation = false,
   isTranslationBusyElsewhere = false,
   isRuntimeStarting,
   isRuntimeUnavailable = false,
   runtimeUnavailableMessage = null,
+  isPdfEngineInstalling = false,
+  isPdfEngineUnavailable = false,
+  isPdfEngineWarming = false,
+  pdfEngineProgressMessage = null,
+  pdfEngineUnavailableMessage = null,
   translatedCount,
   totalCount,
   runStartedAtMs = null,
-  pdfV3RunStatus = null,
-  pdfV3ControlOperation = null,
-  pdfV3CanRecover = false,
-  pdfV3IsDiscovering = false,
-  pdfV3DiscoveryError = null,
-  isPdfV3Exporting = false,
+  pdfProgress = null,
   sourceLang,
   targetLang,
   selectedBlockCount,
   pdfSelectedPageCount = 0,
   pdfPageCount = 0,
+  pdfForceRetranslate = false,
+  onPdfForceRetranslateChange,
   onSelectAllPages,
   onSelectPreviewPages,
   onDeselectAllPages,
@@ -309,10 +411,6 @@ export function WorkspaceTopbar({
   onTargetLangChange,
   onTranslate,
   onCancelTranslation,
-  onPausePdfV3Run,
-  onResumePdfV3Run,
-  onCancelPdfV3Run,
-  onRecoverPdfV3Run,
   onExport,
   onRetranslateSelected,
   onClearSelection,
@@ -321,33 +419,24 @@ export function WorkspaceTopbar({
 }: WorkspaceTopbarProps) {
   const [confirmingCancel, setConfirmingCancel] = useState(false);
   const [confirmingRetranslateAll, setConfirmingRetranslateAll] = useState(false);
+  // Elapsed timer for the "翻译中 · 00:23" display. Starts the moment
+  // `isTranslating` flips true (= user clicked translate) and stops when it
+  // flips false. Independent of whether pdf2zh has emitted any progress
+  // event yet — the whole point is to keep moving during the silent gap.
   const elapsedMs = useElapsedSince(isTranslating, runStartedAtMs);
   const elapsedLabel = formatElapsed(elapsedMs);
 
-  useEffect(() => {
-    setConfirmingCancel(false);
-  }, [isTranslating, job.id, pdfV3RunStatus?.runId, pdfV3RunStatus?.state]);
-
-  const isPdf = job.format === "pdf";
+  const hasTranslation =
+    activeTranslationFile &&
+    (job.format === "pdf" ||
+      activeTranslationFile.completedSegments > 0);
   const allTranslated =
-    isPdf
-      ? pdfV3RunStatus?.state === "completed"
-      : !!activeTranslationFile &&
-        activeTranslationFile.segmentCount > 0 &&
-        activeTranslationFile.completedSegments >= activeTranslationFile.segmentCount;
-  const hasTranslation = isPdf
-    ? allTranslated
-    : activeTranslationFile && activeTranslationFile.completedSegments > 0;
-  const pdfV3HasOpenRun =
-    !!pdfV3RunStatus &&
-    pdfV3RunStatus.state !== "cancelled" &&
-    pdfV3RunStatus.state !== "failed" &&
-    pdfV3RunStatus.state !== "completed";
-  const pdfV3FailedRunNeedsRecovery =
-    pdfV3RunStatus?.state === "failed" &&
-    !pdfV3RunStatus.ownedByCurrentSession;
-  const pdfSelectionLocked =
-    isTranslating || pdfV3HasOpenRun || pdfV3ControlOperation === "creating";
+    !!activeTranslationFile &&
+    (job.format === "pdf"
+      ? activeTranslationFile.status === "translated"
+      : activeTranslationFile.segmentCount > 0 &&
+        activeTranslationFile.completedSegments >= activeTranslationFile.segmentCount);
+  const isPdf = job.format === "pdf";
   const sameLanguage = sourceLang === targetLang;
   const noPdfPagesSelected = isPdf && pdfSelectedPageCount === 0;
   const translateDisabled =
@@ -355,22 +444,18 @@ export function WorkspaceTopbar({
     noPdfPagesSelected ||
     isTranslationBusyElsewhere ||
     isRuntimeUnavailable ||
-    (isPdf && (pdfV3IsDiscovering || pdfV3DiscoveryError != null)) ||
-    (isPdf && (pdfV3HasOpenRun || pdfV3ControlOperation != null));
+    (isPdf && isPdfEngineUnavailable) ||
+    (isPdf && isPdfEngineWarming);
   const translateTitle = sameLanguage
     ? "原文与译文语言不能相同"
     : isTranslationBusyElsewhere
       ? "另一个文件正在翻译"
     : isRuntimeUnavailable
       ? (runtimeUnavailableMessage ?? "本地翻译模型尚未就绪")
-    : isPdf && pdfV3IsDiscovering
-      ? "正在读取 PDF v3 运行状态"
-    : isPdf && pdfV3DiscoveryError
-      ? pdfV3DiscoveryError
-    : isPdf && pdfV3HasOpenRun
-      ? "请先恢复或停止当前 PDF 运行"
-    : isPdf && pdfV3ControlOperation != null
-      ? "PDF 操作正在进行"
+    : isPdf && isPdfEngineUnavailable
+      ? (pdfEngineUnavailableMessage ?? "PDF 组件未安装，请在设置中安装后再翻译。")
+    : isPdf && isPdfEngineWarming
+      ? "PDF 引擎预热中，请稍候"
     : noPdfPagesSelected
       ? "请选择页面"
       : undefined;
@@ -389,16 +474,24 @@ export function WorkspaceTopbar({
     isPdf && pdfPageCount > PDF_AUTO_SELECT_ALL_PAGE_LIMIT;
   const showLongPdfHint =
     showLongPdfControls &&
-    !pdfSelectionLocked &&
+    !isTranslating &&
     pdfSelectedPageCount <= longPdfPreviewPageCount;
   const runPhaseLabel = isPdf
-    ? pdfV3OperationLabel(pdfV3ControlOperation) ??
-      pdfV3WorkerLabel(pdfV3RunStatus)
+    ? isPausingTranslation
+      ? "正在停止"
+      : pdfProgress
+      ? PDF_PHASE_LABELS[pdfProgress.phase] ?? pdfProgress.phase
+      : PDF_PHASE_LABELS.warmup
     : "翻译中";
-  const runPageLabel = isPdf && pdfV3RunStatus
-    ? `${translatedCount}/${totalCount} 页`
-    : null;
-  const runCountValue = isPdf ? null : `${translatedCount}/${totalCount}`;
+  const runPageLabel =
+    isPdf && pdfProgress?.completedPages != null && pdfProgress?.totalPages != null
+      ? `${pdfProgress.completedPages}/${pdfProgress.totalPages} 页`
+      : null;
+  const runCountValue = isPdf
+    ? pdfProgress?.translatedChars != null
+      ? <RollingTranslatedChars value={pdfProgress.translatedChars} />
+      : null
+    : `${translatedCount}/${totalCount}`;
 
   return (
     <div className="border-b border-border/50 bg-background/95 px-4 py-2.5" data-window-no-drag>
@@ -420,7 +513,7 @@ export function WorkspaceTopbar({
                     variant="ghost"
                     className={topbarGhostButtonClass}
                     onClick={onSelectAllPages}
-                    disabled={pdfSelectionLocked || pdfSelectedPageCount === pdfPageCount}
+                    disabled={isTranslating || pdfSelectedPageCount === pdfPageCount}
                   >
                     全选
                   </Button>
@@ -429,7 +522,7 @@ export function WorkspaceTopbar({
                     variant="ghost"
                     className={topbarGhostButtonClass}
                     onClick={onDeselectAllPages}
-                    disabled={pdfSelectionLocked || pdfSelectedPageCount === 0}
+                    disabled={isTranslating || pdfSelectedPageCount === 0}
                   >
                     清空
                   </Button>
@@ -439,12 +532,22 @@ export function WorkspaceTopbar({
                       variant="ghost"
                       className={topbarGhostButtonClass}
                       onClick={onSelectPreviewPages}
-                      disabled={pdfSelectionLocked}
+                      disabled={isTranslating}
                     >
                       前 {longPdfPreviewPageCount} 页
                     </Button>
                   ) : null}
                 </div>
+                <label className="flex h-6 cursor-pointer items-center gap-1.5 rounded-md px-1.5 !text-xs leading-none !text-muted-foreground transition-colors hover:bg-muted/70 hover:!text-foreground has-disabled:cursor-not-allowed has-disabled:opacity-50">
+                  <input
+                    type="checkbox"
+                    checked={pdfForceRetranslate}
+                    onChange={(e) => onPdfForceRetranslateChange?.(e.target.checked)}
+                    disabled={isTranslating}
+                    className="size-3 accent-primary"
+                  />
+                  强制重翻
+                </label>
                 {showLongPdfHint ? (
                   <span className="max-w-[15rem] truncate !text-xs !text-muted-foreground">
                     长 PDF，默认前 {longPdfPreviewPageCount} 页
@@ -475,61 +578,19 @@ export function WorkspaceTopbar({
         </div>
 
         <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
-          {isPdf &&
-          (pdfV3HasOpenRun ||
-            pdfV3FailedRunNeedsRecovery ||
-            pdfV3ControlOperation != null) ? (
+          {isTranslating ? (
             <>
-              {pdfV3HasOpenRun ? (
-                <AnimatedWidth>
-                  <TranslationRunIndicator
-                    phaseLabel={runPhaseLabel}
-                    pageLabel={runPageLabel}
-                    countValue={runCountValue}
-                    countTitle="页面进度"
-                    elapsedLabel={pdfV3RunStatus?.state === "paused" ? null : elapsedLabel}
-                  />
-                </AnimatedWidth>
-              ) : null}
               <AnimatedWidth>
-                {pdfV3ControlOperation ? (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled
-                    className={cn(topbarButtonClass, "border-border/60 bg-card/80")}
-                  >
-                    <Loader2 className="size-3 animate-spin" />
-                    {pdfV3OperationLabel(pdfV3ControlOperation)}
-                  </Button>
-                ) : pdfV3RunStatus && !pdfV3RunStatus.ownedByCurrentSession ? (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={!pdfV3CanRecover}
-                    onClick={onRecoverPdfV3Run}
-                    className={cn(topbarButtonClass, "border-border/60 bg-card/80")}
-                    title={
-                      pdfV3CanRecover
-                        ? "接管失去心跳的 PDF 运行"
-                        : "此运行仍由另一个窗口持有"
-                    }
-                  >
-                    <RefreshCw className="size-3" />
-                    {pdfV3CanRecover ? "接管运行" : "其他窗口运行中"}
-                  </Button>
-                ) : confirmingCancel ? (
-                  <TopbarConfirm
-                    label="确认停止？"
-                    confirmLabel="停止"
-                    destructive
-                    onConfirm={() => {
-                      onCancelPdfV3Run?.();
-                      setConfirmingCancel(false);
-                    }}
-                    onCancel={() => setConfirmingCancel(false)}
-                  />
-                ) : pdfV3RunStatus?.state === "cancelling" ? (
+                <TranslationRunIndicator
+                  phaseLabel={runPhaseLabel}
+                  pageLabel={runPageLabel}
+                  countValue={runCountValue}
+                  countTitle={isPdf ? "已翻译字数" : "段落进度"}
+                  elapsedLabel={elapsedLabel}
+                />
+              </AnimatedWidth>
+              <AnimatedWidth>
+                {isPausingTranslation ? (
                   <Button
                     size="sm"
                     variant="outline"
@@ -539,55 +600,11 @@ export function WorkspaceTopbar({
                     <Loader2 className="size-3 animate-spin" />
                     正在停止
                   </Button>
-                ) : (
-                  <div className="flex items-center gap-1.5">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={
-                        pdfV3RunStatus?.state === "paused"
-                          ? onResumePdfV3Run
-                          : onPausePdfV3Run
-                      }
-                      className={cn(topbarButtonClass, "border-border/60 bg-card/80")}
-                    >
-                      {pdfV3RunStatus?.state === "paused" ? (
-                        <Play className="size-3" />
-                      ) : (
-                        <Pause className="size-3" />
-                      )}
-                      {pdfV3RunStatus?.state === "paused" ? "恢复" : "暂停"}
-                    </Button>
-                    <Button
-                      size="icon-sm"
-                      variant="outline"
-                      onClick={() => setConfirmingCancel(true)}
-                      className="size-8 border-border/60 bg-card/80"
-                      title="停止 PDF 翻译"
-                      aria-label="停止 PDF 翻译"
-                    >
-                      <Square className="size-3" />
-                    </Button>
-                  </div>
-                )}
-              </AnimatedWidth>
-            </>
-          ) : isTranslating ? (
-            <>
-              <AnimatedWidth>
-                <TranslationRunIndicator
-                  phaseLabel={runPhaseLabel}
-                  pageLabel={runPageLabel}
-                  countValue={runCountValue}
-                  countTitle="段落进度"
-                  elapsedLabel={elapsedLabel}
-                />
-              </AnimatedWidth>
-              <AnimatedWidth>
-                {confirmingCancel ? (
+                ) : confirmingCancel ? (
                   <TopbarConfirm
-                    label="确认停止？"
-                    confirmLabel="停止"
+                    label="确认暂停？"
+                    confirmLabel="暂停"
+                    cancelLabel="继续"
                     destructive
                     onConfirm={() => {
                       onCancelTranslation();
@@ -602,7 +619,7 @@ export function WorkspaceTopbar({
                     onClick={() => setConfirmingCancel(true)}
                     className={cn(topbarButtonClass, "border-border/60 bg-card/80")}
                   >
-                    <Square className="size-3" /> 停止
+                    <Square className="size-3" /> 暂停
                   </Button>
                 )}
               </AnimatedWidth>
@@ -615,14 +632,9 @@ export function WorkspaceTopbar({
                     size="sm"
                     variant="outline"
                     onClick={() => onExport("translation")}
-                    disabled={isPdfV3Exporting}
                     className={cn(topbarButtonClass, "border-border/60 bg-card/80")}
                   >
-                    {isPdfV3Exporting ? (
-                      <Loader2 className="size-3 animate-spin" />
-                    ) : (
-                      <Download className="size-3" />
-                    )} {isPdfV3Exporting ? "正在导出" : "导出译文"}
+                    <Download className="size-3" /> 导出译文
                   </Button>
                 </AnimatedWidth>
               )}
@@ -664,7 +676,12 @@ export function WorkspaceTopbar({
               </AnimatedWidth>
 
               <AnimatedWidth>
-                {isRuntimeStarting ? (
+                {isPdfEngineInstalling ? (
+                  <Button size="sm" disabled className={topbarButtonClass}>
+                    <Loader2 className="size-3 animate-spin" />
+                    {pdfEngineProgressMessage ?? "正在准备 PDF 引擎…"}
+                  </Button>
+                ) : isRuntimeStarting ? (
                   <Button size="sm" disabled className={topbarButtonClass}>
                     <Loader2 className="size-3 animate-spin" />
                     正在启动模型…
@@ -752,47 +769,4 @@ export function WorkspaceTopbar({
       ) : null}
     </div>
   );
-}
-
-function pdfV3OperationLabel(operation: PdfV3RunOperation | null) {
-  switch (operation) {
-    case "creating":
-      return "正在创建运行";
-    case "pausing":
-      return "正在暂停";
-    case "resuming":
-      return "正在恢复";
-    case "cancelling":
-      return "正在停止";
-    case "recovering":
-      return "正在接管";
-    case "retrying":
-      return "正在重试页面";
-    default:
-      return null;
-  }
-}
-
-function pdfV3WorkerLabel(status: PdfV3RunControlStatus | null) {
-  if (!status) return "准备 PDF 翻译";
-  if (status.state === "paused") return "已暂停";
-  if (status.state === "cancelling") return "正在停止";
-  if (status.state === "cancelled") return "已停止";
-  if (status.state === "failed") return "处理失败";
-  if (status.state === "completed") return "已完成";
-
-  switch (status.worker.stage) {
-    case "starting":
-      return "正在准备";
-    case "extracting":
-      return "正在解析页面";
-    case "translating":
-      return "正在翻译页面";
-    case "stopping":
-      return "正在停止";
-    case "waiting":
-      return "等待下一页";
-    default:
-      return "PDF 翻译中";
-  }
 }

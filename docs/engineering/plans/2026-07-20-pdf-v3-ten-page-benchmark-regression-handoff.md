@@ -1,6 +1,28 @@
 # 2026-07-20 PDF v3 Ten-Page Benchmark Regression Handoff
 
-## Status
+## Resolution
+
+Resolved on 2026-07-21 by restoring pdf2zh as production extraction and visual
+rendering authority, retaining the bounded native scheduler/store
+infrastructure through an adapter, and optimizing the proven production path.
+
+The exact ten-page fixture now completes cache-miss preparse in approximately
+2.8-3.0 seconds in the App, translates in approximately 104-107 seconds with
+the established 20 RWKV requests, produces ten compressed pages totaling about
+4.3 MiB, and has passed the user's visual acceptance test.
+
+Current status, final measurements, source-state warnings, and the deferred
+resource-pack release checklist are recorded in:
+
+```text
+docs/engineering/plans/2026-07-21-pdf-production-refactor-closeout.md
+```
+
+The remainder of this document is retained as historical evidence of the
+failed native production execution path. Its investigation instructions and
+release-blocking status are superseded.
+
+## Historical Status (Superseded)
 
 Unresolved and release-blocking.
 
