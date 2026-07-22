@@ -27,6 +27,7 @@ import { Button } from "@/components/ui/button";
 import {
   PDF_AUTO_SELECT_ALL_PAGE_LIMIT,
   PDF_LONG_DOCUMENT_DEFAULT_SELECTION,
+  pdfPageSelectionLabel,
 } from "@/lib/pdfPageSelectionPolicy";
 import {
   Select,
@@ -83,6 +84,7 @@ type WorkspaceTopbarProps = {
   targetLang: string;
   selectedBlockCount: number;
   pdfSelectedPageCount?: number;
+  pdfSelectedPages?: number[];
   pdfPageCount?: number;
   pdfForceRetranslate?: boolean;
   onPdfForceRetranslateChange?: (force: boolean) => void;
@@ -401,6 +403,7 @@ export function WorkspaceTopbar({
   targetLang,
   selectedBlockCount,
   pdfSelectedPageCount = 0,
+  pdfSelectedPages = [],
   pdfPageCount = 0,
   pdfForceRetranslate = false,
   onPdfForceRetranslateChange,
@@ -459,13 +462,17 @@ export function WorkspaceTopbar({
     : noPdfPagesSelected
       ? "请选择页面"
       : undefined;
-  const selectedPdfLabel =
-    isPdf && pdfPageCount > 0 && pdfSelectedPageCount === pdfPageCount
-      ? "全部"
-      : "所选页";
   const pdfSelectionReady = isPdf && pdfSelectedPageCount > 0;
+  const pdfActionTarget =
+    pdfSelectedPageCount > 0 && pdfPageCount > 0
+      ? pdfPageSelectionLabel(pdfSelectedPages, pdfPageCount)
+      : "页面";
   const pageSelectionLabel =
-    pdfPageCount > 0 ? `${pdfSelectedPageCount} / ${pdfPageCount} 页` : "等待页数";
+    pdfPageCount > 0
+      ? pdfSelectedPageCount === pdfPageCount
+        ? pdfActionTarget
+        : `${pdfActionTarget} · 共 ${pdfPageCount} 页`
+      : "等待页数";
   const longPdfPreviewPageCount = Math.min(
     PDF_LONG_DOCUMENT_DEFAULT_SELECTION,
     Math.max(pdfPageCount, 0),
@@ -475,7 +482,8 @@ export function WorkspaceTopbar({
   const showLongPdfHint =
     showLongPdfControls &&
     !isTranslating &&
-    pdfSelectedPageCount <= longPdfPreviewPageCount;
+    pdfSelectedPages.length === longPdfPreviewPageCount &&
+    pdfSelectedPages.every((page, index) => page === index + 1);
   const runPhaseLabel = isPdf
     ? isPausingTranslation
       ? "正在停止"
@@ -550,7 +558,7 @@ export function WorkspaceTopbar({
                 </label>
                 {showLongPdfHint ? (
                   <span className="max-w-[15rem] truncate !text-xs !text-muted-foreground">
-                    长 PDF，默认前 {longPdfPreviewPageCount} 页
+                    长 PDF，先翻译前 {longPdfPreviewPageCount} 页
                   </span>
                 ) : null}
               </div>
@@ -700,7 +708,7 @@ export function WorkspaceTopbar({
                 ) : allTranslated ? (
                   confirmingRetranslateAll ? (
                     <TopbarConfirm
-                      label={isPdf ? `确认重翻${selectedPdfLabel}？` : "确认重翻全部？"}
+                      label={isPdf ? `确认重翻${pdfActionTarget}？` : "确认重翻全部？"}
                       confirmLabel="确定"
                       destructive
                       disabled={translateDisabled}
@@ -722,7 +730,7 @@ export function WorkspaceTopbar({
                       title={translateTitle}
                     >
                       <RefreshCw className="size-3" />
-                      {isPdf ? `重翻${selectedPdfLabel}` : "重翻全部"}
+                      {isPdf ? `重翻${pdfActionTarget}` : "重翻全部"}
                     </Button>
                   )
                 ) : (
@@ -734,7 +742,7 @@ export function WorkspaceTopbar({
                     title={translateTitle}
                   >
                     <Play className="size-3" />
-                    {isPdf ? `翻译${selectedPdfLabel}` : "翻译"}
+                    {isPdf ? `翻译${pdfActionTarget}` : "翻译"}
                   </Button>
                 )}
               </AnimatedWidth>

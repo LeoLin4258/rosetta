@@ -197,36 +197,36 @@ def patch_converter_text_rendering_safety(text: str) -> tuple[str, bool]:
 
     changed = False
 
-    old_gen_op_line = """        def gen_op_line(x, y, xlen, ylen, linewidth, color=None):
-            return f"ET q {rosetta_pdf_color_operator(color, True)}1 0 0 1 {x:f} {y:f} cm [] 0 d 0 J {linewidth:f} w 0 0 m {xlen:f} {ylen:f} l S Q BT "
-"""
-    new_gen_op_line = """        def gen_op_line(x, y, xlen, ylen, linewidth, color=None):
-            return f"ET q {rosetta_pdf_color_operator(color, True)}1 0 0 1 {x:f} {y:f} cm [] 0 d 0 J {linewidth:f} w 0 0 m {xlen:f} {ylen:f} l S Q BT "
-
+    fill_rect_helper = '''
         def rosetta_pdf_fill_rect(x0, y0, x1, y1, pad):
             left = min(x0, x1) - pad
             bottom = min(y0, y1) - pad
             width = abs(x1 - x0) + pad * 2
             height = abs(y1 - y0) + pad * 2
             return f"ET q 1 g {left:f} {bottom:f} {width:f} {height:f} re f Q BT "
-"""
-    if "def rosetta_pdf_fill_rect(" not in text:
-        if old_gen_op_line not in text:
-            raise SystemExit(f"::error::could not find expected pdf2zh gen_op_line fragment in {target}")
-        text = text.replace(old_gen_op_line, new_gen_op_line, 1)
+'''
+    if fill_rect_helper in text:
+        text = text.replace(fill_rect_helper, "", 1)
         changed = True
-    if "def rosetta_pdf_fill_rect(x0, pstk[id].y0, x1, pstk[id].y1, pad):" in text:
-        text = text.replace(
-            "def rosetta_pdf_fill_rect(x0, pstk[id].y0, x1, pstk[id].y1, pad):",
-            "def rosetta_pdf_fill_rect(x0, y0, x1, y1, pad):",
-        )
-        changed = True
-    if "ops_list.append(rosetta_pdf_fill_rect(x0, y0, x1, y1" in text:
-        text = text.replace(
-            "ops_list.append(rosetta_pdf_fill_rect(x0, y0, x1, y1",
-            "ops_list.append(rosetta_pdf_fill_rect(x0, pstk[id].y0, x1, pstk[id].y1",
-        )
-        changed = True
+
+    legacy_mask_block = '''            # Rosetta: erase source text under translated paragraphs and keep CJK line spacing legible.
+            if str(new).strip() and self.should_translate_text(sstk[id]):
+                ops_list.append(rosetta_pdf_fill_rect(x0, pstk[id].y0, x1, pstk[id].y1, max(1.0, size * 0.25)))
+
+'''
+    legacy_unconditional_mask_block = '''            # Rosetta: erase source text under translated paragraphs and keep CJK line spacing legible.
+            if str(new).strip():
+                ops_list.append(rosetta_pdf_fill_rect(x0, pstk[id].y0, x1, pstk[id].y1, max(1.0, size * 0.25)))
+
+'''
+    for mask_block in (legacy_mask_block, legacy_unconditional_mask_block):
+        if mask_block in text:
+            text = text.replace(
+                mask_block,
+                "            # Rosetta: keep CJK line spacing legible without painting over source graphics.\n",
+                1,
+            )
+            changed = True
 
     old_line_height = """            line_height = default_line_height
 
@@ -239,10 +239,7 @@ def patch_converter_text_rendering_safety(text: str) -> tuple[str, bool]:
                 elif vals["type"] == OpType.LINE:
                     ops_list.append(gen_op_line(vals["x"], vals["dy"] + y - vals["lidx"] * size * line_height, vals["xlen"], vals["ylen"], vals["linewidth"], vals.get("color")))
 """
-    new_line_height = """            # Rosetta: erase source text under translated paragraphs and keep CJK line spacing legible.
-            if str(new).strip() and self.should_translate_text(sstk[id]):
-                ops_list.append(rosetta_pdf_fill_rect(x0, pstk[id].y0, x1, pstk[id].y1, max(1.0, size * 0.25)))
-
+    new_line_height = """            # Rosetta: keep CJK line spacing legible without painting over source graphics.
             line_count = lidx + 1
             line_height = default_line_height
             lang_key = self.translator.lang_out.lower()
@@ -266,20 +263,10 @@ def patch_converter_text_rendering_safety(text: str) -> tuple[str, bool]:
                 elif vals["type"] == OpType.LINE:
                     ops_list.append(gen_op_line(vals["x"], y_pos, vals["xlen"], vals["ylen"], vals["linewidth"], vals.get("color")))
 """
-    if "Rosetta: erase source text under translated paragraphs" not in text:
+    if "Rosetta: keep CJK line spacing legible without painting over source graphics" not in text:
         if old_line_height in text:
             text = text.replace(old_line_height, new_line_height, 1)
             changed = True
-    if (
-        "Rosetta: erase source text under translated paragraphs" in text
-        and "if str(new).strip():" in text
-    ):
-        text = text.replace(
-            "if str(new).strip():",
-            "if str(new).strip() and self.should_translate_text(sstk[id]):",
-            1,
-        )
-        changed = True
 
     return text, changed
 
@@ -290,15 +277,8 @@ def patch_converter_centered_single_line_alignment(text: str) -> tuple[str, bool
 
     changed = False
     helper_marker = "def rosetta_pdf_centered_alignment_shift("
-    old_helper_anchor = '''        def rosetta_pdf_fill_rect(x0, y0, x1, y1, pad):
-            left = min(x0, x1) - pad
-            bottom = min(y0, y1) - pad
-            width = abs(x1 - x0) + pad * 2
-            height = abs(y1 - y0) + pad * 2
-            return f"ET q 1 g {left:f} {bottom:f} {width:f} {height:f} re f Q BT "
-'''
-    new_helper_anchor = old_helper_anchor + '''
-        def rosetta_pdf_centered_alignment_shift(
+    old_helper_anchor = "            ops_vals: list[dict] = []\n"
+    new_helper_anchor = '''        def rosetta_pdf_centered_alignment_shift(
             page_left,
             page_right,
             source_left,
@@ -332,15 +312,15 @@ def patch_converter_centered_single_line_alignment(text: str) -> tuple[str, bool
                 min(page_right - translated_width, source_center - translated_width / 2),
             )
             return centered_left - translated_left
-'''
+\n''' + old_helper_anchor
     if helper_marker not in text:
         if old_helper_anchor not in text:
-            raise SystemExit(f"::error::could not find expected pdf2zh fill rectangle helper in {target}")
+            raise SystemExit(f"::error::could not find expected pdf2zh paragraph operation list in {target}")
         text = text.replace(old_helper_anchor, new_helper_anchor, 1)
         changed = True
 
     alignment_marker = "Rosetta: preserve page-centered single-line paragraph alignment after translation."
-    old_alignment_anchor = '''            # Rosetta: erase source text under translated paragraphs and keep CJK line spacing legible.
+    old_alignment_anchor = '''            # Rosetta: keep CJK line spacing legible without painting over source graphics.
 '''
     new_alignment_anchor = '''            # Rosetta: preserve page-centered single-line paragraph alignment after translation.
             alignment_shift = rosetta_pdf_centered_alignment_shift(
@@ -358,7 +338,7 @@ def patch_converter_centered_single_line_alignment(text: str) -> tuple[str, bool
                 for vals in ops_vals:
                     vals["x"] += alignment_shift
 
-            # Rosetta: erase source text under translated paragraphs and keep CJK line spacing legible.
+            # Rosetta: keep CJK line spacing legible without painting over source graphics.
 '''
     if alignment_marker not in text:
         if old_alignment_anchor not in text:
@@ -400,11 +380,111 @@ def patch_converter_structural_line_breaks(text: str) -> tuple[str, bool]:
         text = text.replace(old_break_capture, new_break_capture, 1)
         changed = True
 
+    disconnected_marker = "def rosetta_pdf_has_disconnected_vertical_gap("
+    parsing_anchor = '''        ############################################################
+        # A. 原文档解析
+'''
+    disconnected_helper = '''        def rosetta_pdf_has_disconnected_vertical_gap(current, previous):
+            if current is None or previous is None:
+                return False
+            current_size = max(1.0, float(getattr(current, "size", 0.0)))
+            previous_size = max(1.0, float(getattr(previous, "size", 0.0)))
+            vertical_gap = abs(float(current.y0) - float(previous.y0))
+            return vertical_gap > max(24.0, max(current_size, previous_size) * 3.0)
+
+'''
+    if disconnected_marker not in text and parsing_anchor in text:
+        text = text.replace(parsing_anchor, disconnected_helper + parsing_anchor, 1)
+        changed = True
+
+    old_same_paragraph = '''                if not vstk:
+                    if cls == xt_cls:               # 当前字符与前一个字符属于同一段落
+'''
+    new_same_paragraph = '''                if not vstk:
+                    rosetta_same_visual_paragraph = (
+                        cls == xt_cls
+                        and not rosetta_pdf_has_disconnected_vertical_gap(child, xt)
+                    )
+                    if rosetta_same_visual_paragraph:  # 当前字符与前一个字符属于同一连续段落
+'''
+    if "rosetta_same_visual_paragraph" not in text and old_same_paragraph in text:
+        text = text.replace(old_same_paragraph, new_same_paragraph, 1)
+        changed = True
+
     structural_marker = "Rosetta: preserve structural line breaks in list-like text blocks."
     translation_anchor = '''        ############################################################
         # B. 段落翻译
 '''
-    structural_block = f'''        # {structural_marker}
+    structural_content = f'''        # {structural_marker}
+        def rosetta_pdf_reference_entry_break_offsets(paragraph, source_text):
+            line_breaks = getattr(paragraph, "rosetta_line_breaks", [])
+            if len(line_breaks) < 2 or re.match(r"^\\[\\d{{1,3}}\\]\\s", source_text) is None:
+                return set()
+            reference_numbers = [
+                int(match.group(1))
+                for match in re.finditer(r"(?:^|\\s)\\[(\\d{{1,3}})\\]\\s", source_text)
+            ]
+            if len(reference_numbers) < 3 or any(
+                right != left + 1
+                for left, right in zip(reference_numbers, reference_numbers[1:])
+            ):
+                return set()
+            entry_breaks = {{
+                offset
+                for offset, _line_end in line_breaks
+                if re.match(r"\\s*\\[\\d{{1,3}}\\]\\s", source_text[offset:])
+            }}
+            if len(entry_breaks) != len(reference_numbers) - 1:
+                return set()
+            return entry_breaks
+
+        def rosetta_pdf_toc_entries(paragraph, source_text):
+            line_breaks = getattr(paragraph, "rosetta_line_breaks", [])
+            line_starts = [0] + [offset + 1 for offset, _line_end in line_breaks]
+            line_ends = [offset for offset, _line_end in line_breaks] + [len(source_text)]
+            line_ranges = list(zip(line_starts, line_ends))
+            if not line_ranges:
+                return []
+
+            dotted_pattern = re.compile(
+                r"^(?P<label>.*?\\S)(?P<suffix>\\s+(?:\\.\\s*){{5,}}\\s*(?P<page>\\d{{1,4}})\\s*)$"
+            )
+            entries = []
+            for line_start, line_end in line_ranges:
+                line_text = source_text[line_start:line_end]
+                match = dotted_pattern.match(line_text)
+                if match is None or not any(ch.isalpha() for ch in match.group("label")):
+                    entries = []
+                    break
+                entries.append({{
+                    "suffix_start": line_start + match.start("suffix"),
+                    "suffix_end": line_end,
+                    "page_number": match.group("page"),
+                    "dotted": True,
+                }})
+            if entries and len(entries) == len(line_ranges):
+                return entries
+
+            if len(line_ranges) != 1:
+                return []
+            heading_match = re.match(
+                r"^(?P<label>.*[^\\s\\d])(?P<gap>\\s{{12,}})(?P<page>\\d{{1,4}})\\s*$",
+                source_text,
+            )
+            if heading_match is None or not any(
+                ch.isalpha() for ch in heading_match.group("label")
+            ):
+                return []
+            gap_length = len(heading_match.group("gap"))
+            if gap_length < 24 and not getattr(paragraph, "bold", False):
+                return []
+            return [{{
+                "suffix_start": heading_match.start("gap"),
+                "suffix_end": len(source_text),
+                "page_number": heading_match.group("page"),
+                "dotted": False,
+            }}]
+
         def rosetta_pdf_should_preserve_source_line_breaks(paragraph, source_text):
             if len(re.findall(r"\\{{v\\d+\\}}", source_text)) >= 3:
                 return False
@@ -422,18 +502,42 @@ def patch_converter_structural_line_breaks(text: str) -> tuple[str, bool]:
             return short_line_count >= 2 and short_line_count * 3 >= len(line_breaks) * 2
 
         for paragraph_id, paragraph in enumerate(pstk):
-            if not rosetta_pdf_should_preserve_source_line_breaks(paragraph, sstk[paragraph_id]):
+            toc_entries = rosetta_pdf_toc_entries(paragraph, sstk[paragraph_id])
+            if toc_entries:
+                paragraph.rosetta_toc_entries = toc_entries
+                for entry_index, entry in reversed(list(enumerate(toc_entries))):
+                    sstk[paragraph_id] = (
+                        sstk[paragraph_id][:entry["suffix_start"]]
+                        + f"{{{{v{{910000000 + entry_index}}}}}}"
+                        + sstk[paragraph_id][entry["suffix_end"]:]
+                    )
                 continue
-            for offset, _line_end in reversed(paragraph.rosetta_line_breaks):
+            reference_entry_breaks = rosetta_pdf_reference_entry_break_offsets(
+                paragraph, sstk[paragraph_id]
+            )
+            if reference_entry_breaks:
+                paragraph.rosetta_reference_hanging_indent = max(12.0, paragraph.size * 1.8)
+                break_offsets = reference_entry_breaks
+            elif rosetta_pdf_should_preserve_source_line_breaks(paragraph, sstk[paragraph_id]):
+                break_offsets = {{offset for offset, _line_end in paragraph.rosetta_line_breaks}}
+            else:
+                continue
+            for offset in sorted(break_offsets, reverse=True):
                 sstk[paragraph_id] = (
                     sstk[paragraph_id][:offset]
                     + "{line_break_placeholder}"
                     + sstk[paragraph_id][offset + 1:]
                 )
 
-''' + translation_anchor
+'''
+    structural_block = structural_content + translation_anchor
     if structural_marker not in text and translation_anchor in text:
         text = text.replace(translation_anchor, structural_block, 1)
+        changed = True
+    elif structural_marker in text and "rosetta_pdf_toc_entries" not in text:
+        block_start = text.index(f"        # {structural_marker}")
+        block_end = text.index(translation_anchor, block_start)
+        text = text[:block_start] + structural_content + text[block_end:]
         changed = True
     old_structural_helper = '''        def rosetta_pdf_should_preserve_source_line_breaks(paragraph):
             line_breaks = getattr(paragraph, "rosetta_line_breaks", [])
@@ -457,10 +561,50 @@ def patch_converter_structural_line_breaks(text: str) -> tuple[str, bool]:
 """
     new_modifier = """                mod = 0  # 文字修饰符
                 rosetta_forced_line_break = False
+                rosetta_toc_entry = None
                 if vy_regex:  # 加载公式
 """
     if "rosetta_forced_line_break = False" not in text and old_modifier in text:
         text = text.replace(old_modifier, new_modifier, 1)
+        changed = True
+    elif "rosetta_toc_entry = None" not in text and "                rosetta_forced_line_break = False\n" in text:
+        text = text.replace(
+            "                rosetta_forced_line_break = False\n",
+            "                rosetta_forced_line_break = False\n                rosetta_toc_entry = None\n",
+            1,
+        )
+        changed = True
+
+    old_paragraph_render_state = '''            brk: bool = pstk[id].brk                    # 段落换行标记
+            cstk: str = ""                              # 当前文字栈
+'''
+    new_paragraph_render_state = '''            brk: bool = pstk[id].brk                    # 段落换行标记
+            rosetta_reference_hanging_indent = getattr(pstk[id], "rosetta_reference_hanging_indent", 0.0)
+            rosetta_toc_entries = getattr(pstk[id], "rosetta_toc_entries", [])
+            rosetta_toc_right_edge = x1
+            rosetta_text_x1 = x1 - max(24.0, size * 3.0) if rosetta_toc_entries else x1
+            cstk: str = ""                              # 当前文字栈
+'''
+    if "rosetta_reference_hanging_indent = getattr" not in text and old_paragraph_render_state in text:
+        text = text.replace(old_paragraph_render_state, new_paragraph_render_state, 1)
+        changed = True
+    elif "rosetta_toc_entries = getattr" not in text and "            rosetta_reference_hanging_indent = getattr(pstk[id], \"rosetta_reference_hanging_indent\", 0.0)\n" in text:
+        text = text.replace(
+            "            rosetta_reference_hanging_indent = getattr(pstk[id], \"rosetta_reference_hanging_indent\", 0.0)\n",
+            "            rosetta_reference_hanging_indent = getattr(pstk[id], \"rosetta_reference_hanging_indent\", 0.0)\n"
+            "            rosetta_toc_entries = getattr(pstk[id], \"rosetta_toc_entries\", [])\n"
+            "            rosetta_toc_right_edge = x1\n"
+            "            rosetta_text_x1 = x1 - max(24.0, size * 3.0) if rosetta_toc_entries else x1\n",
+            1,
+        )
+        changed = True
+
+    if "rosetta_text_x1" in text and "x + adv > x1 + 0.1 * size" in text:
+        text = text.replace(
+            "x + adv > x1 + 0.1 * size",
+            "x + adv > rosetta_text_x1 + 0.1 * size",
+            2,
+        )
         changed = True
 
     old_placeholder_load = """                        vid = int(vy_regex.group(1).replace(" ", ""))
@@ -470,11 +614,41 @@ def patch_converter_structural_line_breaks(text: str) -> tuple[str, bool]:
                         if vid == 900000000:
                             adv = 0
                             rosetta_forced_line_break = True
+                        elif 910000000 <= vid < 920000000:
+                            entry_index = vid - 910000000
+                            if entry_index >= len(rosetta_toc_entries):
+                                continue
+                            rosetta_toc_entry = rosetta_toc_entries[entry_index]
+                            adv = 0
+                            rosetta_forced_line_break = True
                         else:
                             adv = vlen[vid]
 """
     if "if vid == 900000000:" not in text and old_placeholder_load in text:
         text = text.replace(old_placeholder_load, new_placeholder_load, 1)
+        changed = True
+
+    old_forced_placeholder_load = '''                        if vid == 900000000:
+                            adv = 0
+                            rosetta_forced_line_break = True
+                        else:
+                            adv = vlen[vid]
+'''
+    new_forced_placeholder_load = '''                        if vid == 900000000:
+                            adv = 0
+                            rosetta_forced_line_break = True
+                        elif 910000000 <= vid < 920000000:
+                            entry_index = vid - 910000000
+                            if entry_index >= len(rosetta_toc_entries):
+                                continue
+                            rosetta_toc_entry = rosetta_toc_entries[entry_index]
+                            adv = 0
+                            rosetta_forced_line_break = True
+                        else:
+                            adv = vlen[vid]
+'''
+    if "elif 910000000 <= vid < 920000000:" not in text and old_forced_placeholder_load in text:
+        text = text.replace(old_forced_placeholder_load, new_forced_placeholder_load, 1)
         changed = True
 
     old_modifier_guard = '''                    if var[vid][-1].get_text() and unicodedata.category(var[vid][-1].get_text()[0]) in ["Lm", "Mn", "Sk"]:  # 文字修饰符
@@ -485,17 +659,85 @@ def patch_converter_structural_line_breaks(text: str) -> tuple[str, bool]:
         text = text.replace(old_modifier_guard, new_modifier_guard, 1)
         changed = True
 
-    old_forced_break_anchor = '''                if brk and x + adv > x1 + 0.1 * size:  # 到达右边界且原文段落存在换行
+    old_forced_break_anchor = '''                if brk and x + adv > rosetta_text_x1 + 0.1 * size:  # 到达右边界且原文段落存在换行
 '''
     new_forced_break_anchor = '''                if rosetta_forced_line_break:
+                    if rosetta_toc_entry is not None:
+                        page_number = rosetta_toc_entry["page_number"]
+                        page_font = "tiro"
+                        page_width = sum(
+                            self.fontmap[page_font].char_width(ord(page_char)) * size
+                            for page_char in page_number
+                        )
+                        page_x = rosetta_toc_right_edge - page_width
+                        if rosetta_toc_entry["dotted"]:
+                            leader_unit = ". "
+                            leader_unit_width = sum(
+                                self.fontmap[page_font].char_width(ord(leader_char)) * size
+                                for leader_char in leader_unit
+                            )
+                            leader_x = x + max(3.0, size * 0.6)
+                            leader_end = page_x - max(3.0, size * 0.6)
+                            leader_count = int(max(0.0, leader_end - leader_x) / leader_unit_width)
+                            if leader_count >= 2:
+                                ops_vals.append({
+                                    "type": OpType.TEXT,
+                                    "font": page_font,
+                                    "size": size,
+                                    "x": leader_x,
+                                    "dy": 0,
+                                    "rtxt": raw_string(page_font, leader_unit * leader_count),
+                                    "lidx": lidx,
+                                    "color": pstk[id].color,
+                                    "bold": pstk[id].bold,
+                                })
+                        ops_vals.append({
+                            "type": OpType.TEXT,
+                            "font": page_font,
+                            "size": size,
+                            "x": page_x,
+                            "dy": 0,
+                            "rtxt": raw_string(page_font, page_number),
+                            "lidx": lidx,
+                            "color": pstk[id].color,
+                            "bold": pstk[id].bold,
+                        })
+                    if rosetta_toc_entry is None or new[ptr:].strip():
+                        x = x0
+                        lidx += 1
+                    else:
+                        x = rosetta_toc_right_edge
+                    fcur = None
+                    continue
+                if brk and x + adv > rosetta_text_x1 + 0.1 * size:  # 到达右边界且原文段落存在换行
+'''
+    if "if rosetta_forced_line_break:" not in text and old_forced_break_anchor in text:
+        text = text.replace(old_forced_break_anchor, new_forced_break_anchor, 1)
+        changed = True
+    legacy_forced_break_block = '''                if rosetta_forced_line_break:
                     x = x0
                     lidx += 1
                     fcur = None
                     continue
-                if brk and x + adv > x1 + 0.1 * size:  # 到达右边界且原文段落存在换行
+                if brk and x + adv > rosetta_text_x1 + 0.1 * size:  # 到达右边界且原文段落存在换行
 '''
-    if "if rosetta_forced_line_break:" not in text and old_forced_break_anchor in text:
-        text = text.replace(old_forced_break_anchor, new_forced_break_anchor, 1)
+    if (
+        'page_number = rosetta_toc_entry["page_number"]' not in text
+        and legacy_forced_break_block in text
+    ):
+        text = text.replace(legacy_forced_break_block, new_forced_break_anchor, 1)
+        changed = True
+
+    old_soft_wrap = '''                if brk and x + adv > rosetta_text_x1 + 0.1 * size:  # 到达右边界且原文段落存在换行
+                    x = x0
+                    lidx += 1
+'''
+    new_soft_wrap = '''                if brk and x + adv > rosetta_text_x1 + 0.1 * size:  # 到达右边界且原文段落存在换行
+                    x = x0 + rosetta_reference_hanging_indent
+                    lidx += 1
+'''
+    if "x = x0 + rosetta_reference_hanging_indent" not in text and old_soft_wrap in text:
+        text = text.replace(old_soft_wrap, new_soft_wrap, 1)
         changed = True
 
     return text, changed
@@ -508,6 +750,17 @@ def patch_rosetta_engine_structural_line_breaks(root: Path) -> bool:
 
     text = target.read_text(encoding="utf-8")
     changed = False
+    strip_internal_helper = '''def rosetta_strip_internal_placeholders(text: str) -> str:
+    return re.sub(r"\\{v9\\d{8}\\}", "", text)
+
+
+'''
+    if "def rosetta_strip_internal_placeholders(" not in text:
+        placeholder_anchor = "def rosetta_placeholder_count(text: str) -> int:\n"
+        if placeholder_anchor in text:
+            text = text.replace(placeholder_anchor, strip_internal_helper + placeholder_anchor, 1)
+            changed = True
+
     old_placeholder_count = '''def rosetta_placeholder_count(text: str) -> int:
     return len(re.findall(r"\\{v\\d+\\}", text))
 '''
@@ -515,23 +768,44 @@ def patch_rosetta_engine_structural_line_breaks(root: Path) -> bool:
     return sum(
         1
         for placeholder in re.findall(r"\\{v\\d+\\}", text)
-        if placeholder != "{v900000000}"
+        if int(placeholder[2:-1]) < 900000000
     )
 '''
     if old_placeholder_count in text:
         text = text.replace(old_placeholder_count, new_placeholder_count, 1)
         changed = True
+    if 'if placeholder != "{v900000000}"' in text:
+        text = text.replace(
+            'if placeholder != "{v900000000}"',
+            "if int(placeholder[2:-1]) < 900000000",
+            1,
+        )
+        changed = True
 
     old_source_chars = "                sourceChars=len(text),\n"
-    new_source_chars = '                sourceChars=len(text.replace("{v900000000}", "")),\n'
+    new_source_chars = "                sourceChars=len(rosetta_strip_internal_placeholders(text)),\n"
     if old_source_chars in text:
         text = text.replace(old_source_chars, new_source_chars, 1)
         changed = True
+    if 'sourceChars=len(text.replace("{v900000000}", ""))' in text:
+        text = text.replace(
+            'sourceChars=len(text.replace("{v900000000}", ""))',
+            "sourceChars=len(rosetta_strip_internal_placeholders(text))",
+            1,
+        )
+        changed = True
 
     old_translated_chars = "            self.translated_chars += len(translated)\n"
-    new_translated_chars = '            self.translated_chars += len(translated.replace("{v900000000}", ""))\n'
+    new_translated_chars = "            self.translated_chars += len(rosetta_strip_internal_placeholders(translated))\n"
     if old_translated_chars in text:
         text = text.replace(old_translated_chars, new_translated_chars, 1)
+        changed = True
+    if 'self.translated_chars += len(translated.replace("{v900000000}", ""))' in text:
+        text = text.replace(
+            'self.translated_chars += len(translated.replace("{v900000000}", ""))',
+            "self.translated_chars += len(rosetta_strip_internal_placeholders(translated))",
+            1,
+        )
         changed = True
 
     if changed:
@@ -553,13 +827,144 @@ def patch_converter_formula_text_classification(text: str) -> tuple[str, bool]:
                     cls == 0                                                                                # 1. 类别为保留区域
                     or (cls == xt_cls and len(sstk[-1].strip()) > 1 and child.size < pstk[-1].size * 0.79)  # 2. 角标字体，有 0.76 的角标和 0.799 的大写，这里用 0.79 取中，同时考虑首字母放大的情况
 """
-    visual_text_gate = """        def rosetta_allow_text_like_visual_chars(ltpage: LTPage) -> bool:
+    visual_text_gate = """        def rosetta_visual_table_grid_signature(visual_items: list[LTChar]) -> bool:
+            visual_lines = {}
+            for item in visual_items:
+                line_key = round(float(item.y0) / 2.0)
+                visual_lines.setdefault(line_key, []).append(item)
+
+            tabular_numeric_lines = set()
+            multi_column_text_lines = set()
+            gap_entries = []
+            column_start_entries = []
+            for line_key, line_items in visual_lines.items():
+                ordered_items = sorted(line_items, key=lambda item: item.x0)
+                line_text = "".join(item.get_text() for item in ordered_items)
+                if len(re.findall(r"[A-Za-z0-9]", line_text)) < 4:
+                    continue
+                if len(ordered_items) > 90:
+                    continue
+                font_sizes = sorted(float(item.size) for item in ordered_items if float(item.size) > 0)
+                median_font_size = font_sizes[len(font_sizes) // 2] if font_sizes else 6.0
+                minimum_column_gap = max(6.0, median_font_size * 1.25)
+                line_gaps = []
+                column_starts = []
+                for index in range(1, len(ordered_items)):
+                    left = ordered_items[index - 1]
+                    right = ordered_items[index]
+                    gap = float(right.x0 - left.x1)
+                    if gap < minimum_column_gap:
+                        continue
+                    line_gaps.append(float(left.x1 + right.x0) / 2.0)
+                    column_starts.append(float(right.x0))
+                if not line_gaps:
+                    continue
+                gap_entries.extend((position, line_key) for position in line_gaps)
+                column_start_entries.extend((position, line_key) for position in column_starts)
+                if re.search(r"[0-9]", line_text):
+                    tabular_numeric_lines.add(line_key)
+                if len(line_gaps) >= 2:
+                    multi_column_text_lines.add(line_key)
+
+            if not gap_entries:
+                return False
+
+            gap_clusters = []
+            for position, line_key in sorted(gap_entries):
+                if gap_clusters and abs(position - gap_clusters[-1]["mean"]) <= 10.0:
+                    cluster = gap_clusters[-1]
+                else:
+                    cluster = {"mean": position, "positions": [], "lines": set()}
+                    gap_clusters.append(cluster)
+                cluster["positions"].append(position)
+                cluster["lines"].add(line_key)
+                cluster["mean"] = sum(cluster["positions"]) / len(cluster["positions"])
+
+            column_start_clusters = []
+            for position, line_key in sorted(column_start_entries):
+                if column_start_clusters and abs(position - column_start_clusters[-1]["mean"]) <= 10.0:
+                    cluster = column_start_clusters[-1]
+                else:
+                    cluster = {"mean": position, "positions": [], "lines": set()}
+                    column_start_clusters.append(cluster)
+                cluster["positions"].append(position)
+                cluster["lines"].add(line_key)
+                cluster["mean"] = sum(cluster["positions"]) / len(cluster["positions"])
+
+            numeric_grid = len(tabular_numeric_lines) >= 3 and any(
+                len(cluster["lines"] & tabular_numeric_lines) >= 3
+                for cluster in gap_clusters
+            )
+            stable_text_boundaries = sum(
+                len(cluster["lines"] & multi_column_text_lines) >= 3
+                for cluster in column_start_clusters
+            )
+            all_text_grid = (
+                len(multi_column_text_lines) >= 3
+                and stable_text_boundaries >= 2
+            )
+            return numeric_grid or all_text_grid
+
+        def rosetta_visual_diagram_label_signature(visual_items: list[LTChar]) -> bool:
+            visual_lines = {}
+            for item in visual_items:
+                line_key = round(float(item.y0) / 2.0)
+                visual_lines.setdefault(line_key, []).append(item)
+
+            line_entries = []
+            for line_key, line_items in visual_lines.items():
+                line_text = "".join(
+                    item.get_text() for item in sorted(line_items, key=lambda item: item.x0)
+                )
+                if len(re.findall(r"[A-Za-z0-9]", line_text)) < 4 or len(line_items) > 120:
+                    continue
+                left = min(float(item.x0) for item in line_items)
+                right = max(float(item.x1) for item in line_items)
+                font_sizes = sorted(float(item.size) for item in line_items if float(item.size) > 0)
+                median_font_size = font_sizes[len(font_sizes) // 2] if font_sizes else 6.0
+                line_entries.append(
+                    {
+                        "center": (left + right) / 2.0,
+                        "width": right - left,
+                        "line": line_key,
+                        "font_size": median_font_size,
+                    }
+                )
+
+            center_clusters = []
+            for entry in sorted(line_entries, key=lambda value: value["center"]):
+                tolerance = max(8.0, entry["font_size"] * 1.5)
+                if center_clusters and abs(entry["center"] - center_clusters[-1]["mean"]) <= tolerance:
+                    cluster = center_clusters[-1]
+                else:
+                    cluster = {"mean": entry["center"], "entries": []}
+                    center_clusters.append(cluster)
+                cluster["entries"].append(entry)
+                cluster["mean"] = sum(value["center"] for value in cluster["entries"]) / len(cluster["entries"])
+
+            for cluster in center_clusters:
+                entries = cluster["entries"]
+                if len(entries) < 6:
+                    continue
+                widest = max(entry["width"] for entry in entries)
+                if widest <= 0:
+                    continue
+                short_lines = sum(entry["width"] <= widest * 0.45 for entry in entries)
+                font_sizes = sorted(entry["font_size"] for entry in entries)
+                median_font_size = font_sizes[len(font_sizes) // 2]
+                vertical_span = (max(entry["line"] for entry in entries) - min(entry["line"] for entry in entries)) * 2.0
+                if short_lines >= 3 and vertical_span >= max(48.0, median_font_size * 7.0):
+                    return True
+            return False
+
+        def rosetta_allow_text_like_visual_chars(ltpage: LTPage) -> bool:
             try:
                 layout = self.layout[ltpage.pageid]
                 h, w = layout.shape
             except Exception:
                 return True
             visual_chars = []
+            visual_items = []
             for item in ltpage:
                 if not isinstance(item, LTChar):
                     continue
@@ -567,7 +972,12 @@ def patch_converter_formula_text_classification(text: str) -> tuple[str, bool]:
                 cy = np.clip(int(item.y0), 0, h - 1)
                 if layout[cy, cx] == 0:
                     visual_chars.append(item.get_text())
+                    visual_items.append(item)
             compact = " ".join("".join(visual_chars).split())
+            if rosetta_visual_table_grid_signature(visual_items):
+                return False
+            if rosetta_visual_diagram_label_signature(visual_items):
+                return False
             if len(compact) < 80:
                 return True
             metric_hits = len(re.findall(r"\\b(?:ODS|OIS|mIoU|FLOPs?|Param\\.?|Methods?|Year|Size|AMCM|GBST|DSCD|UNet|SegFormer|SOTA|RIND|SFIAN|ICCV|CVPR|ICIP|WACV|ECCV|arXiv)\\b", compact))
@@ -613,6 +1023,35 @@ def patch_converter_formula_text_classification(text: str) -> tuple[str, bool]:
                 )
                 if token in compact
             )
+            summary_table_label_hits = len(re.findall(r"\\b(?:Pred|Obs)\\.?", compact))
+            summary_table_percentages = len(re.findall(r"\\d+(?:\\.\\d+)?%", compact))
+            probe_table_signature = (
+                "Probe" in compact
+                and "Truncation" in compact
+                and numeric_tokens >= 12
+            )
+            benchmark_table_signature = (
+                "Target" in compact
+                and "Realized" in compact
+                and "Ref." in compact
+                and sum(token in compact for token in ("Gemini", "Haiku", "GPT-4.1-mini")) >= 2
+                and summary_table_percentages >= 8
+            )
+            row_marker_matches = list(re.finditer(r"(Exp|Run|Task|Model|Method|Dataset|System)\\s*\\d+", compact, re.IGNORECASE))
+            row_marker_labels = [match.group(1).lower() for match in row_marker_matches]
+            row_marker_hits = max((row_marker_labels.count(label) for label in row_marker_labels), default=0)
+            row_table_header = compact[:row_marker_matches[0].start()].strip() if row_marker_matches else ""
+            row_header_matches_rows = any(
+                row_table_header.lower().startswith(label)
+                and row_marker_labels.count(label) >= 3
+                for label in row_marker_labels
+            )
+            structured_row_table_signature = (
+                row_marker_hits >= 3
+                and row_header_matches_rows
+                and numeric_tokens >= 4
+                and sentence_marks <= 6
+            )
             if "Algorithm" in compact and algorithm_hits >= 3:
                 return False
             if numeric_tokens >= 40 and math_table_signal_hits >= 2:
@@ -620,6 +1059,12 @@ def patch_converter_formula_text_classification(text: str) -> tuple[str, bool]:
             if numeric_tokens >= 18 and compact_table_signal_hits >= 3:
                 return False
             if numeric_tokens >= 12 and dataset_table_signal_hits >= 3:
+                return False
+            if "Model" in compact and summary_table_label_hits >= 2 and summary_table_percentages >= 6:
+                return False
+            if probe_table_signature or benchmark_table_signature:
+                return False
+            if structured_row_table_signature:
                 return False
             if metric_hits >= 3 and numeric_tokens >= 8 and sentence_marks <= 10:
                 return False
@@ -678,6 +1123,283 @@ def patch_converter_formula_text_classification(text: str) -> tuple[str, bool]:
         if old_visual_condition not in text:
             raise SystemExit(f"::error::could not find expected visual text condition in {target}")
         text = text.replace(old_visual_condition, new_visual_condition, 1)
+        changed = True
+    if (
+        "def rosetta_allow_text_like_visual_chars(" in text
+        and "def rosetta_visual_table_grid_signature(" not in text
+    ):
+        visual_grid_helper = '''        def rosetta_visual_table_grid_signature(visual_items: list[LTChar]) -> bool:
+            visual_lines = {}
+            for item in visual_items:
+                line_key = round(float(item.y0) / 2.0)
+                visual_lines.setdefault(line_key, []).append(item)
+
+            tabular_numeric_lines = set()
+            multi_column_text_lines = set()
+            gap_entries = []
+            column_start_entries = []
+            for line_key, line_items in visual_lines.items():
+                ordered_items = sorted(line_items, key=lambda item: item.x0)
+                line_text = "".join(item.get_text() for item in ordered_items)
+                if len(re.findall(r"[A-Za-z0-9]", line_text)) < 4:
+                    continue
+                if len(ordered_items) > 90:
+                    continue
+                font_sizes = sorted(float(item.size) for item in ordered_items if float(item.size) > 0)
+                median_font_size = font_sizes[len(font_sizes) // 2] if font_sizes else 6.0
+                minimum_column_gap = max(6.0, median_font_size * 1.25)
+                line_gaps = []
+                column_starts = []
+                for index in range(1, len(ordered_items)):
+                    left = ordered_items[index - 1]
+                    right = ordered_items[index]
+                    gap = float(right.x0 - left.x1)
+                    if gap < minimum_column_gap:
+                        continue
+                    line_gaps.append(float(left.x1 + right.x0) / 2.0)
+                    column_starts.append(float(right.x0))
+                if not line_gaps:
+                    continue
+                gap_entries.extend((position, line_key) for position in line_gaps)
+                column_start_entries.extend((position, line_key) for position in column_starts)
+                if re.search(r"[0-9]", line_text):
+                    tabular_numeric_lines.add(line_key)
+                if len(line_gaps) >= 2:
+                    multi_column_text_lines.add(line_key)
+
+            if not gap_entries:
+                return False
+
+            gap_clusters = []
+            for position, line_key in sorted(gap_entries):
+                if gap_clusters and abs(position - gap_clusters[-1]["mean"]) <= 10.0:
+                    cluster = gap_clusters[-1]
+                else:
+                    cluster = {"mean": position, "positions": [], "lines": set()}
+                    gap_clusters.append(cluster)
+                cluster["positions"].append(position)
+                cluster["lines"].add(line_key)
+                cluster["mean"] = sum(cluster["positions"]) / len(cluster["positions"])
+
+            column_start_clusters = []
+            for position, line_key in sorted(column_start_entries):
+                if column_start_clusters and abs(position - column_start_clusters[-1]["mean"]) <= 10.0:
+                    cluster = column_start_clusters[-1]
+                else:
+                    cluster = {"mean": position, "positions": [], "lines": set()}
+                    column_start_clusters.append(cluster)
+                cluster["positions"].append(position)
+                cluster["lines"].add(line_key)
+                cluster["mean"] = sum(cluster["positions"]) / len(cluster["positions"])
+
+            numeric_grid = len(tabular_numeric_lines) >= 3 and any(
+                len(cluster["lines"] & tabular_numeric_lines) >= 3
+                for cluster in gap_clusters
+            )
+            stable_text_boundaries = sum(
+                len(cluster["lines"] & multi_column_text_lines) >= 3
+                for cluster in column_start_clusters
+            )
+            all_text_grid = (
+                len(multi_column_text_lines) >= 3
+                and stable_text_boundaries >= 2
+            )
+            return numeric_grid or all_text_grid
+
+'''
+        visual_gate_anchor = "        def rosetta_allow_text_like_visual_chars(ltpage: LTPage) -> bool:\n"
+        text = text.replace(visual_gate_anchor, visual_grid_helper + visual_gate_anchor, 1)
+        visual_chars_anchor = "            visual_chars = []\n            for item in ltpage:\n"
+        visual_chars_replacement = "            visual_chars = []\n            visual_items = []\n            for item in ltpage:\n"
+        if visual_chars_anchor not in text:
+            raise SystemExit(f"::error::could not find expected visual item collection anchor in {target}")
+        text = text.replace(visual_chars_anchor, visual_chars_replacement, 1)
+        visual_append_anchor = "                    visual_chars.append(item.get_text())\n"
+        visual_append_replacement = "                    visual_chars.append(item.get_text())\n                    visual_items.append(item)\n"
+        if visual_append_anchor not in text:
+            raise SystemExit(f"::error::could not find expected visual item append anchor in {target}")
+        text = text.replace(visual_append_anchor, visual_append_replacement, 1)
+        compact_anchor = '            compact = " ".join("".join(visual_chars).split())\n'
+        compact_replacement = '            compact = " ".join("".join(visual_chars).split())\n            if rosetta_visual_table_grid_signature(visual_items):\n                return False\n'
+        if compact_anchor not in text:
+            raise SystemExit(f"::error::could not find expected visual compact-text anchor in {target}")
+        text = text.replace(compact_anchor, compact_replacement, 1)
+        changed = True
+    if (
+        "def rosetta_visual_table_grid_signature(" in text
+        and "multi_column_text_lines" not in text
+    ):
+        table_grid_upgrades = (
+            (
+                "            tabular_numeric_lines = []\n            gap_entries = []\n",
+                "            tabular_numeric_lines = set()\n            multi_column_text_lines = set()\n            gap_entries = []\n",
+            ),
+            (
+                '                if len(re.findall(r"[A-Za-z0-9]", line_text)) < 4 or not re.search(r"[0-9]", line_text):\n',
+                '                if len(re.findall(r"[A-Za-z0-9]", line_text)) < 4:\n',
+            ),
+            (
+                "                tabular_numeric_lines.append(line_key)\n                gap_entries.extend((position, line_key) for position in line_gaps)\n",
+                "                gap_entries.extend((position, line_key) for position in line_gaps)\n"
+                '                if re.search(r"[0-9]", line_text):\n'
+                "                    tabular_numeric_lines.add(line_key)\n"
+                "                if len(line_gaps) >= 2:\n"
+                "                    multi_column_text_lines.add(line_key)\n",
+            ),
+            (
+                "            if len(tabular_numeric_lines) < 3:\n                return False\n",
+                "            if not gap_entries:\n                return False\n",
+            ),
+            (
+                '            return any(len(cluster["lines"]) >= 3 for cluster in gap_clusters)\n',
+                '            numeric_grid = len(tabular_numeric_lines) >= 3 and any(\n'
+                '                len(cluster["lines"] & tabular_numeric_lines) >= 3\n'
+                "                for cluster in gap_clusters\n"
+                "            )\n"
+                "            stable_text_boundaries = sum(\n"
+                '                len(cluster["lines"] & multi_column_text_lines) >= 3\n'
+                "                for cluster in gap_clusters\n"
+                "            )\n"
+                "            all_text_grid = (\n"
+                "                len(multi_column_text_lines) >= 3\n"
+                "                and stable_text_boundaries >= 2\n"
+                "            )\n"
+                "            return numeric_grid or all_text_grid\n",
+            ),
+        )
+        for old, new in table_grid_upgrades:
+            if old not in text:
+                raise SystemExit(f"::error::could not upgrade expected visual table grid fragment in {target}")
+            text = text.replace(old, new, 1)
+        changed = True
+    if (
+        "def rosetta_visual_table_grid_signature(" in text
+        and "multi_column_text_lines" in text
+        and "column_start_entries" not in text
+    ):
+        table_column_start_upgrades = (
+            (
+                "            gap_entries = []\n            for line_key, line_items in visual_lines.items():\n",
+                "            gap_entries = []\n            column_start_entries = []\n            for line_key, line_items in visual_lines.items():\n",
+            ),
+            (
+                "                line_gaps = []\n                for index in range(1, len(ordered_items)):\n",
+                "                line_gaps = []\n                column_starts = []\n                for index in range(1, len(ordered_items)):\n",
+            ),
+            (
+                "                    line_gaps.append(float(left.x1 + right.x0) / 2.0)\n",
+                "                    line_gaps.append(float(left.x1 + right.x0) / 2.0)\n"
+                "                    column_starts.append(float(right.x0))\n",
+            ),
+            (
+                "                gap_entries.extend((position, line_key) for position in line_gaps)\n",
+                "                gap_entries.extend((position, line_key) for position in line_gaps)\n"
+                "                column_start_entries.extend((position, line_key) for position in column_starts)\n",
+            ),
+            (
+                "                cluster[\"mean\"] = sum(cluster[\"positions\"]) / len(cluster[\"positions\"])\n\n"
+                "            numeric_grid = len(tabular_numeric_lines) >= 3 and any(\n",
+                "                cluster[\"mean\"] = sum(cluster[\"positions\"]) / len(cluster[\"positions\"])\n\n"
+                "            column_start_clusters = []\n"
+                "            for position, line_key in sorted(column_start_entries):\n"
+                "                if column_start_clusters and abs(position - column_start_clusters[-1][\"mean\"]) <= 10.0:\n"
+                "                    cluster = column_start_clusters[-1]\n"
+                "                else:\n"
+                "                    cluster = {\"mean\": position, \"positions\": [], \"lines\": set()}\n"
+                "                    column_start_clusters.append(cluster)\n"
+                "                cluster[\"positions\"].append(position)\n"
+                "                cluster[\"lines\"].add(line_key)\n"
+                "                cluster[\"mean\"] = sum(cluster[\"positions\"]) / len(cluster[\"positions\"])\n\n"
+                "            numeric_grid = len(tabular_numeric_lines) >= 3 and any(\n",
+            ),
+            (
+                "            stable_text_boundaries = sum(\n"
+                "                len(cluster[\"lines\"] & multi_column_text_lines) >= 3\n"
+                "                for cluster in gap_clusters\n"
+                "            )\n",
+                "            stable_text_boundaries = sum(\n"
+                "                len(cluster[\"lines\"] & multi_column_text_lines) >= 3\n"
+                "                for cluster in column_start_clusters\n"
+                "            )\n",
+            ),
+        )
+        for old, new in table_column_start_upgrades:
+            if old not in text:
+                raise SystemExit(f"::error::could not upgrade expected visual table column fragment in {target}")
+            text = text.replace(old, new, 1)
+        changed = True
+    if (
+        "def rosetta_allow_text_like_visual_chars(" in text
+        and "def rosetta_visual_diagram_label_signature(" not in text
+    ):
+        visual_diagram_helper = '''        def rosetta_visual_diagram_label_signature(visual_items: list[LTChar]) -> bool:
+            visual_lines = {}
+            for item in visual_items:
+                line_key = round(float(item.y0) / 2.0)
+                visual_lines.setdefault(line_key, []).append(item)
+
+            line_entries = []
+            for line_key, line_items in visual_lines.items():
+                line_text = "".join(
+                    item.get_text() for item in sorted(line_items, key=lambda item: item.x0)
+                )
+                if len(re.findall(r"[A-Za-z0-9]", line_text)) < 4 or len(line_items) > 120:
+                    continue
+                left = min(float(item.x0) for item in line_items)
+                right = max(float(item.x1) for item in line_items)
+                font_sizes = sorted(float(item.size) for item in line_items if float(item.size) > 0)
+                median_font_size = font_sizes[len(font_sizes) // 2] if font_sizes else 6.0
+                line_entries.append(
+                    {
+                        "center": (left + right) / 2.0,
+                        "width": right - left,
+                        "line": line_key,
+                        "font_size": median_font_size,
+                    }
+                )
+
+            center_clusters = []
+            for entry in sorted(line_entries, key=lambda value: value["center"]):
+                tolerance = max(8.0, entry["font_size"] * 1.5)
+                if center_clusters and abs(entry["center"] - center_clusters[-1]["mean"]) <= tolerance:
+                    cluster = center_clusters[-1]
+                else:
+                    cluster = {"mean": entry["center"], "entries": []}
+                    center_clusters.append(cluster)
+                cluster["entries"].append(entry)
+                cluster["mean"] = sum(value["center"] for value in cluster["entries"]) / len(cluster["entries"])
+
+            for cluster in center_clusters:
+                entries = cluster["entries"]
+                if len(entries) < 6:
+                    continue
+                widest = max(entry["width"] for entry in entries)
+                if widest <= 0:
+                    continue
+                short_lines = sum(entry["width"] <= widest * 0.45 for entry in entries)
+                font_sizes = sorted(entry["font_size"] for entry in entries)
+                median_font_size = font_sizes[len(font_sizes) // 2]
+                vertical_span = (max(entry["line"] for entry in entries) - min(entry["line"] for entry in entries)) * 2.0
+                if short_lines >= 3 and vertical_span >= max(48.0, median_font_size * 7.0):
+                    return True
+            return False
+
+'''
+        visual_gate_anchor = "        def rosetta_allow_text_like_visual_chars(ltpage: LTPage) -> bool:\n"
+        if visual_gate_anchor not in text:
+            raise SystemExit(f"::error::could not find expected visual diagram gate anchor in {target}")
+        text = text.replace(visual_gate_anchor, visual_diagram_helper + visual_gate_anchor, 1)
+        visual_grid_gate = '''            if rosetta_visual_table_grid_signature(visual_items):
+                return False
+'''
+        visual_diagram_gate = '''            if rosetta_visual_table_grid_signature(visual_items):
+                return False
+            if rosetta_visual_diagram_label_signature(visual_items):
+                return False
+'''
+        if visual_grid_gate not in text:
+            raise SystemExit(f"::error::could not find expected visual grid gate in {target}")
+        text = text.replace(visual_grid_gate, visual_diagram_gate, 1)
         changed = True
     old_visual_sentence_marks = '            sentence_marks = sum(compact.count(mark) for mark in ".;:!?")\n'
     new_visual_sentence_marks = '''            without_decimal_points = re.sub(r"(?<=\\d)\\.(?=\\d)", "", compact)
@@ -841,6 +1563,164 @@ def patch_converter_formula_text_classification(text: str) -> tuple[str, bool]:
         if dataset_table_anchor not in text:
             raise SystemExit(f"::error::could not find expected visual dataset-table gate anchor in {target}")
         text = text.replace(dataset_table_anchor, dataset_table_replacement, 1)
+        changed = True
+    if (
+        "def rosetta_allow_text_like_visual_chars(" in text
+        and "summary_table_label_hits" not in text
+    ):
+        summary_table_anchor = '''            if "Algorithm" in compact and algorithm_hits >= 3:
+                return False
+'''
+        summary_table_replacement = '''            summary_table_label_hits = len(re.findall(r"\\b(?:Pred|Obs)\\.?", compact))
+            summary_table_percentages = len(re.findall(r"\\d+(?:\\.\\d+)?%", compact))
+            probe_table_signature = (
+                "Probe" in compact
+                and "Truncation" in compact
+                and numeric_tokens >= 12
+            )
+            benchmark_table_signature = (
+                "Target" in compact
+                and "Realized" in compact
+                and "Ref." in compact
+                and sum(token in compact for token in ("Gemini", "Haiku", "GPT-4.1-mini")) >= 2
+                and summary_table_percentages >= 8
+            )
+            row_marker_matches = list(re.finditer(r"(Exp|Run|Task|Model|Method|Dataset|System)\\s*\\d+", compact, re.IGNORECASE))
+            row_marker_labels = [match.group(1).lower() for match in row_marker_matches]
+            row_marker_hits = max((row_marker_labels.count(label) for label in row_marker_labels), default=0)
+            row_table_header = compact[:row_marker_matches[0].start()].strip() if row_marker_matches else ""
+            row_header_matches_rows = any(
+                row_table_header.lower().startswith(label)
+                and row_marker_labels.count(label) >= 3
+                for label in row_marker_labels
+            )
+            structured_row_table_signature = (
+                row_marker_hits >= 3
+                and row_header_matches_rows
+                and numeric_tokens >= 4
+                and sentence_marks <= 6
+            )
+            if "Algorithm" in compact and algorithm_hits >= 3:
+                return False
+'''
+        if summary_table_anchor not in text:
+            raise SystemExit(f"::error::could not find expected visual summary-table definition anchor in {target}")
+        text = text.replace(summary_table_anchor, summary_table_replacement, 1)
+        summary_table_gate_anchor = '''            if numeric_tokens >= 12 and dataset_table_signal_hits >= 3:
+                return False
+'''
+        summary_table_gate_replacement = '''            if numeric_tokens >= 12 and dataset_table_signal_hits >= 3:
+                return False
+            if "Model" in compact and summary_table_label_hits >= 2 and summary_table_percentages >= 6:
+                return False
+            if probe_table_signature or benchmark_table_signature:
+                return False
+            if structured_row_table_signature:
+                return False
+'''
+        if summary_table_gate_anchor not in text:
+            raise SystemExit(f"::error::could not find expected visual summary-table gate anchor in {target}")
+        text = text.replace(summary_table_gate_anchor, summary_table_gate_replacement, 1)
+        changed = True
+    old_summary_table_gate = '            if "Model" in compact and summary_table_label_hits >= 3 and summary_table_percentages >= 6:\n'
+    new_summary_table_gate = '            if "Model" in compact and summary_table_label_hits >= 2 and summary_table_percentages >= 6:\n'
+    if old_summary_table_gate in text:
+        text = text.replace(old_summary_table_gate, new_summary_table_gate, 1)
+        changed = True
+    if "def rosetta_allow_text_like_visual_chars(" in text and "probe_table_signature" not in text:
+        summary_definition_anchor = '''            summary_table_percentages = len(re.findall(r"\\d+(?:\\.\\d+)?%", compact))
+'''
+        summary_definition_replacement = '''            summary_table_percentages = len(re.findall(r"\\d+(?:\\.\\d+)?%", compact))
+            probe_table_signature = (
+                "Probe" in compact
+                and "Truncation" in compact
+                and numeric_tokens >= 12
+            )
+            benchmark_table_signature = (
+                "Target" in compact
+                and "Realized" in compact
+                and "Ref." in compact
+                and sum(token in compact for token in ("Gemini", "Haiku", "GPT-4.1-mini")) >= 2
+                and summary_table_percentages >= 8
+            )
+'''
+        if summary_definition_anchor not in text:
+            raise SystemExit(f"::error::could not find expected visual structured-table definition anchor in {target}")
+        text = text.replace(summary_definition_anchor, summary_definition_replacement, 1)
+        summary_gate_anchor = '''            if "Model" in compact and summary_table_label_hits >= 2 and summary_table_percentages >= 6:
+                return False
+'''
+        summary_gate_replacement = '''            if "Model" in compact and summary_table_label_hits >= 2 and summary_table_percentages >= 6:
+                return False
+            if probe_table_signature or benchmark_table_signature:
+                return False
+'''
+        if summary_gate_anchor not in text:
+            raise SystemExit(f"::error::could not find expected visual structured-table gate anchor in {target}")
+        text = text.replace(summary_gate_anchor, summary_gate_replacement, 1)
+        changed = True
+    if "def rosetta_allow_text_like_visual_chars(" in text and "structured_row_table_signature" not in text:
+        structured_row_definition_anchor = '''            if "Algorithm" in compact and algorithm_hits >= 3:
+                return False
+'''
+        structured_row_definition_replacement = '''            row_marker_matches = list(re.finditer(r"(Exp|Run|Task|Model|Method|Dataset|System)\\s*\\d+", compact, re.IGNORECASE))
+            row_marker_labels = [match.group(1).lower() for match in row_marker_matches]
+            row_marker_hits = max((row_marker_labels.count(label) for label in row_marker_labels), default=0)
+            row_table_header = compact[:row_marker_matches[0].start()].strip() if row_marker_matches else ""
+            row_header_matches_rows = any(
+                row_table_header.lower().startswith(label)
+                and row_marker_labels.count(label) >= 3
+                for label in row_marker_labels
+            )
+            structured_row_table_signature = (
+                row_marker_hits >= 3
+                and row_header_matches_rows
+                and numeric_tokens >= 4
+                and sentence_marks <= 6
+            )
+            if "Algorithm" in compact and algorithm_hits >= 3:
+                return False
+'''
+        if structured_row_definition_anchor not in text:
+            raise SystemExit(f"::error::could not find expected visual structured-row definition anchor in {target}")
+        text = text.replace(structured_row_definition_anchor, structured_row_definition_replacement, 1)
+        structured_row_gate_anchor = '''            if probe_table_signature or benchmark_table_signature:
+                return False
+'''
+        structured_row_gate_replacement = '''            if probe_table_signature or benchmark_table_signature:
+                return False
+            if structured_row_table_signature:
+                return False
+'''
+        if structured_row_gate_anchor not in text:
+            raise SystemExit(f"::error::could not find expected visual structured-row gate anchor in {target}")
+        text = text.replace(structured_row_gate_anchor, structured_row_gate_replacement, 1)
+        changed = True
+    old_structured_row_definition = '''            row_marker_hits = len(re.findall(r"(?:Exp|Run|Task|Model|Method|Dataset|System)\\s*\\d+", compact, re.IGNORECASE))
+            structured_row_table_signature = (
+                row_marker_hits >= 3
+                and numeric_tokens >= 4
+                and sentence_marks <= 6
+            )
+'''
+    new_structured_row_definition = '''            row_marker_matches = list(re.finditer(r"(Exp|Run|Task|Model|Method|Dataset|System)\\s*\\d+", compact, re.IGNORECASE))
+            row_marker_labels = [match.group(1).lower() for match in row_marker_matches]
+            row_marker_hits = max((row_marker_labels.count(label) for label in row_marker_labels), default=0)
+            row_table_header = compact[:row_marker_matches[0].start()].strip() if row_marker_matches else ""
+            row_header_matches_rows = any(
+                row_table_header.lower().startswith(label)
+                and row_marker_labels.count(label) >= 3
+                for label in row_marker_labels
+            )
+            structured_row_table_signature = (
+                row_marker_hits >= 3
+                and row_header_matches_rows
+                and numeric_tokens >= 4
+                and sentence_marks <= 6
+            )
+'''
+    if old_structured_row_definition in text:
+        text = text.replace(old_structured_row_definition, new_structured_row_definition, 1)
         changed = True
     old_numeric_dense_gate = '''            if metric_hits >= 2 and numeric_tokens >= 18 and sentence_marks <= 12:
                 return False
@@ -1125,6 +2005,50 @@ def is_rosetta_table_like_unit(text: str) -> bool:
     numeric_tokens = len(re.findall(r"(?<![A-Za-z])\\d+(?:\\.\\d+)?(?:[A-Za-z%]+)?", compact))
     table_symbols = len(re.findall(r"[✓×]|(?<![A-Za-z])[xX](?![A-Za-z])", compact))
     sentence_marks = rosetta_sentence_punctuation_count(compact)
+    summary_table_label_hits = len(re.findall(r"\\b(?:Pred|Obs)\\.?", compact))
+    summary_table_percentages = len(re.findall(r"\\d+(?:\\.\\d+)?%", compact))
+    summary_value_row_hits = len(re.findall(r"\\([^()]{1,48}\\)\\s*:\\s*-?\\d+(?:\\.\\d+)?%?", compact))
+    structured_summary_table_signature = (
+        summary_value_row_hits >= 2
+        and numeric_tokens >= 4
+        and sentence_marks <= 6
+        and re.search(r"\\d(?:\\.\\d+)?%?$", compact) is not None
+    )
+    probe_table_signature = (
+        "Probe" in compact
+        and "Truncation" in compact
+        and numeric_tokens >= 12
+    )
+    benchmark_table_signature = (
+        "Target" in compact
+        and "Realized" in compact
+        and "Ref." in compact
+        and sum(token in compact for token in ("Gemini", "Haiku", "GPT-4.1-mini")) >= 2
+        and summary_table_percentages >= 8
+    )
+    row_marker_matches = list(re.finditer(r"(Exp|Run|Task|Model|Method|Dataset|System)\\s*\\d+", compact, re.IGNORECASE))
+    row_marker_labels = [match.group(1).lower() for match in row_marker_matches]
+    row_marker_hits = max((row_marker_labels.count(label) for label in row_marker_labels), default=0)
+    row_table_header = compact[:row_marker_matches[0].start()].strip() if row_marker_matches else ""
+    row_header_matches_rows = any(
+        row_table_header.lower().startswith(label)
+        and row_marker_labels.count(label) >= 3
+        for label in row_marker_labels
+    )
+    structured_row_table_signature = (
+        row_marker_hits >= 3
+        and row_header_matches_rows
+        and numeric_tokens >= 4
+        and sentence_marks <= 6
+    )
+    if "Model" in compact and summary_table_label_hits >= 2 and summary_table_percentages >= 6:
+        return True
+    if probe_table_signature or benchmark_table_signature:
+        return True
+    if structured_row_table_signature:
+        return True
+    if structured_summary_table_signature:
+        return True
     if metric_hits >= 4 and numeric_tokens >= 8 and sentence_marks <= 8:
         return True
     if metric_hits >= 3 and table_symbols >= 4 and numeric_tokens >= 4:
@@ -1210,6 +2134,12 @@ def mark_nontranslatable_layout_units(units: list[TranslationUnit]) -> None:
 def rosetta_nontranslatable_render_text(unit: TranslationUnit, text: str) -> str:
     if unit.kind == "duplicate-layer":
         return ""
+    if unit.kind == "table-like":
+        return re.sub(
+            r"\\s+(?=[A-Z][^:]{0,80}\\([^()]{1,48}\\)\\s*:)",
+            "{v900000000}",
+            text,
+        )
     return text
 
 
@@ -1459,6 +2389,154 @@ def patch_rosetta_engine_duplicate_text_layer_filter(root: Path) -> bool:
             if old_formula_helper not in text:
                 raise SystemExit(f"::error::could not find expected formula-like helper anchor in {target}")
             text = text.replace(old_formula_helper, new_formula_helper, 1)
+        if "def is_rosetta_table_like_unit(" in text and "summary_table_label_hits" not in text:
+            old_summary_table_anchor = '''    sentence_marks = rosetta_sentence_punctuation_count(compact)
+    if metric_hits >= 4 and numeric_tokens >= 8 and sentence_marks <= 8:
+'''
+            new_summary_table_anchor = '''    sentence_marks = rosetta_sentence_punctuation_count(compact)
+    summary_table_label_hits = len(re.findall(r"\\b(?:Pred|Obs)\\.?", compact))
+    summary_table_percentages = len(re.findall(r"\\d+(?:\\.\\d+)?%", compact))
+    if "Model" in compact and summary_table_label_hits >= 2 and summary_table_percentages >= 6:
+        return True
+    if metric_hits >= 4 and numeric_tokens >= 8 and sentence_marks <= 8:
+'''
+            if old_summary_table_anchor in text:
+                text = text.replace(old_summary_table_anchor, new_summary_table_anchor, 1)
+        old_summary_table_gate = '    if "Model" in compact and summary_table_label_hits >= 3 and summary_table_percentages >= 6:\n'
+        new_summary_table_gate = '    if "Model" in compact and summary_table_label_hits >= 2 and summary_table_percentages >= 6:\n'
+        if old_summary_table_gate in text:
+            text = text.replace(old_summary_table_gate, new_summary_table_gate, 1)
+        if (
+            "def is_rosetta_table_like_unit(" in text
+            and "summary_table_percentages" in text
+            and "probe_table_signature" not in text
+        ):
+            structured_definition_anchor = '''    summary_table_percentages = len(re.findall(r"\\d+(?:\\.\\d+)?%", compact))
+'''
+            structured_definition_replacement = '''    summary_table_percentages = len(re.findall(r"\\d+(?:\\.\\d+)?%", compact))
+    probe_table_signature = (
+        "Probe" in compact
+        and "Truncation" in compact
+        and numeric_tokens >= 12
+    )
+    benchmark_table_signature = (
+        "Target" in compact
+        and "Realized" in compact
+        and "Ref." in compact
+        and sum(token in compact for token in ("Gemini", "Haiku", "GPT-4.1-mini")) >= 2
+        and summary_table_percentages >= 8
+    )
+'''
+            if structured_definition_anchor not in text:
+                raise SystemExit(f"::error::could not find expected engine structured-table definition anchor in {target}")
+            text = text.replace(structured_definition_anchor, structured_definition_replacement, 1)
+            structured_gate_anchor = '''    if "Model" in compact and summary_table_label_hits >= 2 and summary_table_percentages >= 6:
+        return True
+'''
+            structured_gate_replacement = '''    if "Model" in compact and summary_table_label_hits >= 2 and summary_table_percentages >= 6:
+        return True
+    if probe_table_signature or benchmark_table_signature:
+        return True
+'''
+            if structured_gate_anchor not in text:
+                raise SystemExit(f"::error::could not find expected engine structured-table gate anchor in {target}")
+            text = text.replace(structured_gate_anchor, structured_gate_replacement, 1)
+        if (
+            "def is_rosetta_table_like_unit(" in text
+            and "probe_table_signature" in text
+            and "structured_row_table_signature" not in text
+        ):
+            structured_row_definition_anchor = '''    if "Model" in compact and summary_table_label_hits >= 2 and summary_table_percentages >= 6:
+        return True
+'''
+            structured_row_definition_replacement = '''    row_marker_matches = list(re.finditer(r"(Exp|Run|Task|Model|Method|Dataset|System)\\s*\\d+", compact, re.IGNORECASE))
+    row_marker_labels = [match.group(1).lower() for match in row_marker_matches]
+    row_marker_hits = max((row_marker_labels.count(label) for label in row_marker_labels), default=0)
+    row_table_header = compact[:row_marker_matches[0].start()].strip() if row_marker_matches else ""
+    row_header_matches_rows = any(
+        row_table_header.lower().startswith(label)
+        and row_marker_labels.count(label) >= 3
+        for label in row_marker_labels
+    )
+    structured_row_table_signature = (
+        row_marker_hits >= 3
+        and row_header_matches_rows
+        and numeric_tokens >= 4
+        and sentence_marks <= 6
+    )
+    if "Model" in compact and summary_table_label_hits >= 2 and summary_table_percentages >= 6:
+        return True
+'''
+            if structured_row_definition_anchor not in text:
+                raise SystemExit(f"::error::could not find expected engine structured-row definition anchor in {target}")
+            text = text.replace(structured_row_definition_anchor, structured_row_definition_replacement, 1)
+            structured_row_gate_anchor = '''    if probe_table_signature or benchmark_table_signature:
+        return True
+'''
+            structured_row_gate_replacement = '''    if probe_table_signature or benchmark_table_signature:
+        return True
+    if structured_row_table_signature:
+        return True
+'''
+            if structured_row_gate_anchor not in text:
+                raise SystemExit(f"::error::could not find expected engine structured-row gate anchor in {target}")
+            text = text.replace(structured_row_gate_anchor, structured_row_gate_replacement, 1)
+        old_structured_row_definition = '''    row_marker_hits = len(re.findall(r"(?:Exp|Run|Task|Model|Method|Dataset|System)\\s*\\d+", compact, re.IGNORECASE))
+    structured_row_table_signature = (
+        row_marker_hits >= 3
+        and numeric_tokens >= 4
+        and sentence_marks <= 6
+    )
+'''
+        new_structured_row_definition = '''    row_marker_matches = list(re.finditer(r"(Exp|Run|Task|Model|Method|Dataset|System)\\s*\\d+", compact, re.IGNORECASE))
+    row_marker_labels = [match.group(1).lower() for match in row_marker_matches]
+    row_marker_hits = max((row_marker_labels.count(label) for label in row_marker_labels), default=0)
+    row_table_header = compact[:row_marker_matches[0].start()].strip() if row_marker_matches else ""
+    row_header_matches_rows = any(
+        row_table_header.lower().startswith(label)
+        and row_marker_labels.count(label) >= 3
+        for label in row_marker_labels
+    )
+    structured_row_table_signature = (
+        row_marker_hits >= 3
+        and row_header_matches_rows
+        and numeric_tokens >= 4
+        and sentence_marks <= 6
+    )
+'''
+        if old_structured_row_definition in text:
+            text = text.replace(old_structured_row_definition, new_structured_row_definition, 1)
+        if (
+            "def is_rosetta_table_like_unit(" in text
+            and "summary_table_percentages" in text
+            and "structured_row_table_signature" in text
+            and "structured_summary_table_signature" not in text
+        ):
+            summary_value_definition_anchor = '''    summary_table_percentages = len(re.findall(r"\\d+(?:\\.\\d+)?%", compact))
+'''
+            summary_value_definition_replacement = '''    summary_table_percentages = len(re.findall(r"\\d+(?:\\.\\d+)?%", compact))
+    summary_value_row_hits = len(re.findall(r"\\([^()]{1,48}\\)\\s*:\\s*-?\\d+(?:\\.\\d+)?%?", compact))
+    structured_summary_table_signature = (
+        summary_value_row_hits >= 2
+        and numeric_tokens >= 4
+        and sentence_marks <= 6
+        and re.search(r"\\d(?:\\.\\d+)?%?$", compact) is not None
+    )
+'''
+            if summary_value_definition_anchor not in text:
+                raise SystemExit(f"::error::could not find expected engine summary-value definition anchor in {target}")
+            text = text.replace(summary_value_definition_anchor, summary_value_definition_replacement, 1)
+            summary_value_gate_anchor = '''    if structured_row_table_signature:
+        return True
+'''
+            summary_value_gate_replacement = '''    if structured_row_table_signature:
+        return True
+    if structured_summary_table_signature:
+        return True
+'''
+            if summary_value_gate_anchor not in text:
+                raise SystemExit(f"::error::could not find expected engine summary-value gate anchor in {target}")
+            text = text.replace(summary_value_gate_anchor, summary_value_gate_replacement, 1)
         if "def is_rosetta_figure_panel_label_unit(" not in text:
             panel_helper_anchor = "\n\ndef mark_nontranslatable_layout_units(units: list[TranslationUnit]) -> None:\n"
             if panel_helper_anchor not in text:
@@ -1655,9 +2733,33 @@ def patch_rosetta_engine_duplicate_text_layer_filter(root: Path) -> bool:
             render_text_helper = '''\n\ndef rosetta_nontranslatable_render_text(unit: TranslationUnit, text: str) -> str:
     if unit.kind == "duplicate-layer":
         return ""
+    if unit.kind == "table-like":
+        return re.sub(
+            r"\\s+(?=[A-Z][^:]{0,80}\\([^()]{1,48}\\)\\s*:)",
+            "{v900000000}",
+            text,
+        )
     return text
 '''
             text = text.replace(render_text_anchor, render_text_helper + render_text_anchor, 1)
+        old_table_like_render_helper = '''def rosetta_nontranslatable_render_text(unit: TranslationUnit, text: str) -> str:
+    if unit.kind == "duplicate-layer":
+        return ""
+    return text
+'''
+        new_table_like_render_helper = '''def rosetta_nontranslatable_render_text(unit: TranslationUnit, text: str) -> str:
+    if unit.kind == "duplicate-layer":
+        return ""
+    if unit.kind == "table-like":
+        return re.sub(
+            r"\\s+(?=[A-Z][^:]{0,80}\\([^()]{1,48}\\)\\s*:)",
+            "{v900000000}",
+            text,
+        )
+    return text
+'''
+        if old_table_like_render_helper in text:
+            text = text.replace(old_table_like_render_helper, new_table_like_render_helper, 1)
         old_non_required_render = '''            if not isinstance(translated, str):
                 raise ValueError(f"translation is not a string for unit: {unit_id}")
             if expected.requiresTranslation and expected.sourceText.strip() and not translated.strip():
@@ -2419,7 +3521,7 @@ if "def rosetta_pdf_is_bold_font(" in text and "rosetta_pdf_is_bold_font(child.f
         if cumulative_bold_changed:
             print(f"[pdf2zh-pack] made PDF paragraph bold marking cumulative in {target}")
         if rendering_safety_changed:
-            print(f"[pdf2zh-pack] hardened translated PDF text masking and CJK line spacing in {target}")
+            print(f"[pdf2zh-pack] hardened translated PDF background safety and CJK line spacing in {target}")
         if centered_alignment_changed:
             print(f"[pdf2zh-pack] preserved centered single-line PDF paragraph alignment in {target}")
         if structural_line_breaks_changed:

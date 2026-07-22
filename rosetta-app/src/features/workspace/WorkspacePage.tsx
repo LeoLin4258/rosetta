@@ -52,6 +52,7 @@ import {
 } from "@/lib/pdf2zhRuntime";
 import {
   defaultPdfSelectedPages,
+  nextPdfSelectedPages,
   normalizePdfPageNumbers,
   shouldConfirmLongPdfTranslation,
 } from "@/lib/pdfPageSelectionPolicy";
@@ -663,6 +664,18 @@ export function WorkspacePage() {
           segments: [],
         });
       }
+      if (!force) {
+        const translatedPages = state.pages
+          .filter((page) => page.status === "translated")
+          .map((page) => page.pageNumber);
+        setPdfSelectedPages((currentSelection) =>
+          nextPdfSelectedPages(
+            state.sourcePageCount || pdfPageCount,
+            currentSelection,
+            translatedPages,
+          ),
+        );
+      }
       return state;
     } catch (err) {
       console.error("[pdf-translate] failed", err);
@@ -1058,6 +1071,7 @@ export function WorkspacePage() {
             targetLang={targetLang}
             selectedBlockCount={selectedBlockIds.length}
             pdfSelectedPageCount={pdfSelectedPages.length}
+            pdfSelectedPages={pdfSelectedPages}
             pdfPageCount={pdfPageCount}
             pdfForceRetranslate={pdfForceRetranslate}
             onPdfForceRetranslateChange={setPdfForceRetranslate}

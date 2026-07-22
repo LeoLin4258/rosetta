@@ -12,8 +12,8 @@ import {
   type PdfPageTranslationState,
 } from "@/lib/rosettaJobs";
 import {
-  defaultPdfSelectedPages,
   PDF_AUTO_SELECT_ALL_PAGE_LIMIT,
+  recommendedPdfSelectedPages,
 } from "@/lib/pdfPageSelectionPolicy";
 import { cn } from "@/lib/utils";
 import type {
@@ -213,14 +213,21 @@ export function PdfDocumentPreview({
         setSourcePageCount(srcPages);
         setPdfPageState(snapshot.pages);
         onPageCountChange(srcPages);
-        onSelectedPagesChange(defaultPdfSelectedPages(srcPages));
+        onSelectedPagesChange(
+          recommendedPdfSelectedPages(
+            srcPages,
+            snapshot.pages.pages
+              .filter((page) => page.status === "translated")
+              .map((page) => page.pageNumber),
+          ),
+        );
       } catch (error) {
         try {
           const srcPages = await countRosettaPdfPages(jobId, "source");
           if (cancelled) return;
           setSourcePageCount(srcPages);
           onPageCountChange(srcPages);
-          onSelectedPagesChange(defaultPdfSelectedPages(srcPages));
+          onSelectedPagesChange(recommendedPdfSelectedPages(srcPages, []));
           void refreshPageState();
           return;
         } catch {
