@@ -43,6 +43,7 @@ const MIN_TARGET_WIDTH: u32 = 200;
 /// by the frontend to pre-allocate page placeholders before any pixels are
 /// rendered.
 pub(crate) fn count_pages(app: &AppHandle, source_path: &Path) -> Result<u32, PdfError> {
+    let _operation_guard = runtime::lock_pdfium();
     let pdfium = runtime::get_pdfium(app).map_err(PdfError::RuntimeMissing)?;
     let source_path_str = source_path
         .to_str()
@@ -76,6 +77,7 @@ pub(crate) fn render_page_as_png(
         }
     }
 
+    let _operation_guard = runtime::lock_pdfium();
     let pdfium = runtime::get_pdfium(app).map_err(PdfError::RuntimeMissing)?;
     let doc = pdfium
         .load_pdf_from_file(source_path_str, None)

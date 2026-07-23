@@ -1,0 +1,43 @@
+#![allow(dead_code)]
+
+#[cfg(all(test, target_os = "windows"))]
+mod acceptance;
+
+pub(crate) mod content_stream;
+pub(crate) mod document;
+pub(crate) mod extract;
+pub(crate) mod font;
+pub(crate) mod font_plan;
+pub(crate) mod identity;
+pub(crate) mod incremental_export;
+pub(crate) mod layout;
+pub(crate) mod legacy_adapter;
+pub(crate) mod mapping;
+pub(crate) mod object_delta;
+pub(crate) mod ownership;
+pub(crate) mod page_context;
+pub(crate) mod page_graph_store;
+pub(crate) mod page_index;
+pub(crate) mod page_pdf;
+pub(crate) mod page_set;
+pub(crate) mod paragraph_translation_plan;
+pub(crate) mod patch;
+pub(crate) mod patch_renderer;
+pub(crate) mod patch_store;
+pub(crate) mod pipeline;
+pub(crate) mod preview;
+pub(crate) mod reconcile;
+pub(crate) mod region_layout;
+pub(crate) mod region_renderer;
+pub(crate) mod region_translation_patch;
+pub(crate) mod render_cache;
+pub(crate) mod replacement;
+pub(crate) mod scheduler;
+pub(crate) mod source_cmap;
+pub(crate) mod source_object;
+pub(crate) mod style;
+pub(crate) mod translation_export;
+pub(crate) mod translation_patch;
+pub(crate) mod translation_plan;
+pub(crate) mod types;
+pub(crate) mod visual_grouping;

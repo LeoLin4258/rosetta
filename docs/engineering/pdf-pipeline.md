@@ -394,12 +394,31 @@ the replay stream aligned. The renderer therefore:
 - blanks only `duplicate-layer` units;
 - validates placeholders for required translated units, but does not fail a
   page because a non-required preserved unit contains formula placeholders;
-- draws white source-text masks only for paragraphs that are actually
-  translated, so preserved formula/table regions do not erase original colored
-  highlights or table fills.
+- relies on pdf2zh's replacement content stream instead of drawing opaque
+  source-text masks. Hard-coded white masks destroy colored panels, image
+  backgrounds, table fills, and page furniture, and can make preserved white
+  text invisible.
 
 The heuristics must stay conservative. Prefer adding narrow marker combinations
 over broad numeric or punctuation rules. Existing examples include:
+
+Before applying textual signatures, the converter now checks the geometry of
+characters already classified as visual content by DocLayout. It groups those
+characters by baseline and finds large intra-line gaps that recur across at
+least three rows. Numeric two-column grids require one stable boundary;
+all-text grids require at least two stable next-column start coordinates,
+preventing ordinary two-column prose from being treated as a table while also
+handling rows whose variable text widths make gap midpoints drift. This
+recognizes stable table columns without depending on table vocabulary. The work
+is bounded to existing page characters and does not rerun layout inference.
+Textual signatures remain a fallback for table fragments that the layout model
+separates from the main grid.
+
+Paragraph grouping also rejects source characters separated from the previous
+baseline by more than both 24 PDF points and three source line heights. This
+keeps page headers, footers, and distant content panels from being merged only
+because DocLayout assigned them the same class, while retaining normal wrapped
+paragraphs and compact card/table rows.
 
 - metric and segmentation table markers such as `ODS`, `OIS`, `mIoU`, `FLOPs`,
   `Param`, `F1mIoU`, and compact no-space forms such as `LayerNumODSOIS`;
@@ -407,6 +426,17 @@ over broad numeric or punctuation rules. Existing examples include:
   `beta`;
 - dataset split table markers such as `DatasetCategoryTrainValTest`,
   `FarmInsects`, `IP102`, `QianFSD`, and `AgriInsect`;
+- compact model-summary tables that combine a `Model` header, at least two
+  `Pred`/`Obs` labels, and at least six percentage cells;
+- probe-summary tables that combine `Probe` and `Truncation` headers with at
+  least twelve numeric cells;
+- benchmark result tables that combine `Target`, `Realized`, and `Ref.`
+  headers with at least two known model columns and eight percentage cells;
+- compact row-key tables whose leading header names a row family such as
+  `Exp`, `Run`, `Task`, `Model`, `Method`, `Dataset`, or `System`, followed by
+  at least three numbered rows from that same family, at least four numeric
+  cells, and little sentence punctuation; both `Exp1` and `Exp 1` forms are
+  accepted, while prose that merely mentions several experiments is not;
 - formula operator markers such as `Partition`, `TopK`, `Gumbel`, `Softmax`,
   `Flatten`, `EM`, `LN`, `FFN`, and `CR`, only when combined with many formula
   placeholders and low sentence punctuation;
@@ -440,6 +470,7 @@ grep -n "rosetta_allow_text_like_visual_chars" "$CONVERTER"
 grep -n "math_table_signal_hits" "$CONVERTER"
 grep -n "compact_table_signal_hits" "$CONVERTER"
 grep -n "dataset_table_signal_hits" "$CONVERTER"
+grep -n "rosetta_visual_diagram_label_signature" "$CONVERTER"
 grep -n "operator_hits = len(re.findall" "$ENGINE"
 grep -n "_match_expected_unit" "$ENGINE"
 grep -n "rosetta_nontranslatable_render_text" "$ENGINE"
@@ -472,6 +503,22 @@ Regression fixture expectations from the July 2026 work:
   right-bottom `Dataset / Category / Train / Val / Test` table should not be a
   required body unit, while normal prose mentioning `QianFSD` or `AgriInsect`
   remains translatable.
+- Task Budget Displacement 9-page PDF: page 5's `Model / Pred. / Obs.` table
+  and page 6's `Probe / Logistic / Truncation` table must remain visual source
+  content rather than required translation units; page 8's consecutive `[6]`
+  through `[20]` references must retain one entry per line with a hanging
+  indent for wrapped continuation lines; page 9's
+  `Target / Realized / Ref. / Gemini / Haiku / GPT` table must remain visual
+  source content.
+- Omnilingual ASR Speech LLM 4-page PDF: page 4's
+  `Exp / System / tcpMER` table must remain visual source content, while the
+  `Table 3` caption remains a required translation unit. Page 3's two
+  per-language tables must also remain visual source content based on their
+  repeated column geometry; their parenthesized numeric summary rows must be
+  non-translatable, while the `Table 1` and `Table 2` captions remain required
+  translation units. Page 1's centered multi-line workflow labels must remain
+  at their original coordinates instead of being grouped into a translated
+  paragraph whose erasure rectangle covers the figure.
 
 These expectations are not a permanent fixture corpus, but they are the current
 minimum dogfood set for publishing a new PDF component pack.

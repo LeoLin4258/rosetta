@@ -3,6 +3,7 @@ mod local_data_reset;
 mod managed_pdf2zh;
 mod managed_rwkv;
 mod onboarding;
+pub(crate) mod pdf_v3;
 mod rosetta_jobs;
 mod rwkv_api;
 mod rwkv_io_debug;
@@ -37,6 +38,10 @@ pub fn run() {
         .manage(managed_pdf2zh::InstallStateRegistry::default())
         .manage(managed_pdf2zh::Pdf2zhWorkerState::default())
         .manage(rosetta_jobs::PdfTranslationCancelState::default())
+        .manage(rosetta_jobs::PdfV3ComponentState::default())
+        .manage(rosetta_jobs::PdfV3RunLifecycleState::default())
+        .manage(rosetta_jobs::PdfV3SourceIdentityState::default())
+        .manage(rosetta_jobs::PdfV3RunWorkerState::default())
         .manage(rosetta_jobs::PdfPngCache::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -67,13 +72,6 @@ pub fn run() {
                 window.show().ok();
                 window.set_focus().ok();
             }
-
-            // Start prewarming the pdf2zh worker as soon as the window is up
-            // so the ~13 s torch import finishes in the background while the
-            // user is still reading the welcome page. The worker stays warm
-            // for the whole session (no idle reaper) — translate clicks
-            // never pay the import cost.
-            managed_pdf2zh::prewarm_in_background(handle);
 
             // macOS native menu bar
             #[cfg(target_os = "macos")]
@@ -228,29 +226,40 @@ pub fn run() {
             rosetta_jobs::ensure_rosetta_translation_file,
             rosetta_jobs::export_rosetta_job_file,
             rosetta_jobs::export_rosetta_translated_pdf,
+            rosetta_jobs::export_rosetta_pdf_v3_run,
             rosetta_jobs::export_rosetta_translation_file,
             rosetta_jobs::create_welcome_document,
             rosetta_jobs::import_rosetta_document_from_path,
             rosetta_jobs::import_rosetta_project_from_directory,
+            rosetta_jobs::list_rosetta_pdf_v3_runs,
             rosetta_jobs::list_rosetta_jobs,
             rosetta_jobs::load_rosetta_job,
             rosetta_jobs::load_rosetta_translation_file,
             rosetta_jobs::count_rosetta_pdf_pages,
+            rosetta_jobs::create_rosetta_pdf_v3_run,
+            rosetta_jobs::cancel_rosetta_pdf_v3_run,
             rosetta_jobs::cancel_rosetta_translated_pdf,
             rosetta_jobs::generate_rosetta_translated_pdf,
             rosetta_jobs::get_rosetta_pdf_assets,
             rosetta_jobs::get_rosetta_pdf_page_status,
             rosetta_jobs::get_rosetta_pdf_snapshot,
+            rosetta_jobs::get_rosetta_pdf_v3_run_status,
             rosetta_jobs::pause_rosetta_pdf_run,
+            rosetta_jobs::pause_rosetta_pdf_v3_run,
             rosetta_jobs::preparse_rosetta_pdf_pages,
             rosetta_jobs::pick_rosetta_export_path,
             rosetta_jobs::pick_rosetta_import_directory,
             rosetta_jobs::pick_rosetta_import_path,
+            rosetta_jobs::probe_rosetta_pdf_v3_component,
             rosetta_jobs::probe_pdf_runtime,
             rosetta_jobs::read_rosetta_pdf_bytes,
+            rosetta_jobs::recover_rosetta_pdf_v3_run,
             rosetta_jobs::repair_rosetta_pdf_job,
             rosetta_jobs::render_rosetta_pdf_page_as_png,
             rosetta_jobs::render_rosetta_pdf_translated_page_as_png,
+            rosetta_jobs::render_rosetta_pdf_v3_translated_page_as_png,
+            rosetta_jobs::retry_rosetta_pdf_v3_page,
+            rosetta_jobs::resume_rosetta_pdf_v3_run,
             rosetta_jobs::rename_rosetta_job,
             rosetta_jobs::save_rosetta_segments,
             rosetta_jobs::save_rosetta_translation_segments,
@@ -279,8 +288,16 @@ pub fn run() {
 
                 let exit_code = code.unwrap_or(0);
                 api.prevent_exit();
+                app_handle
+                    .state::<rosetta_jobs::PdfV3RunWorkerState>()
+                    .request_shutdown();
                 let app = app_handle.clone();
                 tauri::async_runtime::spawn(async move {
+                    app.state::<rosetta_jobs::PdfV3RunWorkerState>()
+                        .shutdown()
+                        .await;
+                    app.state::<rosetta_jobs::PdfV3RunLifecycleState>()
+                        .shutdown();
                     managed_rwkv::shutdown_managed_rwkv_runtime_for_exit(&app).await;
                     managed_pdf2zh::shutdown_worker_for_exit(&app).await;
                     app.exit(exit_code);

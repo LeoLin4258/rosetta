@@ -133,7 +133,7 @@ impl InstallOptions {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelManifest {
     pub schema_version: u32,
@@ -146,7 +146,7 @@ pub struct ModelManifest {
     pub installed_at: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RuntimeManifest {
     schema_version: u32,
@@ -156,6 +156,47 @@ struct RuntimeManifest {
     size_bytes: u64,
     source: String,
     installed_at: String,
+}
+
+pub(crate) fn validate_installed_artifact_manifests(
+    layout: &RuntimeLayout,
+    profile: &RuntimeProfile,
+) -> Result<(), String> {
+    let model: ModelManifest = serde_json::from_slice(
+        &std::fs::read(&layout.model_manifest_file).map_err(|error| {
+            format!(
+                "无法读取托管模型 manifest {}: {error}",
+                layout.model_manifest_file.display()
+            )
+        })?,
+    )
+    .map_err(|error| format!("托管模型 manifest 无效: {error}"))?;
+    if model.schema_version != 1
+        || model.profile_id != profile.id
+        || model.provider_id != profile.provider_id
+        || model.filename != profile.model_filename
+        || model.sha256 != profile.model_sha256
+        || model.size_bytes != profile.model_size_bytes
+    {
+        return Err("托管模型 manifest 与当前 runtime profile 不一致。".to_string());
+    }
+
+    if let Some(path) = layout.runtime_manifest_file.as_deref() {
+        let manifest: RuntimeManifest =
+            serde_json::from_slice(&std::fs::read(path).map_err(|error| {
+                format!("无法读取托管 runtime manifest {}: {error}", path.display())
+            })?)
+            .map_err(|error| format!("托管 runtime manifest 无效: {error}"))?;
+        if manifest.schema_version != 1
+            || manifest.profile_id != profile.id
+            || manifest.archive_filename != profile.runtime_archive_filename.unwrap_or_default()
+            || manifest.sha256 != profile.runtime_archive_sha256.unwrap_or_default()
+            || Some(manifest.size_bytes) != profile.runtime_archive_size_bytes
+        {
+            return Err("托管 runtime manifest 与当前 runtime profile 不一致。".to_string());
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Serialize)]
@@ -1675,7 +1716,7 @@ fn parse_scutil_proxy_output(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::managed_rwkv::profile::MACOS_ARM64_WEBRWKV;
+    use crate::managed_rwkv::profile::{MACOS_ARM64_WEBRWKV, WINDOWS_AMD64_LLAMACPP_VULKAN};
 
     #[test]
     fn hex_lower_pads_each_byte_to_two_chars() {
@@ -1877,6 +1918,45 @@ mod tests {
         assert!(value["installedAt"].as_str().unwrap().ends_with('Z'));
 
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn installed_manifests_must_match_the_exact_runtime_profile() {
+        let tmp = std::env::temp_dir().join(format!(
+            "rosetta-install-binding-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0)
+        ));
+        let profile = &WINDOWS_AMD64_LLAMACPP_VULKAN;
+        let layout = RuntimeLayout::resolve(&tmp, profile);
+        std::fs::create_dir_all(&layout.model_dir).expect("model dir");
+        std::fs::create_dir_all(layout.runtime_dir.as_ref().expect("runtime dir"))
+            .expect("runtime dir");
+        write_manifest(&layout, profile, "https://example.test/model").expect("model manifest");
+        write_runtime_manifest(
+            &layout,
+            profile,
+            "https://example.test/runtime",
+            profile.runtime_archive_size_bytes.expect("runtime size"),
+            profile.runtime_archive_sha256.expect("runtime sha"),
+        )
+        .expect("runtime manifest");
+
+        validate_installed_artifact_manifests(&layout, profile).expect("valid manifests");
+        let mut model: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&layout.model_manifest_file).expect("read model manifest"),
+        )
+        .expect("decode model manifest");
+        model["providerId"] = serde_json::Value::String("provider-other".to_string());
+        std::fs::write(
+            &layout.model_manifest_file,
+            serde_json::to_vec(&model).expect("encode tampered manifest"),
+        )
+        .expect("write tampered manifest");
+        assert!(validate_installed_artifact_manifests(&layout, profile).is_err());
+        std::fs::remove_dir_all(tmp).ok();
     }
 
     // -----------------------------------------------------------------------

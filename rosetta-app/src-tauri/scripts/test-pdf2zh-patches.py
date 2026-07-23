@@ -1,20 +1,303 @@
 #!/usr/bin/env python3
 import ast
+import difflib
 import os
 import re
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PATCH_SCRIPT = SCRIPT_DIR / "patch-pdf2zh-color-preservation.py"
+DIRECTML_PATCH_SCRIPT = SCRIPT_DIR / "patch-pdf2zh-directml-layout.py"
 FONT_ASSETS_SCRIPT = SCRIPT_DIR / "stage-pdf2zh-font-assets.py"
 
 
 class Pdf2zhPatchTests(unittest.TestCase):
+    def test_directml_patch_is_bounded_and_has_cpu_fallback(self) -> None:
+        text = DIRECTML_PATCH_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn('return 5 if self._uses_directml else 1', text)
+        self.assertIn('min(5, int(requested))', text)
+        self.assertIn('falling back to CPU', text)
+        self.assertIn('["CPUExecutionProvider"]', text)
+        self.assertIn('grouped[pix.shape]', text)
+
+    def test_windows_pack_uses_directml_runtime_and_patch(self) -> None:
+        requirements = (
+            SCRIPT_DIR / "requirements-pdf2zh-windows-amd64.txt"
+        ).read_text(encoding="utf-8")
+        builder = (
+            SCRIPT_DIR / "build-pdf2zh-pack-windows-amd64.ps1"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("onnxruntime-directml==1.24.4", requirements)
+        self.assertNotRegex(requirements, r"(?m)^onnxruntime==")
+        self.assertIn("patch-pdf2zh-directml-layout.py", builder)
+
+    def test_duplicate_text_fast_match_preserves_exact_threshold_decisions(self) -> None:
+        module = ast.parse(PATCH_SCRIPT.read_text(encoding="utf-8"))
+        helper_factory = next(
+            node
+            for node in module.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "duplicate_text_layer_helper"
+        )
+        factory_namespace = {}
+        exec(
+            compile(
+                ast.Module(body=[helper_factory], type_ignores=[]),
+                str(PATCH_SCRIPT),
+                "exec",
+            ),
+            factory_namespace,
+        )
+
+        class TranslationUnit:
+            pass
+
+        namespace = {"difflib": difflib, "TranslationUnit": TranslationUnit}
+        exec(factory_namespace["duplicate_text_layer_helper"](), namespace)
+        canonical = namespace["canonical_duplicate_text"]
+        fast_match = namespace["duplicate_text_keys_match"]
+        samples = [
+            "",
+            "Alpha beta gamma",
+            "ALPHA, beta; gamma!",
+            "Alpha beta delta",
+            "a" * 78 + "b" * 22,
+            "a" * 77 + "c" * 23,
+            "completely unrelated text",
+            "公式 {v1} 与 {v2}",
+            "公式 {v1} 和 {v3}",
+        ]
+        for left in samples:
+            for right in samples:
+                left_key = canonical(left)
+                right_key = canonical(right)
+                expected = bool(left_key and right_key) and (
+                    difflib.SequenceMatcher(
+                        None, left_key, right_key, autojunk=False
+                    ).ratio()
+                    >= 0.78
+                )
+                self.assertEqual(fast_match(left_key, right_key), expected)
+
+        units = []
+        for index, text in enumerate(samples[:6] + samples[:6]):
+            unit = TranslationUnit()
+            unit.sourceText = text
+            unit.sourceChars = len(text)
+            unit.requiresTranslation = True
+            unit.kind = "body"
+            units.append(unit)
+        original_canonical = namespace["canonical_duplicate_text"]
+        canonical_calls = 0
+
+        def counted_canonical(text: str) -> str:
+            nonlocal canonical_calls
+            canonical_calls += 1
+            return original_canonical(text)
+
+        namespace["canonical_duplicate_text"] = counted_canonical
+        namespace["mark_duplicate_text_layer_units"](units)
+        self.assertEqual(canonical_calls, len(units))
+
+    def test_patch_uses_scalar_layout_coordinate_clamps(self) -> None:
+        module = ast.parse(PATCH_SCRIPT.read_text(encoding="utf-8"))
+        function = next(
+            node
+            for node in module.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "patch_converter_scalar_layout_clamp"
+        )
+        namespace = {}
+        exec(
+            compile(
+                ast.Module(body=[function], type_ignores=[]),
+                str(PATCH_SCRIPT),
+                "exec",
+            ),
+            namespace,
+        )
+        source = (
+            "                cx, cy = np.clip(int(child.x0), 0, w - 1), "
+            "np.clip(int(child.y0), 0, h - 1)\n"
+        ) * 2 + (
+            "                cx = np.clip(int(item.x0), 0, w - 1)\n"
+            "                cy = np.clip(int(item.y0), 0, h - 1)\n"
+        )
+
+        patched, changed = namespace["patch_converter_scalar_layout_clamp"](source)
+
+        self.assertTrue(changed)
+        self.assertEqual(patched.count("cx = min(max(int(child.x0), 0), w - 1)"), 2)
+        self.assertEqual(patched.count("cy = min(max(int(child.y0), 0), h - 1)"), 2)
+        self.assertIn("cx = min(max(int(item.x0), 0), w - 1)", patched)
+        self.assertIn("cy = min(max(int(item.y0), 0), h - 1)", patched)
+        self.assertNotIn("np.clip(int(child.x0)", patched)
+        self.assertNotIn("np.clip(int(item.x0)", patched)
+        self.assertFalse(namespace["patch_converter_scalar_layout_clamp"](patched)[1])
+
+    def test_patch_reuses_pdfminer_resource_manager_across_pages(self) -> None:
+        module = ast.parse(PATCH_SCRIPT.read_text(encoding="utf-8"))
+        function = next(
+            node
+            for node in module.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "patch_rosetta_engine_resource_manager_reuse"
+        )
+        namespace = {"Path": Path}
+        exec(
+            compile(
+                ast.Module(body=[function], type_ignores=[]),
+                str(PATCH_SCRIPT),
+                "exec",
+            ),
+            namespace,
+        )
+
+        fixture = """from pdfminer.pdfinterp import PDFResourceManager
+from typing import Any
+
+class _UnitCollectorTranslator:
+    pass
+
+class _PageCache:
+    pass
+
+def prepareRun():
+    page_caches: dict[int, _PageCache] = {}
+    with open('prepared.pdf', 'rb') as fp:
+        for page, page_number in zip([], []):
+            cache = collect_page_units(
+                page=page,
+                page_index=0,
+                page_number=page_number,
+                layout={},
+                translator=collector,
+                lang_in='en',
+                lang_out='zh',
+                thread=1,
+                noto_name='noto',
+                noto=None,
+            )
+
+def collect_page_units(
+    page,
+    page_index: int,
+    page_number: int,
+    layout: dict[int, Any],
+    translator: _UnitCollectorTranslator,
+    lang_in: str,
+    lang_out: str,
+    thread: int,
+    noto_name: str,
+    noto: Any,
+) -> _PageCache:
+    translator.set_page(page_number)
+    before_count = len(translator.units)
+    rsrcmgr = PDFResourceManager(caching=True)
+    return _PageCache()
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            engine = root / "rosetta_engine.py"
+            engine.write_text(fixture, encoding="utf-8")
+
+            changed = namespace["patch_rosetta_engine_resource_manager_reuse"](root)
+            self.assertTrue(changed)
+            patched = engine.read_text(encoding="utf-8")
+            self.assertIn("rsrcmgr = PDFResourceManager(caching=True)", patched)
+            self.assertIn("rsrcmgr=rsrcmgr", patched)
+            self.assertNotIn("    rsrcmgr = PDFResourceManager(caching=True)\n    return _PageCache()", patched)
+            self.assertFalse(
+                namespace["patch_rosetta_engine_resource_manager_reuse"](root)
+            )
+
+    def test_patch_shares_prepared_pdf_font_objects_across_pages(self) -> None:
+        module = ast.parse(PATCH_SCRIPT.read_text(encoding="utf-8"))
+        function = next(
+            node
+            for node in module.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "patch_rosetta_engine_shared_font_registration"
+        )
+        namespace = {"Path": Path}
+        exec(
+            compile(
+                ast.Module(body=[function], type_ignores=[]),
+                str(PATCH_SCRIPT),
+                "exec",
+            ),
+            namespace,
+        )
+        fixture = '''import re
+
+def prepare_pdf_document(input_path, font_path, noto_name):
+    doc = open_document(input_path)
+    font_list = [("tiro", None), (noto_name, font_path)]
+    font_id = {}
+    for page in doc:
+        for font_name, font_file in font_list:
+            font_id[font_name] = page.insert_font(font_name, font_file)
+    return doc
+'''
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "rosetta_engine.py"
+            target.write_text(fixture, encoding="utf-8")
+
+            self.assertTrue(namespace["patch_rosetta_engine_shared_font_registration"](root))
+            patched = target.read_text(encoding="utf-8")
+            self.assertIn("share prepared PDF font objects", patched)
+            self.assertIn("doc[0].insert_font(font_name, font_file)", patched)
+            self.assertIn("rosetta_pdf_register_page_fonts(doc, page.xref", patched)
+            self.assertIn('doc.xref_set_key(resource_xref, font_key, "<<>>")', patched)
+            self.assertFalse(namespace["patch_rosetta_engine_shared_font_registration"](root))
+
+    def test_patch_subsets_fonts_in_single_page_artifacts(self) -> None:
+        module = ast.parse(PATCH_SCRIPT.read_text(encoding="utf-8"))
+        function = next(
+            node
+            for node in module.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "patch_rosetta_engine_page_artifact_font_subsetting"
+        )
+        namespace = {"Path": Path}
+        exec(
+            compile(
+                ast.Module(body=[function], type_ignores=[]),
+                str(PATCH_SCRIPT),
+                "exec",
+            ),
+            namespace,
+        )
+        fixture = '''def render_one_page(state, cache, artifact_path):
+        single = pymupdf.open()
+        single.insert_pdf(state.doc, from_page=cache.page_index, to_page=cache.page_index)
+        single.save(
+            artifact_path,
+            deflate=bool(state.options.get("singlePageDeflate", False)),
+            deflate_images=bool(state.options.get("singlePageDeflateImages", True)),
+        )
+'''
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "rosetta_engine.py"
+            target.write_text(fixture, encoding="utf-8")
+
+            self.assertTrue(namespace["patch_rosetta_engine_page_artifact_font_subsetting"](root))
+            patched = target.read_text(encoding="utf-8")
+            self.assertIn("doc.subset_fonts(verbose=False)", patched)
+            self.assertIn('state.options.get("singlePageSubsetFonts", True)', patched)
+            self.assertIn("garbage=4 if subset_page_fonts else 0", patched)
+            self.assertFalse(namespace["patch_rosetta_engine_page_artifact_font_subsetting"](root))
+
     def test_patch_adds_versioned_durable_layout_cache_contract(self) -> None:
         module = ast.parse(PATCH_SCRIPT.read_text(encoding="utf-8"))
         function = next(
@@ -376,6 +659,16 @@ def record_translation(self, translated: str):
         self.assertNotIn("stroke_width = max(0.12, min(0.45, size * 0.018))", patched)
         self.assertNotIn("rosetta_pdf_is_bold_font(child.font)", patched)
 
+    def test_patch_caches_bold_font_across_page_converters(self) -> None:
+        patched = self.run_patch(self.converter_with_bold_helpers())
+
+        self.assertIn("def rosetta_pdf_cached_bold_font", patched)
+        self.assertIn(
+            "self.rosetta_noto_bold_name, self.rosetta_noto_bold = rosetta_pdf_cached_bold_font()",
+            patched,
+        )
+        self.assertEqual(patched.count('get_font_and_metadata("SourceHanSansCN-Bold.ttf")'), 1)
+
     def test_legacy_converter_patch_path_applies_render_order_drift_matching(self) -> None:
         files = self.run_patch_for_package(
             self.legacy_converter_text(),
@@ -492,12 +785,12 @@ class Paragraph:
         self.assertIn('"color": l.stroking_color', patched)
         self.assertIn('vals.get("color"), vals.get("bold", False)', patched)
         self.assertIn("l.linewidth, l.stroking_color", patched)
-        self.assertIn("rosetta_pdf_fill_rect", patched)
+        self.assertNotIn("rosetta_pdf_fill_rect", patched)
         self.assertIn('return "0 Tr "', patched)
         self.assertNotIn("stroke_width =", patched)
         self.assertNotIn("w 2 Tr", patched)
 
-    def test_patch_hardens_current_converter_text_masking_and_cjk_line_spacing(self) -> None:
+    def test_patch_preserves_source_graphics_and_hardens_cjk_line_spacing(self) -> None:
         patched = self.run_patch(
             self.converter_with_bold_helpers()
             + '''        def gen_op_line(x, y, xlen, ylen, linewidth, color=None):
@@ -517,9 +810,9 @@ class Paragraph:
 '''
         )
 
-        self.assertIn("rosetta_pdf_fill_rect", patched)
-        self.assertIn("Rosetta: erase source text under translated paragraphs", patched)
-        self.assertIn("self.should_translate_text(sstk[id])", patched)
+        self.assertNotIn("rosetta_pdf_fill_rect", patched)
+        self.assertNotIn("erase source text under translated paragraphs", patched)
+        self.assertIn("without painting over source graphics", patched)
         self.assertIn("min_line_height = 1.2", patched)
         self.assertIn("render_size = max(min_render_size, min(size, fit_size))", patched)
         self.assertIn('draw_size = min(draw_size, render_size)', patched)
@@ -546,6 +839,8 @@ class Paragraph:
         self.assertIn(".*Code|.*Sym", patched)
         self.assertIn("rosetta_text_like_visual_char", patched)
         self.assertIn("rosetta_allow_text_like_visual_chars", patched)
+        self.assertIn("rosetta_visual_table_grid_signature", patched)
+        self.assertIn("rosetta_visual_diagram_label_signature", patched)
         self.assertIn("rosetta_text_like_visual_chars_enabled", patched)
         self.assertIn("metric_hits >= 3", patched)
         self.assertIn("numeric_tokens >= 40", patched)
@@ -553,29 +848,127 @@ class Paragraph:
         self.assertIn("math_table_signal_hits", patched)
         self.assertIn("compact_table_signal_hits", patched)
         self.assertIn("dataset_table_signal_hits", patched)
+        self.assertIn("summary_table_label_hits", patched)
+        self.assertIn("summary_table_percentages", patched)
+        self.assertIn("probe_table_signature", patched)
+        self.assertIn("benchmark_table_signature", patched)
+        self.assertIn("structured_row_table_signature", patched)
         self.assertIn("numeric_tokens >= 40 and math_table_signal_hits >= 2", patched)
         self.assertIn("numeric_tokens >= 18 and compact_table_signal_hits >= 3", patched)
         self.assertIn("numeric_tokens >= 12 and dataset_table_signal_hits >= 3", patched)
+        self.assertIn('"Model" in compact and summary_table_label_hits >= 2', patched)
         self.assertIn("DatasetCategoryTrainValTest", patched)
         self.assertIn("QianFSD", patched)
         self.assertIn('"Algorithm" in compact', patched)
         self.assertIn("without_decimal_points", patched)
         self.assertIn("(cls == 0 and not rosetta_text_like_visual_char)", patched)
 
+        helper_start = patched.index("        def rosetta_visual_table_grid_signature(")
+        helper_end = patched.index("        def rosetta_allow_text_like_visual_chars(")
+        namespace: dict[str, object] = {"re": re, "LTChar": object}
+        exec(textwrap.dedent(patched[helper_start:helper_end]), namespace)
+        visual_table_grid_signature = namespace["rosetta_visual_table_grid_signature"]
+        visual_diagram_label_signature = namespace["rosetta_visual_diagram_label_signature"]
+
+        class VisualChar:
+            def __init__(self, text: str, x0: float, x1: float, y0: float, size: float = 8.0):
+                self.text = text
+                self.x0 = x0
+                self.x1 = x1
+                self.y0 = y0
+                self.size = size
+
+            def get_text(self) -> str:
+                return self.text
+
+        table_chars = []
+        for row, value in enumerate(("11.1", "17.8", "18.2", "19.9")):
+            y0 = 100.0 - row * 10.0
+            table_chars.extend(
+                (
+                    VisualChar("Language", 10.0, 42.0, y0),
+                    VisualChar(value, 80.0, 96.0, y0),
+                )
+            )
+        prose_chars = [VisualChar(f"Sentence {row}", 10.0, 80.0, 100.0 - row * 10.0) for row in range(4)]
+        all_text_table_chars = []
+        for row, values in enumerate(
+            (
+                ("Alert term", "What it means", "What to do"),
+                ("Advisory", "Limited inconvenience", "Monitor updates"),
+                ("Watch", "Hazard is possible", "Prepare devices"),
+                ("Warning", "Hazard is imminent", "Take action"),
+            )
+        ):
+            y0 = 160.0 - row * 12.0
+            all_text_table_chars.extend(
+                (
+                    VisualChar(values[0], 10.0, 55.0, y0),
+                    VisualChar(values[1], 90.0, 155.0, y0),
+                    VisualChar(values[2], 195.0, 250.0, y0),
+                )
+            )
+        variable_width_all_text_table_chars = []
+        for row, (first_end, second_end) in enumerate(
+            (
+                (30.0, 180.0),
+                (65.0, 210.0),
+                (100.0, 250.0),
+                (125.0, 300.0),
+                (45.0, 190.0),
+            )
+        ):
+            y0 = 240.0 - row * 20.0
+            variable_width_all_text_table_chars.extend(
+                (
+                    VisualChar(f"Row label {row}", 10.0, first_end, y0),
+                    VisualChar(f"Variable description {row}", 155.0, second_end, y0),
+                    VisualChar(f"Action {row}", 345.0, 420.0, y0),
+                )
+            )
+        two_column_prose_chars = []
+        for row, label in enumerate(("Alpha", "Beta", "Gamma", "Delta")):
+            y0 = 160.0 - row * 12.0
+            two_column_prose_chars.extend(
+                (
+                    VisualChar(f"Left prose {label}", 10.0, 75.0, y0),
+                    VisualChar(f"Right prose {label}", 120.0, 190.0, y0),
+                )
+            )
+        diagram_chars = [
+            VisualChar(text, x0, x1, 180.0 - row * 18.0)
+            for row, (text, x0, x1) in enumerate(
+                (
+                    ("Raw input", 82.0, 118.0),
+                    ("Diarization front-end", 40.0, 160.0),
+                    ("Speaker", 84.0, 116.0),
+                    ("Embedding assignment", 35.0, 165.0),
+                    ("Recognition", 80.0, 120.0),
+                    ("Language constrained decoding", 30.0, 170.0),
+                )
+            )
+        ]
+        centered_prose_chars = [
+            VisualChar(f"Complete prose line {row}", 30.0, 170.0, 180.0 - row * 18.0)
+            for row in range(6)
+        ]
+
+        self.assertTrue(visual_table_grid_signature(table_chars))
+        self.assertTrue(visual_table_grid_signature(all_text_table_chars))
+        self.assertTrue(visual_table_grid_signature(variable_width_all_text_table_chars))
+        self.assertFalse(visual_table_grid_signature(prose_chars))
+        self.assertFalse(visual_table_grid_signature(two_column_prose_chars))
+        self.assertTrue(visual_diagram_label_signature(diagram_chars))
+        self.assertFalse(visual_diagram_label_signature(centered_prose_chars))
+        self.assertIn("if rosetta_visual_diagram_label_signature(visual_items):", patched)
+
     def test_patch_centers_only_page_centered_single_line_paragraphs(self) -> None:
         converter = self.converter_with_bold_helpers() + '''
         def gen_op_line(x, y, xlen, ylen, linewidth, color=None):
             return ""
 
-        def rosetta_pdf_fill_rect(x0, y0, x1, y1, pad):
-            left = min(x0, x1) - pad
-            bottom = min(y0, y1) - pad
-            width = abs(x1 - x0) + pad * 2
-            height = abs(y1 - y0) + pad * 2
-            return f"ET q 1 g {left:f} {bottom:f} {width:f} {height:f} re f Q BT "
-
             ops_vals: list[dict] = []
-            # Rosetta: erase source text under translated paragraphs and keep CJK line spacing legible.
+            # Rosetta: keep CJK line spacing legible without painting over source graphics.
 '''
         patched = self.run_patch(converter)
 
@@ -603,12 +996,21 @@ class Paragraph:
         def gen_op_line(x, y, xlen, ylen, linewidth, color=None):
             return f"ET q {rosetta_pdf_color_operator(color, True)}1 0 0 1 {x:f} {y:f} cm [] 0 d 0 J {linewidth:f} w 0 0 m {xlen:f} {ylen:f} l S Q BT "
 
+        ############################################################
+        # A. 原文档解析
+        for child in ltpage:
+                if not vstk:
+                    if cls == xt_cls:               # 当前字符与前一个字符属于同一段落
+                        pass
+
                         elif child.x1 < xt.x0:      # 添加换行空格并标记原文段落存在换行
                             sstk[-1] += " "
                             pstk[-1].brk = True
 
         ############################################################
         # B. 段落翻译
+            brk: bool = pstk[id].brk                    # 段落换行标记
+            cstk: str = ""                              # 当前文字栈
             ops_vals: list[dict] = []
                 mod = 0  # 文字修饰符
                 if vy_regex:  # 加载公式
@@ -618,21 +1020,41 @@ class Paragraph:
                         mod = var[vid][-1].width
                 if brk and x + adv > x1 + 0.1 * size:  # 到达右边界且原文段落存在换行
                     x = x0
+                    lidx += 1
 '''
         files = self.run_patch_for_package(converter)
         patched = files["converter"]
 
-        marker = "        def rosetta_pdf_should_preserve_source_line_breaks("
+        marker = "        def rosetta_pdf_reference_entry_break_offsets("
         helper_start = patched.index(marker)
         helper_end = patched.index("        for paragraph_id, paragraph in enumerate(pstk):")
         namespace: dict[str, object] = {"re": re}
-        exec(patched[helper_start:helper_end].replace("        def ", "def ", 1), namespace)
+        exec(textwrap.dedent(patched[helper_start:helper_end]), namespace)
+        reference_break_offsets = namespace["rosetta_pdf_reference_entry_break_offsets"]
+        toc_entries = namespace["rosetta_pdf_toc_entries"]
         should_preserve = namespace["rosetta_pdf_should_preserve_source_line_breaks"]
+
+        gap_helper_start = patched.index("        def rosetta_pdf_has_disconnected_vertical_gap(")
+        gap_helper_end = patched.index("        ############################################################\n        # A. 原文档解析")
+        gap_namespace: dict[str, object] = {}
+        exec(textwrap.dedent(patched[gap_helper_start:gap_helper_end]), gap_namespace)
+        has_disconnected_gap = gap_namespace["rosetta_pdf_has_disconnected_vertical_gap"]
+
+        class VisualPosition:
+            def __init__(self, y0: float, size: float):
+                self.y0 = y0
+                self.size = size
+
+        self.assertFalse(has_disconnected_gap(VisualPosition(100.0, 8.0), VisualPosition(120.0, 8.0)))
+        self.assertFalse(has_disconnected_gap(VisualPosition(100.0, 11.0), VisualPosition(116.0, 11.0)))
+        self.assertTrue(has_disconnected_gap(VisualPosition(30.0, 9.0), VisualPosition(820.0, 9.0)))
+        self.assertIn("rosetta_same_visual_paragraph", patched)
 
         class ParagraphState:
             x0 = 43.0
             x1 = 400.0
             size = 14.0
+            bold = False
 
         toc = ParagraphState()
         toc.rosetta_line_breaks = [(10, 120.0), (20, 215.0), (30, 400.0)]
@@ -640,16 +1062,74 @@ class Paragraph:
         prose.x0 = 77.0
         prose.x1 = 535.0
         prose.rosetta_line_breaks = [(10, 530.0), (20, 535.0), (30, 526.0), (40, 531.0)]
+        references = ParagraphState()
+        reference_text = "[6] Alpha wrapped text [7] Beta wrapped text [8] Gamma wrapped text"
+        second_entry = reference_text.index(" [7]")
+        third_entry = reference_text.index(" [8]")
+        references.rosetta_line_breaks = [
+            (10, 535.0),
+            (second_entry, 490.0),
+            (35, 532.0),
+            (third_entry, 470.0),
+        ]
 
         self.assertTrue(should_preserve(toc, "Title Page Gateway Introduction Preface Introduction"))
         self.assertFalse(should_preserve(prose, "A normal prose paragraph with visual soft wraps."))
         self.assertFalse(should_preserve(toc, "Input {v0} Conv {v1} Output {v2}"))
+        self.assertEqual(reference_break_offsets(references, reference_text), {second_entry, third_entry})
+        self.assertEqual(
+            reference_break_offsets(references, "[6] Alpha [8] Skipped number [9] Gamma"),
+            set(),
+        )
+        toc_lines = [
+            "Start with a feature . . . . . . . . . .  7",
+            "Detail comes later . . . . . . . . . . .  10",
+            "Limit your choices . . . . . . . . . . .  24",
+        ]
+        toc_text = " ".join(toc_lines)
+        toc_offsets = []
+        toc_offset = 0
+        for toc_line in toc_lines[:-1]:
+            toc_offset += len(toc_line)
+            toc_offsets.append((toc_offset, 400.0))
+            toc_offset += 1
+        dotted_toc = ParagraphState()
+        dotted_toc.rosetta_line_breaks = toc_offsets
+        dotted_entries = toc_entries(dotted_toc, toc_text)
+        self.assertEqual(
+            [entry["page_number"] for entry in dotted_entries],
+            ["7", "10", "24"],
+        )
+        self.assertTrue(all(entry["dotted"] for entry in dotted_entries))
+
+        toc_heading = ParagraphState()
+        toc_heading.bold = True
+        toc_heading.rosetta_line_breaks = []
+        heading_entries = toc_entries(
+            toc_heading, "Hierarchy is Everything            29"
+        )
+        self.assertEqual(len(heading_entries), 1)
+        self.assertEqual(heading_entries[0]["page_number"], "29")
+        self.assertFalse(heading_entries[0]["dotted"])
+
+        self.assertEqual(
+            toc_entries(prose, "Normal prose . . . ends after four dots 2024"), []
+        )
+        self.assertEqual(toc_entries(prose, "Values 1.25 2.50 3.75 4.00 2024"), [])
+        self.assertEqual(toc_entries(prose, "A normal sentence ending in 2024"), [])
         self.assertIn('"{v900000000}"', patched)
+        self.assertIn("910000000 + entry_index", patched)
+        self.assertIn("rosetta_toc_right_edge - page_width", patched)
+        self.assertIn('leader_unit = ". "', patched)
+        self.assertIn("rosetta_reference_hanging_indent", patched)
+        self.assertIn("x = x0 + rosetta_reference_hanging_indent", patched)
         self.assertIn("if rosetta_forced_line_break:", patched)
         self.assertIn("if not rosetta_forced_line_break and var[vid]", patched)
-        self.assertIn('placeholder != "{v900000000}"', files["rosetta_engine"])
-        self.assertIn('sourceChars=len(text.replace("{v900000000}", ""))', files["rosetta_engine"])
-        self.assertIn('self.translated_chars += len(translated.replace("{v900000000}", ""))', files["rosetta_engine"])
+        self.assertIn("int(placeholder[2:-1]) < 900000000", files["rosetta_engine"])
+        self.assertIn("rosetta_strip_internal_placeholders(text)", files["rosetta_engine"])
+        self.assertIn(
+            "rosetta_strip_internal_placeholders(translated)", files["rosetta_engine"]
+        )
 
     def test_patch_upgrades_existing_visual_prose_gate(self) -> None:
         patched = self.run_patch(
@@ -673,6 +1153,8 @@ class Paragraph:
         )
 
         self.assertIn("rosetta_allow_text_like_visual_chars", patched)
+        self.assertIn("rosetta_visual_table_grid_signature", patched)
+        self.assertIn("visual_items.append(item)", patched)
         self.assertIn("rosetta_text_like_visual_chars_enabled", patched)
         self.assertIn("and rosetta_text_like_visual_chars_enabled", patched)
         self.assertIn("without_decimal_points", patched)
@@ -681,13 +1163,20 @@ class Paragraph:
         self.assertIn("math_table_signal_hits", patched)
         self.assertIn("compact_table_signal_hits", patched)
         self.assertIn("dataset_table_signal_hits", patched)
+        self.assertIn("summary_table_label_hits", patched)
+        self.assertIn("summary_table_percentages", patched)
         self.assertIn("numeric_tokens >= 12 and dataset_table_signal_hits >= 3", patched)
+        self.assertIn('"Model" in compact and summary_table_label_hits >= 2', patched)
 
     def test_patch_upgrades_existing_visual_table_gate_for_dataset_tables(self) -> None:
         patched = self.run_patch(
             self.converter_with_bold_helpers()
             + '''        def rosetta_allow_text_like_visual_chars(ltpage: LTPage) -> bool:
-            compact = "DatasetCategoryTrainValTest FarmInsects IP102 QianFSD 143 4938 705 1411"
+            visual_chars = []
+            for item in ltpage:
+                if item:
+                    visual_chars.append(item.get_text())
+            compact = " ".join("".join(visual_chars).split())
             metric_hits = 0
             numeric_tokens = 16
             without_decimal_points = compact
@@ -1019,6 +1508,10 @@ def validate_translation_keys(units: list[TranslationUnit], translations: dict[s
         self.assertIn("is_rosetta_diagram_label_unit", patched)
         self.assertIn("text.casefold()", patched)
         self.assertIn("char.isalnum()", patched)
+        self.assertIn("matcher.real_quick_ratio()", patched)
+        self.assertIn("matcher.quick_ratio()", patched)
+        self.assertIn("canonical_keys = [canonical_duplicate_text", patched)
+        self.assertIn("pair_matches: dict[tuple[int, int], bool]", patched)
         self.assertIn("duplicate.requiresTranslation = False", patched)
         self.assertIn('duplicate.kind = "duplicate-layer"', patched)
         self.assertIn("unitCount=translatable_unit_count(collector.units)", patched)
@@ -1116,6 +1609,33 @@ def validate_translation_keys(units: list[TranslationUnit], translations: dict[s
             "Methods Year FLOPs Param. Size RIND ICCV 2021 695.77G 59.39M 453MB "
             "SFIAN TITS 2023 84.57G 13.63M 56MB SCRWKV ICML 2026 22.78G 1.22M 28MB"
         )
+        probe_table_text = (
+            "Probe Logistic p0 range Approx. reserve Truncation onset Task 1 spec recall "
+            "0.838–0.861 568–665 tok target q = 90% GSM8K-pack 0.853–0.893 438–602 tok "
+            "90% MMLU-Pro-pack 0.733–0.755 1003–1094 tok 50% partial DROP-pack 0.481–0.624 "
+            "1539–2126 tok 50%"
+        )
+        benchmark_table_text = (
+            "Target Realized p Ref. r Gemini 2.0 Flash Haiku 4.5 GPT-4.1-mini 0% 0.0% "
+            "3759 1.000 0.972 1.000 25% 22.9% 2820 0.960 0.906 0.972 50% 45.9% 1880 "
+            "0.944 0.894 0.988 75% 68.8% 940 0.894 0.875 0.981 90% 82.6% 376 0.659 "
+            "0.666 0.853 92% 84.4% 301 0.400 0.441 0.609 94% 86.3% 226 0.016 0.113 "
+            "0.413 96% 88.1% 151 0.009 0.103 0.284 98% 89.9% 76 0.006 0.038 0.331"
+        )
+        summary_table_text = (
+            "Model {v16} Pred. {v17}8K{v18} Obs. {v19}8K{v20} Obs. {v21}16K{v22} "
+            "Gemini 2.0 Flash 665 91.9% 92.1% 95.9% Claude Haiku 4.5 650 "
+            "92.1% 92.2% 96.0% GPT-4.1-mini 568 93.1% 93.1% 96.4%"
+        )
+        summary_footer_text = (
+            "Word cohort micro tcpWER (18 categories): 29.41 "
+            "Char cohort micro tcpCER (3 categories): 27.38 "
+            "Macro tcpMER (21 categories): 29.27"
+        )
+        compact_summary_footer_text = (
+            "Baseline average (21 categories): 79.15 "
+            "Our system (macro, 21 categories): 29.27"
+        )
         formula_text = "max {v8} 2 {v9}24{v10} {v11} 1 {v12} max {v13} 2 {v14}25{v15}"
         operator_formula_text = (
             "1{v7} [0{v8}){v9} Partition(EM({v10})){v11}6{v12} "
@@ -1125,6 +1645,14 @@ def validate_translation_keys(units: list[TranslationUnit], translations: dict[s
         prose_text = (
             "For the TUT dataset, our method achieves SOTA performance, with F1 and mIoU "
             "reaching 0.8428 and 0.8512, respectively."
+        )
+        experiment_prose_text = (
+            "Across the ablation, Exp 1 reached 12.3, Exp 2 reached 13.4, Exp 3 reached "
+            "14.5, and Exp 4 reached 15.6. These results motivate the final configuration."
+        )
+        summary_prose_text = (
+            "The report compares baseline (21 categories): 79.15 with our system "
+            "(21 categories): 29.27 in the discussion."
         )
         panel_label_text = (
             "(a) Comparison with SOTA methods. (c) Segmentation results in complex "
@@ -1148,6 +1676,23 @@ def validate_translation_keys(units: list[TranslationUnit], translations: dict[s
         )
 
         self.assertTrue(namespace["is_rosetta_table_like_unit"](table_text))
+        self.assertTrue(namespace["is_rosetta_table_like_unit"](probe_table_text))
+        self.assertTrue(namespace["is_rosetta_table_like_unit"](benchmark_table_text))
+        self.assertTrue(
+            namespace["is_rosetta_table_like_unit"](
+                "Exp System tcpMER (%) Exp1 End-to-end VAD ASR 141.2 "
+                "Exp2 pyannote seg 35.3 Exp3 overlap disabled 30.6 Exp4 DiariZen 29.27"
+            )
+        )
+        self.assertTrue(namespace["is_rosetta_table_like_unit"](summary_table_text))
+        self.assertTrue(namespace["is_rosetta_table_like_unit"](summary_footer_text))
+        self.assertTrue(namespace["is_rosetta_table_like_unit"](compact_summary_footer_text))
+        table_unit = type("TableUnit", (), {"kind": "table-like"})()
+        self.assertEqual(
+            namespace["rosetta_nontranslatable_render_text"](table_unit, compact_summary_footer_text),
+            "Baseline average (21 categories): 79.15{v900000000}"
+            "Our system (macro, 21 categories): 29.27",
+        )
         self.assertTrue(namespace["is_rosetta_formula_like_unit"](formula_text))
         self.assertTrue(namespace["is_rosetta_formula_like_unit"](operator_formula_text))
         self.assertTrue(namespace["is_rosetta_page_number_unit"]("8"))
@@ -1160,6 +1705,8 @@ def validate_translation_keys(units: list[TranslationUnit], translations: dict[s
         self.assertTrue(namespace["is_rosetta_diagram_label_unit"](frame_text, 1))
         self.assertTrue(namespace["is_rosetta_diagram_label_unit"]("第二篇中的", 2))
         self.assertFalse(namespace["is_rosetta_table_like_unit"](prose_text))
+        self.assertFalse(namespace["is_rosetta_table_like_unit"](experiment_prose_text))
+        self.assertFalse(namespace["is_rosetta_table_like_unit"](summary_prose_text))
         self.assertFalse(namespace["is_rosetta_formula_like_unit"](formula_intro_text))
         self.assertFalse(namespace["is_rosetta_figure_panel_label_unit"](caption_text))
         self.assertFalse(namespace["is_rosetta_diagram_label_unit"](caption_text, 2))

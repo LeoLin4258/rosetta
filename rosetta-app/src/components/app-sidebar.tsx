@@ -2,8 +2,6 @@ import { useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   AlertCircleIcon,
-  CheckCircle2Icon,
-  CircleIcon,
   Loader2Icon,
   PlusIcon,
   SettingsIcon,
@@ -43,7 +41,6 @@ import {
 } from "@/components/ui/sidebar";
 import type { RosettaJobSummary } from "@/types/rosetta";
 import { cn } from "@/lib/utils";
-import { DocumentFormatIcon } from "@/components/document-format-icon";
 
 type AppSidebarProps = React.ComponentProps<typeof Sidebar> & {
   hasMacTitlebarOverlay?: boolean;
@@ -100,7 +97,7 @@ function SidebarJobStatusIndicator({
   if (state === "running") {
     return (
       <span
-        className="inline-flex size-5 shrink-0 items-center justify-center rounded-md bg-blue-500/10 text-blue-700 ring-1 ring-blue-500/25 dark:text-blue-300"
+        className="inline-flex size-4 shrink-0 items-center justify-center text-blue-600 dark:text-blue-400"
         aria-label={label}
         role="img"
         title={label}
@@ -113,12 +110,15 @@ function SidebarJobStatusIndicator({
   if (state === "completed") {
     return (
       <span
-        className="inline-flex size-5 shrink-0 items-center justify-center rounded-md text-emerald-700 dark:text-emerald-300"
+        className="inline-flex size-4 shrink-0 items-center justify-center"
         aria-label={label}
         role="img"
         title={label}
       >
-        <CheckCircle2Icon className="size-4" />
+        <span
+          className="size-1.5 rounded-full bg-emerald-600/65 dark:bg-emerald-400/70"
+          aria-hidden="true"
+        />
       </span>
     );
   }
@@ -126,12 +126,12 @@ function SidebarJobStatusIndicator({
   if (state === "failed") {
     return (
       <span
-        className="inline-flex size-5 shrink-0 items-center justify-center rounded-md text-rose-700 dark:text-rose-300"
+        className="inline-flex size-4 shrink-0 items-center justify-center text-rose-700 dark:text-rose-300"
         aria-label={label}
         role="img"
         title={label}
       >
-        <AlertCircleIcon className="size-4" />
+        <AlertCircleIcon className="size-3.5" />
       </span>
     );
   }
@@ -139,24 +139,30 @@ function SidebarJobStatusIndicator({
   if (state === "partial") {
     return (
       <span
-        className="inline-flex size-5 shrink-0 items-center justify-center rounded-md text-amber-700 dark:text-amber-300"
+        className="inline-flex size-4 shrink-0 items-center justify-center"
         aria-label={label}
         role="img"
         title={label}
       >
-        <CircleIcon className="size-3.5" />
+        <span
+          className="size-2 rounded-full border border-amber-600/65 dark:border-amber-400/70"
+          aria-hidden="true"
+        />
       </span>
     );
   }
 
   return (
     <span
-      className="inline-flex size-5 shrink-0 items-center justify-center rounded-md text-sidebar-foreground/45"
+      className="inline-flex size-4 shrink-0 items-center justify-center"
       aria-label={label}
       role="img"
       title={label}
     >
-      <CircleIcon className="size-3.5" />
+      <span
+        className="size-2 rounded-full border border-sidebar-foreground/25"
+        aria-hidden="true"
+      />
     </span>
   );
 }
@@ -170,7 +176,6 @@ export function AppSidebar({
   const jobs = useRosettaStore((s) => s.jobs);
   const activeJobId = useRosettaStore((s) => s.activeJobId);
   const activeTranslationRun = useRosettaStore((s) => s.activeTranslationRun);
-  const pdfPreparedJobIds = useRosettaStore((s) => s.pdfPreparedJobIds);
   const setJobList = useRosettaStore((s) => s.setJobList);
   const clearActiveJob = useRosettaStore((s) => s.clearActiveJob);
   const setActiveBundle = useRosettaStore((s) => s.setActiveBundle);
@@ -323,33 +328,18 @@ export function AppSidebar({
                   const total = isRunning
                     ? activeTranslationRun.targetSegmentIds.length
                     : job.segmentCount;
-                  const progressPercent =
-                    total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : 0;
                   const isActive = !isSettingsRoute && activeJobId === job.id;
-                  const emphasizeRunning = translationState === "running" && isActive;
-                  const isPdfPrepared =
-                    job.format === "pdf" && pdfPreparedJobIds.includes(job.id);
 
                   return (
                     <SidebarMenuItem key={job.id}>
                       <SidebarMenuButton
                         className={cn(
-                          "relative h-9 gap-1.5 !pr-2 text-[0.8125rem] active:scale-100",
-                          emphasizeRunning &&
-                            "bg-blue-500/10 text-sidebar-foreground ring-1 ring-blue-500/25 hover:bg-blue-500/15 data-active:bg-blue-500/15 data-active:text-sidebar-foreground"
+                          "relative h-9 gap-2 !pr-2 text-[0.8125rem] font-normal text-sidebar-foreground/80 active:scale-100 hover:bg-sidebar-accent/60 data-active:bg-sidebar-accent/80 data-active:font-medium data-active:text-sidebar-foreground",
                         )}
                         isActive={isActive}
                         onClick={() => void openJob(job)}
-                        tooltip={
-                          isPdfPrepared
-                            ? `${job.filename} · PDF 已预解析`
-                            : job.filename
-                        }
+                        tooltip={job.filename}
                       >
-                        <DocumentFormatIcon
-                          format={job.format}
-                          isPdfPrepared={isPdfPrepared}
-                        />
                         <span className="min-w-0 flex-1 truncate">{job.filename}</span>
                         <span className="flex shrink-0 items-center transition-opacity duration-150 group-hover/menu-item:opacity-0 group-focus-within/menu-item:opacity-0">
                           <SidebarJobStatusIndicator
@@ -357,21 +347,10 @@ export function AppSidebar({
                             completed={completed}
                             total={total}
                           />
-                          {translationState === "running" && (
-                            <span
-                              className="pointer-events-none absolute right-2 bottom-1 left-7 h-0.5 overflow-hidden rounded-full bg-blue-500/15"
-                              aria-hidden="true"
-                            >
-                              <span
-                                className="block h-full rounded-full bg-blue-500/70 transition-[width] duration-300 ease-out motion-reduce:transition-none"
-                                style={{ width: `${progressPercent}%` }}
-                              />
-                            </span>
-                          )}
                         </span>
                       </SidebarMenuButton>
                       <SidebarMenuAction
-                        className="right-1.5 bg-sidebar/90 text-sidebar-foreground/65 shadow-sm backdrop-blur hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                        className="right-1.5 text-sidebar-foreground/50 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
                         onClick={(e) => {
                           e.preventDefault();
                           e.stopPropagation();
@@ -390,7 +369,6 @@ export function AppSidebar({
                 {recentJobs.length === 0 && (
                   <SidebarMenuItem>
                     <SidebarMenuButton className="text-muted-foreground/50" disabled>
-                      <DocumentFormatIcon format="txt" isPdfPrepared={false} />
                       <span>暂无文档</span>
                     </SidebarMenuButton>
                   </SidebarMenuItem>

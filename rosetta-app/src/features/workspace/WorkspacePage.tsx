@@ -52,6 +52,7 @@ import {
 } from "@/lib/pdf2zhRuntime";
 import {
   defaultPdfSelectedPages,
+  nextPdfSelectedPages,
   normalizePdfPageNumbers,
   shouldConfirmLongPdfTranslation,
 } from "@/lib/pdfPageSelectionPolicy";
@@ -107,6 +108,12 @@ export function WorkspacePage() {
   const [selectedBlockIds, setSelectedBlockIds] = useState<string[]>([]);
   const [pdfPageCount, setPdfPageCount] = useState(0);
   const [pdfSelectedPages, setPdfSelectedPages] = useState<number[]>([]);
+  const [pdfCurrentPage, setPdfCurrentPage] = useState(1);
+  const [pdfNavigationRequest, setPdfNavigationRequest] = useState<{
+    pageNumber: number;
+    requestId: number;
+  } | null>(null);
+  const pdfNavigationRequestIdRef = useRef(0);
   const [pdfForceRetranslate, setPdfForceRetranslate] = useState(false);
   const [pendingLongPdfTranslation, setPendingLongPdfTranslation] =
     useState<PendingLongPdfTranslation | null>(null);
@@ -164,6 +171,8 @@ export function WorkspacePage() {
     setSelectedBlockIds([]);
     setPdfPageCount(0);
     setPdfSelectedPages([]);
+    setPdfCurrentPage(1);
+    setPdfNavigationRequest(null);
     setPdfForceRetranslate(false);
     setPendingLongPdfTranslation(null);
     setIsPausingPdfRun(false);
@@ -175,15 +184,45 @@ export function WorkspacePage() {
     setIsEditingSource(false);
     setSourceDraft("");
     setPendingLongPdfTranslation(null);
+    setPdfCurrentPage(1);
+    setPdfNavigationRequest(null);
   }, [activeSourceFileId]);
 
   const handlePdfPageCountChange = useCallback((count: number) => {
     setPdfPageCount(count);
+    setPdfCurrentPage((current) =>
+      Math.max(1, Math.min(current, Math.max(1, count))),
+    );
   }, []);
 
   const handlePdfSelectedPagesChange = useCallback((pages: number[]) => {
     setPdfSelectedPages(pages);
   }, []);
+
+  const handlePdfNavigate = useCallback(
+    (requestedPage: number) => {
+      if (pdfPageCount <= 0) return;
+      const pageNumber = Math.max(1, Math.min(requestedPage, pdfPageCount));
+      pdfNavigationRequestIdRef.current += 1;
+      setPdfCurrentPage(pageNumber);
+      setPdfNavigationRequest({
+        pageNumber,
+        requestId: pdfNavigationRequestIdRef.current,
+      });
+    },
+    [pdfPageCount],
+  );
+
+  const handlePdfRangeSelection = useCallback(
+    (range: string) => {
+      const pages = normalizePdfPageNumbers(
+        expandPageSelection(range),
+        pdfPageCount,
+      );
+      if (pages.length > 0) setPdfSelectedPages(pages);
+    },
+    [pdfPageCount],
+  );
 
   const isPdfJob = sourceFile?.format === "pdf";
   const pdfProgress =
@@ -663,6 +702,18 @@ export function WorkspacePage() {
           segments: [],
         });
       }
+      if (!force) {
+        const translatedPages = state.pages
+          .filter((page) => page.status === "translated")
+          .map((page) => page.pageNumber);
+        setPdfSelectedPages((currentSelection) =>
+          nextPdfSelectedPages(
+            state.sourcePageCount || pdfPageCount,
+            currentSelection,
+            translatedPages,
+          ),
+        );
+      }
       return state;
     } catch (err) {
       console.error("[pdf-translate] failed", err);
@@ -1058,16 +1109,17 @@ export function WorkspacePage() {
             targetLang={targetLang}
             selectedBlockCount={selectedBlockIds.length}
             pdfSelectedPageCount={pdfSelectedPages.length}
+            pdfSelectedPages={pdfSelectedPages}
             pdfPageCount={pdfPageCount}
+            pdfCurrentPage={pdfCurrentPage}
             pdfForceRetranslate={pdfForceRetranslate}
             onPdfForceRetranslateChange={setPdfForceRetranslate}
+            onPdfNavigate={handlePdfNavigate}
+            onPdfSelectRange={handlePdfRangeSelection}
             onSelectAllPages={() =>
               handlePdfSelectedPagesChange(
                 Array.from({ length: pdfPageCount }, (_, i) => i + 1),
               )
-            }
-            onSelectPreviewPages={() =>
-              handlePdfSelectedPagesChange(defaultPdfSelectedPages(pdfPageCount))
             }
             onDeselectAllPages={() => handlePdfSelectedPagesChange([])}
             onSourceLangChange={handleSourceLangChange}
@@ -1154,7 +1206,10 @@ export function WorkspacePage() {
               pdfError={pdfError}
               pdfActivePages={pdfActivePages}
               pdfSelectedPages={pdfSelectedPages}
+              pdfCurrentPage={pdfCurrentPage}
+              pdfNavigationRequest={pdfNavigationRequest}
               onPdfPageCountChange={handlePdfPageCountChange}
+              onPdfCurrentPageChange={setPdfCurrentPage}
               onPdfSelectedPagesChange={handlePdfSelectedPagesChange}
             />
           </div>

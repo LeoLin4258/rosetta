@@ -13,10 +13,13 @@ import {
   Info,
   Download,
   LoaderCircle,
+  Monitor,
+  Moon,
   Palette,
   RefreshCw,
   Send,
   ShieldCheck,
+  Sun,
   Timer,
   Trash2,
   XCircle,
@@ -74,10 +77,14 @@ const modeOptions: Array<{ label: string; value: TranslationMode }> = [
   { label: "连贯", value: "coherent" },
 ];
 
-const themeOptions: Array<{ label: string; value: AppThemeMode }> = [
-  { label: "浅色", value: "light" },
-  { label: "深色", value: "dark" },
-  { label: "跟随系统", value: "system" },
+const themeOptions: Array<{
+  icon: typeof Palette;
+  label: string;
+  value: AppThemeMode;
+}> = [
+  { icon: Sun, label: "浅色", value: "light" },
+  { icon: Moon, label: "深色", value: "dark" },
+  { icon: Monitor, label: "跟随系统", value: "system" },
 ];
 
 type AvailableAppUpdate = NonNullable<Awaited<ReturnType<typeof check>>>;
@@ -337,58 +344,64 @@ export function SettingsPage() {
             onSelect={setActiveSection}
           />
 
-          <main className="min-w-0">
-            {activeSection === "translation-ai" ? (
-              <TranslationAiSection
-                apiStatus={apiStatus}
-                canProbeApi={canProbeApi}
-                externalApiOpen={externalApiOpen}
-                isProbingApi={isProbingApi}
-                isTranslationRunning={activeTranslationRun != null}
-                managedRuntimeStatus={managedRuntimeStatus}
-                missingConnectionFields={missingConnectionFields}
-                apiError={apiError}
-                apiProbeResult={apiProbeResult}
-                onExternalApiOpenChange={setExternalApiOpen}
-                onProbeApi={() => void probeApi()}
-                remoteApiConfigured={remoteApiConfigured}
-                rwkv={rwkv}
-                setProviderPreference={(providerPreference) =>
-                  updateRwkvConfig({ providerPreference })
-                }
-                setTranslationMode={setTranslationMode}
-                updateTextField={updateTextField}
-                updateTimeout={updateTimeout}
-              />
-            ) : null}
+          <main className="min-w-0 overflow-hidden">
+            <SettingsSectionTransition activeSection={activeSection}>
+              {(displayedSection) => (
+                <>
+                  {displayedSection === "translation-ai" ? (
+                    <TranslationAiSection
+                      apiStatus={apiStatus}
+                      canProbeApi={canProbeApi}
+                      externalApiOpen={externalApiOpen}
+                      isProbingApi={isProbingApi}
+                      isTranslationRunning={activeTranslationRun != null}
+                      managedRuntimeStatus={managedRuntimeStatus}
+                      missingConnectionFields={missingConnectionFields}
+                      apiError={apiError}
+                      apiProbeResult={apiProbeResult}
+                      onExternalApiOpenChange={setExternalApiOpen}
+                      onProbeApi={() => void probeApi()}
+                      remoteApiConfigured={remoteApiConfigured}
+                      rwkv={rwkv}
+                      setProviderPreference={(providerPreference) =>
+                        updateRwkvConfig({ providerPreference })
+                      }
+                      setTranslationMode={setTranslationMode}
+                      updateTextField={updateTextField}
+                      updateTimeout={updateTimeout}
+                    />
+                  ) : null}
 
-            {activeSection === "document-handling" ? (
-              <DocumentHandlingSection />
-            ) : null}
+                  {displayedSection === "document-handling" ? (
+                    <DocumentHandlingSection />
+                  ) : null}
 
-            {activeSection === "appearance" ? (
-              <AppearanceSettingsSection
-                setThemeMode={setThemeMode}
-                themeMode={themeMode}
-              />
-            ) : null}
+                  {displayedSection === "appearance" ? (
+                    <AppearanceSettingsSection
+                      setThemeMode={setThemeMode}
+                      themeMode={themeMode}
+                    />
+                  ) : null}
 
-            {activeSection === "about-settings" ? (
-              <AboutSettingsSection
-                appVersion={appVersion}
-                availableUpdate={availableUpdate}
-                downloadProgress={downloadProgress}
-                onCheckForUpdate={() => void checkForUpdate()}
-                onInstallUpdate={() => void installAvailableUpdate()}
-                onRestart={() => void restartApp()}
-                updateError={updateError}
-                updateStatus={updateStatus}
-              />
-            ) : null}
+                  {displayedSection === "about-settings" ? (
+                    <AboutSettingsSection
+                      appVersion={appVersion}
+                      availableUpdate={availableUpdate}
+                      downloadProgress={downloadProgress}
+                      onCheckForUpdate={() => void checkForUpdate()}
+                      onInstallUpdate={() => void installAvailableUpdate()}
+                      onRestart={() => void restartApp()}
+                      updateError={updateError}
+                      updateStatus={updateStatus}
+                    />
+                  ) : null}
 
-            {activeSection === "danger-settings" ? (
-              <DangerSettingsSection clearJobHistory={clearJobHistory} />
-            ) : null}
+                  {displayedSection === "danger-settings" ? (
+                    <DangerSettingsSection clearJobHistory={clearJobHistory} />
+                  ) : null}
+                </>
+              )}
+            </SettingsSectionTransition>
           </main>
         </div>
       </section>
@@ -445,6 +458,53 @@ function SettingsNavigation({
         })}
       </div>
     </nav>
+  );
+}
+
+function SettingsSectionTransition({
+  activeSection,
+  children,
+}: {
+  activeSection: SettingsSectionId;
+  children: (section: SettingsSectionId) => React.ReactNode;
+}) {
+  const [displayedSection, setDisplayedSection] =
+    useState<SettingsSectionId>(activeSection);
+  const [phase, setPhase] = useState<"idle" | "leaving" | "entering">(
+    "idle",
+  );
+
+  useEffect(() => {
+    if (activeSection === displayedSection) return;
+
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setDisplayedSection(activeSection);
+      setPhase("idle");
+      return;
+    }
+
+    setPhase("leaving");
+    const timeout = window.setTimeout(() => {
+      setDisplayedSection(activeSection);
+      setPhase("entering");
+    }, 110);
+
+    return () => window.clearTimeout(timeout);
+  }, [activeSection, displayedSection]);
+
+  useEffect(() => {
+    if (phase !== "entering") return;
+    const timeout = window.setTimeout(() => setPhase("idle"), 170);
+    return () => window.clearTimeout(timeout);
+  }, [phase]);
+
+  return (
+    <div
+      className="rosetta-settings-section-transition min-w-0"
+      data-phase={phase}
+    >
+      {children(displayedSection)}
+    </div>
   );
 }
 
@@ -837,7 +897,7 @@ function RemoteApiSettingsPanel({
               <ShieldCheck
                 className={cn(
                   apiStatus === "connected"
-                    ? "text-[var(--rosetta-settings-accent)]"
+                    ? "text-emerald-600 dark:text-emerald-400"
                     : "text-muted-foreground"
                 )}
               />
@@ -930,7 +990,7 @@ function BackendChoiceRow({
                 className={cn(
                   "size-4",
                   status === "active"
-                    ? "text-[var(--rosetta-settings-accent)]"
+                    ? "text-emerald-600 dark:text-emerald-400"
                     : "text-amber-700 dark:text-amber-300"
                 )}
               />
@@ -982,29 +1042,41 @@ function AppearanceSettingsSection({
       id="appearance"
       title="外观"
     >
-      <div className="grid gap-3 md:grid-cols-[8rem_minmax(18rem,1fr)] md:items-center">
+      <div className="flex max-w-xl flex-col gap-3">
         <Label>主题</Label>
-        <ToggleGroup
-          className="grid grid-cols-3"
-          onValueChange={(value) => {
-            if (value) {
-              setThemeMode(value as AppThemeMode);
-            }
-          }}
-          type="single"
-          value={themeMode}
-          variant="outline"
+        <div
+          aria-label="主题"
+          className="grid grid-cols-3 gap-2"
+          role="radiogroup"
         >
-          {themeOptions.map((option) => (
-            <ToggleGroupItem
-              key={option.value}
-              className={SETTINGS_TOGGLE_ITEM_CLASS}
-              value={option.value}
-            >
-              {option.label}
-            </ToggleGroupItem>
-          ))}
-        </ToggleGroup>
+          {themeOptions.map((option) => {
+            const Icon = option.icon;
+            const selected = themeMode === option.value;
+
+            return (
+              <button
+                key={option.value}
+                aria-checked={selected}
+                className={cn(
+                  "flex h-20 min-w-0 flex-col items-center justify-center gap-2 rounded-lg border border-border/70 bg-background text-sm text-muted-foreground outline-none transition-colors hover:border-border hover:bg-muted/40 hover:text-foreground focus-visible:ring-2 focus-visible:ring-blue-500/50",
+                  selected &&
+                    "border-blue-500/45 bg-blue-500/[0.07] text-foreground ring-1 ring-inset ring-blue-500/20 dark:border-blue-400/45 dark:bg-blue-400/[0.08]",
+                )}
+                onClick={() => setThemeMode(option.value)}
+                role="radio"
+                type="button"
+              >
+                <Icon
+                  className={cn(
+                    "size-5",
+                    selected && "text-blue-600 dark:text-blue-400",
+                  )}
+                />
+                <span className="font-medium">{option.label}</span>
+              </button>
+            );
+          })}
+        </div>
       </div>
     </SettingsSection>
   );
@@ -1317,7 +1389,7 @@ function InlineNotice({
       className={cn(
         "flex items-start gap-2 rounded-md border border-border/70 bg-muted/25 px-3 py-2 text-sm text-muted-foreground",
         tone === "success" &&
-          "border-primary/20 bg-primary/5 text-[var(--rosetta-settings-accent-ink)]",
+          "border-emerald-500/25 bg-emerald-500/[0.07] text-emerald-800 dark:text-emerald-300",
         tone === "warning" &&
           "border-amber-500/25 bg-amber-500/8 text-amber-800 dark:text-amber-300",
         tone === "danger" &&
@@ -1369,7 +1441,8 @@ function SemanticBadge({
       className={cn(
         "h-5 gap-1.5 border-transparent px-1.5 text-xs font-medium ring-1 ring-inset ring-border/70",
         tone === "selected" && "rosetta-settings-accent-badge",
-        tone === "success" && "rosetta-settings-accent-badge",
+        tone === "success" &&
+          "border-emerald-500/20 bg-emerald-500/10 text-emerald-800 ring-emerald-500/20 dark:text-emerald-300",
         tone === "warning" &&
           "border-amber-500/20 bg-amber-500/10 text-amber-800 ring-amber-500/20 dark:text-amber-300",
         tone === "danger" &&
@@ -1605,13 +1678,13 @@ function ApiProbeResult({
       className={cn(
         "flex flex-col gap-3 rounded-md border bg-background p-3",
         result.ok
-          ? "border-primary/25 bg-primary/5"
+          ? "border-emerald-500/25 bg-emerald-500/[0.07]"
           : "border-destructive/40 bg-destructive/5"
       )}
     >
       <div className="flex flex-wrap items-center gap-2 text-sm">
         {result.ok ? (
-          <CheckCircle2 className="text-[var(--rosetta-settings-accent)]" />
+          <CheckCircle2 className="text-emerald-600 dark:text-emerald-400" />
         ) : (
           <XCircle className="text-destructive" />
         )}

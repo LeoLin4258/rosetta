@@ -1,5 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  PdfV3RunControlStatus,
+  PdfV3RunExportResult,
+  PdfV3RunList,
+  PdfV3RunRecoveryResult,
   RosettaExportKind,
   RosettaExportResult,
   RosettaJobDeleteResult,
@@ -86,6 +90,12 @@ export type PdfRepairResult = {
   warnings: string[];
 };
 
+export type PdfV3ComponentStatus = {
+  schema: string;
+  ready: boolean;
+  verifiedAtMs: number;
+};
+
 export type LocalDataResetItem = {
   label: string;
   path: string;
@@ -155,6 +165,110 @@ export function pickRosettaExportPath(
 
 export function listRosettaJobs() {
   return invoke<RosettaJobSummary[]>("list_rosetta_jobs");
+}
+
+export function probeRosettaPdfV3Component(targetLanguage: string) {
+  return invoke<PdfV3ComponentStatus>("probe_rosetta_pdf_v3_component", {
+    targetLanguage,
+  });
+}
+
+export function listRosettaPdfV3Runs(
+  jobId: string,
+  options: {
+    targetLanguage?: string | null;
+    beforeRevision?: number | null;
+    limit?: number | null;
+  } = {}
+) {
+  return invoke<PdfV3RunList>("list_rosetta_pdf_v3_runs", {
+    jobId,
+    targetLanguage: options.targetLanguage,
+    beforeRevision: options.beforeRevision,
+    limit: options.limit,
+  });
+}
+
+export function getRosettaPdfV3RunStatus(
+  jobId: string,
+  runId: string,
+  options: {
+    startAfter?: number | null;
+    limit?: number | null;
+  } = {},
+) {
+  return invoke<PdfV3RunControlStatus>("get_rosetta_pdf_v3_run_status", {
+    jobId,
+    runId,
+    startAfter: options.startAfter,
+    limit: options.limit,
+  });
+}
+
+export function createRosettaPdfV3Run(
+  jobId: string,
+  requestedPageSet: string | null,
+  targetLanguage: string,
+  preferredPageNumber: number | null = null,
+) {
+  return invoke<PdfV3RunControlStatus>("create_rosetta_pdf_v3_run", {
+    jobId,
+    requestedPageSet,
+    targetLanguage,
+    preferredPageNumber,
+  });
+}
+
+export function pauseRosettaPdfV3Run(jobId: string, runId: string) {
+  return invoke<PdfV3RunControlStatus>("pause_rosetta_pdf_v3_run", {
+    jobId,
+    runId,
+  });
+}
+
+export function resumeRosettaPdfV3Run(jobId: string, runId: string) {
+  return invoke<PdfV3RunControlStatus>("resume_rosetta_pdf_v3_run", {
+    jobId,
+    runId,
+  });
+}
+
+export function cancelRosettaPdfV3Run(jobId: string, runId: string) {
+  return invoke<PdfV3RunControlStatus>("cancel_rosetta_pdf_v3_run", {
+    jobId,
+    runId,
+  });
+}
+
+export function retryRosettaPdfV3Page(
+  jobId: string,
+  runId: string,
+  pageNumber: number,
+) {
+  return invoke<PdfV3RunControlStatus>("retry_rosetta_pdf_v3_page", {
+    jobId,
+    runId,
+    pageNumber,
+  });
+}
+
+export function recoverRosettaPdfV3Run(jobId: string, runId: string) {
+  return invoke<PdfV3RunRecoveryResult>("recover_rosetta_pdf_v3_run", {
+    jobId,
+    runId,
+  });
+}
+
+export function exportRosettaPdfV3Run(
+  jobId: string,
+  runId: string,
+  targetPath: string,
+) {
+  return invoke<PdfV3RunExportResult>("export_rosetta_pdf_v3_run", {
+    jobId,
+    runId,
+    targetPath,
+  });
 }
 
 export function loadRosettaJob(jobId: string) {
@@ -500,6 +614,24 @@ export async function renderRosettaPdfTranslatedPageAsPng(
       jobId,
       pageNumber,
       targetLang,
+      targetWidth,
+    },
+  );
+  return new Uint8Array(buffer);
+}
+
+export async function renderRosettaPdfV3TranslatedPageAsPng(
+  jobId: string,
+  runId: string,
+  pageNumber: number,
+  targetWidth: number,
+): Promise<Uint8Array> {
+  const buffer = await invoke<ArrayBuffer>(
+    "render_rosetta_pdf_v3_translated_page_as_png",
+    {
+      jobId,
+      runId,
+      pageNumber,
       targetWidth,
     },
   );

@@ -146,6 +146,192 @@ export type RosettaJob = {
 
 export type RosettaJobSummary = RosettaJob;
 
+export type PdfV3RunState =
+  | "running"
+  | "paused"
+  | "cancelling"
+  | "cancelled"
+  | "failed"
+  | "completed";
+
+export type PdfV3SchedulerSummary = {
+  requestedPages: number;
+  pendingPages: number;
+  extractingPages: number;
+  extractedPages: number;
+  translatingPages: number;
+  completedPages: number;
+  preservedPages: number;
+  failedPages: number;
+};
+
+export type PdfV3RunListItem = {
+  runId: string;
+  translationRevision: number;
+  state: PdfV3RunState;
+  sourcePageCount: number;
+  requestedPageSet: string;
+  sourceLanguage: string;
+  targetLanguage: string;
+  ownedByCurrentSession: boolean;
+  ownerRecoveryEligibleAtMs: number;
+  summary: PdfV3SchedulerSummary;
+};
+
+export type PdfV3RunList = {
+  schema: "rosetta-pdf-v3-run-list/1";
+  runs: PdfV3RunListItem[];
+  nextBeforeRevision: number | null;
+  hasMore: boolean;
+};
+
+export type PdfV3SchedulerStage = "extraction" | "translation";
+
+export type PdfV3ExtractionAuthority = {
+  artifactId: string;
+  sourcePageHash: string;
+};
+
+export type PdfV3PatchAuthority = {
+  patchId: string;
+  translationRevision: number;
+};
+
+export type PdfV3PageState =
+  | { kind: "pending" }
+  | { kind: "extracted"; extraction: PdfV3ExtractionAuthority }
+  | {
+      kind: "completed";
+      extraction: PdfV3ExtractionAuthority;
+      patch: PdfV3PatchAuthority;
+    }
+  | {
+      kind: "preserved";
+      extraction: PdfV3ExtractionAuthority;
+      reasonCode: string;
+    }
+  | {
+      kind: "failed";
+      stage: PdfV3SchedulerStage;
+      extraction: PdfV3ExtractionAuthority | null;
+      reasonCode: string;
+      retryable: boolean;
+    };
+
+export type PdfV3PageControlStatus = {
+  pageNumber: number;
+  state: PdfV3PageState;
+  activeLease: {
+    stage: PdfV3SchedulerStage;
+    leasedAtMs: number;
+    ownedByCurrentSession: boolean;
+  } | null;
+  extractionAttempts: number;
+  translationAttempts: number;
+  updatedAtMs: number;
+};
+
+export type PdfV3RunControlStatus = {
+  schema: "rosetta-pdf-v3-run-control-status/4";
+  runId: string;
+  state: PdfV3RunState;
+  sourceFingerprint: string;
+  sourcePageCount: number;
+  requestedPageSet: string;
+  sourceLanguage: string;
+  targetLanguage: string;
+  ownedByCurrentSession: boolean;
+  ownerLeaseUpdatedAtMs: number;
+  ownerRecoveryEligibleAtMs: number;
+  ownerHeartbeat: {
+    active: boolean;
+    intervalMs: number;
+    lastSuccessAtMs: number | null;
+    consecutiveFailures: number;
+  };
+  worker: {
+    active: boolean;
+    stage: "starting" | "extracting" | "translating" | "waiting" | "stopping" | null;
+    lastProgressAtMs: number | null;
+    consecutiveFailures: number;
+  };
+  cancellation: {
+    requestedAtMs: number;
+    reasonCode: string;
+  } | null;
+  summary: PdfV3SchedulerSummary;
+  runtime: {
+    manifestId: string;
+    componentId: string;
+    componentVersion: string;
+    componentManifestId: string;
+    componentBuildSha256: string;
+    platformOs: string;
+    platformArch: string;
+    providerId: string;
+    modelId: string;
+    modelSha256: string;
+    translationRevision: number;
+    rendererVersion: string;
+    minimumFitScale: number;
+    regularFont: PdfV3TranslationFontBinding;
+    boldFont: PdfV3TranslationFontBinding | null;
+  };
+  pages: PdfV3PageControlStatus[];
+  nextStartAfter: number | null;
+  hasMore: boolean;
+};
+
+export type PdfV3TranslationFontBinding = {
+  assetId: string;
+  weight: "regular" | "bold";
+  faceIndex: number;
+  fingerprintSha256: string;
+  byteCount: number;
+};
+
+export type PdfV3RecoveryReport = {
+  releasedExtractionLeases: number;
+  releasedTranslationLeases: number;
+  promotedExtractions: number;
+  promotedPatches: number;
+  invalidatedExtractions: number;
+  invalidatedPatches: number;
+  retainedCompletedPages: number;
+};
+
+export type PdfV3RunRecoveryResult = {
+  schema: "rosetta-pdf-v3-run-recovery-result/1";
+  recovery: PdfV3RecoveryReport;
+  status: PdfV3RunControlStatus;
+};
+
+export type PdfV3RunExportResult = {
+  schema: "rosetta-pdf-v3-run-export/1";
+  runId: string;
+  targetLanguage: string;
+  requestedPageCount: number;
+  translatedPageCount: number;
+  preservedPageCount: number;
+  export: {
+    schema: "rosetta-pdf-v3-region-translation-export/2";
+    commitKind: "incremental" | "source-copy";
+    selectedPageCount: number;
+    renderedContainerCount: number;
+    renderedLineCount: number;
+    preservedContainerCount: number;
+    regularCharacterCount: number;
+    boldCharacterCount: number;
+    preparedFontCount: number;
+    fontSubsetBytes: number;
+    fontObjectCount: number;
+    deltaObjectCount: number;
+    sourceBytes: number;
+    appendedBytes: number;
+    outputBytes: number;
+  };
+};
+
 export type RosettaJobBundle = {
   schemaVersion: number;
   job: RosettaJobSummary;

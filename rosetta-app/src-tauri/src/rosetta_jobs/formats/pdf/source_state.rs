@@ -64,7 +64,7 @@ pub(crate) fn build_pdf_source_metadata(
     })
 }
 
-fn fingerprint_file(path: &Path) -> Result<String, String> {
+pub(crate) fn fingerprint_file(path: &Path) -> Result<String, String> {
     let file = File::open(path)
         .map_err(|error| format!("无法读取 PDF 指纹 {}: {error}", path.display()))?;
     let mut reader = BufReader::new(file);
@@ -79,5 +79,33 @@ fn fingerprint_file(path: &Path) -> Result<String, String> {
         }
         hasher.update(&buffer[..read]);
     }
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(format!("sha256:{:x}", hasher.finalize()))
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    use super::build_pdf_source_metadata;
+    use crate::{
+        pdf_v3::document::DocumentHandle,
+        rosetta_jobs::formats::pdf::test_helpers::{fixture_path, pdfium_test_lock, shared_pdfium},
+    };
+
+    #[test]
+    fn source_metadata_uses_the_native_pdf_v3_fingerprint_identity() {
+        let _guard = pdfium_test_lock();
+        let source = fixture_path("simple-one-page.pdf");
+        let handle = DocumentHandle::open(shared_pdfium(), &source).expect("document handle");
+
+        let metadata = build_pdf_source_metadata(
+            &source,
+            handle.page_count(),
+            "simple-one-page.pdf".to_string(),
+            None,
+            None,
+        )
+        .expect("source metadata");
+
+        assert_eq!(metadata.source_fingerprint, handle.source_fingerprint());
+        assert_eq!(metadata.source_fingerprint.len(), "sha256:".len() + 64);
+    }
 }

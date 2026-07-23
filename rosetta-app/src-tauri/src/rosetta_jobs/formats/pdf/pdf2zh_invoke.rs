@@ -126,6 +126,8 @@ pub(crate) struct Pdf2zhOutput {
     pub prepare_timings_ms: PdfPrepareTimings,
     pub render_ms: u64,
     pub render_call_count: u32,
+    pub pending_translation_peak_units: u64,
+    pub pending_translation_peak_chars: u64,
     pub rwkv_metrics: PdfUnitTranslationMetrics,
 }
 
@@ -142,6 +144,45 @@ pub(crate) struct Pdf2zhPreparseOutput {
 struct PdfRenderMetrics {
     total_ms: u64,
     call_count: u32,
+}
+
+#[derive(Debug, Default)]
+struct PendingTranslationMetrics {
+    current_chars: u64,
+    peak_units: u64,
+    peak_chars: u64,
+}
+
+fn retain_translation(
+    translations_by_unit_id: &mut BTreeMap<String, String>,
+    metrics: &mut PendingTranslationMetrics,
+    translation: PdfUnitTranslation,
+) {
+    let PdfUnitTranslation { unit_id, text, .. } = translation;
+    if let Some(previous) = translations_by_unit_id.insert(unit_id, text.clone()) {
+        metrics.current_chars = metrics
+            .current_chars
+            .saturating_sub(previous.chars().count() as u64);
+    }
+    metrics.current_chars = metrics
+        .current_chars
+        .saturating_add(text.chars().count() as u64);
+    metrics.peak_units = metrics.peak_units.max(translations_by_unit_id.len() as u64);
+    metrics.peak_chars = metrics.peak_chars.max(metrics.current_chars);
+}
+
+fn release_page_translations(
+    unit_ids: &[String],
+    translations_by_unit_id: &mut BTreeMap<String, String>,
+    metrics: &mut PendingTranslationMetrics,
+) {
+    for unit_id in unit_ids {
+        if let Some(text) = translations_by_unit_id.remove(unit_id) {
+            metrics.current_chars = metrics
+                .current_chars
+                .saturating_sub(text.chars().count() as u64);
+        }
+    }
 }
 
 fn pdf_prepare_cache_key(
@@ -322,7 +363,7 @@ pub(crate) async fn invoke_pdf2zh(
     )?;
     let persistent_cache_dir = persistent_layout_cache_dir(source_path, &prepare_cache_key)?;
     let source_fingerprint = persistent_source_fingerprint(source_path);
-    let prepared = crate::managed_pdf2zh::worker::prepare_pdf_window(
+    let mut prepared = crate::managed_pdf2zh::worker::prepare_pdf_window(
         app,
         serde_json::json!({
             "file": source_path.to_string_lossy(),
@@ -362,15 +403,16 @@ pub(crate) async fn invoke_pdf2zh(
     let cancel_flag = Arc::new(AtomicBool::new(false));
     let translate_started = std::time::Instant::now();
     let ordered_pages = prepared.prepared_run.pages.clone();
-    let unit_ids_by_page = unit_ids_by_page(&ordered_pages, &prepared.units);
+    let mut unit_ids_by_page = unit_ids_by_page(&ordered_pages, &prepared.units);
     let mut translations_by_unit_id = BTreeMap::<String, String>::new();
+    let mut pending_translation_metrics = PendingTranslationMetrics::default();
     let mut rendered_pages = BTreeSet::<u32>::new();
     let mut render_metrics = PdfRenderMetrics::default();
     let (unit_tx, mut unit_rx) = mpsc::unbounded_channel::<PdfUnitTranslation>();
     let provider_for_task = options.provider.clone();
     let source_lang_for_task = options.source_lang.clone();
     let target_lang_for_task = options.target_lang.clone();
-    let units_for_task = prepared.units.clone();
+    let units_for_task = std::mem::take(&mut prepared.units);
     let cancel_for_task = Arc::clone(&cancel_flag);
     let mut translate_task = tokio::spawn(async move {
         let mut on_unit_translation = move |translation: PdfUnitTranslation| {
@@ -399,8 +441,9 @@ pub(crate) async fn invoke_pdf2zh(
         &prepared.prepared_run.prepared_run_id,
         output_dir,
         &ordered_pages,
-        &unit_ids_by_page,
-        &translations_by_unit_id,
+        &mut unit_ids_by_page,
+        &mut translations_by_unit_id,
+        &mut pending_translation_metrics,
         &mut rendered_pages,
         &mut render_metrics,
         &mut on_stderr,
@@ -428,14 +471,19 @@ pub(crate) async fn invoke_pdf2zh(
         if translate_task_done {
             match unit_rx.recv().await {
                 Some(translation) => {
-                    translations_by_unit_id.insert(translation.unit_id, translation.text);
+                    retain_translation(
+                        &mut translations_by_unit_id,
+                        &mut pending_translation_metrics,
+                        translation,
+                    );
                     match render_ready_pages(
                         app,
                         &prepared.prepared_run.prepared_run_id,
                         output_dir,
                         &ordered_pages,
-                        &unit_ids_by_page,
-                        &translations_by_unit_id,
+                        &mut unit_ids_by_page,
+                        &mut translations_by_unit_id,
+                        &mut pending_translation_metrics,
                         &mut rendered_pages,
                         &mut render_metrics,
                         &mut on_stderr,
@@ -464,14 +512,19 @@ pub(crate) async fn invoke_pdf2zh(
         tokio::select! {
             maybe_translation = unit_rx.recv() => {
                 if let Some(translation) = maybe_translation {
-                    translations_by_unit_id.insert(translation.unit_id, translation.text);
+                    retain_translation(
+                        &mut translations_by_unit_id,
+                        &mut pending_translation_metrics,
+                        translation,
+                    );
                     match render_ready_pages(
                         app,
                         &prepared.prepared_run.prepared_run_id,
                         output_dir,
                         &ordered_pages,
-                        &unit_ids_by_page,
-                        &translations_by_unit_id,
+                        &mut unit_ids_by_page,
+                        &mut translations_by_unit_id,
+                        &mut pending_translation_metrics,
                         &mut rendered_pages,
                         &mut render_metrics,
                         &mut on_stderr,
@@ -531,8 +584,9 @@ pub(crate) async fn invoke_pdf2zh(
         &prepared.prepared_run.prepared_run_id,
         output_dir,
         &ordered_pages,
-        &unit_ids_by_page,
-        &translations_by_unit_id,
+        &mut unit_ids_by_page,
+        &mut translations_by_unit_id,
+        &mut pending_translation_metrics,
         &mut rendered_pages,
         &mut render_metrics,
         &mut on_stderr,
@@ -591,6 +645,8 @@ pub(crate) async fn invoke_pdf2zh(
         prepare_timings_ms: prepared.timings_ms,
         render_ms: render_metrics.total_ms,
         render_call_count: render_metrics.call_count,
+        pending_translation_peak_units: pending_translation_metrics.peak_units,
+        pending_translation_peak_chars: pending_translation_metrics.peak_chars,
         rwkv_metrics: translation_result.metrics,
     })
 }
@@ -615,8 +671,9 @@ async fn render_ready_pages(
     prepared_run_id: &str,
     output_dir: &Path,
     ordered_pages: &[u32],
-    unit_ids_by_page: &BTreeMap<u32, Vec<String>>,
-    translations_by_unit_id: &BTreeMap<String, String>,
+    unit_ids_by_page: &mut BTreeMap<u32, Vec<String>>,
+    translations_by_unit_id: &mut BTreeMap<String, String>,
+    pending_translation_metrics: &mut PendingTranslationMetrics,
     rendered_pages: &mut BTreeSet<u32>,
     render_metrics: &mut PdfRenderMetrics,
     on_stderr: &mut (dyn FnMut(&str) + Send),
@@ -665,6 +722,12 @@ async fn render_ready_pages(
         match outcome {
             crate::managed_pdf2zh::worker::WorkerTranslateOutcome::Completed => {
                 rendered_pages.insert(*page_number);
+                unit_ids_by_page.remove(page_number);
+                release_page_translations(
+                    &unit_ids,
+                    translations_by_unit_id,
+                    pending_translation_metrics,
+                );
             }
             other => return Err(worker_outcome_to_pdf_error(other)),
         }
@@ -803,14 +866,15 @@ fn emit_progress(
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{collections::BTreeMap, path::PathBuf};
 
     use super::{
         completed_page_progress_payload, pdf_prepare_cache_key, persistent_layout_cache_dir,
-        Pdf2zhInvokeOptions, PdfEngineScratchDir,
+        release_page_translations, retain_translation, Pdf2zhInvokeOptions, PdfEngineScratchDir,
+        PendingTranslationMetrics,
     };
     use crate::rosetta_jobs::formats::pdf::unit_translation::{
-        LlamaCppPdfApiConfig, PdfUnitProviderConfig,
+        LlamaCppPdfApiConfig, PdfUnitProviderConfig, PdfUnitTranslation,
     };
 
     fn scratch_test_root() -> PathBuf {
@@ -946,5 +1010,39 @@ mod tests {
         assert_eq!(payload.total_pages, Some(7));
         assert_eq!(payload.completed_pages, Some(7));
         assert_eq!(payload.translated_chars, Some(0));
+    }
+
+    #[test]
+    fn committed_page_translation_state_is_released_and_peak_is_retained() {
+        let mut translations = BTreeMap::new();
+        let mut metrics = PendingTranslationMetrics::default();
+        retain_translation(
+            &mut translations,
+            &mut metrics,
+            PdfUnitTranslation {
+                unit_id: "p0001-u0001".to_string(),
+                text: "第一段译文".to_string(),
+                output_chars: 5,
+            },
+        );
+        retain_translation(
+            &mut translations,
+            &mut metrics,
+            PdfUnitTranslation {
+                unit_id: "p0001-u0002".to_string(),
+                text: "第二段译文".to_string(),
+                output_chars: 5,
+            },
+        );
+        release_page_translations(
+            &["p0001-u0001".to_string(), "p0001-u0002".to_string()],
+            &mut translations,
+            &mut metrics,
+        );
+
+        assert!(translations.is_empty());
+        assert_eq!(metrics.current_chars, 0);
+        assert_eq!(metrics.peak_units, 2);
+        assert_eq!(metrics.peak_chars, 10);
     }
 }

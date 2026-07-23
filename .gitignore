@@ -17,6 +17,7 @@ rosetta-app/src-tauri/target/
 .rosetta/
 rosetta-data/
 supabase/.temp/
+tmp/
 
 # Local model debugging artifacts
 .tmp-rwkv-badcase/

@@ -41,6 +41,89 @@ use status::{
 pub use install::InstallRegistry as InstallStateRegistry;
 pub use lifecycle::ManagedRwkvRuntimeRegistry as Registry;
 
+#[derive(Clone)]
+pub(crate) struct VerifiedManagedRuntimeBinding {
+    pub profile: &'static profile::RuntimeProfile,
+    pub base_url: String,
+    pub sidecar_path: std::path::PathBuf,
+    pub model_path: std::path::PathBuf,
+    pub runtime_release_sha256: Option<&'static str>,
+    process_pid: u32,
+}
+
+pub(crate) async fn verified_runtime_binding_is_current(
+    registry: &Registry,
+    binding: &VerifiedManagedRuntimeBinding,
+) -> bool {
+    let (snapshot, state) = current_process_snapshot(registry).await;
+    state == Some(ManagedRuntimeState::Ready)
+        && snapshot.profile_id.as_deref() == Some(binding.profile.id)
+        && snapshot.pid == Some(binding.process_pid)
+        && snapshot.base_url.as_deref() == Some(binding.base_url.as_str())
+}
+
+pub(crate) async fn resolve_verified_runtime_binding(
+    app: &AppHandle,
+    registry: &Registry,
+) -> Result<VerifiedManagedRuntimeBinding, String> {
+    let (before, before_state) = current_process_snapshot(registry).await;
+    if before_state != Some(ManagedRuntimeState::Ready) {
+        return Err("本地翻译 runtime 尚未就绪。".to_string());
+    }
+    let profile_id = before
+        .profile_id
+        .as_deref()
+        .ok_or_else(|| "运行中的本地翻译 runtime 缺少 profile identity。".to_string())?;
+    let profile = profile::profile_by_id(profile_id)
+        .filter(|profile| {
+            profile.enabled
+                && profile.platform_os == std::env::consts::OS
+                && profile.platform_arch == std::env::consts::ARCH
+        })
+        .ok_or_else(|| "运行中的本地翻译 runtime profile 不适用于当前平台。".to_string())?;
+    let static_status = build_static_status_for_profile(app, profile)?;
+    if !static_status.install_plan.ready {
+        return Err("本地翻译 runtime 的安装组件不完整。".to_string());
+    }
+    install::validate_installed_artifact_manifests(&static_status.layout, profile)?;
+
+    let probe = probe_sidecar(registry, profile).await;
+    if !probe.ok {
+        return Err("本地翻译 runtime 健康检查失败。".to_string());
+    }
+    let (after, after_state) = current_process_snapshot(registry).await;
+    if after_state != Some(ManagedRuntimeState::Ready)
+        || before.profile_id != after.profile_id
+        || before.pid != after.pid
+        || before.base_url != after.base_url
+    {
+        return Err("本地翻译 runtime 在身份校验期间发生变化。".to_string());
+    }
+
+    let base_url = after
+        .base_url
+        .ok_or_else(|| "运行中的本地翻译 runtime 缺少本地 endpoint。".to_string())?;
+    let process_pid = after
+        .pid
+        .ok_or_else(|| "运行中的本地翻译 runtime 缺少进程 identity。".to_string())?;
+    let sidecar_path = static_status
+        .sidecar_path
+        .ok_or_else(|| "找不到运行中的本地翻译 runtime 二进制。".to_string())?;
+    let model_path = static_status
+        .layout
+        .model_extracted_dir
+        .clone()
+        .unwrap_or_else(|| static_status.layout.model_file.clone());
+    Ok(VerifiedManagedRuntimeBinding {
+        profile,
+        base_url,
+        sidecar_path,
+        model_path,
+        runtime_release_sha256: profile.runtime_archive_sha256,
+        process_pid,
+    })
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManagedRuntimeLogsSummary {

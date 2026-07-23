@@ -194,3 +194,25 @@ Do not run dev or build unless explicitly requested for a release or UI verifica
 - Whether high-fidelity PDF restoration should become a durable product promise after the contributor validates feasibility on real fixtures.
 
 Choosing a new PDF parsing crate is a dependency decision. Record the choice in a change-log entry; add an ADR if the crate or layout strategy creates a long-term data model or architecture constraint.
+
+## PDF v3 Rewrite Addendum (2026-07-19)
+
+This historical v1 plan no longer describes the active high-fidelity PDF
+architecture. The native PDF v3 rewrite now has durable page-bounded
+extraction/translation authority, atomic trusted run creation, native bounded
+worker supervision, owner heartbeat and stale recovery, pause/resume/cancel,
+and exact failed-page retry.
+
+The visible workbench now uses native v3 run authority end to end. It discovers
+the newest target-language run, polls bounded control/page windows, creates new
+native revisions, and exposes pause/resume/cancel/recover/retry without a
+frontend run index or fake segment run. Completed pages render lazily and
+preserved pages reuse the source preview. The workbench no longer reads legacy
+PDF progress events, page state or translated-PDF paths.
+
+Still pending as beta gates:
+
+- complex 500/1,000-page native export acceptance evidence;
+- real managed-runtime validation on complex 500/1,000-page documents;
+- measured performance, peak-memory, cancellation/recovery and disk-size
+  acceptance evidence on the Windows AMD test platform.

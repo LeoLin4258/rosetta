@@ -11,7 +11,7 @@
 
 use std::path::{Path, PathBuf};
 
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 use lru::LruCache;
 use once_cell::sync::OnceCell;
@@ -19,6 +19,13 @@ use pdfium_render::prelude::Pdfium;
 use tauri::{AppHandle, Manager};
 
 static PDFIUM: OnceCell<Pdfium> = OnceCell::new();
+static PDFIUM_OPERATION_LOCK: Mutex<()> = Mutex::new(());
+
+pub(crate) fn lock_pdfium() -> MutexGuard<'static, ()> {
+    PDFIUM_OPERATION_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 /// LRU cache for rendered PNG bytes. Key: (path, page_index, target_width).
 /// Capacity: 64 entries (enough for ~10-page PDF × 2 panes with some headroom).
@@ -132,6 +139,7 @@ pub(crate) fn probe_status(app: &AppHandle) -> PdfRuntimeStatus {
         .and_then(|version_file| std::fs::read_to_string(version_file).ok())
         .map(|tag| tag.trim().to_string());
 
+    let _operation_guard = lock_pdfium();
     let (loaded, error) = match get_pdfium(app) {
         Ok(_) => (true, None),
         Err(error) => (false, Some(error)),

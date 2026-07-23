@@ -31,6 +31,8 @@ pub async fn clear_rosetta_local_data(
     rwkv_install_registry: State<'_, managed_rwkv::InstallStateRegistry>,
     pdf2zh_install_registry: State<'_, managed_pdf2zh::InstallStateRegistry>,
     pdf_translation_cancel_state: State<'_, rosetta_jobs::PdfTranslationCancelState>,
+    pdf_v3_lifecycle: State<'_, rosetta_jobs::PdfV3RunLifecycleState>,
+    pdf_v3_workers: State<'_, rosetta_jobs::PdfV3RunWorkerState>,
 ) -> Result<LocalDataResetResult, String> {
     // Prevent an active PDF translation cancellation from immediately
     // prewarming a replacement worker while its installation directory is
@@ -45,6 +47,9 @@ pub async fn clear_rosetta_local_data(
         .map(|result| result.cancelled)
         .unwrap_or(false);
     let cancelled_pdf_translation = cancel_pdf_translation(pdf_translation_cancel_state);
+    pdf_v3_workers.request_shutdown();
+    pdf_v3_workers.shutdown().await;
+    pdf_v3_lifecycle.shutdown();
     managed_pdf2zh::shutdown_worker(&app).await;
 
     let stop_result = managed_rwkv::stop_all_managed_rwkv_runtimes(&app, &rwkv_registry).await;
