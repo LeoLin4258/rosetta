@@ -3,11 +3,15 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type FormEvent,
   type ReactNode,
 } from "react";
 import {
   ArrowRight,
   AlertTriangle,
+  Check,
+  ChevronDown,
+  ChevronUp,
   Download,
   FileText,
   Loader2,
@@ -24,11 +28,8 @@ import {
 } from "@/components/animated-width";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  PDF_AUTO_SELECT_ALL_PAGE_LIMIT,
-  PDF_LONG_DOCUMENT_DEFAULT_SELECTION,
-  pdfPageSelectionLabel,
-} from "@/lib/pdfPageSelectionPolicy";
+import { Input } from "@/components/ui/input";
+import { pdfPageSelectionLabel } from "@/lib/pdfPageSelectionPolicy";
 import {
   Select,
   SelectContent,
@@ -86,10 +87,12 @@ type WorkspaceTopbarProps = {
   pdfSelectedPageCount?: number;
   pdfSelectedPages?: number[];
   pdfPageCount?: number;
+  pdfCurrentPage?: number;
   pdfForceRetranslate?: boolean;
   onPdfForceRetranslateChange?: (force: boolean) => void;
+  onPdfNavigate?: (pageNumber: number) => void;
+  onPdfSelectRange?: (range: string) => void;
   onSelectAllPages?: () => void;
-  onSelectPreviewPages?: () => void;
   onDeselectAllPages?: () => void;
   onSourceLangChange: (lang: string) => void;
   onTargetLangChange: (lang: string) => void;
@@ -405,10 +408,12 @@ export function WorkspaceTopbar({
   pdfSelectedPageCount = 0,
   pdfSelectedPages = [],
   pdfPageCount = 0,
+  pdfCurrentPage = 1,
   pdfForceRetranslate = false,
   onPdfForceRetranslateChange,
+  onPdfNavigate,
+  onPdfSelectRange,
   onSelectAllPages,
-  onSelectPreviewPages,
   onDeselectAllPages,
   onSourceLangChange,
   onTargetLangChange,
@@ -422,12 +427,48 @@ export function WorkspaceTopbar({
 }: WorkspaceTopbarProps) {
   const [confirmingCancel, setConfirmingCancel] = useState(false);
   const [confirmingRetranslateAll, setConfirmingRetranslateAll] = useState(false);
+  const [pageInput, setPageInput] = useState(String(pdfCurrentPage));
+  const [rangeInput, setRangeInput] = useState("");
+  const pageInputRef = useRef<HTMLInputElement | null>(null);
   // Elapsed timer for the "翻译中 · 00:23" display. Starts the moment
   // `isTranslating` flips true (= user clicked translate) and stops when it
   // flips false. Independent of whether pdf2zh has emitted any progress
   // event yet — the whole point is to keep moving during the silent gap.
   const elapsedMs = useElapsedSince(isTranslating, runStartedAtMs);
   const elapsedLabel = formatElapsed(elapsedMs);
+
+  useEffect(() => {
+    if (document.activeElement !== pageInputRef.current) {
+      setPageInput(String(pdfCurrentPage));
+    }
+  }, [pdfCurrentPage]);
+
+  useEffect(() => {
+    setRangeInput("");
+  }, [job.id]);
+
+  function commitPageNavigation() {
+    const requestedPage = Number(pageInput);
+    if (!Number.isInteger(requestedPage) || pdfPageCount <= 0) {
+      setPageInput(String(pdfCurrentPage));
+      return;
+    }
+    const pageNumber = Math.max(1, Math.min(requestedPage, pdfPageCount));
+    setPageInput(String(pageNumber));
+    onPdfNavigate?.(pageNumber);
+  }
+
+  function submitPageNavigation(event: FormEvent) {
+    event.preventDefault();
+    commitPageNavigation();
+  }
+
+  function submitRangeSelection(event: FormEvent) {
+    event.preventDefault();
+    const range = rangeInput.trim();
+    if (!range) return;
+    onPdfSelectRange?.(range);
+  }
 
   const hasTranslation =
     activeTranslationFile &&
@@ -473,17 +514,6 @@ export function WorkspaceTopbar({
         ? pdfActionTarget
         : `${pdfActionTarget} · 共 ${pdfPageCount} 页`
       : "等待页数";
-  const longPdfPreviewPageCount = Math.min(
-    PDF_LONG_DOCUMENT_DEFAULT_SELECTION,
-    Math.max(pdfPageCount, 0),
-  );
-  const showLongPdfControls =
-    isPdf && pdfPageCount > PDF_AUTO_SELECT_ALL_PAGE_LIMIT;
-  const showLongPdfHint =
-    showLongPdfControls &&
-    !isTranslating &&
-    pdfSelectedPages.length === longPdfPreviewPageCount &&
-    pdfSelectedPages.every((page, index) => page === index + 1);
   const runPhaseLabel = isPdf
     ? isPausingTranslation
       ? "正在停止"
@@ -507,60 +537,111 @@ export function WorkspaceTopbar({
         <div className="flex min-w-0 flex-1 items-center gap-2">
           <AnimatedWidth className="min-w-0" contentClassName="min-w-0">
             {isPdf ? (
-              <div className={cn(topbarPanelClass, "min-w-0")}>
-                <span className="shrink-0 !text-xs font-medium !text-foreground">
-                  页面范围
-                </span>
-                <TopbarBadge variant={pdfSelectionReady ? "secondary" : "outline"}>
-                  {pageSelectionLabel}
-                </TopbarBadge>
-                <TopbarDivider />
-                <div className="flex items-center gap-0.5">
+              <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
+                <form
+                  className={cn(topbarPanelClass, "gap-0.5 px-1")}
+                  onSubmit={submitPageNavigation}
+                >
                   <Button
-                    size="xs"
+                    type="button"
+                    size="icon-xs"
                     variant="ghost"
-                    className={topbarGhostButtonClass}
-                    onClick={onSelectAllPages}
-                    disabled={isTranslating || pdfSelectedPageCount === pdfPageCount}
+                    title="上一页"
+                    aria-label="上一页"
+                    onClick={() => onPdfNavigate?.(Math.max(1, pdfCurrentPage - 1))}
+                    disabled={pdfPageCount <= 0 || pdfCurrentPage <= 1}
                   >
-                    全选
+                    <ChevronUp />
                   </Button>
+                  <span className="shrink-0 text-foreground">第</span>
+                  <Input
+                    ref={pageInputRef}
+                    value={pageInput}
+                    onChange={(event) => setPageInput(event.target.value.replace(/\D/g, ""))}
+                    onFocus={(event) => event.currentTarget.select()}
+                    onBlur={() => {
+                      if (pageInput !== String(pdfCurrentPage)) {
+                        commitPageNavigation();
+                      }
+                    }}
+                    inputMode="numeric"
+                    aria-label="当前 PDF 页码"
+                    className="h-6 w-10 rounded-md border-0 bg-muted/60 px-1 text-center text-xs tabular-nums shadow-none focus-visible:ring-2"
+                  />
+                  <span className="shrink-0 tabular-nums">/ {pdfPageCount || "-"} 页</span>
                   <Button
-                    size="xs"
+                    type="button"
+                    size="icon-xs"
                     variant="ghost"
-                    className={topbarGhostButtonClass}
-                    onClick={onDeselectAllPages}
-                    disabled={isTranslating || pdfSelectedPageCount === 0}
+                    title="下一页"
+                    aria-label="下一页"
+                    onClick={() =>
+                      onPdfNavigate?.(Math.min(pdfPageCount, pdfCurrentPage + 1))
+                    }
+                    disabled={pdfPageCount <= 0 || pdfCurrentPage >= pdfPageCount}
                   >
-                    清空
+                    <ChevronDown />
                   </Button>
-                  {showLongPdfControls ? (
+                </form>
+
+                <div className={cn(topbarPanelClass, "min-w-0")}>
+                  <span className="shrink-0 font-medium text-foreground">翻译范围</span>
+                  <form className="flex items-center" onSubmit={submitRangeSelection}>
+                    <Input
+                      value={rangeInput}
+                      onChange={(event) => setRangeInput(event.target.value)}
+                      placeholder="如 21-30"
+                      aria-label="输入要翻译的 PDF 页面范围"
+                      disabled={isTranslating}
+                      className="h-6 w-20 rounded-r-none border-border/60 px-1.5 text-xs shadow-none"
+                    />
+                    <Button
+                      type="submit"
+                      size="icon-xs"
+                      variant="outline"
+                      title="应用页面范围"
+                      aria-label="应用页面范围"
+                      disabled={isTranslating || !rangeInput.trim()}
+                      className="rounded-l-none border-l-0"
+                    >
+                      <Check />
+                    </Button>
+                  </form>
+                  <TopbarBadge variant={pdfSelectionReady ? "secondary" : "outline"}>
+                    {pageSelectionLabel}
+                  </TopbarBadge>
+                  <TopbarDivider />
+                  <div className="flex items-center gap-0.5">
                     <Button
                       size="xs"
                       variant="ghost"
                       className={topbarGhostButtonClass}
-                      onClick={onSelectPreviewPages}
-                      disabled={isTranslating}
+                      onClick={onSelectAllPages}
+                      disabled={isTranslating || pdfSelectedPageCount === pdfPageCount}
                     >
-                      前 {longPdfPreviewPageCount} 页
+                      全选
                     </Button>
-                  ) : null}
+                    <Button
+                      size="xs"
+                      variant="ghost"
+                      className={topbarGhostButtonClass}
+                      onClick={onDeselectAllPages}
+                      disabled={isTranslating || pdfSelectedPageCount === 0}
+                    >
+                      清空
+                    </Button>
+                  </div>
+                  <label className="flex h-6 cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-xs leading-none text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground has-disabled:cursor-not-allowed has-disabled:opacity-50">
+                    <input
+                      type="checkbox"
+                      checked={pdfForceRetranslate}
+                      onChange={(e) => onPdfForceRetranslateChange?.(e.target.checked)}
+                      disabled={isTranslating}
+                      className="size-3 accent-primary"
+                    />
+                    强制重翻
+                  </label>
                 </div>
-                <label className="flex h-6 cursor-pointer items-center gap-1.5 rounded-md px-1.5 !text-xs leading-none !text-muted-foreground transition-colors hover:bg-muted/70 hover:!text-foreground has-disabled:cursor-not-allowed has-disabled:opacity-50">
-                  <input
-                    type="checkbox"
-                    checked={pdfForceRetranslate}
-                    onChange={(e) => onPdfForceRetranslateChange?.(e.target.checked)}
-                    disabled={isTranslating}
-                    className="size-3 accent-primary"
-                  />
-                  强制重翻
-                </label>
-                {showLongPdfHint ? (
-                  <span className="max-w-[15rem] truncate !text-xs !text-muted-foreground">
-                    长 PDF，先翻译前 {longPdfPreviewPageCount} 页
-                  </span>
-                ) : null}
               </div>
             ) : selectedBlockCount > 0 ? (
               <div className={topbarPanelClass}>

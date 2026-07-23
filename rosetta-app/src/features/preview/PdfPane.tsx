@@ -19,9 +19,10 @@ export type PdfPageActivity =
 type CachedPng = {
   url: string;
   lastUsed: number;
+  aspectRatio?: number;
 };
 
-const PDF_PAGE_ASPECT_RATIO = "1 / 1.4142";
+const PDF_PAGE_FALLBACK_ASPECT_RATIO = 1 / 1.4142;
 const PDF_PAGE_IMAGE_CACHE = new Map<string, CachedPng>();
 const PDF_PAGE_IMAGE_CACHE_LIMIT = 96;
 
@@ -29,7 +30,7 @@ function getCachedPng(key: string) {
   const cached = PDF_PAGE_IMAGE_CACHE.get(key);
   if (!cached) return null;
   cached.lastUsed = Date.now();
-  return cached.url;
+  return cached;
 }
 
 function putCachedPng(key: string, url: string) {
@@ -93,12 +94,19 @@ export function PdfPageImage({
 }) {
   const [src, setSrc] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [pageAspectRatio, setPageAspectRatio] = useState(
+    PDF_PAGE_FALLBACK_ASPECT_RATIO,
+  );
   const cacheKey = `${jobId}:${kind}:${pageIndex}:${targetWidth}:${renderVersion}`;
   const displaySrc = staticSrc ?? src;
   const showLoadingBackdrop =
     kind === "translated" &&
     !!backdropSrc &&
     ((canRender && !displaySrc) || (!canRender && activity === "translating"));
+
+  useEffect(() => {
+    setPageAspectRatio(PDF_PAGE_FALLBACK_ASPECT_RATIO);
+  }, [jobId, kind, pageIndex]);
 
   useEffect(() => {
     let cancelled = false;
@@ -119,8 +127,9 @@ export function PdfPageImage({
 
         const cached = getCachedPng(cacheKey);
         if (cached) {
-          setSrc(cached);
-          onRendered?.(pageIndex, cached);
+          setSrc(cached.url);
+          if (cached.aspectRatio) setPageAspectRatio(cached.aspectRatio);
+          onRendered?.(pageIndex, cached.url);
           return;
         }
 
@@ -158,6 +167,16 @@ export function PdfPageImage({
     targetWidth,
   ]);
 
+  function handleImageLoad(event: React.SyntheticEvent<HTMLImageElement>) {
+    const image = event.currentTarget;
+    if (image.naturalWidth <= 0 || image.naturalHeight <= 0) return;
+    const nextAspectRatio = image.naturalWidth / image.naturalHeight;
+    setPageAspectRatio(nextAspectRatio);
+
+    const cached = PDF_PAGE_IMAGE_CACHE.get(cacheKey);
+    if (cached) cached.aspectRatio = nextAspectRatio;
+  }
+
   if (!canRender) {
     return (
       <div
@@ -165,7 +184,7 @@ export function PdfPageImage({
           "rosetta-pdf-page-frame rosetta-pdf-page-frame--placeholder h-full w-full",
           showLoadingBackdrop && "rosetta-pdf-page-frame--backdrop",
         )}
-        style={{ aspectRatio: PDF_PAGE_ASPECT_RATIO }}
+        style={{ aspectRatio: pageAspectRatio }}
       >
         {showLoadingBackdrop ? (
           <img
@@ -174,6 +193,7 @@ export function PdfPageImage({
             className="rosetta-pdf-page-backdrop"
             draggable={false}
             aria-hidden="true"
+            onLoad={handleImageLoad}
           />
         ) : null}
         {kind === "translated" ? (
@@ -196,7 +216,7 @@ export function PdfPageImage({
     return (
       <div
         className="flex h-full w-full items-center justify-center rounded border border-destructive/40 bg-destructive/5 px-3 py-4 text-center text-xs text-destructive"
-        style={{ aspectRatio: PDF_PAGE_ASPECT_RATIO }}
+        style={{ aspectRatio: pageAspectRatio }}
       >
         <div>
           <AlertCircle className="mx-auto mb-2 size-4" />
@@ -213,7 +233,7 @@ export function PdfPageImage({
           "rosetta-pdf-page-frame flex h-full w-full items-center justify-center rounded border border-border bg-background text-xs text-muted-foreground",
           showLoadingBackdrop && "rosetta-pdf-page-frame--backdrop",
         )}
-        style={{ aspectRatio: PDF_PAGE_ASPECT_RATIO }}
+        style={{ aspectRatio: pageAspectRatio }}
       >
         {showLoadingBackdrop ? (
           <img
@@ -222,6 +242,7 @@ export function PdfPageImage({
             className="rosetta-pdf-page-backdrop"
             draggable={false}
             aria-hidden="true"
+            onLoad={handleImageLoad}
           />
         ) : null}
         <span className="rosetta-pdf-page-loading-label">
@@ -233,7 +254,10 @@ export function PdfPageImage({
   }
 
   return (
-    <div className="rosetta-pdf-page-frame h-full w-full" style={{ aspectRatio: PDF_PAGE_ASPECT_RATIO }}>
+    <div
+      className="rosetta-pdf-page-frame h-full w-full"
+      style={{ aspectRatio: pageAspectRatio }}
+    >
       {kind === "translated" && backdropSrc ? (
         <img
           src={backdropSrc}
@@ -241,13 +265,15 @@ export function PdfPageImage({
           className="rosetta-pdf-page-backdrop rosetta-pdf-page-backdrop--exit"
           draggable={false}
           aria-hidden="true"
+          onLoad={handleImageLoad}
         />
       ) : null}
       <img
         src={displaySrc}
         alt={imageAlt ?? `第 ${pageIndex + 1} 页`}
-        className="rosetta-pdf-page-image block size-full rounded border border-border bg-background shadow-sm"
+        className="rosetta-pdf-page-image block size-full rounded border border-border bg-background object-contain shadow-sm"
         draggable={false}
+        onLoad={handleImageLoad}
       />
       {kind === "source" && activity === "translating" ? (
         <div className="rosetta-pdf-page-scan" aria-hidden="true" />

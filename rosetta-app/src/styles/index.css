@@ -780,16 +780,15 @@ textarea {
 }
 
 .rosetta-settings-page {
-  --primary: oklch(0.4700 0.0700 220);
+  --primary: oklch(0.5500 0.2200 264);
   --primary-foreground: oklch(0.9850 0 0);
-  --ring: oklch(0.6000 0.0550 220);
-  --rosetta-settings-accent: oklch(0.4700 0.0700 220);
-  --rosetta-settings-accent-ink: oklch(0.3000 0.0550 220);
-  --rosetta-settings-accent-soft: oklch(0.9650 0.0100 220);
-  --rosetta-settings-accent-wash: oklch(0.9450 0.0140 220);
-  --rosetta-settings-accent-muted: oklch(0.9000 0.0180 220);
-  --rosetta-settings-accent-border: oklch(0.7650 0.0300 220);
-  --rosetta-settings-accent-ring: oklch(0.4700 0.0700 220 / 0.22);
+  --ring: oklch(0.6200 0.1800 264);
+  --rosetta-settings-accent: oklch(0.5500 0.2200 264);
+  --rosetta-settings-accent-ink: oklch(0.3800 0.1600 264);
+  --rosetta-settings-accent-soft: oklch(0.9600 0.0250 264);
+  --rosetta-settings-accent-wash: oklch(0.9300 0.0450 264);
+  --rosetta-settings-accent-border: oklch(0.7000 0.1100 264);
+  --rosetta-settings-accent-ring: oklch(0.5500 0.2200 264 / 0.24);
   font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 1rem;
   font-kerning: normal;
@@ -803,16 +802,15 @@ textarea {
 }
 
 .dark .rosetta-settings-page {
-  --primary: oklch(0.7100 0.0600 220);
-  --primary-foreground: oklch(0.1450 0.0250 220);
-  --ring: oklch(0.6600 0.0520 220);
-  --rosetta-settings-accent: oklch(0.7100 0.0600 220);
-  --rosetta-settings-accent-ink: oklch(0.8600 0.0400 220);
-  --rosetta-settings-accent-soft: oklch(0.2450 0.0260 220);
-  --rosetta-settings-accent-wash: oklch(0.2850 0.0320 220);
-  --rosetta-settings-accent-muted: oklch(0.3350 0.0360 220);
-  --rosetta-settings-accent-border: oklch(0.4600 0.0400 220);
-  --rosetta-settings-accent-ring: oklch(0.7100 0.0600 220 / 0.24);
+  --primary: oklch(0.7000 0.1600 264);
+  --primary-foreground: oklch(0.1450 0.0250 264);
+  --ring: oklch(0.6800 0.1500 264);
+  --rosetta-settings-accent: oklch(0.7000 0.1600 264);
+  --rosetta-settings-accent-ink: oklch(0.8600 0.0800 264);
+  --rosetta-settings-accent-soft: oklch(0.2400 0.0400 264);
+  --rosetta-settings-accent-wash: oklch(0.2800 0.0550 264);
+  --rosetta-settings-accent-border: oklch(0.5000 0.1000 264);
+  --rosetta-settings-accent-ring: oklch(0.7000 0.1600 264 / 0.28);
 }
 
 .rosetta-settings-accent-control {
@@ -839,6 +837,18 @@ textarea {
   border-color: var(--rosetta-settings-accent-border);
   background: var(--rosetta-settings-accent-soft);
   color: var(--rosetta-settings-accent-ink);
+}
+
+.rosetta-settings-section-transition[data-phase="leaving"] {
+  pointer-events: none;
+  animation: rosetta-settings-section-out 110ms cubic-bezier(0.4, 0, 1, 1)
+    both;
+}
+
+.rosetta-settings-section-transition[data-phase="entering"] {
+  pointer-events: none;
+  animation: rosetta-settings-section-in 170ms cubic-bezier(0.22, 1, 0.36, 1)
+    both;
 }
 
 .rosetta-settings-collapsible-content[data-state="open"] {
@@ -974,6 +984,28 @@ textarea {
     height: 0;
     opacity: 0;
     transform: translateY(-2px);
+  }
+}
+
+@keyframes rosetta-settings-section-out {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(-6px);
+  }
+}
+
+@keyframes rosetta-settings-section-in {
+  from {
+    opacity: 0;
+    transform: translateX(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
   }
 }
 

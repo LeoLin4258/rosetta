@@ -22,6 +22,7 @@ import type {
 } from "../../types/rosetta";
 
 import { pdfPreviewPaneWidth, pdfRasterTargetWidth } from "./pdfRasterSizing";
+import { PdfPageMap } from "./PdfPageMap";
 import { PdfPageImage } from "./PdfPane";
 
 const PAGE_ASPECT_RATIO = 1.4142;
@@ -48,7 +49,10 @@ type PdfDocumentPreviewProps = {
   pdfError?: string | null;
   activePages?: number[];
   selectedPages: number[];
+  currentPage: number;
+  navigationRequest?: { pageNumber: number; requestId: number } | null;
   onPageCountChange: (count: number) => void;
+  onCurrentPageChange: (pageNumber: number) => void;
   onSelectedPagesChange: (pages: number[]) => void;
 };
 
@@ -64,7 +68,10 @@ export function PdfDocumentPreview({
   pdfError,
   activePages = [],
   selectedPages,
+  currentPage,
+  navigationRequest = null,
   onPageCountChange,
+  onCurrentPageChange,
   onSelectedPagesChange,
 }: PdfDocumentPreviewProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -316,14 +323,6 @@ export function PdfDocumentPreview({
     isTranslating ||
     pdfAlreadyTranslated;
 
-  function togglePage(pageNumber: number, checked: boolean) {
-    const next = checked
-      ? [...selectedPages, pageNumber]
-      : selectedPages.filter((page) => page !== pageNumber);
-    const normalized = [...new Set(next)].sort((a, b) => a - b);
-    onSelectedPagesChange(normalized);
-  }
-
   function pageStatus(pageIndex: number) {
     const pageNumber = pageIndex + 1;
     return pagesByNumber.get(pageNumber) ?? null;
@@ -341,10 +340,61 @@ export function PdfDocumentPreview({
   }, []);
 
   const virtualItems = virtualizer.getVirtualItems();
+  const viewportCenter =
+    (virtualizer.scrollOffset ?? 0) + (scrollRef.current?.clientHeight ?? 0) / 2;
+  const centeredItem = virtualItems.reduce<(typeof virtualItems)[number] | null>(
+    (closest, item) => {
+      if (!closest) return item;
+      const itemCenter = item.start + item.size / 2;
+      const closestCenter = closest.start + closest.size / 2;
+      return Math.abs(itemCenter - viewportCenter) <
+        Math.abs(closestCenter - viewportCenter)
+        ? item
+        : closest;
+    },
+    null,
+  );
+  const visibleCurrentPage = centeredItem
+    ? pages[centeredItem.index] + 1
+    : Math.max(1, Math.min(currentPage, pages.length || 1));
+
+  const navigateToPage = useCallback(
+    (pageNumber: number) => {
+      if (pages.length === 0) return;
+      const targetPage = Math.max(1, Math.min(pageNumber, pages.length));
+      virtualizer.scrollToIndex(targetPage - 1, { align: "start" });
+      onCurrentPageChange(targetPage);
+    },
+    [onCurrentPageChange, pages.length, virtualizer],
+  );
+
+  useEffect(() => {
+    onCurrentPageChange(visibleCurrentPage);
+  }, [onCurrentPageChange, visibleCurrentPage]);
+
+  useEffect(() => {
+    if (!navigationRequest || pages.length === 0) return;
+    navigateToPage(navigationRequest.pageNumber);
+  }, [navigateToPage, navigationRequest, pages.length]);
 
   return (
-    <Card className="flex h-full min-h-0 flex-col gap-0 overflow-hidden rounded-none border-0 py-0">
-      <ScrollArea className="h-full min-h-0 bg-muted/30" viewportRef={scrollRef}>
+    <Card className="flex h-full min-h-0 flex-row gap-0 overflow-hidden rounded-none border-0 py-0">
+      {sourcePageCount && sourcePageCount > 0 ? (
+        <PdfPageMap
+          jobId={jobId}
+          pageCount={sourcePageCount}
+          pagesByNumber={pagesByNumber}
+          selectedPages={selectedPages}
+          currentPage={visibleCurrentPage}
+          selectionDisabled={isTranslating}
+          onNavigate={navigateToPage}
+          onSelectedPagesChange={onSelectedPagesChange}
+        />
+      ) : null}
+      <ScrollArea
+        className="h-full min-h-0 min-w-0 flex-1 bg-muted/30"
+        viewportRef={scrollRef}
+      >
         {pages.length === 0 ? (
           <div className="flex min-h-full flex-col items-center justify-center gap-2 px-8 text-center text-sm text-muted-foreground">
             {translationPlaceholderLoading ? (
@@ -389,22 +439,11 @@ export function PdfDocumentPreview({
                 >
                   <div
                     className={cn(
-                      "grid min-w-0 grid-cols-[2rem_minmax(0,1fr)_minmax(0,1fr)] items-stretch gap-4 px-4 py-3",
+                      "grid min-w-0 grid-cols-2 items-stretch gap-4 px-4 py-3",
                       pageIndex === 0 && "pt-4",
                       pageIndex === pages.length - 1 && "pb-4",
                     )}
                   >
-                    <div className="flex items-center justify-center">
-                      <input
-                        type="checkbox"
-                        aria-label={`选择第 ${pageNumber} 页`}
-                        checked={selectedPages.includes(pageNumber)}
-                        disabled={isTranslating}
-                        onChange={(event) => togglePage(pageNumber, event.target.checked)}
-                        className="size-3.5 rounded border-border accent-primary"
-                      />
-                    </div>
-
                     <div className="min-w-0">
                       <PdfPageImage
                         jobId={jobId}

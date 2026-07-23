@@ -53,7 +53,10 @@ export function DocumentPreview({
   onSourceEditSave,
   onSourceEditStart,
   onPdfPageCountChange,
+  onPdfCurrentPageChange,
   onPdfSelectedPagesChange,
+  pdfCurrentPage = 1,
+  pdfNavigationRequest = null,
 }: {
   /// Required for PDF preview (needed to resolve `<job_dir>/source.pdf` and
   /// trigger translated-PDF generation). Other format paths don't use it; the
@@ -101,7 +104,10 @@ export function DocumentPreview({
   onSourceEditSave?: () => void;
   onSourceEditStart?: () => void;
   onPdfPageCountChange?: (count: number) => void;
+  onPdfCurrentPageChange?: (pageNumber: number) => void;
   onPdfSelectedPagesChange?: (pages: number[]) => void;
+  pdfCurrentPage?: number;
+  pdfNavigationRequest?: { pageNumber: number; requestId: number } | null;
 }) {
   // PDF documents get a dedicated react-pdf-based preview. The temporary
   // markdown-block fallback below is kept as the renderer for txt/md and as
@@ -128,7 +134,10 @@ export function DocumentPreview({
         pdfError={pdfError}
         activePages={pdfActivePages}
         selectedPages={pdfSelectedPages}
+        currentPage={pdfCurrentPage}
+        navigationRequest={pdfNavigationRequest}
         onPageCountChange={onPdfPageCountChange ?? (() => {})}
+        onCurrentPageChange={onPdfCurrentPageChange ?? (() => {})}
         onSelectedPagesChange={onPdfSelectedPagesChange ?? (() => {})}
       />
     );
