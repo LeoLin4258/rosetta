@@ -34,6 +34,17 @@ export type ReleaseNote = {
  * appearing in `package.json` (e.g. `"0.1.0-beta.8"`), not semver tuples.
  */
 export const RELEASE_NOTES: Record<string, ReleaseNote> = {
+  "0.1.0-beta.23": {
+    version: "0.1.0-beta.23",
+    highlights: [
+      "大幅缩短 PDF 预解析等待，10 页测试文档的首次准备时间由约 7.5 秒降至约 3 秒",
+      "恢复成熟的 PDF 视觉回填路径，提升表格、目录、彩色背景和复杂论文页面的译文还原稳定性",
+      "单个翻译单元异常时仅保留该处原文，其余有效内容仍会正常回填，不再轻易导致整页失败",
+      "新增 PDF 页码地图和快速跳转，并改进翻译页选择、进度状态与文档导航",
+      "压缩逐页译文缓存并限制长期磁盘占用，长 PDF 翻译不再持续堆积巨大的页面文件",
+      "更新 Windows 和 Apple Silicon Mac 的 PDF 组件，并修复组件升级后的兼容性校验",
+    ],
+  },
   "0.1.0-beta.22": {
     version: "0.1.0-beta.22",
     highlights: [
