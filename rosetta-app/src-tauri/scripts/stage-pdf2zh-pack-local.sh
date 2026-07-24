@@ -44,11 +44,15 @@ ROSETTA_APP_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 case "$(uname -s)-$(uname -m)" in
   Darwin-arm64)
     PLATFORM_DIR="macos-arm64"
+    PROFILE_ID="macos-arm64-pdf2zh"
+    PACK_FILENAME="rosetta-pdf2zh-macos-arm64.tar.gz"
     PBS_TARGET="aarch64-apple-darwin"
     APP_DATA_ROOT="$HOME/Library/Application Support/$APP_ID"
     ;;
   Linux-x86_64)
     PLATFORM_DIR="linux-x64"
+    PROFILE_ID="linux-x64-pdf2zh"
+    PACK_FILENAME="rosetta-pdf2zh-linux-x64.tar.gz"
     PBS_TARGET="x86_64-unknown-linux-gnu"
     APP_DATA_ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/$APP_ID"
     ;;
@@ -202,3 +206,39 @@ echo "[pdf2zh-pack] staged binary:" >&2
 ls -lh "$BIN_DIR/pdf2zh" >&2
 ls -lh "$DOCLAYOUT_MODEL_PATH" >&2
 "$BIN_DIR/pdf2zh" --version >&2
+
+PDF2ZH_PACKAGE_DIR="$("$PYTHON_DIR/bin/python" -c 'import pathlib, pdf2zh; print(pathlib.Path(pdf2zh.__file__).parent)')"
+PACK_SHA256="$("$PYTHON_DIR/bin/python" - \
+  "$BIN_DIR/pdf2zh" \
+  "$PDF2ZH_PACKAGE_DIR/converter.py" \
+  "$PDF2ZH_PACKAGE_DIR/rosetta_engine.py" \
+  "$DOCLAYOUT_MODEL_PATH" \
+  "$BABELDOC_CACHE_DIR/fonts/SourceHanSansCN-Regular.ttf" \
+  "$BABELDOC_CACHE_DIR/fonts/SourceHanSansCN-Bold.ttf" \
+  "$BABELDOC_CACHE_DIR/fonts/GoNotoKurrent-Regular.ttf" <<'PY'
+import hashlib
+import pathlib
+import sys
+
+digest = hashlib.sha256()
+for raw_path in sys.argv[1:]:
+    path = pathlib.Path(raw_path)
+    digest.update(path.name.encode("utf-8"))
+    digest.update(b"\0")
+    with path.open("rb") as file:
+        while chunk := file.read(1024 * 1024):
+            digest.update(chunk)
+print(digest.hexdigest())
+PY
+)"
+
+cat > "$PACK_ROOT/manifest.json" <<EOF
+{
+  "profileId": "$PROFILE_ID",
+  "packFilename": "$PACK_FILENAME",
+  "sha256": "$PACK_SHA256",
+  "customPack": true
+}
+EOF
+
+echo "[pdf2zh-pack] wrote local custom-pack manifest: $PACK_ROOT/manifest.json" >&2

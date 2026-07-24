@@ -53,6 +53,11 @@ online installs, while an explicitly imported local test pack remains usable
 after restart when its installer-computed SHA-256 is valid. Older manifests
 default to the pinned-release validation path.
 
+The macOS/Linux local staging helper now writes the same custom-pack manifest
+after its engine smoke test. Its SHA-256 covers the staged engine, converter,
+layout model, launcher, and bundled fonts, preventing a successfully staged
+developer pack from being misreported as an outdated official component.
+
 - PDFMathTranslate Rosetta engine tests cover nested callback exclusion,
   strict replay, empty/missing fallback, placeholder fallback, and text-bearing
   artifacts.
