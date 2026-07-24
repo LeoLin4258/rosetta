@@ -25,6 +25,9 @@ use std::{
     time::Duration,
 };
 
+#[cfg(target_os = "linux")]
+use std::ffi::OsString;
+
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager};
@@ -47,8 +50,29 @@ fn sanitize_python_environment(command: &mut Command) {
     command.env_remove("LD_LIBRARY_PATH");
 }
 
+#[cfg(target_os = "linux")]
+fn apply_linux_worker_environment_overrides(
+    command: &mut Command,
+    get_env: impl Fn(&str) -> Option<OsString>,
+) {
+    for (source, target) in [
+        ("ROSETTA_PDF_WORKER_PYTHONPATH", "PYTHONPATH"),
+        ("ROSETTA_PDF_WORKER_LD_LIBRARY_PATH", "LD_LIBRARY_PATH"),
+        (
+            "ROSETTA_PDF_WORKER_CUDA_VISIBLE_DEVICES",
+            "CUDA_VISIBLE_DEVICES",
+        ),
+    ] {
+        if let Some(value) = get_env(source).filter(|value| !value.is_empty()) {
+            command.env(target, value);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    use super::apply_linux_worker_environment_overrides;
     use super::{sanitize_python_environment, WorkerState, WORKER_SCRIPT};
     use tokio::process::Command;
 
@@ -72,6 +96,44 @@ mod tests {
         assert!(removed.iter().any(|key| key == "PYTHONPATH"));
         #[cfg(target_os = "linux")]
         assert!(removed.iter().any(|key| key == "LD_LIBRARY_PATH"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn worker_accepts_explicit_linux_gpu_environment_overrides() {
+        let mut command = Command::new("python");
+        sanitize_python_environment(&mut command);
+        apply_linux_worker_environment_overrides(&mut command, |key| match key {
+            "ROSETTA_PDF_WORKER_PYTHONPATH" => Some("/opt/rosetta/ort-gpu".into()),
+            "ROSETTA_PDF_WORKER_LD_LIBRARY_PATH" => Some("/opt/rosetta/ort-gpu/nvidia/lib".into()),
+            "ROSETTA_PDF_WORKER_CUDA_VISIBLE_DEVICES" => Some("1".into()),
+            _ => None,
+        });
+
+        let configured = command
+            .as_std()
+            .get_envs()
+            .filter_map(|(key, value)| {
+                value.map(|value| {
+                    (
+                        key.to_string_lossy().into_owned(),
+                        value.to_string_lossy().into_owned(),
+                    )
+                })
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(
+            configured.get("PYTHONPATH").map(String::as_str),
+            Some("/opt/rosetta/ort-gpu")
+        );
+        assert_eq!(
+            configured.get("LD_LIBRARY_PATH").map(String::as_str),
+            Some("/opt/rosetta/ort-gpu/nvidia/lib")
+        );
+        assert_eq!(
+            configured.get("CUDA_VISIBLE_DEVICES").map(String::as_str),
+            Some("1")
+        );
     }
 
     #[test]
@@ -529,6 +591,8 @@ async fn spawn_worker(app: &AppHandle) -> Result<WorkerProcess, String> {
 
     let mut command = Command::new(&python);
     sanitize_python_environment(&mut command);
+    #[cfg(target_os = "linux")]
+    apply_linux_worker_environment_overrides(&mut command, |key| std::env::var_os(key));
     command
         .arg(&script_path)
         .current_dir(&worker_dir)
