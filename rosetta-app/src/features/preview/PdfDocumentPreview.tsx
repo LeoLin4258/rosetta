@@ -262,6 +262,8 @@ export function PdfDocumentPreview({
       pageNumber: number;
       status: string;
       resultKind?: PdfPageTranslation["resultKind"];
+      translatedUnitCount?: number | null;
+      fallbackUnitCount?: number | null;
     }>(
       "rosetta-pdf-page-progress",
       (event) => {
@@ -273,6 +275,8 @@ export function PdfDocumentPreview({
             sourcePageCount: sourcePageCountRef.current,
             status: event.payload.status,
             resultKind: event.payload.resultKind ?? null,
+            translatedUnitCount: event.payload.translatedUnitCount ?? null,
+            fallbackUnitCount: event.payload.fallbackUnitCount ?? null,
             targetLang,
             runId: event.payload.runId ?? null,
           }),
@@ -490,6 +494,7 @@ export function PdfDocumentPreview({
                           activity,
                           stablePreviewMode,
                         )}
+                        notice={partialPageNotice(status)}
                       />
                     </div>
                   </div>
@@ -510,6 +515,8 @@ function patchPdfPageState(
     sourcePageCount: number | null;
     status: string;
     resultKind: PdfPageTranslation["resultKind"] | null;
+    translatedUnitCount: number | null;
+    fallbackUnitCount: number | null;
     targetLang: string;
     runId: string | null;
   },
@@ -535,7 +542,8 @@ function patchPdfPageState(
         ? null
         : existing?.translatedPdfPath ?? null,
     sourceUnitCount: existing?.sourceUnitCount ?? null,
-    translatedUnitCount: existing?.translatedUnitCount ?? null,
+    translatedUnitCount: update.translatedUnitCount ?? existing?.translatedUnitCount ?? null,
+    fallbackUnitCount: update.fallbackUnitCount ?? existing?.fallbackUnitCount ?? null,
     sourceChars: existing?.sourceChars ?? null,
     translatedChars: existing?.translatedChars ?? null,
     artifactVersion: hasTranslatedArtifact ? existing?.artifactVersion ?? now : null,
@@ -619,12 +627,20 @@ function translatedPageLabel(
   if (!page) return null;
   if (page.status === "translated") {
     if (page.resultKind === "no_text") return `第 ${pageNumber} 页无可提取文本`;
+    if (page.resultKind === "partial") return `第 ${pageNumber} 页部分内容保留原文`;
     return stablePreviewMode
       ? `第 ${pageNumber} 页已完成，预览将在本次结束后加载`
       : `加载第 ${pageNumber} 页译文...`;
   }
   if (page.status === "failed") return `失败原因：${page.error ?? "可重试"}`;
   return null;
+}
+
+function partialPageNotice(page: PdfPageTranslation | null) {
+  if (page?.status !== "translated" || page.resultKind !== "partial") return null;
+  const translated = page.translatedUnitCount ?? 0;
+  const fallback = page.fallbackUnitCount ?? 0;
+  return `${translated} 个单元已翻译，${fallback} 个保留原文`;
 }
 
 function pdfPageRelativePath(targetLang: string, pageNumber: number) {

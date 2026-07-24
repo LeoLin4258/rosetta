@@ -420,12 +420,6 @@ async fn translate_provider_units_with_events(
                 && translation.text.trim().is_empty()
         })
         .count() as u64;
-    if metrics.empty_output_count > 0 {
-        return Err(format!(
-            "PDF unit translation produced {} empty output(s).",
-            metrics.empty_output_count
-        ));
-    }
     Ok(PdfUnitTranslationBatchResult {
         translations,
         metrics,
@@ -1732,6 +1726,37 @@ mod tests {
         assert_eq!(emitted[0].unit_id, "dup");
         assert_eq!(emitted[0].text, "");
         assert_eq!(result.metrics.request_count, 0);
+    }
+
+    #[tokio::test]
+    async fn empty_provider_output_is_emitted_for_renderer_source_fallback() {
+        let scripted = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::from(
+            vec![provider_success(vec![String::new()])],
+        )));
+        let provider = PdfUnitProviderConfig::Scripted {
+            results: scripted,
+            max_batch_size: 1,
+        };
+        let mut emitted = Vec::new();
+
+        let result = translate_provider_units_with_events(
+            &provider,
+            "en",
+            "zh-CN",
+            &[unit("unit-a", "Source paragraph")],
+            None,
+            &mut |translation| emitted.push(translation),
+        )
+        .await
+        .expect("empty unit output should reach the renderer for source fallback");
+
+        assert_eq!(result.translations.len(), 1);
+        assert_eq!(result.translations[0].unit_id, "unit-a");
+        assert_eq!(result.translations[0].text, "");
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].unit_id, "unit-a");
+        assert_eq!(emitted[0].text, "");
+        assert_eq!(result.metrics.empty_output_count, 1);
     }
 
     #[tokio::test]

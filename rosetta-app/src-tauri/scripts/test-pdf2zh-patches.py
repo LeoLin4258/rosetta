@@ -38,6 +38,12 @@ class Pdf2zhPatchTests(unittest.TestCase):
         self.assertIn("onnxruntime-directml==1.24.4", requirements)
         self.assertNotRegex(requirements, r"(?m)^onnxruntime==")
         self.assertIn("patch-pdf2zh-directml-layout.py", builder)
+        self.assertIn("pip uninstall --yes onnxruntime", builder)
+        self.assertIn(
+            'pip install --force-reinstall --no-deps "onnxruntime-directml==1.24.4"',
+            builder,
+        )
+        self.assertIn('if "DmlExecutionProvider" not in model_providers:', builder)
 
     def test_duplicate_text_fast_match_preserves_exact_threshold_decisions(self) -> None:
         module = ast.parse(PATCH_SCRIPT.read_text(encoding="utf-8"))
@@ -445,8 +451,25 @@ from pdf2zh.high_level import NOTO_NAME, download_remote_fonts
 class TranslationUnit:
     unitId: str
     pageNumber: int
+    orderOnPage: int
     sourceText: str
+    sourceChars: int
+    kind: str
     requiresTranslation: bool
+
+@dataclass
+class PageResult:
+    pageNumber: int
+    status: str
+    sourceUnitCount: int
+    translatedUnitCount: int
+    sourceChars: int
+    translatedChars: int
+    emptyTranslationCount: int
+    placeholderMismatchCount: int
+    artifactPath: str | None = None
+    artifactBytes: int | None = None
+    error: str | None = None
 
 def prepareRun(inputPdf: str, langOut: str):
     input_path = Path(inputPdf)
@@ -467,6 +490,42 @@ def prepare_pdf_document(input_path: Path, font_path: str, noto_name: str):
 
 def validate_translation_keys(units: list[TranslationUnit], translations: dict[str, str]) -> None:
     pass
+
+class _EngineTranslator:
+    def __init__(self, lang_in: str, lang_out: str):
+        self.lang_in = lang_in
+        self.lang_out = lang_out
+
+class _UnitCollectorTranslator(_EngineTranslator):
+    def __init__(self, lang_in: str, lang_out: str):
+        super().__init__(lang_in, lang_out)
+        self.current_page_number = 0
+        self._orders_by_page: dict[int, int] = {}
+        self.units: list[TranslationUnit] = []
+
+    def set_page(self, page_number: int):
+        self.current_page_number = page_number
+        self._orders_by_page.setdefault(page_number, 0)
+
+    def translate_many(self, texts, *args, **kwargs):
+        outputs = []
+        for text in list(texts):
+            self._orders_by_page[self.current_page_number] += 1
+            order = self._orders_by_page[self.current_page_number]
+            self.units.append(TranslationUnit(
+                unitId=unit_id_for(self.current_page_number, order),
+                pageNumber=self.current_page_number,
+                orderOnPage=order,
+                sourceText=text,
+                sourceChars=len(text),
+                kind="body",
+                requiresTranslation=True,
+            ))
+            outputs.append(text)
+        return outputs
+
+    def translate(self, text, *args, **kwargs):
+        return self.translate_many([text])[0]
 
 class _RenderTranslator(_EngineTranslator):
     def __init__(
@@ -518,6 +577,84 @@ class _RenderTranslator(_EngineTranslator):
 
     def translate(self, text, *args, **kwargs):
         return self.translate_many([text])[0]
+
+def prewarm(options=None):
+    return {}
+
+def collect_page_units(page, page_number, translator):
+    translator.set_page(page_number)
+    before_count = len(translator.units)
+    interpreter.render_contents(page.resources, page.contents, ctm=ctm)
+    device.fontmap = interpreter.fontmap
+    device.end_page(page)
+    return translator.units[before_count:]
+
+def render_one_page(state, cache, translations_by_unit_id, output_dir):
+    source_chars = translatable_source_chars(cache.units)
+    if not translatable_page_units(cache.units):
+        return PageResult(
+            pageNumber=cache.page_number,
+            status="no_text",
+            sourceUnitCount=0,
+            translatedUnitCount=0,
+            sourceChars=0,
+            translatedChars=0,
+            emptyTranslationCount=0,
+            placeholderMismatchCount=0,
+        )
+    missing = [
+        unit.unitId
+        for unit in cache.units
+        if unit.requiresTranslation and unit.unitId not in translations_by_unit_id
+    ]
+    translator = _RenderTranslator(
+        state.lang_in,
+        state.lang_out,
+        cache.units,
+        translations_by_unit_id,
+    )
+    translator.set_page(cache.page_number)
+    ops_new = device.receive_layout(cache.ltpage)
+    if translator.empty_translation_count > 0:
+        return failed_page_result(cache, source_chars, "empty translation")
+    if translator.placeholder_mismatch_count > 0:
+        return failed_page_result(cache, source_chars, "placeholder mismatch")
+    if (
+        translator.translated_chars > 0
+        and not rosetta_pdf_has_text_drawing_operators(ops_new)
+    ):
+        return failed_page_result(cache, source_chars, "no text operators")
+    return PageResult(
+        pageNumber=cache.page_number,
+        status="translated",
+        sourceUnitCount=translatable_unit_count(cache.units),
+        translatedUnitCount=translator.translated_unit_count,
+        sourceChars=source_chars,
+        translatedChars=translator.translated_chars,
+        emptyTranslationCount=translator.empty_translation_count,
+        placeholderMismatchCount=translator.placeholder_mismatch_count,
+    )
+
+def failed_page_result(
+    cache,
+    source_chars: int,
+    error: str,
+    translated_unit_count: int = 0,
+    translated_chars: int = 0,
+    empty_translation_count: int = 0,
+    placeholder_mismatch_count: int = 0,
+) -> PageResult:
+    return PageResult(
+        pageNumber=cache.page_number,
+        status="failed",
+        sourceUnitCount=translatable_unit_count(cache.units),
+        translatedUnitCount=translated_unit_count,
+        sourceChars=source_chars,
+        translatedChars=translated_chars,
+        emptyTranslationCount=empty_translation_count,
+        placeholderMismatchCount=placeholder_mismatch_count,
+        error=error,
+    )
 """
 
     def write_default_high_level(self, package: Path) -> None:
@@ -612,7 +749,13 @@ def record_translation(self, translated: str):
 
             return converter.read_text()
 
-    def run_patch_for_package(self, converter_text: str, high_level_text: str | None = None, rosetta_engine_text: str | None = None) -> dict[str, str]:
+    def run_patch_for_package(
+        self,
+        converter_text: str,
+        high_level_text: str | None = None,
+        rosetta_engine_text: str | None = None,
+        runs: int = 1,
+    ) -> dict[str, str]:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             package = root / "pdf2zh"
@@ -630,14 +773,15 @@ def record_translation(self, translated: str):
 
             env = os.environ.copy()
             env["PYTHONPATH"] = str(root)
-            subprocess.run(
-                [sys.executable, str(PATCH_SCRIPT)],
-                env=env,
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
+            for _ in range(runs):
+                subprocess.run(
+                    [sys.executable, str(PATCH_SCRIPT)],
+                    env=env,
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
 
             return {
                 "converter": (package / "converter.py").read_text(),
@@ -669,17 +813,21 @@ def record_translation(self, translated: str):
         )
         self.assertEqual(patched.count('get_font_and_metadata("SourceHanSansCN-Bold.ttf")'), 1)
 
-    def test_legacy_converter_patch_path_applies_render_order_drift_matching(self) -> None:
+    def test_legacy_converter_patch_path_keeps_strict_render_order(self) -> None:
         files = self.run_patch_for_package(
             self.legacy_converter_text(),
             rosetta_engine_text=self.render_order_drift_engine_text(),
         )
 
         patched = files["rosetta_engine"]
-        self.assertIn("tolerate replay translate_many order drift", patched)
-        self.assertIn("expected = self._match_expected_unit(unit_id, text)", patched)
-        self.assertIn("self._consumed_unit_ids", patched)
-        self.assertNotIn("expected.sourceText != text", patched)
+        self.assertIn("final page render slots are authoritative", patched)
+        self.assertIn("translator.set_collection_enabled(False)", patched)
+        self.assertIn("translator.set_collection_enabled(True)", patched)
+        self.assertIn("fallbackUnitCount", patched)
+        self.assertNotIn("tolerate replay translate_many order drift", patched)
+        self.assertNotIn("expected = self._match_expected_unit(unit_id, text)", patched)
+        self.assertNotIn("self._consumed_unit_ids", patched)
+        self.assertIn("expected.sourceText != text", patched)
 
     def test_patch_preserves_color_and_bold_for_paragraph_ops_converter(self) -> None:
         patched = self.run_patch("""class TranslateConverter(PDFConverterEx):
@@ -967,6 +1115,7 @@ class Paragraph:
         def gen_op_line(x, y, xlen, ylen, linewidth, color=None):
             return ""
 
+        for id, new in enumerate(news):
             ops_vals: list[dict] = []
             # Rosetta: keep CJK line spacing legible without painting over source graphics.
 '''
@@ -974,17 +1123,23 @@ class Paragraph:
 
         marker = "        def rosetta_pdf_centered_alignment_shift("
         helper_start = patched.index(marker)
-        helper_end = patched.index("            ops_vals: list[dict] = []")
+        loop_start = patched.index("        for id, new in enumerate(news):")
+        helper_end = loop_start
         namespace: dict[str, object] = {"re": re}
         exec(patched[helper_start:helper_end].replace("        def ", "def ", 1), namespace)
         shift = namespace["rosetta_pdf_centered_alignment_shift"]
+        ops_start = patched.index("            ops_vals: list[dict] = []", loop_start)
 
         self.assertAlmostEqual(shift(0, 612, 129.77, 482.22, 129.77, 354.75, 24, False, 1), 63.74, places=1)
         self.assertEqual(shift(0, 612, 72, 300, 72, 220, 12, False, 1), 0.0)
         self.assertEqual(shift(0, 612, 50, 562, 50, 300, 12, False, 1), 0.0)
         self.assertEqual(shift(0, 612, 129.77, 482.22, 129.77, 354.75, 24, True, 2), 0.0)
+        self.assertLess(helper_start, helper_end)
+        self.assertLess(helper_end, ops_start)
+        self.assertNotIn("ops_vals", patched[helper_start:helper_end])
         self.assertIn("for vals in ops_vals:", patched)
         self.assertIn('vals["x"] += alignment_shift', patched)
+        self.assertEqual(self.run_patch(patched), patched)
 
     def test_patch_preserves_structural_but_not_soft_pdf_line_breaks(self) -> None:
         converter = self.converter_with_bold_helpers() + '''
@@ -1524,6 +1679,32 @@ def validate_translation_keys(units: list[TranslationUnit], translations: dict[s
         self.assertIn('if unit.kind == "duplicate-layer":', patched)
         self.assertIn('return ""', patched)
 
+    def test_patch_accepts_current_authoritative_pdf2zh_engine(self) -> None:
+        sibling_engine = (
+            SCRIPT_DIR.parents[3]
+            / "PDFMathTranslate"
+            / "pdf2zh"
+            / "rosetta_engine.py"
+        )
+        if not sibling_engine.is_file():
+            self.skipTest("sibling PDFMathTranslate checkout is unavailable")
+
+        files = self.run_patch_for_package(
+            self.converter_with_bold_helpers(),
+            rosetta_engine_text=sibling_engine.read_text(encoding="utf-8"),
+            runs=2,
+        )
+
+        patched = files["rosetta_engine"]
+        ast.parse(patched)
+        self.assertIn("suppress duplicate PDF text layers", patched)
+        self.assertIn("final page render slots are authoritative", patched)
+        self.assertIn(
+            "outputs.append(rosetta_nontranslatable_render_text(expected, text))",
+            patched,
+        )
+        self.assertNotIn("_match_expected_unit", patched)
+
     def test_patch_marks_table_formula_and_page_number_units_nontranslatable(self) -> None:
         files = self.run_patch_for_package(
             self.converter_with_bold_helpers(),
@@ -1697,6 +1878,96 @@ def validate_translation_keys(units: list[TranslationUnit], translations: dict[s
         self.assertTrue(namespace["is_rosetta_formula_like_unit"](operator_formula_text))
         self.assertTrue(namespace["is_rosetta_page_number_unit"]("8"))
         self.assertTrue(namespace["is_rosetta_figure_panel_label_unit"](panel_label_text))
+        split_panel_units = [
+            type(
+                "PanelUnit",
+                (),
+                {
+                    "sourceText": source_text,
+                    "requiresTranslation": True,
+                    "kind": "body",
+                    "orderOnPage": index,
+                },
+            )()
+            for index, source_text in enumerate(
+                [
+                    "(a) Comparison with SOTA methods.",
+                    "(c) Segmentation results in complex interference conditions.",
+                    "(b) Different Enhancement Modules.",
+                ],
+                start=1,
+            )
+        ]
+        namespace["mark_nontranslatable_layout_units"](split_panel_units)
+        self.assertTrue(all(not unit.requiresTranslation for unit in split_panel_units))
+        self.assertTrue(all(unit.kind == "figure-panel-labels" for unit in split_panel_units))
+        single_panel_unit = type(
+            "PanelUnit",
+            (),
+            {
+                "sourceText": "(a) This paragraph explains one experimental condition in prose.",
+                "requiresTranslation": True,
+                "kind": "body",
+                "orderOnPage": 5,
+            },
+        )()
+        namespace["mark_nontranslatable_layout_units"]([single_panel_unit])
+        self.assertTrue(single_panel_unit.requiresTranslation)
+        deployment_units = [
+            type(
+                "DiagramUnit",
+                (),
+                {
+                    "sourceText": source_text,
+                    "requiresTranslation": True,
+                    "kind": kind,
+                    "orderOnPage": index,
+                },
+            )()
+            for index, (source_text, kind) in enumerate(
+                [
+                    ("Move", "body"),
+                    ("Camera Control", "body"),
+                    ("...... ......", "body"),
+                    ("Get", "body"),
+                    ("Input", "body"),
+                    ("Upload ...... ......", "body"),
+                    ("Output", "body"),
+                    ("Process", "body"),
+                    ("Initial Video", "body"),
+                    ("Split", "body"),
+                    ("Combine", "body"),
+                    ("Processed Video", "body"),
+                    ("Resize", "body"),
+                    ("SCRWKV: Ultra-Compact Structure-Calibrated Vision-RWKV", "body"),
+                    ("Figure 10. Practical deployment illustration.", "caption"),
+                ],
+                start=1,
+            )
+        ]
+        namespace["mark_nontranslatable_layout_units"](deployment_units)
+        self.assertTrue(all(not unit.requiresTranslation for unit in deployment_units[:13]))
+        self.assertTrue(all(unit.kind == "diagram-label" for unit in deployment_units[:13]))
+        self.assertTrue(deployment_units[13].requiresTranslation)
+        self.assertTrue(deployment_units[14].requiresTranslation)
+        isolated_anchor_units = [
+            type(
+                "DiagramUnit",
+                (),
+                {
+                    "sourceText": source_text,
+                    "requiresTranslation": True,
+                    "kind": "body",
+                    "orderOnPage": index,
+                },
+            )()
+            for index, source_text in enumerate(
+                ["Camera Control", "9 Real-world Deployment Applications"],
+                start=1,
+            )
+        ]
+        namespace["mark_rosetta_diagram_label_clusters"](isolated_anchor_units)
+        self.assertTrue(all(unit.requiresTranslation for unit in isolated_anchor_units))
         self.assertTrue(namespace["is_rosetta_diagram_label_unit"](diagram_text, 2))
         self.assertTrue(namespace["is_rosetta_diagram_label_unit"]("Group A", 2))
         self.assertTrue(namespace["is_rosetta_diagram_label_unit"]("Inward Shift Outward Shift", 4))
@@ -1795,7 +2066,11 @@ def validate_translation_keys(units: list[TranslationUnit], translations: dict[s
 
         patched = files["rosetta_engine"]
         self.assertIn("def is_rosetta_figure_panel_label_unit", patched)
+        self.assertIn("def mark_rosetta_split_figure_panel_label_units", patched)
+        self.assertIn("mark_rosetta_split_figure_panel_label_units(units)", patched)
         self.assertIn("def is_rosetta_diagram_label_unit", patched)
+        self.assertIn("def mark_rosetta_diagram_label_clusters", patched)
+        self.assertIn("mark_rosetta_diagram_label_clusters(units)", patched)
         self.assertIn("operator_hits = len(re.findall", patched)
         self.assertIn("Partition|TopK|Gumbel|Softmax|Flatten|EM|LN|FFN|CR", patched)
         self.assertIn("Attention|Inward|Outward|Shift", patched)
@@ -1861,7 +2136,7 @@ class _RenderTranslator:
         self.assertIn("outputs.append(rosetta_nontranslatable_render_text(expected, text))", patched)
         self.assertNotIn('outputs.append("")', patched)
 
-    def test_patch_tolerates_render_translate_many_order_drift(self) -> None:
+    def test_patch_does_not_add_source_text_order_drift_matching(self) -> None:
         files = self.run_patch_for_package(
             self.converter_with_bold_helpers(),
             rosetta_engine_text="""from pathlib import Path
@@ -1941,12 +2216,12 @@ class _RenderTranslator(_EngineTranslator):
         )
 
         patched = files["rosetta_engine"]
-        self.assertIn("tolerate replay translate_many order drift", patched)
-        self.assertIn("self.expected_by_page", patched)
-        self.assertIn("self._consumed_unit_ids", patched)
-        self.assertIn("def _match_expected_unit", patched)
-        self.assertIn("expected = self._match_expected_unit(unit_id, text)", patched)
-        self.assertNotIn("expected.sourceText != text", patched)
+        self.assertNotIn("tolerate replay translate_many order drift", patched)
+        self.assertNotIn("self.expected_by_page", patched)
+        self.assertNotIn("self._consumed_unit_ids", patched)
+        self.assertNotIn("def _match_expected_unit", patched)
+        self.assertNotIn("expected = self._match_expected_unit(unit_id, text)", patched)
+        self.assertIn("expected.sourceText != text", patched)
 
     def test_release_pack_builders_apply_pdf_converter_patch(self) -> None:
         builders = [

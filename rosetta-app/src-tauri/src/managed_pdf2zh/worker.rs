@@ -251,6 +251,8 @@ pub(crate) struct PdfPageResult {
     pub translated_unit_count: u32,
     pub source_chars: u64,
     pub translated_chars: u64,
+    #[serde(default)]
+    pub fallback_unit_count: u32,
     pub empty_translation_count: u32,
     pub placeholder_mismatch_count: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]

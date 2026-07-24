@@ -19,6 +19,8 @@ struct Pdf2zhPackManifest {
     pack_filename: String,
     sha256: Option<String>,
     size_bytes: Option<u64>,
+    #[serde(default)]
+    custom_pack: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -104,6 +106,9 @@ impl Pdf2zhLayout {
         if manifest.profile_id != profile.id || manifest.pack_filename != profile.pack_filename {
             return false;
         }
+        if manifest.custom_pack {
+            return manifest.sha256.as_deref().is_some_and(is_lowercase_sha256);
+        }
         if let Some(expected) = profile.pack_sha256 {
             if manifest.sha256.as_deref() != Some(expected) {
                 return false;
@@ -124,6 +129,13 @@ impl Pdf2zhLayout {
         }
         Ok(())
     }
+}
+
+fn is_lowercase_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }
 
 fn has_custom_pack_url_env() -> bool {
@@ -253,6 +265,25 @@ mod tests {
         assert!(
             !layout.managed_pack_ready(&WINDOWS_AMD64_PDF2ZH),
             "an installed pack from a previous release must not satisfy the current profile"
+        );
+
+        std::fs::write(
+            &layout.manifest_file,
+            r#"{
+  "schemaVersion": 1,
+  "profileId": "windows-amd64-pdf2zh",
+  "packFilename": "rosetta-pdf2zh-windows-amd64.zip",
+  "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "sizeBytes": null,
+  "sourceUrl": "file:///tmp/local-test.zip",
+  "installedAt": "0",
+  "customPack": true
+}"#,
+        )
+        .expect("write local test manifest");
+        assert!(
+            layout.managed_pack_ready(&WINDOWS_AMD64_PDF2ZH),
+            "an explicitly imported local pack should remain ready after restart"
         );
 
         write_matching_manifest(&layout, &WINDOWS_AMD64_PDF2ZH);

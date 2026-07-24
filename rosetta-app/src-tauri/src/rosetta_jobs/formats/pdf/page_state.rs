@@ -33,6 +33,8 @@ pub(crate) struct PdfPageTranslation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub translated_unit_count: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_unit_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_chars: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub translated_chars: Option<u64>,
@@ -239,6 +241,7 @@ pub(crate) fn upsert_pdf_page_with_run(
         artifact_compression_error: None,
         source_unit_count: None,
         translated_unit_count: None,
+        fallback_unit_count: None,
         source_chars: None,
         translated_chars: None,
         translated_pdf_path,
@@ -256,6 +259,7 @@ pub(crate) fn set_pdf_page_result_metadata(
     result_kind: Option<String>,
     source_unit_count: Option<u32>,
     translated_unit_count: Option<u32>,
+    fallback_unit_count: Option<u32>,
     source_chars: Option<u64>,
     translated_chars: Option<u64>,
 ) {
@@ -267,6 +271,7 @@ pub(crate) fn set_pdf_page_result_metadata(
         page.result_kind = result_kind;
         page.source_unit_count = source_unit_count;
         page.translated_unit_count = translated_unit_count;
+        page.fallback_unit_count = fallback_unit_count;
         page.source_chars = source_chars;
         page.translated_chars = translated_chars;
     }
@@ -299,6 +304,7 @@ pub(crate) fn clear_pdf_page_artifact_metadata(page: &mut PdfPageTranslation) {
 pub(crate) fn clear_pdf_page_result_metadata(page: &mut PdfPageTranslation) {
     page.source_unit_count = None;
     page.translated_unit_count = None;
+    page.fallback_unit_count = None;
     page.source_chars = None;
     page.translated_chars = None;
 }

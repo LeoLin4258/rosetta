@@ -44,7 +44,9 @@ the current viewport page and a direct translation-range input.
 - Main source and translated page frames now derive their aspect ratio from the
   rendered PNG instead of assuming portrait A4. The ratio is cached with the
   raster so landscape and non-standard pages fill their frame without
-  letterboxing or repeated layout correction.
+  letterboxing or repeated layout correction. Untranslated placeholders also
+  read the source page dimensions invisibly, so both columns remain full-height
+  and aligned before a translation exists.
 - Added viewport-center current-page tracking and virtualized page navigation.
 - Added topbar previous/next controls, direct page entry, and page-range
   selection such as `21-30` or `21-30,42`.

@@ -1266,6 +1266,10 @@ struct PdfPageProgressPayload {
     status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     result_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    translated_unit_count: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fallback_unit_count: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1797,6 +1801,7 @@ fn effective_pdf_page_state(
                     translated_pdf_path: None,
                     source_unit_count: None,
                     translated_unit_count: None,
+                    fallback_unit_count: None,
                     source_chars: None,
                     translated_chars: None,
                     artifact_version: None,
@@ -2434,6 +2439,8 @@ async fn translate_pdf_pages_inner(
                                 page_number,
                                 status: "translated".to_string(),
                                 result_kind: Some(committed.result_kind.clone()),
+                                translated_unit_count: Some(page_result.translated_unit_count),
+                                fallback_unit_count: Some(page_result.fallback_unit_count),
                             },
                         );
                         diagnostics::append_timeline_event(
@@ -2452,6 +2459,7 @@ async fn translate_pdf_pages_inner(
                                 "outputBytes": committed.artifact_bytes,
                                 "sourceUnitCount": page_result.source_unit_count,
                                 "translatedUnitCount": page_result.translated_unit_count,
+                                "fallbackUnitCount": page_result.fallback_unit_count,
                                 "sourceChars": page_result.source_chars,
                                 "translatedChars": page_result.translated_chars,
                             })),
@@ -2478,6 +2486,7 @@ async fn translate_pdf_pages_inner(
                             Some("failed".to_string()),
                             Some(page_result.source_unit_count),
                             Some(page_result.translated_unit_count),
+                            Some(page_result.fallback_unit_count),
                             Some(page_result.source_chars),
                             Some(page_result.translated_chars),
                         );
@@ -2492,6 +2501,8 @@ async fn translate_pdf_pages_inner(
                                 page_number,
                                 status: "failed".to_string(),
                                 result_kind: Some("failed".to_string()),
+                                translated_unit_count: Some(page_result.translated_unit_count),
+                                fallback_unit_count: Some(page_result.fallback_unit_count),
                             },
                         );
                         diagnostics::append_timeline_event(
@@ -2782,29 +2793,24 @@ fn commit_pdf_page_result(
     let page_number = page_result.page_number;
     match page_result.status.as_str() {
         "translated" => {
-            if page_result.source_unit_count > 0 && page_result.translated_chars == 0 {
-                return Err(format!(
-                    "PDF 第 {page_number} 页检测到可翻译文本，但译文字数为 0，已拒绝提交空白译文。"
-                ));
-            }
-            if page_result.empty_translation_count > 0 {
-                return Err(format!(
-                    "PDF 第 {page_number} 页存在 {} 个空译文单元，已拒绝提交。",
-                    page_result.empty_translation_count
-                ));
-            }
-            if page_result.placeholder_mismatch_count > 0 {
-                return Err(format!(
-                    "PDF 第 {page_number} 页存在 {} 个公式/占位符不匹配，已拒绝提交。",
-                    page_result.placeholder_mismatch_count
-                ));
-            }
             if page_result.source_unit_count > 0
-                && page_result.translated_unit_count < page_result.source_unit_count
+                && page_result
+                    .translated_unit_count
+                    .saturating_add(page_result.fallback_unit_count)
+                    != page_result.source_unit_count
             {
                 return Err(format!(
-                    "PDF 第 {page_number} 页译文单元数量不足：期望 {}，实际 {}。",
-                    page_result.source_unit_count, page_result.translated_unit_count
+                    "PDF 第 {page_number} 页渲染单元数量不一致：期望 {}，译文 {}，原文回退 {}。",
+                    page_result.source_unit_count,
+                    page_result.translated_unit_count,
+                    page_result.fallback_unit_count
+                ));
+            }
+            if page_result.empty_translation_count + page_result.placeholder_mismatch_count
+                > page_result.fallback_unit_count
+            {
+                return Err(format!(
+                    "PDF 第 {page_number} 页报告了未回退的无效译文单元。"
                 ));
             }
             let artifact_path = page_result
@@ -2840,12 +2846,18 @@ fn commit_pdf_page_result(
                 None,
                 Some(run_id),
             );
+            let result_kind = if page_result.fallback_unit_count > 0 {
+                "partial"
+            } else {
+                "translated"
+            };
             page_state::set_pdf_page_result_metadata(
                 state,
                 page_number,
-                Some("translated".to_string()),
+                Some(result_kind.to_string()),
                 Some(page_result.source_unit_count),
                 Some(page_result.translated_unit_count),
+                Some(page_result.fallback_unit_count),
                 Some(page_result.source_chars),
                 Some(page_result.translated_chars),
             );
@@ -2857,7 +2869,7 @@ fn commit_pdf_page_result(
                 None,
             );
             Ok(PdfCommittedPage {
-                result_kind: "translated".to_string(),
+                result_kind: result_kind.to_string(),
                 translated_pdf_path: Some(relative_path),
                 artifact_bytes: Some(artifact_bytes),
             })
@@ -2877,6 +2889,7 @@ fn commit_pdf_page_result(
                 Some("no_text".to_string()),
                 Some(page_result.source_unit_count),
                 Some(page_result.translated_unit_count),
+                Some(page_result.fallback_unit_count),
                 Some(page_result.source_chars),
                 Some(page_result.translated_chars),
             );
@@ -3105,6 +3118,8 @@ fn emit_pdf_page_progress_for_run(
             page_number,
             status: status.to_string(),
             result_kind: None,
+            translated_unit_count: None,
+            fallback_unit_count: None,
         },
     );
 }

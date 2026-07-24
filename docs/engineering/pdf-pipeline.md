@@ -574,8 +574,10 @@ without loading source text or running layout inference for every PDF.
 
 - `pending`: no committed translated page artifact.
 - `translated`: the page is completed. `resultKind="translated"` has a valid
-  `translatedPdfPath`; `resultKind="no_text"` intentionally has no translated
-  PDF artifact and export keeps the source page for that page.
+  `translatedPdfPath`; `resultKind="partial"` also has a valid artifact but
+  preserves one or more invalid translation units as source text;
+  `resultKind="no_text"` intentionally has no translated PDF artifact and
+  export keeps the source page for that page.
 - `failed`: the last attempt for this page failed and can be retried.
 
 Page commit is driven only by the formal `PageResult` returned by the PDF
@@ -583,16 +585,26 @@ engine. Diagnostics and timeline entries are not business inputs.
 
 Commit rules:
 
-- `status="translated"` requires a readable one-page PDF artifact.
-- `sourceUnitCount > 0 && translatedChars == 0` fails the page.
-- `emptyTranslationCount > 0` fails the page. The engine should only count
-  required translation units in this field.
-- `placeholderMismatchCount > 0` fails the page.
+- `status="translated"` requires a readable one-page PDF artifact with text
+  drawing operators for a text-bearing page.
+- The final renderer replay slots are authoritative. Collection ignores nested
+  figure/layout callbacks and records only the slots emitted by final page
+  layout. Rendering must replay exactly the same slot count, order, unit IDs,
+  and source text; structural drift fails the page.
+- A known unit with a missing, non-string, empty, or placeholder-invalid
+  translation falls back to that unit's source text. Neighboring valid units
+  remain translated.
+- `translatedUnitCount + fallbackUnitCount` must equal `sourceUnitCount`.
+  A nonzero `fallbackUnitCount` commits as `resultKind="partial"` rather than
+  failing or hiding the entire page.
+- `emptyTranslationCount + placeholderMismatchCount` cannot exceed
+  `fallbackUnitCount`; these fields remain diagnostics for fallback reasons.
 - `status="no_text"` completes the page with `resultKind="no_text"` and no
   translated artifact.
-- `status="failed"`, provider failure, translation count mismatch,
-  truncation, worker crash, and render failure all fail explicitly. They must
-  never produce a successful blank artifact.
+- `status="failed"`, provider transport/protocol failure, batch-count
+  mismatch, truncation, worker crash, structural slot mismatch, and render
+  failure all fail explicitly. They must never produce a successful blank
+  artifact.
 
 The UI may receive effective statuses:
 
@@ -613,10 +625,11 @@ Page record:
   "schemaVersion": 2,
   "pageNumber": 1,
   "status": "translated",
-  "resultKind": "translated",
+  "resultKind": "partial",
   "translatedPdfPath": "translated-pages/zh-CN/page-0001.pdf",
   "sourceUnitCount": 8,
-  "translatedUnitCount": 8,
+  "translatedUnitCount": 7,
+  "fallbackUnitCount": 1,
   "sourceChars": 1788,
   "translatedChars": 551,
   "artifactVersion": "1782369534004",
@@ -681,6 +694,10 @@ Run states:
 7. Rust sends `prepare_pdf_window` to the persistent worker. The worker calls
    the fork-owned Rosetta engine `prepareRun` and `collectUnits`, then returns
    a typed `PreparedRun` plus ordered `TranslationUnit[]`.
+   The engine disables collection while pdfminer recursively parses nested
+   figure contents, then enables it for the final page-layout callback. Those
+   final callback slots are the collection and render authority; source-text
+   scanning is not used to guess or repair ordering.
    Large source PDFs are prepared as selected-page windows: `sourcePageCount`
    still reports the full original page count, but the prepared PDF document
    contains only the requested pages for the current chunk/window.
@@ -713,16 +730,22 @@ Run states:
    letters are returned literally without a model request. Each translated or
    literal part is reassembled into its original `unitId`, preserving the PDF
    engine render contract. Non-Lightning providers use the same typed unit
-   contract with stricter chunking, split retry, and truncation/empty-output
-   rejection.
+   contract with stricter chunking, split retry, and truncation rejection. An
+   empty output for a known unit is retained under that `unitId` so the
+   renderer can apply source fallback; provider transport, protocol, and
+   batch-count failures still fail the page.
 9. Rust sends `render_pdf_window` with `unitId -> translation`. The worker
    calls the engine `renderPages`, which emits one formal `PageResult` per
-   page in page order.
+   page in page order. The renderer requires exact unit ID/order/source replay.
+   Missing, empty, non-string, or placeholder-invalid values fall back only
+   their own slot and increment `fallbackUnitCount`.
 10. Rust commits each `PageResult` immediately as it arrives. Translated pages
    are validated as readable one-page PDFs, moved to
    `translated-pages/<targetLang>/page-XXXX.pdf`, recorded with v2 metadata,
-   and emitted to the UI. `no_text` pages are completed without pretending to
-   have translated text or a translated artifact.
+   and emitted to the UI. Pages with fallback units are committed as
+   `resultKind="partial"` and remain visible with a translated/fallback count
+   notice. `no_text` pages are completed without pretending to have translated
+   text or a translated artifact.
 11. After a successful run, Rust leaves the prepared window in the bounded LRU
     for a possible immediate retranslation. Failure or cancellation disposes
     its live run. Worker restart clears only the memory tier; the next

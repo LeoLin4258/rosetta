@@ -91,6 +91,10 @@ try {
 
     Invoke-NativeChecked $PythonExe -m pip install --upgrade "pip==26.1.2" --index-url $PipIndexUrl
     Invoke-NativeChecked $PythonExe -m pip install --requirement $Requirements --index-url $PipIndexUrl
+    # BabelDOC depends on the CPU onnxruntime distribution, which can overwrite
+    # the shared onnxruntime module installed by onnxruntime-directml.
+    Invoke-NativeChecked $PythonExe -m pip uninstall --yes onnxruntime
+    Invoke-NativeChecked $PythonExe -m pip install --force-reinstall --no-deps "onnxruntime-directml==1.24.4" --index-url $PipIndexUrl
     Invoke-NativeChecked $PythonExe -m pip install $Pdf2zhSourcePath --no-deps --index-url $PipIndexUrl
 
     Write-Host "[pdf2zh-pack] applying NumPy 2 compatibility patch"
@@ -193,7 +197,13 @@ for font_name in [
 
 model_path = os.environ["ROSETTA_DOCLAYOUT_MODEL"]
 model = OnnxModel(model_path)
-providers = ",".join(model.model.get_providers())
+model_providers = model.model.get_providers()
+if "DmlExecutionProvider" not in model_providers:
+    raise SystemExit(
+        "Windows PDF pack layout model is not using DmlExecutionProvider: "
+        + ",".join(model_providers)
+    )
+providers = ",".join(model_providers)
 print(f"pdf-pack-imports-ok pdf2zh={pdf2zh.__version__} contract={rosetta_engine.ENGINE_CONTRACT_VERSION} providers={providers}")
 '@
     $env:ROSETTA_DOCLAYOUT_MODEL = $ModelPath

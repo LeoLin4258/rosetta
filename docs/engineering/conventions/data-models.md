@@ -162,7 +162,7 @@ AppData/Rosetta/jobs/
 - 工作台在创建 run 前必须先通过窄 Tauri command 持久化当前文件的 source/target language metadata。trusted run creation 只接受 `jobId`、exact PageSet 和 target language，source language 由 native 从持久化 metadata 解析，前端不得把它作为未验证 authority 传入 run command。
 - `pdf_source.json` 是 PDF source 元数据文件，记录 `pageCount`、`sourceFingerprint`、导入文件名、原始路径快照和时间戳。`sourceFingerprint` 使用 canonical `sha256:<64 lowercase hex>`，并与 PDF v3 `DocumentHandle` identity 完全一致；它只用于 source authority、诊断和未来显式去重，不触发隐式跨 job 共享状态。旧 beta 裸 64-hex 值不迁移，其 PDF 派生状态从缓存 `source.pdf` 重建。
 - `pdf_pages.<targetLang>.json` 是 legacy v2 页状态，不再由 PDF v3 工作台读取或写入。
-- `pdf_pages.<targetLang>.json` v2 中，`resultKind` 可为 `translated`、`no_text`、`failed`。`resultKind="no_text"` 表示该页完成但无可提取文本，不应伪造 `translatedPdfPath` 或译文字数。
+- `pdf_pages.<targetLang>.json` v2 中，`resultKind` 可为 `translated`、`partial`、`no_text`、`failed`。`resultKind="partial"` 表示页面 artifact 已成功生成，但至少一个已知渲染单元因译文为空、缺失或占位符损坏而保留原文；`translatedUnitCount + fallbackUnitCount` 必须等于 `sourceUnitCount`。`resultKind="no_text"` 表示该页完成但无可提取文本，不应伪造 `translatedPdfPath` 或译文字数。
 - PDF v2 不迁移 beta v1 页状态。读取到 `schemaVersion < 2` 的 PDF page state 时，Rosetta 必须清理派生译文 artifacts 和旧 page-state 文件，保留 `source.pdf`，并返回空的 v2 pending state。
 - `pdf_run.<targetLang>.json` 是当前或最近一次 PDF 翻译 run。`running` / `pausing` run 必须绑定 `ownerSessionId`；新 app session 看到旧 live run 时必须恢复为 `paused`。
 - PDF 页级译文文件保存在 `translated-pages/<targetLang>/page-000N.pdf`。这些文件是 Rosetta 内部译文产物，不是用户导出文件。旧任务中的 `pdf-pages/<targetLang>/page-000N.pdf` 和 `pdf-pages/page-000N.pdf` 只作为兼容读取入口；repair 应迁移或复制到 `translated-pages/`。
@@ -216,10 +216,11 @@ PDF page state:
     {
       "pageNumber": 1,
       "status": "translated",
-      "resultKind": "translated",
+      "resultKind": "partial",
       "translatedPdfPath": "translated-pages/zh-CN/page-0001.pdf",
       "sourceUnitCount": 8,
-      "translatedUnitCount": 8,
+      "translatedUnitCount": 7,
+      "fallbackUnitCount": 1,
       "sourceChars": 1788,
       "translatedChars": 551,
       "artifactVersion": "1782369534004",

@@ -19,10 +19,11 @@ import type {
 export type PdfPageTranslation = {
   pageNumber: number;
   status: "pending" | "queued" | "translating" | "translated" | "failed";
-  resultKind?: "translated" | "no_text" | "failed" | null;
+  resultKind?: "translated" | "partial" | "no_text" | "failed" | null;
   translatedPdfPath?: string | null;
   sourceUnitCount?: number | null;
   translatedUnitCount?: number | null;
+  fallbackUnitCount?: number | null;
   sourceChars?: number | null;
   translatedChars?: number | null;
   artifactVersion?: string | null;

@@ -69,6 +69,7 @@ fn pdf_page_result_commit_accepts_valid_translated_page() {
         translated_unit_count: 1,
         source_chars: 12,
         translated_chars: 4,
+        fallback_unit_count: 0,
         empty_translation_count: 0,
         placeholder_mismatch_count: 0,
         artifact_bytes: None,
@@ -98,7 +99,7 @@ fn pdf_page_result_commit_accepts_valid_translated_page() {
 }
 
 #[test]
-fn pdf_page_result_commit_rejects_empty_translation_for_text_page() {
+fn pdf_page_result_commit_accepts_source_fallback_for_invalid_unit() {
     let dir = unique_temp_dir("pdf-page-result-empty");
     let artifact = fixture_path("simple-one-page.pdf");
     let mut state = empty_state(1, "zh-CN");
@@ -110,17 +111,47 @@ fn pdf_page_result_commit_rejects_empty_translation_for_text_page() {
         translated_unit_count: 0,
         source_chars: 12,
         translated_chars: 0,
+        fallback_unit_count: 1,
         empty_translation_count: 1,
         placeholder_mismatch_count: 0,
         artifact_bytes: None,
         error: None,
     };
 
-    let message = super::commit_pdf_page_result(&dir, &mut state, "zh-CN", "run-1", &result)
-        .expect_err("empty translated output should be rejected");
+    let committed = super::commit_pdf_page_result(&dir, &mut state, "zh-CN", "run-1", &result)
+        .expect("source fallback artifact should be committed");
 
-    assert!(message.contains("PDF 第 1 页"));
-    assert!(message.contains("译文字数为 0"));
+    assert_eq!(committed.result_kind, "partial");
+    assert_eq!(state.pages[0].status, "translated");
+    assert_eq!(state.pages[0].result_kind.as_deref(), Some("partial"));
+    assert_eq!(state.pages[0].fallback_unit_count, Some(1));
+    fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn pdf_page_result_commit_rejects_unaccounted_render_slot() {
+    let dir = unique_temp_dir("pdf-page-result-slot-mismatch");
+    let artifact = fixture_path("simple-one-page.pdf");
+    let mut state = empty_state(1, "zh-CN");
+    let result = PdfPageResult {
+        page_number: 1,
+        status: "translated".to_string(),
+        artifact_path: Some(artifact.to_string_lossy().to_string()),
+        source_unit_count: 2,
+        translated_unit_count: 1,
+        source_chars: 12,
+        translated_chars: 4,
+        fallback_unit_count: 0,
+        empty_translation_count: 0,
+        placeholder_mismatch_count: 0,
+        artifact_bytes: None,
+        error: None,
+    };
+
+    let message = super::commit_pdf_page_result(&dir, &mut state, "zh-CN", "run-1", &result)
+        .expect_err("unaccounted render slot should be rejected");
+
+    assert!(message.contains("渲染单元数量不一致"));
     assert!(state.pages.is_empty());
     fs::remove_dir_all(dir).ok();
 }
@@ -137,6 +168,7 @@ fn pdf_page_result_commit_accepts_no_text_page_without_artifact() {
         translated_unit_count: 0,
         source_chars: 0,
         translated_chars: 0,
+        fallback_unit_count: 0,
         empty_translation_count: 0,
         placeholder_mismatch_count: 0,
         artifact_bytes: None,
@@ -169,6 +201,7 @@ fn pdf_page_state_restores_pending_no_text_as_translated() {
         Some(0),
         Some(0),
         Some(0),
+        Some(0),
     );
     write_pdf_page_translation_state(&dir, &state).expect("write pending no-text state");
 
@@ -193,6 +226,7 @@ fn pdf_repair_preserves_no_text_page_without_artifact() {
         translated_unit_count: 0,
         source_chars: 0,
         translated_chars: 0,
+        fallback_unit_count: 0,
         empty_translation_count: 0,
         placeholder_mismatch_count: 0,
         artifact_bytes: None,
@@ -723,6 +757,7 @@ fn pdf_page_status_restores_stale_translating_pages() {
             translated_pdf_path: None,
             source_unit_count: None,
             translated_unit_count: None,
+            fallback_unit_count: None,
             source_chars: None,
             translated_chars: None,
             artifact_version: None,
@@ -757,6 +792,7 @@ fn pdf_page_state_writes_canonical_file_and_only_durable_statuses() {
             translated_pdf_path: Some("translated-pages/zh-CN/page-0001.pdf".to_string()),
             source_unit_count: None,
             translated_unit_count: None,
+            fallback_unit_count: None,
             source_chars: None,
             translated_chars: None,
             artifact_version: Some("1".to_string()),
@@ -933,6 +969,7 @@ fn pdf_page_status_does_not_reuse_state_for_other_target_language() {
             translated_pdf_path: Some(pdf_page_relative_path(1)),
             source_unit_count: None,
             translated_unit_count: None,
+            fallback_unit_count: None,
             source_chars: None,
             translated_chars: None,
             artifact_version: Some("1".to_string()),
@@ -968,6 +1005,7 @@ fn pdf_page_status_does_not_trust_legacy_shared_page_path_for_english() {
             translated_pdf_path: Some("pdf-pages/page-0001.pdf".to_string()),
             source_unit_count: None,
             translated_unit_count: None,
+            fallback_unit_count: None,
             source_chars: None,
             translated_chars: None,
             artifact_version: Some("1".to_string()),
@@ -1052,6 +1090,7 @@ fn pdf_page_status_summary_marks_all_pages_translated() {
                 translated_pdf_path: Some("translated-pages/zh-CN/page-0001.pdf".to_string()),
                 source_unit_count: None,
                 translated_unit_count: None,
+                fallback_unit_count: None,
                 source_chars: None,
                 translated_chars: None,
                 artifact_version: Some("1".to_string()),
@@ -1069,6 +1108,7 @@ fn pdf_page_status_summary_marks_all_pages_translated() {
                 translated_pdf_path: Some("translated-pages/zh-CN/page-0002.pdf".to_string()),
                 source_unit_count: None,
                 translated_unit_count: None,
+                fallback_unit_count: None,
                 source_chars: None,
                 translated_chars: None,
                 artifact_version: Some("1".to_string()),
@@ -1109,6 +1149,7 @@ fn pdf_force_retranslate_clears_existing_page_artifact() {
             translated_pdf_path: Some("translated-pages/zh-CN/page-0002.pdf".to_string()),
             source_unit_count: None,
             translated_unit_count: None,
+            fallback_unit_count: None,
             source_chars: None,
             translated_chars: None,
             artifact_version: Some("1".to_string()),
@@ -1233,6 +1274,7 @@ fn pdf_page_export_substitutes_translated_page_and_keeps_full_length() {
             translated_pdf_path: Some("translated-pages/zh-CN/page-0001.pdf".to_string()),
             source_unit_count: None,
             translated_unit_count: None,
+            fallback_unit_count: None,
             source_chars: None,
             translated_chars: None,
             artifact_version: Some("1".to_string()),

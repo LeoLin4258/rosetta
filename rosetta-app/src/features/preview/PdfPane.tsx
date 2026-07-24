@@ -75,6 +75,7 @@ export function PdfPageImage({
   staticSrc,
   imageAlt,
   action,
+  notice,
   onRendered,
 }: {
   jobId: string;
@@ -90,6 +91,7 @@ export function PdfPageImage({
   staticSrc?: string | null;
   imageAlt?: string;
   action?: React.ReactNode;
+  notice?: React.ReactNode;
   onRendered?: (pageIndex: number, src: string | null) => void;
 }) {
   const [src, setSrc] = useState<string | null>(null);
@@ -196,6 +198,16 @@ export function PdfPageImage({
             onLoad={handleImageLoad}
           />
         ) : null}
+        {backdropSrc && !showLoadingBackdrop ? (
+          <img
+            src={backdropSrc}
+            alt=""
+            className="pointer-events-none absolute left-0 top-0 size-px opacity-0"
+            draggable={false}
+            aria-hidden="true"
+            onLoad={handleImageLoad}
+          />
+        ) : null}
         {kind === "translated" ? (
           <PdfPagePlaceholder
             activity={activity}
@@ -275,6 +287,12 @@ export function PdfPageImage({
         draggable={false}
         onLoad={handleImageLoad}
       />
+      {notice ? (
+        <div className="pointer-events-none absolute right-2 top-2 z-10 flex max-w-[calc(100%-1rem)] items-center gap-1.5 rounded border border-border bg-background/95 px-2 py-1 text-xs text-foreground shadow-sm">
+          <AlertCircle className="size-3.5 shrink-0 text-muted-foreground" />
+          <span>{notice}</span>
+        </div>
+      ) : null}
       {kind === "source" && activity === "translating" ? (
         <div className="rosetta-pdf-page-scan" aria-hidden="true" />
       ) : null}

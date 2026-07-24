@@ -115,6 +115,7 @@ struct Pdf2zhPackManifest {
     size_bytes: Option<u64>,
     source_url: String,
     installed_at: String,
+    custom_pack: bool,
 }
 
 #[derive(Default)]
@@ -364,6 +365,7 @@ async fn install_inner(
         &source_url,
         expected_size,
         Some(actual_sha),
+        has_custom_pack_url(options),
     )?;
 
     set_done(registry, "PDF 版面处理组件已安装。".to_string()).await;
@@ -760,6 +762,7 @@ fn write_manifest(
     source_url: &str,
     size_bytes: Option<u64>,
     sha256: Option<String>,
+    custom_pack: bool,
 ) -> Result<(), String> {
     let manifest = Pdf2zhPackManifest {
         schema_version: 1,
@@ -769,6 +772,7 @@ fn write_manifest(
         size_bytes,
         source_url: source_url.to_string(),
         installed_at: timestamp_ms_string(),
+        custom_pack,
     };
     let contents = serde_json::to_string_pretty(&manifest)
         .map_err(|error| format!("无法序列化 pdf2zh manifest: {error}"))?;

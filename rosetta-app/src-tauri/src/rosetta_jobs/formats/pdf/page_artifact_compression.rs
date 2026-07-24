@@ -31,10 +31,21 @@ import sys
 import pymupdf
 
 src, dst = sys.argv[1], sys.argv[2]
+
+def has_text_drawing_operators(doc):
+    if doc.page_count != 1:
+        return False
+    streams = b"\n".join(
+        doc.xref_stream(xref) or b""
+        for xref in doc[0].get_contents()
+    )
+    return b" Tf" in streams and (b" TJ" in streams or b" Tj" in streams)
+
 doc = pymupdf.open(src)
 try:
     if doc.page_count != 1:
         raise RuntimeError(f"expected one page, got {doc.page_count}")
+    source_has_text = has_text_drawing_operators(doc)
     doc.subset_fonts(fallback=True)
     doc.save(
         dst,
@@ -49,6 +60,13 @@ finally:
 
 if not os.path.isfile(dst) or os.path.getsize(dst) <= 0:
     raise RuntimeError("compressed output was not written")
+
+compressed = pymupdf.open(dst)
+try:
+    if source_has_text and not has_text_drawing_operators(compressed):
+        raise RuntimeError("compression removed translated text drawing operators")
+finally:
+    compressed.close()
 "#;
 
 #[derive(Debug, Clone)]
@@ -826,6 +844,7 @@ mod tests {
                 translated_pdf_path: Some("translated-pages/zh-CN/page-0001.pdf".to_string()),
                 source_unit_count: None,
                 translated_unit_count: None,
+                fallback_unit_count: None,
                 source_chars: None,
                 translated_chars: None,
                 artifact_version: Some("v1".to_string()),
@@ -872,6 +891,11 @@ mod tests {
         assert!(
             super::PYMUPDF_COMPRESS_SCRIPT.contains("doc.subset_fonts(fallback=True)"),
             "page artifact compression must subset embedded fonts; otherwise every translated page can keep a full CJK font copy"
+        );
+        assert!(
+            super::PYMUPDF_COMPRESS_SCRIPT
+                .contains("compression removed translated text drawing operators"),
+            "page artifact compression must reject outputs that lose translated text"
         );
     }
 
