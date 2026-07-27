@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import ast
 import difflib
+import json
 import os
 import re
 import subprocess
@@ -828,6 +829,34 @@ def record_translation(self, translated: str):
         self.assertNotIn("expected = self._match_expected_unit(unit_id, text)", patched)
         self.assertNotIn("self._consumed_unit_ids", patched)
         self.assertIn("expected.sourceText != text", patched)
+
+    def test_authoritative_render_slots_accepts_pinned_source_guard(self) -> None:
+        old_guard = """    if (
+        translator.translated_chars > 0
+        and not rosetta_pdf_has_text_drawing_operators(ops_new)
+    ):
+        return failed_page_result(cache, source_chars, "no text operators")
+"""
+        pinned_guard = """    if source_chars > 0 and translator.translated_chars == 0:
+        return failed_page_result(cache, source_chars, "translated output is empty for text page")
+"""
+        upstream = self.render_order_drift_engine_text().replace(
+            old_guard,
+            pinned_guard,
+            1,
+        )
+        self.assertNotEqual(upstream, self.render_order_drift_engine_text())
+
+        files = self.run_patch_for_package(
+            self.legacy_converter_text(),
+            rosetta_engine_text=upstream,
+        )
+
+        patched = files["rosetta_engine"]
+        self.assertIn("renderer translation slot count mismatch", patched)
+        self.assertIn(pinned_guard, patched)
+        self.assertNotIn("if translator.empty_translation_count > 0:", patched)
+        self.assertNotIn("if translator.placeholder_mismatch_count > 0:", patched)
 
     def test_patch_preserves_color_and_bold_for_paragraph_ops_converter(self) -> None:
         patched = self.run_patch("""class TranslateConverter(PDFConverterEx):
@@ -2225,6 +2254,7 @@ class _RenderTranslator(_EngineTranslator):
 
     def test_release_pack_builders_apply_pdf_converter_patch(self) -> None:
         builders = [
+            SCRIPT_DIR / "build-pdf2zh-pack-linux-x64.sh",
             SCRIPT_DIR / "build-pdf2zh-pack-macos-arm64.sh",
             SCRIPT_DIR / "build-pdf2zh-pack-windows-amd64.ps1",
             SCRIPT_DIR / "stage-pdf2zh-pack-local.sh",
@@ -2248,6 +2278,7 @@ class _RenderTranslator(_EngineTranslator):
 
     def test_release_pack_builders_stage_babeldoc_font_assets(self) -> None:
         builders = [
+            SCRIPT_DIR / "build-pdf2zh-pack-linux-x64.sh",
             SCRIPT_DIR / "build-pdf2zh-pack-macos-arm64.sh",
             SCRIPT_DIR / "build-pdf2zh-pack-windows-amd64.ps1",
             SCRIPT_DIR / "stage-pdf2zh-pack-local.sh",
@@ -2261,6 +2292,63 @@ class _RenderTranslator(_EngineTranslator):
                 self.assertIn("SourceHanSansCN-Regular.ttf", text)
                 self.assertIn("SourceHanSansCN-Bold.ttf", text)
                 self.assertIn("GoNotoKurrent-Regular.ttf", text)
+
+    def test_linux_pack_uses_hashed_binary_lock_and_recipe_manifest(self) -> None:
+        builder = (SCRIPT_DIR / "build-pdf2zh-pack-linux-x64.sh").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("requirements-pdf2zh-linux-x64.lock", builder)
+        self.assertIn("pdf2zh-linux-x64-inputs.json", builder)
+        self.assertIn("--require-hashes", builder)
+        self.assertIn("--only-binary=:all:", builder)
+        self.assertIn("--no-build-isolation", builder)
+        self.assertIn("verify_sha256", builder)
+        self.assertIn('"build_recipe_id"', builder)
+        self.assertIn("linux-x64-build.log", builder)
+        self.assertNotIn("pip install --upgrade", builder)
+
+    def test_linux_pack_external_inputs_have_sha256_identities(self) -> None:
+        inputs = json.loads(
+            (SCRIPT_DIR / "pdf2zh-linux-x64-inputs.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(inputs["lockGenerator"], {"name": "uv", "version": "0.11.32"})
+        self.assertEqual(
+            inputs["pdfMathTranslate"]["commit"],
+            "990bed055d372772f5cec8ef4a982a8f767d64a4",
+        )
+        hashes = [
+            inputs["pythonBuildStandalone"]["sha256"],
+            inputs["docLayoutModel"]["sha256"],
+            *(font["sha256"] for font in inputs["babeldoc"]["fonts"]),
+        ]
+        for digest in hashes:
+            self.assertRegex(digest, r"^[0-9a-f]{64}$")
+
+    def test_linux_dependency_lock_covers_every_distribution_with_hashes(self) -> None:
+        lock = (SCRIPT_DIR / "requirements-pdf2zh-linux-x64.lock").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("/tmp/", lock)
+        self.assertNotIn(" @ ", lock)
+        self.assertIn("hatchling==1.31.0", lock)
+        self.assertIn("pip==26.1.2", lock)
+        blocks = re.split(r"(?m)(?=^[a-zA-Z0-9])", lock)
+        requirement_blocks = [block for block in blocks if re.match(r"^[a-zA-Z0-9]", block)]
+        self.assertGreater(len(requirement_blocks), 100)
+        for block in requirement_blocks:
+            self.assertIn("--hash=sha256:", block)
+
+    def test_linux_lock_compiler_requires_the_pinned_uv_generator(self) -> None:
+        compiler = (
+            SCRIPT_DIR / "compile-pdf2zh-pack-linux-x64-lock.sh"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("EXPECTED_UV_VERSION", compiler)
+        self.assertIn("--generate-hashes", compiler)
+        self.assertIn("--no-annotate", compiler)
+        self.assertIn("--only-binary :all:", compiler)
+        self.assertNotIn("pip-compile", compiler)
 
     def test_local_archive_checks_current_onnx_model_and_fonts(self) -> None:
         text = (SCRIPT_DIR / "archive-pdf2zh-pack-local.sh").read_text()

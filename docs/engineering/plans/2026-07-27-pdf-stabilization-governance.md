@@ -5,7 +5,7 @@
 - 状态：Active
 - 创建日期：2026-07-27
 - 审计窗口：2026-07-17 至当前 `HEAD`；更早代码只在解释该窗口内的设计来源时取证
-- 当前阶段：CP0，尚未开始实施
+- 当前阶段：CP4，尚未开始实施
 - 当前生产 PDF 执行路径：`pdf2zh` prepare / unit collection / page render，Rosetta Rust 负责本地翻译、任务状态、页产物、预览与导出
 - 当前验证基线：仓库 `main` 在 `61ff0ab` 的审计快照；后续 agent 必须重新读取当前 `HEAD`，不能把该 commit 当成永久事实
 - 本文是 PDF 稳定化和治理工作的唯一活跃 handoff authority
@@ -169,8 +169,10 @@ CP1 完成前使用以下临时门禁：
 - 相对增长 warning：相对上一已发布同平台 pack 增长超过 5%。
 - 相对增长 hard fail：增长超过 15%，除非本文 execution ledger 记录用户批准的例外。
 - 1.8 GB archive 不得通过修改 hardcoded size/hash 直接发布。
-
-CP1 必须建立旧包的 unpacked baseline，之后把 unpacked bytes、file count 和最大单文件预算写回本文。预算调整必须基于 inventory，不允许猜测。
+- Linux unpacked baseline：1,353,005,365 bytes；超过 1,420,655,634 bytes（+5%）warning，超过 1,555,956,170 bytes（+15%）hard fail。
+- Linux regular-file baseline：21,573；超过 22,652（+5%）warning，超过 24,809（+15%）hard fail。
+- Linux 最大单文件 baseline：218,461,128 bytes；出现更大单文件时 warning，超过 256 MiB（268,435,456 bytes）hard fail，除非本文 execution ledger 记录用户批准的例外。
+- Linux symlink baseline：1,048；任何增长都 warning，并继续服从 CP5 的 absolute/escaping symlink hard fail。
 
 ### 供应链与身份
 
@@ -258,7 +260,7 @@ CP8、CP9、CP10 不应与 Linux release candidate 的包内容变化混在同�
 
 ## CP1：Linux 1.8 GB 产物取证
 
-- 状态：`not-started`
+- 状态：`completed`
 - 依赖：CP0
 - 建议单次工作量：一个 agent context
 
@@ -288,11 +290,11 @@ CP8、CP9、CP10 不应与 Linux release candidate 的包内容变化混在同�
 
 ### Acceptance
 
-- [ ] 1.8 GB 的度量类型已确认。
-- [ ] 至少 95% 的体积可按目录或 distribution 解释。
-- [ ] old/new freeze 和 inventory diff 已保存。
-- [ ] 没有把推测写成根因。
-- [ ] 最终体积预算已写回本文。
+- [x] 1.8 GB 的度量类型已确认。
+- [x] 至少 95% 的体积可按目录或 distribution 解释。
+- [x] old/new freeze 和 inventory diff 已保存。
+- [x] 没有把推测写成根因。
+- [x] 最终体积预算已写回本文。
 
 ### 停止条件
 
@@ -302,7 +304,7 @@ CP8、CP9、CP10 不应与 Linux release candidate 的包内容变化混在同�
 
 ## CP2：锁定 Linux pack 输入与构建配方
 
-- 状态：`not-started`
+- 状态：`completed`
 - 依赖：CP1
 - 建议单次工作量：一个 agent context
 
@@ -331,11 +333,11 @@ CP8、CP9、CP10 不应与 Linux release candidate 的包内容变化混在同�
 
 ### Acceptance
 
-- [ ] 无未锁定的 Python distribution。
-- [ ] 所有下载输入在使用前验证 hash。
-- [ ] 两次构建的 freeze 和 inventory 一致。
-- [ ] manifest 可以追溯到完整 build recipe。
-- [ ] pack smoke 和 CP0 自动化质量基线通过。
+- [x] 无未锁定的 Python distribution。
+- [x] 所有下载输入在使用前验证 hash。
+- [x] 两次构建的 freeze 和 inventory 一致。
+- [x] manifest 可以追溯到完整 build recipe。
+- [x] pack smoke 和 CP0 自动化质量基线通过。
 
 ### 停止条件
 
@@ -345,7 +347,7 @@ CP8、CP9、CP10 不应与 Linux release candidate 的包内容变化混在同�
 
 ## CP3：Linux dependency diet 与安全裁剪
 
-- 状态：`not-started`
+- 状态：`completed`
 - 依赖：CP2
 - 建议单次工作量：一个 agent context；如 provider import 解耦需要修改外部 fork，应拆到 CP8
 
@@ -367,11 +369,11 @@ CP8、CP9、CP10 不应与 Linux release candidate 的包内容变化混在同�
 
 ### Acceptance
 
-- [ ] archive 和 unpacked size 均在预算内。
-- [ ] 每个删除项有 import/dependency 证据。
-- [ ] real prepare/collect/render smoke 通过。
-- [ ] CP0 translation-unit authority 未变化。
-- [ ] SBOM 和 license inventory 完整。
+- [x] archive 和 unpacked size 均在预算内。
+- [x] 每个删除项有 import/dependency 证据。
+- [x] real prepare/collect/render smoke 通过。
+- [x] CP0 translation-unit authority 未变化。
+- [x] SBOM 和 license inventory 完整。
 
 ### 停止条件
 
@@ -692,11 +694,11 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 
 ### 当前状态摘要
 
-- 当前 checkpoint：CP1（`not-started`）
-- last completed：CP0
+- 当前 checkpoint：CP4（`not-started`）
+- last completed：CP3
 - blocked：无
-- last verified HEAD：`61ff0ab`
-- 下一步唯一动作：执行 CP1，取得约 1.8 GB Linux artifact/build directory、对应 freeze/build log 和旧发布 archive 后做同格式 inventory 取证
+- last verified HEAD：`62de5bc`
+- 下一步唯一动作：执行 CP4，设计向后兼容的 engine revision/capabilities 与 fail-closed readiness
 
 ### 记录模板
 
@@ -776,6 +778,233 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
   - CP1 开始前仍需取得被报告约 1.8 GB 的 Linux archive 或构建目录、对应 freeze/build log，以及旧发布 archive；缺任一新 artifact/build directory/freeze 组合时 CP1 必须按停止条件标记 blocked
 - 下一步唯一动作：
   - 执行 CP1 Linux 1.8 GB 产物取证；先验证必需输入，再生成 old/new 同格式 inventory 和 freeze diff
+
+#### 2026-07-27 / CP1 / Codex
+
+- 状态：started
+- HEAD：`62de5bc`
+- worktree baseline：clean
+- 修改文件：`docs/engineering/plans/2026-07-27-pdf-stabilization-governance.md`
+- 执行命令与结果：
+  - `git status --short` -> pass；开始前 worktree clean
+  - `git rev-parse --short HEAD` -> `62de5bc`
+  - `rg` Linux pack builder/profile/freeze references -> pass；确认 `build-pdf2zh-pack-linux-x64.sh`、`requirements-pdf2zh-linux-x64.txt` 和 2026-07-15 immutable profile 入口仍存在
+- 产物：
+  - pending
+- 已确认事实：
+  - CP1 只做 archive、build directory、freeze、build log 和 inventory 取证，不修改 production PDF 行为或 pack 配方
+- 未解决问题或 blocker：
+  - 正在核对 CP1 必需输入是否可获得
+- 下一步唯一动作：
+  - 扫描本机候选产物并核对旧 immutable release asset
+
+#### 2026-07-27 / CP1 / Codex
+
+- 状态：blocked
+- HEAD：`62de5bc`
+- worktree baseline：clean；本 checkpoint 只修改本文状态和 ledger
+- 修改文件：`docs/engineering/plans/2026-07-27-pdf-stabilization-governance.md`
+- 执行命令与结果：
+  - `rg --files -uu C:\Users\Leo` 定向查找 Linux archive、`requirements.freeze.txt` 和 build log -> 无匹配；本机用户目录没有 CP1 新产物输入
+  - `gh release view pdf-layout-pack-linux-x64-v2026.07.15.1 --repo LeoLin4258/rosetta-assets` -> pass；旧 immutable release 含 510,388,352-byte archive，release digest 与 profile SHA-256 `f6492939a7ea919d8d01923f59a78e2c5761abd5428264ca4a636da73dda2034` 一致
+  - `gh release view pdf-layout-pack-linux-x64-v2026.07.24.1 --repo LeoLin4258/rosetta-assets` -> pass；draft release 仅含 98-byte `.sha256` asset，没有主 archive、freeze 或 build log
+  - `gh api repos/LeoLin4258/rosetta-assets/releases/assets/488545124 -H "Accept: application/octet-stream"` -> pass；未发布主 archive 的记录 SHA-256 为 `23060aaba516677346bf1717887c8482145f613de77642b6234ccf544321bb94`
+  - `gh run list` 查询 `LeoLin4258/rosetta` 与 `LeoLin4258/rosetta-assets` -> pass；两个仓库均无可下载 Actions artifact
+  - 旧 immutable archive 下载探测 -> release 可访问；因新产物仍缺且当前连接吞吐不足，停止并清理 incomplete 临时文件，未把 partial download 作为证据
+- 产物：
+  - old release metadata：`https://github.com/LeoLin4258/rosetta-assets/releases/tag/pdf-layout-pack-linux-x64-v2026.07.15.1`
+  - new draft metadata：`https://github.com/LeoLin4258/rosetta-assets/releases/tag/untagged-853d8488401b372f8a5c`
+  - inventory：未生成；缺少 new archive/build directory 和 freeze，不能进行同格式比较
+- 已确认事实：
+  - 被报告约 1.8 GB 的新主 archive 不在 draft release；仅有 checksum 不能确认 1.8 GB 指 compressed、unpacked 还是 installed runtime
+  - 旧 immutable asset 可获得，CP1 的实际阻塞输入只剩新 archive 或构建目录、对应 freeze 和 build log
+  - 没有修改 pack builder、dependency、renderer、profile 或 production PDF 行为
+- 未解决问题或 blocker：
+  - 需要用户提供约 1.8 GB Linux archive 或其构建目录的可访问路径
+  - 需要同一次构建产生的 `requirements.freeze.txt` 和完整 build log
+- 下一步唯一动作：
+  - 取得上述三项输入后恢复 CP1，先确认 1.8 GB 度量类型，再生成 old/new inventory 和 freeze diff
+
+#### 2026-07-27 / CP1 / Codex
+
+- 状态：started
+- HEAD：`62de5bc`
+- worktree baseline：existing changes: `docs/engineering/plans/2026-07-27-pdf-stabilization-governance.md`（前一 CP1 blocked 记录）
+- 修改文件：`docs/engineering/plans/2026-07-27-pdf-stabilization-governance.md`
+- 执行命令与结果：
+  - pinned-host-key SSH probe to `rwkv@192.168.0.115` -> pass；Ubuntu x86_64，remote user/home 为 `rwkv` / `/home/rwkv`
+- 产物：
+  - remote host key：`ssh-ed25519 255 SHA256:KPoVOiLe0VwRORSjnHHLM2lB2qF8mAX/BsxepEXj6gM`
+- 已确认事实：
+  - 用户确认该主机是此前测试 Rosetta Linux 版本的机器，可继续检查本机保留的 build evidence
+- 未解决问题或 blocker：
+  - 尚未定位新产物、freeze 和 build log
+- 下一步唯一动作：
+  - 只读扫描远程常见构建目录、近期大文件和 release evidence
+
+#### 2026-07-27 / CP1 / Codex
+
+- 状态：blocked
+- HEAD：`62de5bc`
+- worktree baseline：existing changes: `docs/engineering/plans/2026-07-27-pdf-stabilization-governance.md`（本 checkpoint 先前记录）
+- 修改文件：`docs/engineering/plans/2026-07-27-pdf-stabilization-governance.md`, `rosetta-app/src-tauri/scripts/inventory-pdf2zh-pack.py`, `rosetta-app/src-tauri/scripts/diff-pdf2zh-pack-inventories.py`
+- 执行命令与结果：
+  - pinned-host-key SSH inventory scan on `rwkv@192.168.0.115` -> pass；定位 2026-07-24 new archive/freeze/manifest、2026-07-15 old archive/freeze/manifest 和 unpacked installed packs
+  - `sha256sum` old/new archives -> pass；均与各自 manifest/checksum 一致
+  - `inventory-pdf2zh-pack.py` old/new archive scan -> pass；相同算法生成 total/file/symlink、top-level、top 100 directories/files、distribution、model/font/runtime、residue、tests/headers/static libs 和 >=1 MiB duplicate inventory
+  - `diff-pdf2zh-pack-inventories.py` inventory/freeze comparison -> pass；目录解释率 100%，site-packages distribution attribution >99.9999%
+  - `rg`/`find`/shell history search for 2026-07-24 build log -> 无对应日志；`/tmp/rosetta-linux-pdf-eed557b-*-tauri.log` 是 App/runtime 验证日志，不是 pack build log
+  - local Python `compile(...)` and `--help` for both inventory scripts -> pass
+  - `python rosetta-app/src-tauri/scripts/test-pdf2zh-patches.py -q` -> pass；34 passed
+  - remote `jq empty` on old/new inventory and diff -> pass；JSON 均可解析，重新计算的 SHA-256 与本条产物记录一致
+  - `git diff --check` and `git diff --no-index --check` for new scripts -> pass；无 whitespace error，仅有既有 CRLF conversion warning
+  - `pnpm typecheck` / `cargo check` / `cargo test rosetta_jobs` -> not-run；本 checkpoint 只新增独立 Python 取证工具和治理文档，没有修改 frontend/Rust/product behavior
+- 产物：
+  - old archive：`/home/rwkv/src/rosetta-pdfpack-beta22-proxy/rosetta-app/dist/pdf-layout/rosetta-pdf2zh-linux-x64.tar.gz`；510,388,352 bytes；SHA-256 `f6492939a7ea919d8d01923f59a78e2c5761abd5428264ca4a636da73dda2034`
+  - new archive：`/home/rwkv/src/rosetta-linux-pdf-workspace-eed557b/rosetta/rosetta-app/dist/pdf-layout/rosetta-pdf2zh-linux-x64.tar.gz`；1,887,604,648 bytes；SHA-256 `23060aaba516677346bf1717887c8482145f613de77642b6234ccf544321bb94`
+  - old inventory：`/home/rwkv/src/rosetta-pdfpack-beta22-proxy/rosetta-app/dist/pdf-layout/linux-x64-inventory.json`；SHA-256 `d6d3ead4766037f937ff97a488f92d1d8b045babec629a093e1114da78524d08`
+  - new inventory：`/home/rwkv/src/rosetta-linux-pdf-workspace-eed557b/rosetta/rosetta-app/dist/pdf-layout/linux-x64-inventory.json`；SHA-256 `101b07c3d84209356897203c56a6be371c55093892b413ced5664e13a5fdffbd`
+  - inventory/freeze diff：`/home/rwkv/src/rosetta-linux-pdf-workspace-eed557b/rosetta/rosetta-app/dist/pdf-layout/linux-x64-inventory-diff.json`；SHA-256 `6c5694d2fc901d6405dcde3a0478237c3f345dd324ea426da36c92c25006185a`
+- 已确认事实：
+  - “约 1.8 GB”是 compressed archive：old/new 分别为 486.74 MiB / 1,800.16 MiB，增长 269.84%；unpacked 分别为 1,353,005,365 / 3,426,131,261 bytes，增长 153.22%
+  - unpacked 净增长 2,073,125,896 bytes；`site-packages` 增长 2,073,231,949 bytes，Python runtime 减少 106,400 bytes，model/font/license 均无变化，因此目录解释率为 100%
+  - direct requirements 将 `onnxruntime==1.27.0` 替换为 `onnxruntime-gpu==1.27.0`，并加入 `nvidia-cublas`、`nvidia-cuda-nvrtc`、`nvidia-cuda-runtime`、`nvidia-cudnn-cu13`、`nvidia-cufft`、`nvidia-curand`；freeze 另新增传递依赖 `nvidia-nvjitlink`
+  - 最大 distribution 增量为 `nvidia-cublas` 595,369,748、`nvidia-cudnn-cu13` 468,635,308、`onnxruntime-gpu` 305,812,097、`nvidia-cufft` 287,646,467、`nvidia-cuda-nvrtc` 228,019,748 bytes；同时移除 CPU `onnxruntime` 53,062,118 bytes
+  - 最大新文件是 `libcublasLt.so.13` 539,533,072 bytes；new archive 的 archive/unpacked ratio 从 old 0.3772 上升到 0.5509
+  - cache/build residue 仍为 10,315 bytes，>=1 MiB duplicate bytes 仍为 2,714,697，二者净增长均为 0；tests/headers/static libs 只增长 9,665,136 bytes，不是主要根因
+  - new pack 违反 archive、unpacked 和最大单文件 hard cap；regular-file count 为 21,780，未触发 file-count warning
+  - build manifest、freeze、archive、checksum 和 runtime logs 存在，但完整 pack build stdout/stderr 没有保存，不能把 runtime log 标成 build log
+- 未解决问题或 blocker：
+  - CP1 必需输入中的 2026-07-24 build log 缺失；需要找到原日志，或由用户批准把该历史证据缺口记录为例外
+- 下一步唯一动作：
+  - 取得 build log 或用户例外批准后将 CP1 标记 completed，然后进入 CP2 锁定 Linux pack 输入与构建配方
+
+#### 2026-07-27 / CP1 / Codex
+
+- 状态：completed
+- HEAD：`62de5bc`
+- worktree baseline：existing changes: CP1 governance and inventory tooling
+- 修改文件：`docs/engineering/plans/2026-07-27-pdf-stabilization-governance.md`
+- 执行命令与结果：
+  - 用户明确批准 2026-07-24 historical build log 缺失例外 -> accepted
+- 产物：
+  - CP1 old/new archive、inventory、freeze diff 和 budget 证据保持上一条记录
+- 已确认事实：
+  - CP1 所有 acceptance 已满足；缺失 build log 不再阻塞 checkpoint，但该例外不能用于 CP2/CP11 的新构建，新构建必须保存完整 stdout/stderr
+- 未解决问题或 blocker：
+  - none
+- 下一步唯一动作：
+  - 开始 CP2，锁定 Linux pack dependency resolution、external input hashes 和 build recipe identity
+
+#### 2026-07-27 / CP2 / Codex
+
+- 状态：started
+- HEAD：`62de5bc`
+- worktree baseline：existing changes: CP1 governance and inventory tooling
+- 修改文件：`docs/engineering/plans/2026-07-27-pdf-stabilization-governance.md`
+- 执行命令与结果：
+  - CP2 scope/readback and current Linux builder/requirements inspection -> pass
+- 产物：
+  - pending
+- 已确认事实：
+  - CP2 选择 `uv pip compile` 作为唯一 lock generator；不引入 pip-tools
+  - 当前 main builder 仍使用 unhashed direct requirements，外部 PBS/model/font 输入尚未全部在使用前校验
+- 未解决问题或 blocker：
+  - none
+- 下一步唯一动作：
+  - 核对 font/PBS/model 下载实现与 Linux `uv` 能力，设计并生成 lock/recipe identity
+
+#### 2026-07-27 / CP2 / Codex
+
+- 状态：completed
+- HEAD：`62de5bc`；Linux 验证 worktree 基于远端已有 `8bee070`，所有 CP2 recipe 文件按 SHA-256 单独绑定
+- worktree baseline：existing changes: CP1 governance and inventory tooling
+- 修改文件：`docs/engineering/plans/2026-07-27-pdf-stabilization-governance.md`, `docs/engineering/change-log/2026-07-27-pdf-linux-pack-reproducibility.md`, `rosetta-app/src-tauri/scripts/build-pdf2zh-pack-linux-x64.sh`, `rosetta-app/src-tauri/scripts/compile-pdf2zh-pack-linux-x64-lock.sh`, `rosetta-app/src-tauri/scripts/pdf2zh-linux-x64-inputs.json`, `rosetta-app/src-tauri/scripts/requirements-pdf2zh-linux-x64.txt`, `rosetta-app/src-tauri/scripts/requirements-pdf2zh-linux-x64.lock`, `rosetta-app/src-tauri/scripts/patch-pdf2zh-color-preservation.py`, `rosetta-app/src-tauri/scripts/test-pdf2zh-patches.py`
+- 执行命令与结果：
+  - pinned `uv 0.11.32` `pip compile --generate-hashes --only-binary :all:` -> pass；生成 104-distribution Linux x64/Python 3.12 lock
+  - 两次 isolated Linux build -> pass；均使用相同 PBS、model、font source、PDFMathTranslate commit、lock 和 recipe 文件，完整 stdout/stderr 各保存 51 行
+  - 首次构建尝试 -> failed before artifact；固定 `990bed0` 源码使用单行 `source_chars` guard，而 patch 只识别旧多行 guard；补充兼容分支和回归测试后通过
+  - 一次重试 -> failed before dependency install；远端 GitHub 443 transient timeout；连接恢复后用相同固定输入重试通过，未将失败尝试计入双构建证据
+  - build A/B `requirements.freeze.txt` and `build-recipe.json` `cmp` -> identical
+  - build A/B inventory diff -> pass；除 archive path/compressed bytes/SHA/ratio 外，unpacked bytes、file/directory/symlink counts、top-level areas、directories、files、distributions、residue、duplicates、tests/headers/static libraries 全部零差异
+  - build A/B in-place and relocated real PDF smoke -> pass；runtime imports 28/28
+  - isolated build A `prewarm -> prepareRun -> collectUnits -> identity renderPages` against `2604.17278v1.pdf` -> pass；CP0 unit authority、10-page render 和 artifact bytes 精确匹配
+  - `python rosetta-app/src-tauri/scripts/test-pdf2zh-patches.py -q` -> pass；39 passed
+  - `bash -n` Linux builder/lock compiler and JSON parse -> pass
+- 产物：
+  - dependency lock：SHA-256 `c47978def1c4de4c40298f151508fb5f3242fa6bef8e7b00dea98a1f22dcbe15`
+  - build recipe ID：`1c51c5de6db135db06890cda3f496e5e17649236462744d8272daf5794fc93fb`
+  - build A archive：`/home/rwkv/cp2-dist-a/rosetta-pdf2zh-linux-x64.tar.gz`；510,482,265 bytes；SHA-256 `e2fa35a2c4f3ce1e378052c2a477d3852262b5c21bcbf6be3c72076b4c4cb2e0`
+  - build B archive：`/home/rwkv/cp2-dist-b/rosetta-pdf2zh-linux-x64.tar.gz`；510,477,373 bytes；SHA-256 `f1ec05a74751159333402a085379a864812aac33437c0003eb2a7201b8b3bdbb`
+  - build A/B freeze：SHA-256 `ad93cc5acae4cb5e6364d2dccc20eb023f1a2273a4a175008ee30925b6947fa5`
+  - build A/B inventory：SHA-256 `87a2507d7cddca94058bce2a583dae1b11666d6bf9eb21c964be8c1bd2b92ee6` / `d980f5d39752fb458738dc5756bfe692b723be74a50cd6851f5c4ed7b990bd30`；共同 unpacked 1,354,528,694 bytes、21,792 regular files、5,077 directories、1,048 symlinks
+  - reproducibility diff：`/home/rwkv/cp2-dist-b/linux-x64-reproducibility-diff.json`；SHA-256 `beae2d458b17b7bd26577d509ee973387aab35b4e561289f80cc5a0f96aff7e7`
+  - build A/B logs：SHA-256 `1a7e57b2c8bb7476faad31a350e87f2c7d33624b166d29b36215116add919a6d` / `3ddaa848160a32cb2513f46b153f0e6c1ec53fb383238162b4f91dda7b70c622`
+  - CP0 quality evidence：`/home/rwkv/cp2-dist-a/linux-x64-cp0-quality.json`；SHA-256 `507b7652cb3987e4da3cffe232b65ad01277dc908188f24adad4b53bf04f1b3f`
+- 已确认事实：
+  - lock 安装使用 `--require-hashes --only-binary=:all: --no-deps`；PDFMathTranslate 固定 Git commit 后使用 pack 内已锁定的 `hatchling` 做 `--no-build-isolation --no-deps` 安装，没有静默源码依赖构建
+  - PBS、DocLayout model 和三个 BabelDOC fonts 均在使用前验证固定 SHA-256；manifest 绑定 inputs manifest、lock compiler、builder、requirements、color patch 和 font stager hashes
+  - 两次 build 的 archive SHA 不同仅反映尚未规范化的 tar/gzip metadata；CP2 明确只以 freeze 和内容 inventory 一致为 acceptance，archive reproducibility 需要另行固定 tar order、mtime、owner/group 和 gzip timestamp
+  - CP0 fixture 保持 94 units、41,035 source chars、unit SHA-256 `81d6185ffc72f263bbc03a6ab1872e4e8615728ad47ecd359b1b2b1d2f3cecb5`、10/10 translated pages 和 139,293,175 artifact bytes
+  - 新 archive 与 unpacked size 均在 CP1 预算内；本 checkpoint 未改变 translation-unit authority 或 fill-back 输出
+- 未解决问题或 blocker：
+  - none
+- 下一步唯一动作：
+  - 执行 CP3，以 import trace 和 reverse dependency 证据逐类评估可删除依赖，不修改 renderer heuristic
+
+#### 2026-07-27 / CP3 / Codex
+
+- 状态：started
+- HEAD：`62de5bc`
+- worktree baseline：existing CP1/CP2 governance、inventory、lock 与 builder changes；全部保留并继续作为 CP3 基线
+- 修改文件：`docs/engineering/plans/2026-07-27-pdf-stabilization-governance.md`
+- 执行命令与结果：
+  - CP3 scope、CP2 acceptance 与当前 Linux builder/lock inspection -> pass
+  - Linux test host `rwkv@192.168.0.115` host key `SHA256:KPoVOiLe0VwRORSjnHHLM2lB2qF8mAX/BsxepEXj6gM` -> verified；CP2 A/B archives、fixtures 与 685 GiB free disk available
+- 产物：
+  - pending
+- 已确认事实：
+  - CP2 archive 510,482,265 bytes、unpacked 1,354,528,694 bytes，已在 CP1 hard budgets 内；CP3 仍需逐项证明 optional provider 与 runtime residue 的安全删除边界
+- 未解决问题或 blocker：
+  - none
+- 下一步唯一动作：
+  - 对 CP2 pack 执行 import trace、reverse dependency、distribution/license 与 runtime residue 取证，确定逐类裁剪候选
+
+#### 2026-07-27 / CP3 / Codex
+
+- 状态：completed
+- HEAD：`62de5bc`；Linux candidate worktree 基于远端已有 `8bee070`，CP3 builder/SBOM generator 由 build recipe SHA-256 绑定
+- worktree baseline：existing CP1/CP2 governance、inventory、lock 与 builder changes；全部保留
+- 修改文件：`docs/engineering/plans/2026-07-27-pdf-stabilization-governance.md`, `docs/engineering/change-log/2026-07-27-pdf-linux-pack-reproducibility.md`, `rosetta-app/src-tauri/scripts/build-pdf2zh-pack-linux-x64.sh`, `rosetta-app/src-tauri/scripts/generate-pdf2zh-pack-sbom.py`, `rosetta-app/src-tauri/scripts/pdf2zh-linux-x64-inputs.json`
+- 执行命令与结果：
+  - `python -X importtime -c 'from pdf2zh import rosetta_engine'` -> pass；Azure、DeepL、Ollama、OpenAI、Tencent、Xinference 全部在 production engine import chain 中加载
+  - `pipdeptree 2.29.0 --reverse` -> pass；六类 provider SDK 均由 `pdf2zh` 声明，OpenAI 同时由 BabelDOC 声明；pinned `translator.py` 对六类 SDK 均为 eager import，因此 CP3 未删除或伪造 provider package，解耦留给 CP8
+  - OpenCV dependency/link inspection -> `opencv-python` 由 `rapidocr-onnxruntime -> BabelDOC` 引入、headless variant 由 BabelDOC/pdf2zh 引入，当前 `cv2.abi3.so` RPATH 绑定 `opencv_python.libs`；为避免改变 locked resolution 和图像行为，CP3 未删除任一 OpenCV distribution
+  - isolated category experiments against CP2 pack -> headers/static libraries、Tcl/Tk/IDLE、79 个 test 目录、非生产 console scripts 分别通过 10-page prepare/collect/identity render；每轮均保持 94 units、41,035 chars、frozen unit hash 和 139,293,175 artifact bytes
+  - GNU `strip --strip-debug` experiment -> rejected；会损坏 PBS `python3.12` 并产生 undefined symbol，未进入 builder
+  - first two full-build attempts -> stopped before build by GitHub TLS/443 outage；改用已有 partial clone 中已验证的 immutable `990bed0` object 建立 clean detached worktree后，输入身份不变
+  - final isolated Linux build -> pass；in-place、relocated、post-prune real PDF smoke 均通过，runtime imports 28/28
+  - final extracted candidate 10-page CP0 quality -> pass；94 units、41,035 source chars、10/10 translated pages、unit SHA-256 `81d6185ffc72f263bbc03a6ab1872e4e8615728ad47ecd359b1b2b1d2f3cecb5`、139,293,175 artifact bytes
+  - SBOM/license generation -> pass；105 installed distributions、CPython runtime、3 fonts、DocLayout model 与 196 retained license files；font/model licenses 作为 hashed build inputs，declared license files fail closed on missing，manifest sidecar hashes一致
+  - `python rosetta-app/src-tauri/scripts/test-pdf2zh-patches.py -q` -> pass；39 passed
+  - `pnpm typecheck` -> pass
+  - remote `bash -n`、local SBOM script AST parse、JSON parse、`git diff --check` -> pass
+- 产物：
+  - build recipe ID：`b7f4d6dc71c617c97f377644a2be13ed6c187082f3c014deeb260d81ab323910`
+  - archive：`/home/rwkv/cp3-dist/rosetta-pdf2zh-linux-x64.tar.gz`；475,184,227 bytes；SHA-256 `6cd0d56e57b9e2c3fa601789c02486d550b46d1d18e53b0a5b7641fa99215bfa`
+  - inventory：`/home/rwkv/cp3-dist/linux-x64-inventory.json`；SHA-256 `0576d1c066de66e0c09a97054216fccf9e1203701505dd3ff96759791fdecace`；unpacked 1,262,340,076 bytes、11,103 regular files、1,081 directories、1,044 symlinks、max file 218,461,128 bytes
+  - SBOM：`/home/rwkv/cp3-dist/linux-x64-sbom.cdx.json`；SHA-256 `d96b07dbd4e180750a3816fb1a201718f88c34619caff43dfd9bcc8f7d304f8c`
+  - license inventory：`/home/rwkv/cp3-dist/linux-x64-licenses.inventory.json`；SHA-256 `8d125b8ca7554b17ae64c10fd8d2647a000978673dd0847ba7f26812f6d9fc8b`
+  - CP0 quality：`/home/rwkv/cp3-dist/linux-x64-cp0-quality.json`；SHA-256 `eb848276867c3daacf019e47157965dae0a4e521d1bbcfc75cec86aecfba2cfa`
+  - build log：`/home/rwkv/cp3-dist/linux-x64-build.log`；SHA-256 `16f88be35f96cd999a77b0dc914c8d714436081f5996ecb3d3171d326e7ea34b`
+- 已确认事实：
+  - candidate 相对 CP2 build A 减少 35,298,038 compressed bytes、92,188,618 unpacked bytes；archive、unpacked、file count、max file 和 symlink 均在 CP1 budget 内
+  - builder 每类裁剪记录 byte delta，并在全部裁剪后重新执行 real prepare/collect/render；没有修改 renderer heuristic、translation unit、source payload 或视觉回填逻辑
+  - provider SDK 与 duplicate OpenCV 当前不能在 CP3 安全删除；这不阻塞预算和 CP3 acceptance，但 CP8 如解耦 fork imports 必须重新跑全部 CP0/CP3 质量门禁
+- 未解决问题或 blocker：
+  - none
+- 下一步唯一动作：
+  - 执行 CP4，设计向后兼容的 engine revision/capabilities 与 fail-closed readiness
 
 ## 新 agent 接手提示词
 

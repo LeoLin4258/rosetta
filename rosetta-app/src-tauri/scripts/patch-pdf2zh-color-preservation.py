@@ -2429,10 +2429,20 @@ class _RenderTranslator(_EngineTranslator):
         "    if translator.empty_translation_count > 0:",
         text.index("def render_one_page("),
     )
-    text_guard = text.index(
+    text_guard_candidates = (
         "    if (\n        translator.translated_chars > 0",
-        validation_start,
+        "    if source_chars > 0 and translator.translated_chars == 0:",
     )
+    text_guard = next(
+        (
+            index
+            for candidate in text_guard_candidates
+            if (index := text.find(candidate, validation_start)) >= 0
+        ),
+        -1,
+    )
+    if text_guard < 0:
+        raise ValueError("render_one_page text-output guard not found")
     structural_guard = '''    if translator.rendered_unit_count != len(cache.units):
         return failed_page_result(
             cache,

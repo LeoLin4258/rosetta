@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "lockGenerator": {
+    "name": "uv",
+    "version": "0.11.32"
+  },
+  "dependencyIndexUrl": "https://pypi.org/simple",
+  "pythonBuildStandalone": {
+    "release": "20260602",
+    "pythonVersion": "3.12.13",
+    "filename": "cpython-3.12.13+20260602-x86_64-unknown-linux-gnu-install_only.tar.gz",
+    "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260602/cpython-3.12.13+20260602-x86_64-unknown-linux-gnu-install_only.tar.gz",
+    "sha256": "9be5c21b78dbc371e739bc7faf3b007b8e607335f780bdd2e0dd44a6e3580d76"
+  },
+  "pdfMathTranslate": {
+    "version": "1.9.11",
+    "repositoryUrl": "https://github.com/LeoLin4258/PDFMathTranslate.git",
+    "commit": "990bed055d372772f5cec8ef4a982a8f767d64a4"
+  },
+  "docLayoutModel": {
+    "filename": "doclayout_yolo_docstructbench_imgsz1024.onnx",
+    "url": "https://huggingface.co/wybxc/DocLayout-YOLO-DocStructBench-onnx/resolve/main/doclayout_yolo_docstructbench_imgsz1024.onnx?download=true",
+    "sha256": "fece9af02f618b603ff7921ccec6861d13e7e1f9830e091dfb7e8ad9311e5b21"
+  },
+  "licenseAssets": [
+    {
+      "filename": "SIL-OFL-1.1.txt",
+      "url": "https://raw.githubusercontent.com/funstory-ai/BabelDOC-Assets/main/fonts/SourceHanTrueTypeLICENSE.txt",
+      "sha256": "dbaa78e2fdeef95b4f94cfb86bc53cb07b2abb4bb104cf361dde00724243dc35",
+      "licenseExpression": "OFL-1.1",
+      "appliesTo": [
+        "SourceHanSansCN-Regular.ttf",
+        "SourceHanSansCN-Bold.ttf",
+        "GoNotoKurrent-Regular.ttf"
+      ]
+    },
+    {
+      "filename": "DocLayout-YOLO-Apache-2.0.txt",
+      "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "licenseExpression": "Apache-2.0",
+      "appliesTo": [
+        "doclayout_yolo_docstructbench_imgsz1024.onnx"
+      ]
+    }
+  ],
+  "babeldoc": {
+    "version": "0.2.33",
+    "fontSource": "babeldoc.assets.embedding_assets_metadata",
+    "fonts": [
+      {
+        "filename": "SourceHanSansCN-Regular.ttf",
+        "sha256": "dd4ae04ab7d33f43202750cf755b2ba47a2122ba41412954e562da459337bbf6"
+      },
+      {
+        "filename": "SourceHanSansCN-Bold.ttf",
+        "sha256": "2dcaecc0dcba896fdc48e32617633123d91fa80c7eb9f7ae7c836da70e45ce88"
+      },
+      {
+        "filename": "GoNotoKurrent-Regular.ttf",
+        "sha256": "2f2cee5fbb2403df352ca2005247f6c4faa70f3086ebd31b6c62308b5f2f9865"
+      }
+    ]
+  }
+}
