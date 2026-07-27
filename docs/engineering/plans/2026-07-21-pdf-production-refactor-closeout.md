@@ -1,12 +1,18 @@
 # 2026-07-21 PDF Production Refactor Closeout
 
+> Historical closeout. As of 2026-07-27 this document is no longer the active
+> handoff authority. Continue from
+> [`2026-07-27-pdf-stabilization-governance.md`](2026-07-27-pdf-stabilization-governance.md),
+> verify all architecture claims against current code, and retain this file only
+> for its benchmark and rollback history.
+
 ## Status
 
 The production PDF refactor is functionally complete and has passed the user's
 ten-page App acceptance test. PDF resource-pack publication is intentionally
 deferred while unrelated UI/UX work continues.
 
-This document is the current handoff authority for the refactor. It supersedes
+At closeout time this document was the handoff authority for the refactor. It superseded
 the unresolved status in
 `2026-07-20-pdf-v3-ten-page-benchmark-regression-handoff.md` without deleting
 that document's historical failure evidence.

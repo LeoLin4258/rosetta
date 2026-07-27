@@ -2,6 +2,12 @@
 
 这个目录记录 Rosetta 的工程决策、较大改动和长期约定。它不是替代 Git 历史，而是补充 Git 历史中缺少的上下文：为什么这样做、哪些边界不能随意破坏、未来做新功能时应该遵循什么。
 
+## 当前活跃计划
+
+- PDF 稳定化、Linux 包体与可维护性治理：[`plans/2026-07-27-pdf-stabilization-governance.md`](plans/2026-07-27-pdf-stabilization-governance.md)
+
+同一领域只能有一份活跃 handoff authority。历史 plan、closeout、ADR 和 change-log 可能保留当时的事实，但下一位 agent 应从这里列出的活跃计划进入，并以当前代码和实际验证为准。
+
 ## 目录
 
 ```txt
@@ -63,6 +69,8 @@ ADR 放在 `decisions/`。它回答“为什么选择这个方案”。文件名
 ### Plans
 
 计划文档放在 `plans/`。它回答“还没有完全定案的大功能准备怎么推进”。计划可以包含待验证假设、阶段目标、风险和退出标准。方案被验证并形成长期约束后，应新增 ADR 或更新对应约定，而不是让计划文档承担最终决策记录。
+
+较长实施应拆成可独立交接的 checkpoint，并在同一活跃计划内维护状态、验证结果和下一步动作。不要为每个 agent 或每个 checkpoint 新建 handoff 文档。
 
 ## 写作原则
 
