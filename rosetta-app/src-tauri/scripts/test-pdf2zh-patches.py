@@ -16,6 +16,8 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PATCH_SCRIPT = SCRIPT_DIR / "patch-pdf2zh-color-preservation.py"
 DIRECTML_PATCH_SCRIPT = SCRIPT_DIR / "patch-pdf2zh-directml-layout.py"
 FONT_ASSETS_SCRIPT = SCRIPT_DIR / "stage-pdf2zh-font-assets.py"
+SIZE_GATE_SCRIPT = SCRIPT_DIR / "check-pdf2zh-pack-size.py"
+REPO_ROOT = SCRIPT_DIR.parents[2]
 
 
 class Pdf2zhPatchTests(unittest.TestCase):
@@ -2478,6 +2480,103 @@ CACHE_FOLDER = Path.home() / ".cache" / "babeldoc"
             patched = (package / "const.py").read_text()
             self.assertIn("ROSETTA_BABELDOC_CACHE_DIR", patched)
             self.assertIn("allow the PDF component pack to own BabelDOC assets", patched)
+
+    def test_linux_pack_size_gate_accepts_the_current_budget_candidate(self) -> None:
+        manifest = {
+            "size_bytes": 475_184_227,
+            "unpacked_size_bytes": 1_262_340_076,
+            "file_count": 11_103,
+            "max_single_file_bytes": 218_461_128,
+            "symlink_count": 1_044,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest_path = root / "manifest.json"
+            result_path = root / "size-gate.json"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SIZE_GATE_SCRIPT),
+                    str(manifest_path),
+                    "--output",
+                    str(result_path),
+                ],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(
+                json.loads(result_path.read_text(encoding="utf-8"))["status"],
+                "passed",
+            )
+
+    def test_linux_pack_size_gate_fails_closed_and_keeps_a_result(self) -> None:
+        manifest = {
+            "size_bytes": 700 * 1024 * 1024,
+            "unpacked_size_bytes": 1_262_340_076,
+            "file_count": 11_103,
+            "max_single_file_bytes": 218_461_128,
+            "symlink_count": 1_044,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest_path = root / "manifest.json"
+            result_path = root / "size-gate.json"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SIZE_GATE_SCRIPT),
+                    str(manifest_path),
+                    "--output",
+                    str(result_path),
+                ],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+
+            self.assertNotEqual(completed.returncode, 0)
+            result = json.loads(result_path.read_text(encoding="utf-8"))
+            self.assertEqual(result["status"], "failed")
+            self.assertTrue(result["failures"])
+
+    def test_ci_workflows_keep_release_authority_out_of_cp6(self) -> None:
+        main_ci = (REPO_ROOT / ".github/workflows/main-app-ci.yml").read_text(
+            encoding="utf-8"
+        )
+        pack_ci = (
+            REPO_ROOT / ".github/workflows/build-pdf2zh-pack-linux.yml"
+        ).read_text(encoding="utf-8")
+
+        for command in (
+            "pnpm typecheck",
+            "cargo check",
+            "cargo test rosetta_jobs",
+            "python3 scripts/test-pdf2zh-patches.py -q",
+        ):
+            self.assertIn(command, main_ci)
+        self.assertIn("pull_request:", main_ci)
+        self.assertIn("Linux required gate (Windows/macOS manual)", main_ci)
+        self.assertIn("contents: read", main_ci)
+
+        self.assertIn("workflow_dispatch:", pack_ci)
+        self.assertNotIn("pull_request:", pack_ci)
+        self.assertNotRegex(pack_ci, r"(?m)^\s+push:")
+        self.assertIn("build-pdf2zh-pack-linux-x64.sh", pack_ci)
+        self.assertIn("inventory-pdf2zh-pack.py", pack_ci)
+        self.assertIn("check-pdf2zh-pack-size.py", pack_ci)
+        self.assertIn("linux-x64-sbom.cdx.json", pack_ci)
+        self.assertIn("actions/upload-artifact@v4", pack_ci)
+        self.assertIn("contents: read", pack_ci)
+        self.assertNotIn("contents: write", pack_ci)
+        self.assertNotIn("softprops/action-gh-release", pack_ci)
+        self.assertNotIn("managed_pdf2zh/profile.rs", pack_ci)
 
 
 if __name__ == "__main__":

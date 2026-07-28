@@ -1,0 +1,99 @@
+name: Main app CI
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/build-pdf2zh-pack-linux.yml"
+      - ".github/workflows/main-app-ci.yml"
+      - "rosetta-app/**"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-pdf2zh-pack-linux.yml"
+      - ".github/workflows/main-app-ci.yml"
+      - "rosetta-app/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: main-app-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux required gate (Windows/macOS manual)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: "0"
+      ROSETTA_PDF_DIAGNOSTICS: "0"
+    defaults:
+      run:
+        working-directory: rosetta-app
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Record platform coverage
+        shell: bash
+        run: |
+          {
+            echo "## Platform coverage"
+            echo ""
+            echo "Linux is the required pull-request gate. Windows and macOS remain manual release gates."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install Linux system dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.4
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: rosetta-app/pnpm-lock.yaml
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rosetta-app/src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck frontend
+        run: pnpm typecheck
+
+      - name: Check Rust application
+        working-directory: rosetta-app/src-tauri
+        run: cargo check
+
+      - name: Test job system
+        working-directory: rosetta-app/src-tauri
+        run: cargo test rosetta_jobs
+
+      - name: Test PDF patch suite
+        working-directory: rosetta-app/src-tauri
+        run: python3 scripts/test-pdf2zh-patches.py -q

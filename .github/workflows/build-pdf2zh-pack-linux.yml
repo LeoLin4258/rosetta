@@ -1,0 +1,72 @@
+name: Build pdf2zh pack (Linux x64)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pdf2zh-pack-linux-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and audit workflow artifact only
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    env:
+      ROSETTA_PDF_DIAGNOSTICS: "0"
+      ROSETTA_PDF2ZH_DIST_DIR: ${{ github.workspace }}/rosetta-app/dist/pdf-layout-ci
+      ROSETTA_PDF2ZH_DOWNLOAD_DIR: ${{ github.workspace }}/rosetta-app/dist/pdf-layout-download
+      ROSETTA_PDF2ZH_BUILD_LOG: ${{ github.workspace }}/rosetta-app/dist/pdf-layout-ci/linux-x64-build.log
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build locked Linux pack
+        working-directory: rosetta-app
+        shell: bash
+        run: src-tauri/scripts/build-pdf2zh-pack-linux-x64.sh
+
+      - name: Generate deterministic inventory
+        working-directory: rosetta-app
+        shell: bash
+        run: |
+          python3 src-tauri/scripts/inventory-pdf2zh-pack.py \
+            "$ROSETTA_PDF2ZH_DIST_DIR/rosetta-pdf2zh-linux-x64.tar.gz" \
+            --pretty > "$ROSETTA_PDF2ZH_DIST_DIR/linux-x64-inventory.json"
+
+      - name: Enforce size budgets
+        working-directory: rosetta-app
+        shell: bash
+        run: |
+          python3 src-tauri/scripts/check-pdf2zh-pack-size.py \
+            "$ROSETTA_PDF2ZH_DIST_DIR/linux-x64-manifest.json" \
+            --output "$ROSETTA_PDF2ZH_DIST_DIR/linux-x64-size-gate.json"
+
+      - name: Upload pack audit artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdf2zh-pack-linux-x64-${{ github.sha }}
+          path: |
+            ${{ github.workspace }}/rosetta-app/dist/pdf-layout-ci/rosetta-pdf2zh-linux-x64.tar.gz
+            ${{ github.workspace }}/rosetta-app/dist/pdf-layout-ci/rosetta-pdf2zh-linux-x64.tar.gz.sha256
+            ${{ github.workspace }}/rosetta-app/dist/pdf-layout-ci/linux-x64-manifest.json
+            ${{ github.workspace }}/rosetta-app/dist/pdf-layout-ci/linux-x64-inventory.json
+            ${{ github.workspace }}/rosetta-app/dist/pdf-layout-ci/linux-x64-size-gate.json
+            ${{ github.workspace }}/rosetta-app/dist/pdf-layout-ci/linux-x64-sbom.cdx.json
+            ${{ github.workspace }}/rosetta-app/dist/pdf-layout-ci/linux-x64-licenses.inventory.json
+            ${{ github.workspace }}/rosetta-app/dist/pdf-layout-ci/linux-x64-build-recipe.json
+            ${{ github.workspace }}/rosetta-app/dist/pdf-layout-ci/linux-x64-build-inputs.json
+            ${{ github.workspace }}/rosetta-app/dist/pdf-layout-ci/linux-x64-requirements.freeze.txt
+            ${{ github.workspace }}/rosetta-app/dist/pdf-layout-ci/linux-x64-requirements.lock
+            ${{ github.workspace }}/rosetta-app/dist/pdf-layout-ci/linux-x64-build.log
+          if-no-files-found: warn
+          retention-days: 14

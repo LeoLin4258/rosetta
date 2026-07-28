@@ -174,8 +174,10 @@ pub(crate) fn merge_legacy_page_unit_window(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "windows")]
     use std::{fs, time::Instant};
 
+    #[cfg(target_os = "windows")]
     use windows_sys::Win32::System::{
         ProcessStatus::{
             K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX,
@@ -221,6 +223,7 @@ mod tests {
         assert!(window.source_chars > 0);
     }
 
+    #[cfg(target_os = "windows")]
     #[derive(Debug, Clone, Copy)]
     struct ProcessMemorySample {
         working_set_bytes: usize,
@@ -228,6 +231,7 @@ mod tests {
         private_bytes: usize,
     }
 
+    #[cfg(target_os = "windows")]
     fn process_memory_sample() -> ProcessMemorySample {
         let mut counters = unsafe { std::mem::zeroed::<PROCESS_MEMORY_COUNTERS_EX>() };
         counters.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32;
@@ -247,6 +251,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "windows")]
     fn directory_file_bytes(path: &std::path::Path) -> u64 {
         fs::read_dir(path)
             .ok()
@@ -266,6 +271,7 @@ mod tests {
             .sum()
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
     #[ignore = "manual Windows native preparse bounded-memory probe"]
     fn manual_windows_native_preparse_bounded_memory_probe() {

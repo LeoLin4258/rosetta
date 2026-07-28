@@ -5,7 +5,7 @@
 - 状态：Active
 - 创建日期：2026-07-27
 - 审计窗口：2026-07-17 至当前 `HEAD`；更早代码只在解释该窗口内的设计来源时取证
-- 当前阶段：CP5，已完成；下一步 CP6
+- 当前阶段：CP6，已完成；下一步 CP7
 - 当前生产 PDF 执行路径：`pdf2zh` prepare / unit collection / page render，Rosetta Rust 负责本地翻译、任务状态、页产物、预览与导出
 - 当前验证基线：仓库 `main` 在 `61ff0ab` 的审计快照；后续 agent 必须重新读取当前 `HEAD`，不能把该 commit 当成永久事实
 - 本文是 PDF 稳定化和治理工作的唯一活跃 handoff authority
@@ -454,7 +454,7 @@ CP8、CP9、CP10 不应与 Linux release candidate 的包内容变化混在同�
 
 ## CP6：Linux CI 与跨平台编译门禁
 
-- 状态：`not-started`
+- 状态：`completed`
 - 依赖：CP0
 - 建议单次工作量：一个 agent context
 
@@ -476,10 +476,10 @@ CP8、CP9、CP10 不应与 Linux release candidate 的包内容变化混在同�
 
 ### Acceptance
 
-- [ ] Linux test target 编译并通过。
-- [ ] PR 可以看到主应用基础验证结果。
-- [ ] pack workflow 默认不发布、不改 profile。
-- [ ] workflow 失败日志不包含文档文本或凭据。
+- [x] Linux test target 编译并通过。
+- [x] PR 可以看到主应用基础验证结果。
+- [x] pack workflow 默认不发布、不改 profile。
+- [x] workflow 失败日志不包含文档文本或凭据。
 
 ### 停止条件
 
@@ -694,12 +694,12 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 
 ### 当前状态摘要
 
-- 当前 checkpoint：CP5（`completed`）
-- last completed：CP5
+- 当前 checkpoint：CP6（`completed`）
+- last completed：CP6
 - blocked：无
 - 已知 CP11 release issue：Linux AppImage 页产物压缩子进程继承错误的 `PYTHONHOME` / `PYTHONPATH`，当前会保留未压缩但可用的原始回填页；CP5 不处理此问题，CP11 full-App release gate 前必须修复并复验
-- last verified HEAD：`c3fc561`
-- 下一步唯一动作：执行 CP6，建立 Linux CI 与跨平台编译门禁；不要在 CP6 触发 pack 发布或修改 profile
+- last verified HEAD：`dfe6a07`
+- 下一步唯一动作：执行 CP7，为 production PDF 译文队列建立背压与覆盖 channel/pending/render payload 的真实内存指标；不要改变 provider chunking、unit order 或页面 ready 判断
 
 ### 记录模板
 
@@ -722,6 +722,60 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 - 下一步唯一动作：
   - ...
 ```
+
+#### 2026-07-28 / CP6 / Codex
+
+- 状态：started
+- HEAD：`dfe6a07`
+- worktree baseline：clean
+- 修改文件：`docs/engineering/plans/2026-07-27-pdf-stabilization-governance.md`
+- 执行命令与结果：
+  - `git status --short` -> pass；开始前 worktree clean
+  - `git rev-parse --short HEAD` -> `dfe6a07`
+  - `rg` workflows / Linux builder / inventory / SBOM / legacy adapter Windows probe -> pass；仓库只有 macOS sidecar workflow，Linux builder 已输出 manifest 与 SBOM，但没有主应用 CI 或独立 size gate
+- 产物：
+  - pending
+- 已确认事实：
+  - CP0 已完成，CP6 依赖满足
+  - `legacy_adapter.rs` 的 `#[cfg(test)]` 模块在非 Windows test target 仍无条件 import `windows_sys`
+  - CP6 只建立编译和构建治理门禁，不运行 production pack build，不发布 release asset，不修改 `managed_pdf2zh/profile.rs`
+- 未解决问题或 blocker：
+  - none
+- 下一步唯一动作：
+  - 修复 Windows memory probe target gating，新增 Linux 主应用 CI、手动 pack workflow 与可机读 size gate
+
+#### 2026-07-28 / CP6 completion / Codex
+
+- 状态：completed
+- HEAD：`dfe6a07`
+- worktree baseline：clean；本 checkpoint 的 workflow、size gate、target gating 与治理文档改动尚未提交
+- 修改文件：`.github/workflows/main-app-ci.yml`、`.github/workflows/build-pdf2zh-pack-linux.yml`、`rosetta-app/src-tauri/scripts/check-pdf2zh-pack-size.py`、`rosetta-app/src-tauri/scripts/test-pdf2zh-patches.py`、`rosetta-app/src-tauri/src/pdf_v3/legacy_adapter.rs`、`docs/engineering/plans/2026-07-27-pdf-stabilization-governance.md`
+- 执行命令与结果：
+  - local `pnpm typecheck` -> pass
+  - local `cargo check` -> pass
+  - local `cargo test rosetta_jobs` -> pass；134 passed
+  - local `cargo test pdf_v3::legacy_adapter` -> pass；1 passed、1 ignored Windows manual probe
+  - local `python src-tauri/scripts/test-pdf2zh-patches.py -q` -> pass；44 passed
+  - local `cargo fmt -- --check`、Python `py_compile`、`git diff --check` -> pass
+  - checksum-verified `actionlint v1.7.7` on both workflows -> pass
+  - isolated Linux x64 host `pnpm install --frozen-lockfile`、`pnpm typecheck`、`cargo check` -> pass
+  - isolated Linux x64 host `cargo test rosetta_jobs` -> pass；103 passed
+  - isolated Linux x64 host `cargo test pdf_v3::legacy_adapter` -> pass；1 passed，确认非 Windows test target 不再编译 Windows memory probe
+  - isolated Linux x64 host patch suite -> pass；44 passed、1 Linux skip
+- 产物：
+  - required PR workflow：`.github/workflows/main-app-ci.yml`；SHA-256 `9bb78bb516cc4af6789297f35b5515f022e94e0d0700948c4dacf462d3e36fd5`
+  - manual pack workflow：`.github/workflows/build-pdf2zh-pack-linux.yml`；SHA-256 `1c18c09e53a50a931b6b7daa400744701db492989a87c2a737b2c58951fe548a`
+  - machine-readable size gate：`rosetta-app/src-tauri/scripts/check-pdf2zh-pack-size.py`；SHA-256 `fdf67b3a51adf7deb0c0b50852e85c73d34a7bc26b2c03efac4e42594dd0b550`
+- 已确认事实：
+  - 主应用 workflow 在相关 PR/main push 上执行 Linux frontend install/typecheck、`cargo check`、`cargo test rosetta_jobs` 与 patch suite；job 名称和 step summary 明确 Windows/macOS 仍为 manual release gates
+  - pack workflow 只有 `workflow_dispatch`，权限为 `contents: read`；成功路径上传 archive、inventory、SBOM、license inventory、size-gate、recipe、locks 与 build log 为 14 天 workflow artifact，不调用 GitHub Release、不修改 profile
+  - size gate fail closed，并执行 CP1 的 archive/unpacked/file-count/max-file/symlink budget；current CP3 candidate fixture 通过，700 MiB synthetic archive 被拒绝且保留 JSON result
+  - 两个 workflow 不读取 secrets、不接受文档输入，禁用 PDF diagnostics；失败日志只覆盖代码测试和 builder 状态，不包含用户文档文本或凭据
+  - 本 checkpoint 未运行 production pack build，未发布 asset，未修改 profile、renderer、translation-unit authority、RWKV request plan、持久化 schema 或用户流程
+- 未解决问题或 blocker：
+  - none；Linux AppImage artifact compression 环境污染仍为既有 CP11 release issue
+- 下一步唯一动作：
+  - 执行 CP7，为 production PDF 译文队列建立 bounded backpressure 与真实 combined pending metrics；不得改变 provider chunking、unit order 或页面 ready 判断
 
 #### 2026-07-28 / CP4 / Codex
 
