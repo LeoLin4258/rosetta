@@ -25,7 +25,14 @@ $DistDir = Join-Path $AppDir "dist\pdf-layout"
 $ArchiveName = "rosetta-pdf2zh-windows-amd64.zip"
 $ArchivePath = Join-Path $DistDir $ArchiveName
 $Requirements = Join-Path $ScriptDir "requirements-pdf2zh-windows-amd64.txt"
+$EngineCapabilitiesManifest = Join-Path $ScriptDir "pdf2zh-engine-capabilities.json"
 $ModelName = "doclayout_yolo_docstructbench_imgsz1024.onnx"
+
+if (-not (Test-Path -LiteralPath $EngineCapabilitiesManifest)) {
+    throw "PDF engine capability manifest not found: $EngineCapabilitiesManifest"
+}
+$EngineCapabilities = Get-Content -Raw -LiteralPath $EngineCapabilitiesManifest | ConvertFrom-Json
+$EngineCapabilitiesManifestSha256 = (Get-FileHash -LiteralPath $EngineCapabilitiesManifest -Algorithm SHA256).Hash.ToLowerInvariant()
 
 if (-not $Pdf2zhSourcePath) {
     $Pdf2zhSourcePath = Join-Path (Split-Path -Parent $RepoRoot) "PDFMathTranslate"
@@ -70,6 +77,7 @@ function Invoke-NativeChecked {
 try {
     New-Item -ItemType Directory -Path $PackDir -Force | Out-Null
     New-Item -ItemType Directory -Path $DistDir -Force | Out-Null
+    Copy-Item -LiteralPath $EngineCapabilitiesManifest -Destination (Join-Path $PackDir "engine-capabilities.json")
 
     $LocalPythonArchive = Join-Path ([Environment]::GetFolderPath("UserProfile")) "Downloads\$PythonArchiveName"
     if (Test-Path -LiteralPath $LocalPythonArchive) {
@@ -168,6 +176,8 @@ else:
     $Smoke = @'
 import os
 import tempfile
+import json
+from pathlib import Path
 
 import numpy
 import pymupdf
@@ -179,8 +189,24 @@ from pdf2zh.converter import TranslateConverter
 from pdf2zh.doclayout import OnnxModel
 from pdf2zh.translator import RosettaBatchTranslator
 
-if rosetta_engine.ENGINE_CONTRACT_VERSION != 2:
-    raise SystemExit("pdf2zh.rosetta_engine contract version is not 2")
+expected = json.loads(
+    Path(os.environ["ROSETTA_PDF_ENGINE_CAPABILITIES"]).read_text(encoding="utf-8")
+)
+actual = rosetta_engine.prewarm(
+    {"modelPath": os.environ["ROSETTA_DOCLAYOUT_MODEL"]}
+)
+if actual.get("contractVersion") != expected["engineContractVersion"]:
+    raise SystemExit("unexpected Rosetta PDF engine contract")
+if actual.get("engineRevision", 0) < expected["engineRevision"]:
+    raise SystemExit("Rosetta PDF engine revision is too old")
+missing_capabilities = sorted(
+    set(expected["capabilities"]) - set(actual.get("capabilities", []))
+)
+if missing_capabilities:
+    raise SystemExit(
+        "Rosetta PDF engine is missing capabilities: "
+        + ", ".join(missing_capabilities)
+    )
 if not callable(getattr(rosetta_engine, "resetRun", None)):
     raise SystemExit("pdf2zh.rosetta_engine does not support reusable prepared runs")
 if not callable(getattr(rosetta_engine, "load_persistent_layout_cache", None)):
@@ -208,6 +234,7 @@ print(f"pdf-pack-imports-ok pdf2zh={pdf2zh.__version__} contract={rosetta_engine
 '@
     $env:ROSETTA_DOCLAYOUT_MODEL = $ModelPath
     $env:ROSETTA_BABELDOC_CACHE_DIR = $BabeldocCacheDir
+    $env:ROSETTA_PDF_ENGINE_CAPABILITIES = Join-Path $PackDir "engine-capabilities.json"
     $Smoke | & $PythonExe -
     if ($LASTEXITCODE -ne 0) {
         throw "PDF runtime import smoke test failed"
@@ -264,6 +291,9 @@ print(f"pdf-pack-imports-ok pdf2zh={pdf2zh.__version__} contract={rosetta_engine
         pdf2zhSourcePath = $Pdf2zhSourcePath
         pythonVersion = $PythonVersion
         pythonBuildRelease = $PythonBuildRelease
+        engineContractVersion = [int]$EngineCapabilities.engineContractVersion
+        engineRevision = [int]$EngineCapabilities.engineRevision
+        engineCapabilitiesManifestSha256 = $EngineCapabilitiesManifestSha256
         layoutModel = $ModelName
         layoutModelSha256 = $ModelSha
         sizeBytes = $Size
@@ -277,6 +307,7 @@ print(f"pdf-pack-imports-ok pdf2zh={pdf2zh.__version__} contract={rosetta_engine
 } finally {
     Remove-Item Env:\ROSETTA_DOCLAYOUT_MODEL -ErrorAction SilentlyContinue
     Remove-Item Env:\ROSETTA_BABELDOC_CACHE_DIR -ErrorAction SilentlyContinue
+    Remove-Item Env:\ROSETTA_PDF_ENGINE_CAPABILITIES -ErrorAction SilentlyContinue
     if (Test-Path -LiteralPath $ResolvedBuildRoot) {
         Remove-Item -LiteralPath $ResolvedBuildRoot -Recurse -Force
     }

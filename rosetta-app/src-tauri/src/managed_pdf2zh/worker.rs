@@ -38,7 +38,7 @@ use tokio::{
     sync::{mpsc, oneshot, Mutex},
 };
 
-use super::build_static_status;
+use super::{build_static_status, capabilities::validate_worker_capabilities};
 use crate::windows_process::HideConsole;
 
 const WORKER_SCRIPT: &str = include_str!("rosetta_pdf2zh_worker.py");
@@ -787,18 +787,12 @@ async fn spawn_worker(app: &AppHandle) -> Result<WorkerProcess, String> {
                             }
                         }
                         "ready" => {
-                            let contract_version = event
-                                .capabilities
-                                .as_ref()
-                                .and_then(|value| value.get("contractVersion"))
-                                .and_then(|value| value.as_u64())
-                                .unwrap_or(0);
-                            if contract_version != 2 {
-                                return Err(
-                                    "PDF 组件不支持 Rosetta PDF engine contract v2，请更新 PDF 组件。"
-                                        .to_string(),
-                                );
-                            }
+                            let capabilities = event.capabilities.as_ref().ok_or_else(|| {
+                                "PDF 组件未报告 engine 能力，请更新 PDF 组件。".to_string()
+                            })?;
+                            validate_worker_capabilities(capabilities).map_err(|error| {
+                                format!("PDF 组件需要更新：{error}。请重新安装 PDF 组件。")
+                            })?;
                             let import_ms = event.import_ms.unwrap_or(0);
                             let yolo_warmup_ms = event
                                 .yolo_warmup_ms

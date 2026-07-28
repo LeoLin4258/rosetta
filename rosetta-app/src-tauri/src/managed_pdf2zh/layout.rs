@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use serde::Deserialize;
 use tauri::{AppHandle, Manager};
 
-use super::profile::Pdf2zhProfile;
+use super::{capabilities::validate_installed_capabilities, profile::Pdf2zhProfile};
 
 pub const DOCLAYOUT_MODEL_FILENAME: &str = "doclayout_yolo_docstructbench_imgsz1024.onnx";
 const REQUIRED_BABELDOC_FONTS: [&str; 3] = [
@@ -19,6 +19,10 @@ struct Pdf2zhPackManifest {
     pack_filename: String,
     sha256: Option<String>,
     size_bytes: Option<u64>,
+    engine_capability_schema_version: Option<u32>,
+    engine_contract_version: Option<u32>,
+    engine_revision: Option<u32>,
+    capabilities: Vec<String>,
     #[serde(default)]
     custom_pack: bool,
 }
@@ -89,37 +93,42 @@ impl Pdf2zhLayout {
     }
 
     pub fn pack_manifest_matches_profile(&self, profile: &Pdf2zhProfile) -> bool {
-        if has_custom_pack_url_env() {
-            return true;
-        }
-        if profile.pack_sha256.is_none() && profile.pack_size_bytes.is_none() {
-            return true;
-        }
+        self.pack_manifest_compatibility(profile).is_ok()
+    }
 
+    pub fn pack_manifest_compatibility(&self, profile: &Pdf2zhProfile) -> Result<(), String> {
         let Ok(contents) = std::fs::read_to_string(&self.manifest_file) else {
-            return false;
+            return Err("组件缺少安装记录".to_string());
         };
         let Ok(manifest) = serde_json::from_str::<Pdf2zhPackManifest>(&contents) else {
-            return false;
+            return Err("组件安装记录无法解析".to_string());
         };
 
         if manifest.profile_id != profile.id || manifest.pack_filename != profile.pack_filename {
-            return false;
+            return Err("组件平台或文件身份与当前 profile 不匹配".to_string());
         }
-        if manifest.custom_pack {
-            return manifest.sha256.as_deref().is_some_and(is_lowercase_sha256);
-        }
-        if let Some(expected) = profile.pack_sha256 {
-            if manifest.sha256.as_deref() != Some(expected) {
-                return false;
+        if manifest.custom_pack || has_custom_pack_url_env() {
+            if !manifest.sha256.as_deref().is_some_and(is_lowercase_sha256) {
+                return Err("自定义组件安装记录缺少有效 SHA-256".to_string());
+            }
+        } else if profile.pack_sha256.is_some() || profile.pack_size_bytes.is_some() {
+            if let Some(expected) = profile.pack_sha256 {
+                if manifest.sha256.as_deref() != Some(expected) {
+                    return Err("组件 SHA-256 与当前 profile 不匹配".to_string());
+                }
+            }
+            if let Some(expected) = profile.pack_size_bytes {
+                if manifest.size_bytes != Some(expected) {
+                    return Err("组件大小与当前 profile 不匹配".to_string());
+                }
             }
         }
-        if let Some(expected) = profile.pack_size_bytes {
-            if manifest.size_bytes != Some(expected) {
-                return false;
-            }
-        }
-        true
+        validate_installed_capabilities(
+            manifest.engine_capability_schema_version,
+            manifest.engine_contract_version,
+            manifest.engine_revision,
+            &manifest.capabilities,
+        )
     }
 
     pub fn ensure_dirs(&self) -> Result<(), String> {
@@ -282,8 +291,8 @@ mod tests {
         )
         .expect("write local test manifest");
         assert!(
-            layout.managed_pack_ready(&WINDOWS_AMD64_PDF2ZH),
-            "an explicitly imported local pack should remain ready after restart"
+            !layout.managed_pack_ready(&WINDOWS_AMD64_PDF2ZH),
+            "a local pack without the required engine capabilities must fail closed"
         );
 
         write_matching_manifest(&layout, &WINDOWS_AMD64_PDF2ZH);
@@ -302,6 +311,10 @@ mod tests {
   "packFilename": "{}",
   "sha256": "{}",
   "sizeBytes": {},
+  "engineCapabilitySchemaVersion": 1,
+  "engineContractVersion": 2,
+  "engineRevision": 1,
+  "capabilities": ["authoritative-render-slots", "durable-layout-cache", "partial-page-accounting", "reusable-prepared-run"],
   "sourceUrl": "file:///tmp/{}",
   "installedAt": "0"
 }}"#,

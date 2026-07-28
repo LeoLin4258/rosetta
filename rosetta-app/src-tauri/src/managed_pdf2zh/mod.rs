@@ -1,3 +1,4 @@
+pub mod capabilities;
 pub mod install;
 pub mod layout;
 #[allow(dead_code)]

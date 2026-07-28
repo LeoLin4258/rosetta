@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from pathlib import Path
+import json
 import re
 import sys
 
@@ -3704,6 +3705,76 @@ def write_persistent_layout_cache(
     return True
 
 
+def patch_rosetta_engine_capabilities(root: Path) -> bool:
+    target = root / "rosetta_engine.py"
+    if not target.is_file():
+        raise SystemExit(f"::error::could not find rosetta_engine.py in {root}")
+
+    manifest_path = Path(__file__).with_name("pdf2zh-engine-capabilities.json")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    revision = int(manifest["engineRevision"])
+    capabilities = tuple(sorted(str(value) for value in manifest["capabilities"]))
+    text = target.read_text(encoding="utf-8")
+    if "ENGINE_CONTRACT_VERSION = " not in text or "class EngineCapabilities:" not in text:
+        return False
+
+    required_markers = {
+        "reusable-prepared-run": "def resetRun(preparedRunId: str) -> None:",
+        "durable-layout-cache": "_PERSISTENT_LAYOUT_CACHE_SCHEMA = 1",
+        "authoritative-render-slots": "Rosetta: final page render slots are authoritative.",
+        "partial-page-accounting": "fallbackUnitCount",
+    }
+    missing_markers = [
+        capability
+        for capability in capabilities
+        if required_markers.get(capability) not in text
+    ]
+    if missing_markers:
+        raise SystemExit(
+            "::error::cannot declare PDF engine capabilities before behavior patches: "
+            + ", ".join(missing_markers)
+        )
+
+    revision_line = f"ENGINE_REVISION = {revision}"
+    capabilities_line = f"ENGINE_CAPABILITIES = {capabilities!r}"
+    if revision_line in text and capabilities_line in text:
+        return False
+    if "ENGINE_REVISION = " in text or "ENGINE_CAPABILITIES = " in text:
+        raise SystemExit(f"::error::existing PDF engine capability declaration conflicts in {target}")
+
+    contract_anchor = "ENGINE_CONTRACT_VERSION = 2\n"
+    if contract_anchor not in text:
+        raise SystemExit(f"::error::could not find PDF engine contract in {target}")
+    text = text.replace(
+        contract_anchor,
+        contract_anchor + revision_line + "\n" + capabilities_line + "\n",
+        1,
+    )
+
+    fields_anchor = "class EngineCapabilities:\n    engineVersion: str\n"
+    if fields_anchor not in text:
+        raise SystemExit(f"::error::could not find EngineCapabilities fields in {target}")
+    text = text.replace(
+        fields_anchor,
+        fields_anchor + "    engineRevision: int\n    capabilities: list[str]\n",
+        1,
+    )
+
+    values_anchor = "            engineVersion=ENGINE_VERSION,\n"
+    if values_anchor not in text:
+        raise SystemExit(f"::error::could not find EngineCapabilities construction in {target}")
+    text = text.replace(
+        values_anchor,
+        values_anchor
+        + "            engineRevision=ENGINE_REVISION,\n"
+        + "            capabilities=list(ENGINE_CAPABILITIES),\n",
+        1,
+    )
+    target.write_text(text, encoding="utf-8")
+    print(f"[pdf2zh-pack] declared revisioned PDF engine capabilities in {target}")
+    return True
+
+
 def patch_rosetta_engine_resource_manager_reuse(root: Path) -> bool:
     target = root / "rosetta_engine.py"
     if not target.is_file():
@@ -4282,4 +4353,5 @@ patch_rosetta_engine_persistent_layout_cache(root)
 patch_rosetta_engine_resource_manager_reuse(root)
 patch_rosetta_engine_shared_font_registration(root)
 patch_rosetta_engine_page_artifact_font_subsetting(root)
+patch_rosetta_engine_capabilities(root)
 clear_pycache(root)

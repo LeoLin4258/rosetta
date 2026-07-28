@@ -55,9 +55,15 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+ENGINE_CAPABILITIES_MANIFEST="$SCRIPT_DIR/pdf2zh-engine-capabilities.json"
 DIST_DIR="$REPO_ROOT/dist/pdf-layout"
 ARCHIVE_NAME="rosetta-pdf2zh-macos-arm64.tar.gz"
 ARCHIVE_PATH="$DIST_DIR/$ARCHIVE_NAME"
+
+if [[ ! -f "$ENGINE_CAPABILITIES_MANIFEST" ]]; then
+  echo "::error::missing PDF engine capability manifest: $ENGINE_CAPABILITIES_MANIFEST" >&2
+  exit 2
+fi
 
 if [[ -z "$PDF2ZH_SOURCE_PATH" ]]; then
   PDF2ZH_SOURCE_PATH="$(cd "$REPO_ROOT/../.." && pwd)/PDFMathTranslate"
@@ -84,6 +90,7 @@ echo "[pdf2zh-release] PBS python:  $PBS_PYTHON_VERSION (release $PBS_RELEASE)" 
 echo "[pdf2zh-release] build root:  $BUILD_ROOT" >&2
 
 mkdir -p "$PACK_DIR" "$BIN_DIR" "$MODELS_DIR"
+cp "$ENGINE_CAPABILITIES_MANIFEST" "$PACK_DIR/engine-capabilities.json"
 
 echo "[pdf2zh-release] downloading python-build-standalone" >&2
 echo "  $PBS_TARBALL_URL" >&2
@@ -98,6 +105,9 @@ if [[ ! -x "$PYTHON_DIR/bin/python" ]]; then
 fi
 
 PBS_REPORTED_VERSION="$("$PYTHON_DIR/bin/python" -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')"
+ENGINE_CONTRACT_VERSION="$("$PYTHON_DIR/bin/python" -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["engineContractVersion"])' "$ENGINE_CAPABILITIES_MANIFEST")"
+ENGINE_REVISION="$("$PYTHON_DIR/bin/python" -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["engineRevision"])' "$ENGINE_CAPABILITIES_MANIFEST")"
+ENGINE_CAPABILITIES_MANIFEST_SHA256="$(shasum -a 256 "$ENGINE_CAPABILITIES_MANIFEST" | awk '{print $1}')"
 echo "[pdf2zh-release] PBS python ready: $PBS_REPORTED_VERSION" >&2
 
 echo "[pdf2zh-release] installing PDFMathTranslate fork into pack python" >&2
@@ -150,16 +160,37 @@ if [[ ! -s "$DOCLAYOUT_MODEL_PATH" ]]; then
 fi
 
 echo "[pdf2zh-release] Rosetta engine smoke test:" >&2
-ROSETTA_DOCLAYOUT_MODEL="$DOCLAYOUT_MODEL_PATH" ROSETTA_BABELDOC_CACHE_DIR="$BABELDOC_CACHE_DIR" "$PYTHON_DIR/bin/python" - <<'PY'
+ROSETTA_DOCLAYOUT_MODEL="$DOCLAYOUT_MODEL_PATH" \
+ROSETTA_BABELDOC_CACHE_DIR="$BABELDOC_CACHE_DIR" \
+ROSETTA_PDF_ENGINE_CAPABILITIES="$PACK_DIR/engine-capabilities.json" \
+  "$PYTHON_DIR/bin/python" - <<'PY'
+import json
 import os
+from pathlib import Path
 
 import pdf2zh
 from babeldoc.assets.assets import get_font_and_metadata
 from pdf2zh import rosetta_engine
 from pdf2zh.doclayout import OnnxModel
 
-if rosetta_engine.ENGINE_CONTRACT_VERSION != 2:
-    raise SystemExit("::error::pdf2zh.rosetta_engine contract version is not 2")
+expected = json.loads(
+    Path(os.environ["ROSETTA_PDF_ENGINE_CAPABILITIES"]).read_text(encoding="utf-8")
+)
+actual = rosetta_engine.prewarm(
+    {"modelPath": os.environ["ROSETTA_DOCLAYOUT_MODEL"]}
+)
+if actual.get("contractVersion") != expected["engineContractVersion"]:
+    raise SystemExit("::error::unexpected Rosetta PDF engine contract")
+if actual.get("engineRevision", 0) < expected["engineRevision"]:
+    raise SystemExit("::error::Rosetta PDF engine revision is too old")
+missing_capabilities = sorted(
+    set(expected["capabilities"]) - set(actual.get("capabilities", []))
+)
+if missing_capabilities:
+    raise SystemExit(
+        "::error::Rosetta PDF engine is missing capabilities: "
+        + ", ".join(missing_capabilities)
+    )
 if not callable(getattr(rosetta_engine, "resetRun", None)):
     raise SystemExit("::error::Rosetta PDF engine does not support reusable prepared runs")
 if not callable(getattr(rosetta_engine, "load_persistent_layout_cache", None)):
@@ -202,6 +233,29 @@ echo "[pdf2zh-release] relocation smoke test (rename pack root, re-run shim):" >
 RELOCATED_DIR="$BUILD_ROOT/macos-arm64-relocated"
 mv "$PACK_DIR" "$RELOCATED_DIR"
 "$RELOCATED_DIR/bin/pdf2zh" --version >&2
+ROSETTA_DOCLAYOUT_MODEL="$RELOCATED_DIR/models/$DOCLAYOUT_MODEL_FILENAME" \
+ROSETTA_PDF_ENGINE_CAPABILITIES="$RELOCATED_DIR/engine-capabilities.json" \
+  "$RELOCATED_DIR/python/bin/python" -B - <<'PY'
+import json
+import os
+from pathlib import Path
+
+from pdf2zh import rosetta_engine
+
+expected = json.loads(
+    Path(os.environ["ROSETTA_PDF_ENGINE_CAPABILITIES"]).read_text(encoding="utf-8")
+)
+actual = rosetta_engine.prewarm(
+    {"modelPath": os.environ["ROSETTA_DOCLAYOUT_MODEL"]}
+)
+missing = sorted(set(expected["capabilities"]) - set(actual.get("capabilities", [])))
+if (
+    actual.get("contractVersion") != expected["engineContractVersion"]
+    or actual.get("engineRevision", 0) < expected["engineRevision"]
+    or missing
+):
+    raise SystemExit("::error::relocated PDF engine capabilities do not match manifest")
+PY
 mv "$RELOCATED_DIR" "$PACK_DIR"
 
 echo "[pdf2zh-release] verifying no stale bytecode:" >&2
@@ -238,6 +292,9 @@ cat > "$DIST_DIR/manifest.json" <<EOF
   "pdf2zh_version": "$PDF2ZH_VERSION",
   "pdf2zh_source_path": "$PDF2ZH_SOURCE_PATH",
   "python_runtime": "python-build-standalone $PBS_PYTHON_VERSION (release $PBS_RELEASE)",
+  "engine_contract_version": $ENGINE_CONTRACT_VERSION,
+  "engine_revision": $ENGINE_REVISION,
+  "engine_capabilities_manifest_sha256": "$ENGINE_CAPABILITIES_MANIFEST_SHA256",
   "layout_model": "$DOCLAYOUT_MODEL_FILENAME",
   "sha256": "$SHA256",
   "size_bytes": $SIZE_BYTES,

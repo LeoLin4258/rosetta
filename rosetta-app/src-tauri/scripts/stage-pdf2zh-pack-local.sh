@@ -40,6 +40,12 @@ BABELDOC_FONT_SOURCE_DIR="${BABELDOC_FONT_SOURCE_DIR:-}"
 APP_ID="${ROSETTA_APP_ID:-com.rosetta.desktop}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROSETTA_APP_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+ENGINE_CAPABILITIES_MANIFEST="$SCRIPT_DIR/pdf2zh-engine-capabilities.json"
+
+if [[ ! -f "$ENGINE_CAPABILITIES_MANIFEST" ]]; then
+  echo "::error::missing PDF engine capability manifest: $ENGINE_CAPABILITIES_MANIFEST" >&2
+  exit 2
+fi
 
 case "$(uname -s)-$(uname -m)" in
   Darwin-arm64)
@@ -89,6 +95,7 @@ echo "[pdf2zh-pack] PBS python: $PBS_PYTHON_VERSION (release $PBS_RELEASE)" >&2
 
 rm -rf "$PACK_ROOT"
 mkdir -p "$PACK_ROOT" "$BIN_DIR" "$MODELS_DIR"
+cp "$ENGINE_CAPABILITIES_MANIFEST" "$PACK_ROOT/engine-capabilities.json"
 
 DOWNLOAD_TMP="$(mktemp -d)"
 trap 'rm -rf "$DOWNLOAD_TMP"' EXIT
@@ -160,16 +167,37 @@ if [[ ! -s "$DOCLAYOUT_MODEL_PATH" ]]; then
 fi
 
 echo "[pdf2zh-pack] Rosetta engine smoke test:" >&2
-ROSETTA_DOCLAYOUT_MODEL="$DOCLAYOUT_MODEL_PATH" ROSETTA_BABELDOC_CACHE_DIR="$BABELDOC_CACHE_DIR" "$PYTHON_DIR/bin/python" - <<'PY'
+ROSETTA_DOCLAYOUT_MODEL="$DOCLAYOUT_MODEL_PATH" \
+ROSETTA_BABELDOC_CACHE_DIR="$BABELDOC_CACHE_DIR" \
+ROSETTA_PDF_ENGINE_CAPABILITIES="$PACK_ROOT/engine-capabilities.json" \
+  "$PYTHON_DIR/bin/python" - <<'PY'
+import json
 import os
+from pathlib import Path
 
 import pdf2zh
 from babeldoc.assets.assets import get_font_and_metadata
 from pdf2zh import rosetta_engine
 from pdf2zh.doclayout import OnnxModel
 
-if rosetta_engine.ENGINE_CONTRACT_VERSION != 2:
-    raise SystemExit("::error::pdf2zh.rosetta_engine contract version is not 2")
+expected = json.loads(
+    Path(os.environ["ROSETTA_PDF_ENGINE_CAPABILITIES"]).read_text(encoding="utf-8")
+)
+actual = rosetta_engine.prewarm(
+    {"modelPath": os.environ["ROSETTA_DOCLAYOUT_MODEL"]}
+)
+if actual.get("contractVersion") != expected["engineContractVersion"]:
+    raise SystemExit("::error::unexpected Rosetta PDF engine contract")
+if actual.get("engineRevision", 0) < expected["engineRevision"]:
+    raise SystemExit("::error::Rosetta PDF engine revision is too old")
+missing_capabilities = sorted(
+    set(expected["capabilities"]) - set(actual.get("capabilities", []))
+)
+if missing_capabilities:
+    raise SystemExit(
+        "::error::Rosetta PDF engine is missing capabilities: "
+        + ", ".join(missing_capabilities)
+    )
 if not callable(getattr(rosetta_engine, "resetRun", None)):
     raise SystemExit("::error::Rosetta PDF engine does not support reusable prepared runs")
 if not callable(getattr(rosetta_engine, "load_persistent_layout_cache", None)):
@@ -212,6 +240,7 @@ PACK_SHA256="$("$PYTHON_DIR/bin/python" - \
   "$BIN_DIR/pdf2zh" \
   "$PDF2ZH_PACKAGE_DIR/converter.py" \
   "$PDF2ZH_PACKAGE_DIR/rosetta_engine.py" \
+  "$PACK_ROOT/engine-capabilities.json" \
   "$DOCLAYOUT_MODEL_PATH" \
   "$BABELDOC_CACHE_DIR/fonts/SourceHanSansCN-Regular.ttf" \
   "$BABELDOC_CACHE_DIR/fonts/SourceHanSansCN-Bold.ttf" \
@@ -232,13 +261,32 @@ print(digest.hexdigest())
 PY
 )"
 
-cat > "$PACK_ROOT/manifest.json" <<EOF
-{
-  "profileId": "$PROFILE_ID",
-  "packFilename": "$PACK_FILENAME",
-  "sha256": "$PACK_SHA256",
-  "customPack": true
+"$PYTHON_DIR/bin/python" - \
+  "$PACK_ROOT/engine-capabilities.json" \
+  "$PACK_ROOT/manifest.json" \
+  "$PROFILE_ID" \
+  "$PACK_FILENAME" \
+  "$PACK_SHA256" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+capability_path, manifest_path, profile_id, pack_filename, pack_sha256 = sys.argv[1:]
+capability_manifest = json.loads(Path(capability_path).read_text(encoding="utf-8"))
+installed_manifest = {
+    "schemaVersion": 1,
+    "profileId": profile_id,
+    "packFilename": pack_filename,
+    "sha256": pack_sha256,
+    "customPack": True,
+    "engineCapabilitySchemaVersion": capability_manifest["schemaVersion"],
+    "engineContractVersion": capability_manifest["engineContractVersion"],
+    "engineRevision": capability_manifest["engineRevision"],
+    "capabilities": capability_manifest["capabilities"],
 }
-EOF
+Path(manifest_path).write_text(
+    json.dumps(installed_manifest, indent=2) + "\n", encoding="utf-8"
+)
+PY
 
 echo "[pdf2zh-pack] wrote local custom-pack manifest: $PACK_ROOT/manifest.json" >&2

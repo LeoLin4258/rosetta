@@ -32,6 +32,7 @@ LOCK_COMPILER_SCRIPT="$SCRIPT_DIR/compile-pdf2zh-pack-linux-x64-lock.sh"
 COLOR_PATCH_SCRIPT="$SCRIPT_DIR/patch-pdf2zh-color-preservation.py"
 FONT_STAGER_SCRIPT="$SCRIPT_DIR/stage-pdf2zh-font-assets.py"
 SBOM_SCRIPT="$SCRIPT_DIR/generate-pdf2zh-pack-sbom.py"
+ENGINE_CAPABILITIES_MANIFEST="$SCRIPT_DIR/pdf2zh-engine-capabilities.json"
 ARCHIVE_NAME="rosetta-pdf2zh-linux-x64.tar.gz"
 ARCHIVE_PATH="$DIST_DIR/$ARCHIVE_NAME"
 BUILD_ROOT="$(mktemp -d)"
@@ -39,7 +40,7 @@ trap 'rm -rf "$BUILD_ROOT"' EXIT
 
 for required_file in "$REQUIREMENTS" "$REQUIREMENTS_LOCK" "$INPUTS_MANIFEST" \
   "$LOCK_COMPILER_SCRIPT" "$COLOR_PATCH_SCRIPT" "$FONT_STAGER_SCRIPT" \
-  "$SBOM_SCRIPT"; do
+  "$SBOM_SCRIPT" "$ENGINE_CAPABILITIES_MANIFEST"; do
   if [[ ! -f "$required_file" ]]; then
     echo "::error::missing Linux PDF build input: $required_file" >&2
     exit 2
@@ -72,6 +73,22 @@ values = {
     "BABELDOC_VERSION": inputs["babeldoc"]["version"],
 }
 for name, value in values.items():
+    print(f"{name}={shlex.quote(str(value))}")
+PY
+)"
+
+eval "$(python3 - "$ENGINE_CAPABILITIES_MANIFEST" <<'PY'
+import json
+import shlex
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as file:
+    manifest = json.load(file)
+
+for name, value in {
+    "ENGINE_CONTRACT_VERSION": manifest["engineContractVersion"],
+    "ENGINE_REVISION": manifest["engineRevision"],
+}.items():
     print(f"{name}={shlex.quote(str(value))}")
 PY
 )"
@@ -110,6 +127,7 @@ LOCK_COMPILER_SHA256="$(sha256sum "$LOCK_COMPILER_SCRIPT" | awk '{print $1}')"
 COLOR_PATCH_SHA256="$(sha256sum "$COLOR_PATCH_SCRIPT" | awk '{print $1}')"
 FONT_STAGER_SHA256="$(sha256sum "$FONT_STAGER_SCRIPT" | awk '{print $1}')"
 SBOM_SCRIPT_SHA256="$(sha256sum "$SBOM_SCRIPT" | awk '{print $1}')"
+ENGINE_CAPABILITIES_MANIFEST_SHA256="$(sha256sum "$ENGINE_CAPABILITIES_MANIFEST" | awk '{print $1}')"
 BUILD_RECIPE_ID="$(printf '%s\n' \
   "rosetta_commit=$ROSETTA_COMMIT" \
   "build_script_sha256=$BUILD_SCRIPT_SHA256" \
@@ -120,6 +138,7 @@ BUILD_RECIPE_ID="$(printf '%s\n' \
   "color_patch_sha256=$COLOR_PATCH_SHA256" \
   "font_stager_sha256=$FONT_STAGER_SHA256" \
   "sbom_script_sha256=$SBOM_SCRIPT_SHA256" \
+  "engine_capabilities_manifest_sha256=$ENGINE_CAPABILITIES_MANIFEST_SHA256" \
   | sha256sum | awk '{print $1}')"
 
 if [[ -z "$PDF2ZH_SOURCE_PATH" ]]; then
@@ -167,6 +186,7 @@ echo "[pdf2zh-linux-release] build recipe: $BUILD_RECIPE_ID" >&2
 echo "[pdf2zh-linux-release] build root: $BUILD_ROOT" >&2
 
 mkdir -p "$PACK_DIR" "$BIN_DIR" "$MODELS_DIR" "$LICENSES_DIR"
+cp "$ENGINE_CAPABILITIES_MANIFEST" "$PACK_DIR/engine-capabilities.json"
 
 while IFS=$'\t' read -r LICENSE_FILENAME LICENSE_URL LICENSE_SHA256; do
   LICENSE_CACHE_DIR="$DOWNLOAD_DIR/licenses"
@@ -340,7 +360,9 @@ cat > "$PACK_DIR/build-recipe.json" <<EOF
   "lock_compiler_sha256": "$LOCK_COMPILER_SHA256",
   "color_patch_sha256": "$COLOR_PATCH_SHA256",
   "font_stager_sha256": "$FONT_STAGER_SHA256",
-  "sbom_script_sha256": "$SBOM_SCRIPT_SHA256"
+  "sbom_script_sha256": "$SBOM_SCRIPT_SHA256",
+  "engine_capabilities_manifest_sha256": "$ENGINE_CAPABILITIES_MANIFEST_SHA256",
+  "engine_revision": $ENGINE_REVISION
 }
 EOF
 
@@ -350,7 +372,9 @@ run_pack_smoke() {
   local fonts="$root/assets/babeldoc"
   "$root/bin/pdf2zh" --version >&2
   ROSETTA_DOCLAYOUT_MODEL="$model" ROSETTA_BABELDOC_CACHE_DIR="$fonts" \
+  ROSETTA_PDF_ENGINE_CAPABILITIES="$root/engine-capabilities.json" \
     "$root/python/bin/python" - <<'PY'
+import json
 import os
 import tempfile
 from pathlib import Path
@@ -360,8 +384,24 @@ from babeldoc.assets.assets import get_font_and_metadata
 from pdf2zh import rosetta_engine
 from pdf2zh.doclayout import OnnxModel
 
-if rosetta_engine.ENGINE_CONTRACT_VERSION != 2:
+expected = json.loads(
+    Path(os.environ["ROSETTA_PDF_ENGINE_CAPABILITIES"]).read_text(encoding="utf-8")
+)
+actual = rosetta_engine.prewarm(
+    {"modelPath": os.environ["ROSETTA_DOCLAYOUT_MODEL"]}
+)
+if actual.get("contractVersion") != expected["engineContractVersion"]:
     raise SystemExit("::error::unexpected Rosetta PDF engine contract")
+if actual.get("engineRevision", 0) < expected["engineRevision"]:
+    raise SystemExit("::error::Rosetta PDF engine revision is too old")
+missing_capabilities = sorted(
+    set(expected["capabilities"]) - set(actual.get("capabilities", []))
+)
+if missing_capabilities:
+    raise SystemExit(
+        "::error::Rosetta PDF engine is missing capabilities: "
+        + ", ".join(missing_capabilities)
+    )
 if not callable(getattr(rosetta_engine, "resetRun", None)):
     raise SystemExit("::error::Rosetta PDF engine does not support reusable prepared runs")
 if not callable(getattr(rosetta_engine, "load_persistent_layout_cache", None)):
@@ -650,6 +690,9 @@ cat > "$DIST_DIR/linux-x64-manifest.json" <<EOF
   "color_patch_sha256": "$COLOR_PATCH_SHA256",
   "font_stager_sha256": "$FONT_STAGER_SHA256",
   "sbom_script_sha256": "$SBOM_SCRIPT_SHA256",
+  "engine_contract_version": $ENGINE_CONTRACT_VERSION,
+  "engine_revision": $ENGINE_REVISION,
+  "engine_capabilities_manifest_sha256": "$ENGINE_CAPABILITIES_MANIFEST_SHA256",
   "sbom_sha256": "$SBOM_SHA256",
   "license_inventory_sha256": "$LICENSE_INVENTORY_SHA256",
   "layout_model": "$DOCLAYOUT_MODEL_FILENAME",

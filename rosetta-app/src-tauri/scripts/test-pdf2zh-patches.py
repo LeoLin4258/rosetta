@@ -2252,6 +2252,62 @@ class _RenderTranslator(_EngineTranslator):
         self.assertNotIn("expected = self._match_expected_unit(unit_id, text)", patched)
         self.assertIn("expected.sourceText != text", patched)
 
+    def test_engine_capability_declaration_is_behavior_gated_and_idempotent(self) -> None:
+        module = ast.parse(PATCH_SCRIPT.read_text(encoding="utf-8"))
+        capability_patch = next(
+            node
+            for node in module.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "patch_rosetta_engine_capabilities"
+        )
+        namespace = {"Path": Path, "json": json, "__file__": str(PATCH_SCRIPT)}
+        exec(
+            compile(
+                ast.Module(body=[capability_patch], type_ignores=[]),
+                str(PATCH_SCRIPT),
+                "exec",
+            ),
+            namespace,
+        )
+        fixture = '''ENGINE_CONTRACT_VERSION = 2
+ENGINE_VERSION = "rosetta-pdf-engine-v2"
+_PERSISTENT_LAYOUT_CACHE_SCHEMA = 1
+
+class EngineCapabilities:
+    engineVersion: str
+
+def resetRun(preparedRunId: str) -> None:
+    pass
+
+def prewarm():
+    return EngineCapabilities(
+            engineVersion=ENGINE_VERSION,
+    )
+
+# Rosetta: final page render slots are authoritative.
+fallbackUnitCount = 0
+'''
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "rosetta_engine.py"
+            target.write_text(fixture, encoding="utf-8")
+
+            self.assertTrue(namespace["patch_rosetta_engine_capabilities"](root))
+            declared = target.read_text(encoding="utf-8")
+            self.assertIn("ENGINE_REVISION = 1", declared)
+            self.assertIn("ENGINE_CAPABILITIES = (", declared)
+            self.assertIn("engineRevision: int", declared)
+            self.assertIn("capabilities: list[str]", declared)
+            self.assertFalse(namespace["patch_rosetta_engine_capabilities"](root))
+            self.assertEqual(target.read_text(encoding="utf-8"), declared)
+
+            target.write_text(
+                fixture.replace("fallbackUnitCount = 0\n", ""), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(SystemExit, "partial-page-accounting"):
+                namespace["patch_rosetta_engine_capabilities"](root)
+
     def test_release_pack_builders_apply_pdf_converter_patch(self) -> None:
         builders = [
             SCRIPT_DIR / "build-pdf2zh-pack-linux-x64.sh",
@@ -2264,6 +2320,42 @@ class _RenderTranslator(_EngineTranslator):
             with self.subTest(builder=builder.name):
                 text = builder.read_text()
                 self.assertIn("patch-pdf2zh-color-preservation.py", text)
+
+    def test_engine_capability_manifest_is_canonical_and_used_by_every_builder(self) -> None:
+        manifest = json.loads(
+            (SCRIPT_DIR / "pdf2zh-engine-capabilities.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(manifest["schemaVersion"], 1)
+        self.assertEqual(manifest["engineContractVersion"], 2)
+        self.assertEqual(manifest["engineRevision"], 1)
+        self.assertEqual(
+            manifest["capabilities"],
+            [
+                "authoritative-render-slots",
+                "durable-layout-cache",
+                "partial-page-accounting",
+                "reusable-prepared-run",
+            ],
+        )
+        self.assertEqual(
+            manifest["capabilities"], sorted(set(manifest["capabilities"]))
+        )
+
+        builders = [
+            SCRIPT_DIR / "build-pdf2zh-pack-linux-x64.sh",
+            SCRIPT_DIR / "build-pdf2zh-pack-macos-arm64.sh",
+            SCRIPT_DIR / "build-pdf2zh-pack-windows-amd64.ps1",
+            SCRIPT_DIR / "stage-pdf2zh-pack-local.sh",
+        ]
+        for builder in builders:
+            with self.subTest(builder=builder.name):
+                text = builder.read_text(encoding="utf-8")
+                self.assertIn("pdf2zh-engine-capabilities.json", text)
+                self.assertIn("engine-capabilities.json", text)
+                self.assertIn("ROSETTA_PDF_ENGINE_CAPABILITIES", text)
+                self.assertIn("rosetta_engine.prewarm", text)
 
     def test_macos_pack_builders_pin_tencentcloud_tmt_import_compatible_version(self) -> None:
         builders = [
@@ -2305,6 +2397,7 @@ class _RenderTranslator(_EngineTranslator):
         self.assertIn("--no-build-isolation", builder)
         self.assertIn("verify_sha256", builder)
         self.assertIn('"build_recipe_id"', builder)
+        self.assertIn("engine_capabilities_manifest_sha256", builder)
         self.assertIn("linux-x64-build.log", builder)
         self.assertNotIn("pip install --upgrade", builder)
 

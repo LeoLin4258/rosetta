@@ -115,6 +115,9 @@ pub fn build_static_status(app: &AppHandle) -> Result<StaticStatus, String> {
     } else {
         layout.managed_pack_ready(profile)
     };
+    let compatibility_error = (!using_runtime_overrides && bin_ready && model_ready)
+        .then(|| layout.pack_manifest_compatibility(profile).err())
+        .flatten();
     let state = if ready {
         Pdf2zhState::Installed
     } else {
@@ -124,8 +127,10 @@ pub fn build_static_status(app: &AppHandle) -> Result<StaticStatus, String> {
         ready,
         message: if ready {
             "PDF 版面处理可用。".to_string()
+        } else if let Some(error) = compatibility_error {
+            format!("PDF 版面处理组件需要更新：{error}。请在设置中重新安装 PDF 组件。")
         } else if bin_ready && model_ready {
-            "PDF 版面处理组件需要更新：当前组件版本或内置字体与此版本不匹配。请重新安装 PDF 组件。"
+            "PDF 版面处理组件需要更新：当前组件版本或内置字体与此版本不匹配。请在设置中重新安装 PDF 组件。"
                 .to_string()
         } else if bin_path.is_some() {
             format!(
@@ -225,6 +230,10 @@ mod tests {
   "packFilename": "{}",
   "sha256": "{}",
   "sizeBytes": {},
+  "engineCapabilitySchemaVersion": 1,
+  "engineContractVersion": 2,
+  "engineRevision": 1,
+  "capabilities": ["authoritative-render-slots", "durable-layout-cache", "partial-page-accounting", "reusable-prepared-run"],
   "sourceUrl": "file:///tmp/{}",
   "installedAt": "0"
 }}"#,

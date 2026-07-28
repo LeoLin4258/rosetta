@@ -17,6 +17,7 @@ use tokio::{
 };
 
 use super::{
+    capabilities::{read_pack_engine_capabilities, Pdf2zhEngineCapabilities},
     layout::{Pdf2zhLayout, DOCLAYOUT_MODEL_FILENAME},
     profile::Pdf2zhProfile,
 };
@@ -116,6 +117,10 @@ struct Pdf2zhPackManifest {
     source_url: String,
     installed_at: String,
     custom_pack: bool,
+    engine_capability_schema_version: u32,
+    engine_contract_version: u32,
+    engine_revision: u32,
+    capabilities: Vec<String>,
 }
 
 #[derive(Default)]
@@ -357,7 +362,7 @@ async fn install_inner(
     .await;
     emit_progress(app, registry).await;
 
-    extract_pack(app, &archive_path, layout, profile, cancel).await?;
+    let engine_capabilities = extract_pack(app, &archive_path, layout, profile, cancel).await?;
     scrub_python_bytecode(&layout.pack_dir)?;
     write_manifest(
         layout,
@@ -366,6 +371,7 @@ async fn install_inner(
         expected_size,
         Some(actual_sha),
         has_custom_pack_url(options),
+        &engine_capabilities,
     )?;
 
     set_done(registry, "PDF 版面处理组件已安装。".to_string()).await;
@@ -543,7 +549,7 @@ async fn extract_pack(
     layout: &Pdf2zhLayout,
     profile: &Pdf2zhProfile,
     cancel: &Arc<AtomicBool>,
-) -> Result<(), String> {
+) -> Result<Pdf2zhEngineCapabilities, String> {
     if cancel.load(Ordering::SeqCst) {
         return Err("PDF 版面处理组件安装已取消。".to_string());
     }
@@ -586,6 +592,9 @@ async fn extract_pack(
             "PDF 版面处理组件结构不正确，缺少 models/{DOCLAYOUT_MODEL_FILENAME}"
         ));
     }
+    let engine_capabilities = read_pack_engine_capabilities(&candidate).map_err(|error| {
+        format!("PDF 版面处理组件需要更新：{error}。请安装当前版本的 PDF 组件。")
+    })?;
 
     if layout.pack_dir.exists() {
         if super::worker::stop_worker_for_install(app).await {
@@ -610,7 +619,7 @@ async fn extract_pack(
         }
     }
     let _ = std::fs::remove_dir_all(&staging);
-    Ok(())
+    Ok(engine_capabilities)
 }
 
 async fn remove_pack_dir(pack_dir: &Path) -> Result<(), String> {
@@ -763,6 +772,7 @@ fn write_manifest(
     size_bytes: Option<u64>,
     sha256: Option<String>,
     custom_pack: bool,
+    engine_capabilities: &Pdf2zhEngineCapabilities,
 ) -> Result<(), String> {
     let manifest = Pdf2zhPackManifest {
         schema_version: 1,
@@ -773,6 +783,10 @@ fn write_manifest(
         source_url: source_url.to_string(),
         installed_at: timestamp_ms_string(),
         custom_pack,
+        engine_capability_schema_version: engine_capabilities.schema_version,
+        engine_contract_version: engine_capabilities.engine_contract_version,
+        engine_revision: engine_capabilities.engine_revision,
+        capabilities: engine_capabilities.capabilities.clone(),
     };
     let contents = serde_json::to_string_pretty(&manifest)
         .map_err(|error| format!("无法序列化 pdf2zh manifest: {error}"))?;

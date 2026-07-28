@@ -5,7 +5,7 @@
 - 状态：Active
 - 创建日期：2026-07-27
 - 审计窗口：2026-07-17 至当前 `HEAD`；更早代码只在解释该窗口内的设计来源时取证
-- 当前阶段：CP4，尚未开始实施
+- 当前阶段：CP4，已完成；下一步 CP5
 - 当前生产 PDF 执行路径：`pdf2zh` prepare / unit collection / page render，Rosetta Rust 负责本地翻译、任务状态、页产物、预览与导出
 - 当前验证基线：仓库 `main` 在 `61ff0ab` 的审计快照；后续 agent 必须重新读取当前 `HEAD`，不能把该 commit 当成永久事实
 - 本文是 PDF 稳定化和治理工作的唯一活跃 handoff authority
@@ -384,7 +384,7 @@ CP8、CP9、CP10 不应与 Linux release candidate 的包内容变化混在同�
 
 ## CP4：pack manifest、engine revision 与兼容性能力
 
-- 状态：`not-started`
+- 状态：`completed`
 - 依赖：CP2；可与 CP3 分开实施
 - 建议单次工作量：一个 agent context
 
@@ -402,10 +402,10 @@ CP8、CP9、CP10 不应与 Linux release candidate 的包内容变化混在同�
 
 ### Acceptance
 
-- [ ] 7 月 15 日旧 Linux pack 和新 pack 能被明确区分。
-- [ ] 不满足最低 capability 的 pack fail closed，并给出可操作安装提示。
-- [ ] 新 manifest 保持旧安装记录可解析。
-- [ ] frontend 不成为 component identity authority。
+- [x] 7 月 15 日旧 Linux pack 和新 pack 能被明确区分。
+- [x] 不满足最低 capability 的 pack fail closed，并给出可操作安装提示。
+- [x] 新 manifest 保持旧安装记录可解析。
+- [x] frontend 不成为 component identity authority。
 
 ### 停止条件
 
@@ -694,12 +694,12 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 
 ### 当前状态摘要
 
-- 当前 checkpoint：CP4（`not-started`）
-- last completed：CP3
+- 当前 checkpoint：CP4（`completed`）
+- last completed：CP4
 - blocked：无
 - 已知 CP11 release issue：Linux AppImage 页产物压缩子进程继承错误的 `PYTHONHOME` / `PYTHONPATH`，当前会保留未压缩但可用的原始回填页；CP4 不处理此问题，CP11 full-App release gate 前必须修复并复验
 - last verified HEAD：`c3b5a8b`
-- 下一步唯一动作：将当前 CP3 验收修复作为独立提交封存，随后执行 CP4；不要把 CP4 改动混入当前 worktree
+- 下一步唯一动作：执行 CP5，为下载、解压、磁盘空间与取消建立安全边界；不要在 CP5 修改 renderer 或 capability 集合
 
 ### 记录模板
 
@@ -722,6 +722,53 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 - 下一步唯一动作：
   - ...
 ```
+
+#### 2026-07-28 / CP4 / Codex
+
+- 状态：started
+- HEAD：`6b4ddb5`
+- worktree baseline：clean
+- 修改文件：`docs/engineering/plans/2026-07-27-pdf-stabilization-governance.md`
+- 执行命令与结果：
+  - `git status --short` -> pass；开始前 worktree clean
+  - `git rev-parse --short HEAD` -> `6b4ddb5`
+  - `rg` worker handshake / installed manifest / profile readiness / pack smoke -> pass；入口仍位于 `managed_pdf2zh/worker.rs`、`install.rs`、`profile.rs` 与 pack build scripts
+- 产物：
+  - pending
+- 已确认事实：
+  - CP2、CP3 已完成，CP4 依赖满足
+  - CP4 不改变 renderer heuristic、translation-unit authority、持久化页状态或 workbench UI
+- 未解决问题或 blocker：
+  - none
+- 下一步唯一动作：
+  - 定义并接通 Rust authority 的最低能力集合，使旧 pack fail closed 且保留可升级安装记录
+
+#### 2026-07-28 / CP4 / Codex
+
+- 状态：completed
+- HEAD：`6b4ddb5`
+- worktree baseline：clean；本条记录覆盖当前 CP4 未提交 diff
+- 修改文件：`docs/engineering/plans/2026-07-27-pdf-stabilization-governance.md`, `rosetta-app/src-tauri/scripts/pdf2zh-engine-capabilities.json`, `patch-pdf2zh-color-preservation.py`, `test-pdf2zh-patches.py`, 四个 pack build/staging scripts，`managed_pdf2zh/capabilities.rs`, `install.rs`, `layout.rs`, `mod.rs`, `status.rs`, `worker.rs`
+- 执行命令与结果：
+  - `pnpm typecheck` -> pass
+  - `cargo check` -> pass
+  - `cargo test rosetta_jobs` -> pass；134 passed
+  - `cargo test managed_pdf2zh` -> pass；44 passed
+  - `python scripts/test-pdf2zh-patches.py -q` -> pass；41 passed
+  - `cargo fmt -- --check`、PowerShell parser、Git Bash `bash -n` 三个 shell builder、`git diff --check` -> pass
+- 产物：
+  - capability authority：`rosetta-app/src-tauri/scripts/pdf2zh-engine-capabilities.json`；schema 1、contract 2、revision 1；SHA-256 `a73f3f2ec19784609e24df39e81316790683273ab028dcc746db6917d4dc2922`
+  - required capabilities：`authoritative-render-slots`, `durable-layout-cache`, `partial-page-accounting`, `reusable-prepared-run`
+  - 未运行 release pack production build；CP4 通过 builder smoke wiring、patch suite 与 Rust compatibility tests 验证，不产生新 archive
+- 已确认事实：
+  - worker handshake、pack root capability manifest、installed manifest 与 profile readiness 都由同一 version-controlled JSON 派生；contract 精确匹配、revision 允许向前、capability 使用 required-subset 规则
+  - 新 pack 在替换当前 pack 前验证能力清单；缺字段的旧安装记录仍可反序列化，但 readiness fail closed，并提示用户从设置重新安装
+  - installed manifest schema 与 engine capability schema 使用独立字段，frontend 只接收 native readiness/status，不拥有 component identity
+  - 本 checkpoint 未修改 renderer heuristic、translation-unit authority、RWKV request plan、页状态 schema 或 workbench UI
+- 未解决问题或 blocker：
+  - none；Linux AppImage artifact compression 环境污染仍为既有 CP11 release issue
+- 下一步唯一动作：
+  - 执行 CP5，为 download/extraction byte quota、磁盘空间、path/link 安全与 cancellation 建立门禁
 
 #### 2026-07-27 / CP0 / Codex
 
