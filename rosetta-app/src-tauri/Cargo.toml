@@ -27,6 +27,8 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "multipart"] }
 futures-util = { version = "0.3", default-features = false }
 flate2 = "1"
+tar = "0.4"
+fs2 = "0.4"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 tokio = { version = "1", features = ["sync", "time", "process", "io-util", "net"] }

@@ -284,6 +284,11 @@ print(f"pdf-pack-imports-ok pdf2zh={pdf2zh.__version__} contract={rosetta_engine
     $Size = (Get-Item -LiteralPath $ArchivePath).Length
     $Sha = (Get-FileHash -LiteralPath $ArchivePath -Algorithm SHA256).Hash.ToLowerInvariant()
     $ModelSha = (Get-FileHash -LiteralPath $ModelPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $PackFiles = @(Get-ChildItem -LiteralPath $PackDir -Recurse -File -Force)
+    $UnpackedSize = [long](($PackFiles | Measure-Object -Property Length -Sum).Sum)
+    $FileCount = [long]$PackFiles.Count
+    $SymlinkCount = [long]@(Get-ChildItem -LiteralPath $PackDir -Recurse -Force -Attributes ReparsePoint).Count
+    $MaxSingleFileBytes = [long](($PackFiles | Measure-Object -Property Length -Maximum).Maximum)
     [ordered]@{
         profileId = "windows-amd64-pdf2zh"
         packFilename = $ArchiveName
@@ -297,6 +302,10 @@ print(f"pdf-pack-imports-ok pdf2zh={pdf2zh.__version__} contract={rosetta_engine
         layoutModel = $ModelName
         layoutModelSha256 = $ModelSha
         sizeBytes = $Size
+        unpackedSizeBytes = $UnpackedSize
+        fileCount = $FileCount
+        symlinkCount = $SymlinkCount
+        maxSingleFileBytes = $MaxSingleFileBytes
         sha256 = $Sha
         builtAt = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
     } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $DistDir "windows-amd64-manifest.json") -Encoding utf8

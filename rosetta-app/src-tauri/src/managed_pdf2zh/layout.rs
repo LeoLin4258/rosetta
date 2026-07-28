@@ -15,10 +15,13 @@ const REQUIRED_BABELDOC_FONTS: [&str; 3] = [
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 struct Pdf2zhPackManifest {
+    schema_version: u32,
     profile_id: String,
     pack_filename: String,
     sha256: Option<String>,
     size_bytes: Option<u64>,
+    unpacked_size_bytes: Option<u64>,
+    file_count: Option<u64>,
     engine_capability_schema_version: Option<u32>,
     engine_contract_version: Option<u32>,
     engine_revision: Option<u32>,
@@ -120,6 +123,24 @@ impl Pdf2zhLayout {
             if let Some(expected) = profile.pack_size_bytes {
                 if manifest.size_bytes != Some(expected) {
                     return Err("组件大小与当前 profile 不匹配".to_string());
+                }
+            }
+        }
+        if manifest.schema_version >= 2 {
+            let unpacked_size_bytes = manifest
+                .unpacked_size_bytes
+                .ok_or_else(|| "组件安装记录缺少解压体积".to_string())?;
+            let file_count = manifest
+                .file_count
+                .ok_or_else(|| "组件安装记录缺少文件数".to_string())?;
+            if let Some(expected) = profile.pack_unpacked_size_bytes {
+                if unpacked_size_bytes != expected {
+                    return Err("组件解压体积与当前 profile 不匹配".to_string());
+                }
+            }
+            if let Some(expected) = profile.pack_file_count {
+                if file_count != expected {
+                    return Err("组件文件数与当前 profile 不匹配".to_string());
                 }
             }
         }
@@ -261,7 +282,7 @@ mod tests {
         std::fs::write(
             &layout.manifest_file,
             r#"{
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "profileId": "windows-amd64-pdf2zh",
   "packFilename": "rosetta-pdf2zh-windows-amd64.zip",
   "sha256": "old-pack",
@@ -295,6 +316,30 @@ mod tests {
             "a local pack without the required engine capabilities must fail closed"
         );
 
+        std::fs::write(
+            &layout.manifest_file,
+            format!(
+                r#"{{
+  "schemaVersion": 1,
+  "profileId": "windows-amd64-pdf2zh",
+  "packFilename": "rosetta-pdf2zh-windows-amd64.zip",
+  "sha256": "{}",
+  "sizeBytes": {},
+  "engineCapabilitySchemaVersion": 1,
+  "engineContractVersion": 2,
+  "engineRevision": 1,
+  "capabilities": ["authoritative-render-slots", "durable-layout-cache", "partial-page-accounting", "reusable-prepared-run"]
+}}"#,
+                WINDOWS_AMD64_PDF2ZH.pack_sha256.unwrap_or_default(),
+                WINDOWS_AMD64_PDF2ZH.pack_size_bytes.unwrap_or_default()
+            ),
+        )
+        .expect("write compatible schema 1 manifest");
+        assert!(
+            layout.managed_pack_ready(&WINDOWS_AMD64_PDF2ZH),
+            "schema 1 manifests remain compatible when release identity and capabilities match"
+        );
+
         write_matching_manifest(&layout, &WINDOWS_AMD64_PDF2ZH);
         assert!(layout.managed_pack_ready(&WINDOWS_AMD64_PDF2ZH));
         let _ = std::fs::remove_dir_all(temp);
@@ -311,6 +356,8 @@ mod tests {
   "packFilename": "{}",
   "sha256": "{}",
   "sizeBytes": {},
+  "unpackedSizeBytes": {},
+  "fileCount": {},
   "engineCapabilitySchemaVersion": 1,
   "engineContractVersion": 2,
   "engineRevision": 1,
@@ -322,6 +369,8 @@ mod tests {
             profile.pack_filename,
             profile.pack_sha256.unwrap_or_default(),
             profile.pack_size_bytes.unwrap_or_default(),
+            profile.pack_unpacked_size_bytes.unwrap_or(1),
+            profile.pack_file_count.unwrap_or(1),
             profile.pack_filename
         );
         std::fs::write(&layout.manifest_file, contents).expect("write manifest");

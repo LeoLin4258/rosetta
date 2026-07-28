@@ -5,7 +5,7 @@
 - 状态：Active
 - 创建日期：2026-07-27
 - 审计窗口：2026-07-17 至当前 `HEAD`；更早代码只在解释该窗口内的设计来源时取证
-- 当前阶段：CP4，已完成；下一步 CP5
+- 当前阶段：CP5，已完成；下一步 CP6
 - 当前生产 PDF 执行路径：`pdf2zh` prepare / unit collection / page render，Rosetta Rust 负责本地翻译、任务状态、页产物、预览与导出
 - 当前验证基线：仓库 `main` 在 `61ff0ab` 的审计快照；后续 agent 必须重新读取当前 `HEAD`，不能把该 commit 当成永久事实
 - 本文是 PDF 稳定化和治理工作的唯一活跃 handoff authority
@@ -415,7 +415,7 @@ CP8、CP9、CP10 不应与 Linux release candidate 的包内容变化混在同�
 
 ## CP5：下载、解压和磁盘安全边界
 
-- 状态：`not-started`
+- 状态：`completed`
 - 依赖：CP1、CP2
 - 建议单次工作量：一个 agent context
 
@@ -440,11 +440,11 @@ CP8、CP9、CP10 不应与 Linux release candidate 的包内容变化混在同�
 
 ### Acceptance
 
-- [ ] oversized download 在超过限制时立即停止并删除 partial。
-- [ ] oversized/file-count/path-escape archive 被拒绝。
-- [ ] extraction cancel 有自动化测试。
-- [ ] 失败不会先删除旧 pack。
-- [ ] fresh install 和 upgrade install 通过。
+- [x] oversized download 在超过限制时立即停止并删除 partial。
+- [x] oversized/file-count/path-escape archive 被拒绝。
+- [x] extraction cancel 有自动化测试。
+- [x] 失败不会先删除旧 pack。
+- [x] fresh install 和 upgrade install 通过。
 
 ### 停止条件
 
@@ -694,12 +694,12 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 
 ### 当前状态摘要
 
-- 当前 checkpoint：CP4（`completed`）
-- last completed：CP4
+- 当前 checkpoint：CP5（`completed`）
+- last completed：CP5
 - blocked：无
-- 已知 CP11 release issue：Linux AppImage 页产物压缩子进程继承错误的 `PYTHONHOME` / `PYTHONPATH`，当前会保留未压缩但可用的原始回填页；CP4 不处理此问题，CP11 full-App release gate 前必须修复并复验
-- last verified HEAD：`c3b5a8b`
-- 下一步唯一动作：执行 CP5，为下载、解压、磁盘空间与取消建立安全边界；不要在 CP5 修改 renderer 或 capability 集合
+- 已知 CP11 release issue：Linux AppImage 页产物压缩子进程继承错误的 `PYTHONHOME` / `PYTHONPATH`，当前会保留未压缩但可用的原始回填页；CP5 不处理此问题，CP11 full-App release gate 前必须修复并复验
+- last verified HEAD：`c3fc561`
+- 下一步唯一动作：执行 CP6，建立 Linux CI 与跨平台编译门禁；不要在 CP6 触发 pack 发布或修改 profile
 
 ### 记录模板
 
@@ -769,6 +769,56 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
   - none；Linux AppImage artifact compression 环境污染仍为既有 CP11 release issue
 - 下一步唯一动作：
   - 执行 CP5，为 download/extraction byte quota、磁盘空间、path/link 安全与 cancellation 建立门禁
+
+#### 2026-07-28 / CP5 / Codex
+
+- 状态：started
+- HEAD：`c3fc561`
+- worktree baseline：clean
+- 修改文件：`docs/engineering/plans/2026-07-27-pdf-stabilization-governance.md`
+- 执行命令与结果：
+  - `git status --short` -> pass；开始前 worktree clean
+  - `git rev-parse --short HEAD` -> `c3fc561`
+  - `rg` download / extraction / manifest / profile readiness -> pass；安装入口仍位于 `managed_pdf2zh/install.rs`
+- 产物：
+  - pending
+- 已确认事实：
+  - CP1、CP2 已完成，CP5 依赖满足
+  - Linux 当前调用平台 `tar`，运行期间不可取消且没有 unpacked/file/single-file quota
+  - 当前升级在新 candidate 验证后直接删除旧 pack，替换失败无法保证旧 pack 保持可用
+- 未解决问题或 blocker：
+  - none
+- 下一步唯一动作：
+  - 实现受限下载、Rust archive reader、磁盘预检和事务式 pack 替换，并加入异常 archive 与取消测试
+
+#### 2026-07-28 / CP5 completion / Codex
+
+- 状态：completed
+- HEAD：`c3fc561`
+- worktree baseline：clean；本 checkpoint 的实现与治理文档改动尚未提交
+- 修改文件：`docs/engineering/plans/2026-07-27-pdf-stabilization-governance.md`、`docs/engineering/change-log/2026-07-27-pdf-linux-pack-reproducibility.md`、`rosetta-app/src-tauri/Cargo.toml`、`rosetta-app/src-tauri/Cargo.lock`、`rosetta-app/src-tauri/src/managed_pdf2zh/{install,layout,profile}.rs`、Linux/macOS/Windows pack builders、local staging script
+- 执行命令与结果：
+  - `cargo test managed_pdf2zh --lib` -> pass；54 passed，覆盖 oversized download/partial cleanup、ZIP traversal 与 quotas、tar.gz 正常解压与 symlink escape、解压中取消、staging cleanup、fresh/upgrade install、pack 与 manifest rollback
+  - `pnpm typecheck` -> pass
+  - `cargo check` -> pass
+  - `cargo test rosetta_jobs` -> pass；134 passed，0 failed
+  - `python src-tauri/scripts/test-pdf2zh-patches.py -q` -> pass；41 passed
+  - `cargo fmt -- --check`、`git diff --check` -> pass
+  - Windows pack builder PowerShell AST parse -> pass
+  - `bash -n` -> unavailable；本机 `bash.exe` 解析到 WindowsApps WSL launcher，两次调用均超时，未继续重试
+- 产物：
+  - 安装器 650 MiB archive 绝对上限、expected size + 64 KiB streaming tolerance、exact final size/SHA-256 门禁
+  - archive/unpacked/old-pack/safety-margin 磁盘预检，以及 ZIP/tar.gz path/link/byte/count/single-file 门禁
+  - 可取消 Rust tar.gz reader、`.part`/staging RAII cleanup、pack 与 installed manifest 事务式升级/回滚
+  - installed manifest schema 2 capacity evidence；schema 1 readiness 保持兼容；future release/local staging manifests 输出同类指标
+- 已确认事实：
+  - Linux 已知 release baseline 为 1,353,005,365 unpacked bytes、21,573 regular files；hard limits 为 1,555,956,170 bytes、24,809 files、256 MiB single file
+  - fresh install 与 upgrade acceptance 由 synthetic automated install transaction tests 覆盖；没有运行 production pack build 或 runtime UI verification
+  - renderer、translation-unit authority、RWKV request plan、capability 集合和用户流程均未改变
+- 未解决问题或 blocker：
+  - CP5 无 blocker；shell builders 已人工审计，但受本机 WSL launcher 限制未取得 `bash -n` 结果
+- 下一步唯一动作：
+  - 执行 CP6，建立 Linux CI 与跨平台编译门禁；pack workflow 默认不得发布或修改 profile
 
 #### 2026-07-27 / CP0 / Codex
 

@@ -656,6 +656,10 @@ echo "[pdf2zh-linux-release] archiving $ARCHIVE_PATH" >&2
 tar -czf "$ARCHIVE_PATH" -C "$BUILD_ROOT" linux-x64
 SIZE_BYTES="$(stat -c '%s' "$ARCHIVE_PATH")"
 SHA256="$(sha256sum "$ARCHIVE_PATH" | awk '{print $1}')"
+UNPACKED_SIZE_BYTES="$(find "$PACK_DIR" -type f -printf '%s\n' | awk '{ total += $1 } END { printf "%.0f", total }')"
+FILE_COUNT="$(find "$PACK_DIR" -type f | wc -l | tr -d ' ')"
+SYMLINK_COUNT="$(find "$PACK_DIR" -type l | wc -l | tr -d ' ')"
+MAX_SINGLE_FILE_BYTES="$(find "$PACK_DIR" -type f -printf '%s\n' | sort -nr | head -1)"
 REQUIREMENTS_SHA256="$(sha256sum "$REQUIREMENTS" | awk '{print $1}')"
 MODEL_SHA256="$(sha256sum "$DOCLAYOUT_MODEL_PATH" | awk '{print $1}')"
 FREEZE_SHA256="$(sha256sum "$PACK_DIR/requirements.freeze.txt" | awk '{print $1}')"
@@ -699,6 +703,10 @@ cat > "$DIST_DIR/linux-x64-manifest.json" <<EOF
   "layout_model_sha256": "$MODEL_SHA256",
   "sha256": "$SHA256",
   "size_bytes": $SIZE_BYTES,
+  "unpacked_size_bytes": $UNPACKED_SIZE_BYTES,
+  "file_count": $FILE_COUNT,
+  "symlink_count": $SYMLINK_COUNT,
+  "max_single_file_bytes": $MAX_SINGLE_FILE_BYTES,
   "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 EOF

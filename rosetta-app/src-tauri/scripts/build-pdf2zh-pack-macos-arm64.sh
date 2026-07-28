@@ -282,6 +282,10 @@ tar -czf "$ARCHIVE_PATH" -C "$BUILD_ROOT" "macos-arm64"
 
 SIZE_BYTES="$(stat -f '%z' "$ARCHIVE_PATH")"
 SHA256="$(shasum -a 256 "$ARCHIVE_PATH" | awk '{print $1}')"
+UNPACKED_SIZE_BYTES="$(find "$PACK_DIR" -type f -exec stat -f '%z' {} + | awk '{ total += $1 } END { printf "%.0f", total }')"
+FILE_COUNT="$(find "$PACK_DIR" -type f | wc -l | tr -d ' ')"
+SYMLINK_COUNT="$(find "$PACK_DIR" -type l | wc -l | tr -d ' ')"
+MAX_SINGLE_FILE_BYTES="$(find "$PACK_DIR" -type f -exec stat -f '%z' {} + | sort -nr | head -1)"
 
 echo "$SHA256  $ARCHIVE_NAME" > "$ARCHIVE_PATH.sha256"
 
@@ -298,6 +302,10 @@ cat > "$DIST_DIR/manifest.json" <<EOF
   "layout_model": "$DOCLAYOUT_MODEL_FILENAME",
   "sha256": "$SHA256",
   "size_bytes": $SIZE_BYTES,
+  "unpacked_size_bytes": $UNPACKED_SIZE_BYTES,
+  "file_count": $FILE_COUNT,
+  "symlink_count": $SYMLINK_COUNT,
+  "max_single_file_bytes": $MAX_SINGLE_FILE_BYTES,
   "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 EOF

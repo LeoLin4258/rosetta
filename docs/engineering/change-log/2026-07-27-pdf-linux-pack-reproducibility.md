@@ -102,3 +102,28 @@ Rust and Python now use the same explicit truthy values (`1`, `true`, `yes`,
 and `on`) for `ROSETTA_PDF_DIAGNOSTICS`. Values such as `0`, `false`, and `off`
 do not enable request diagnostics. Focused tests enforce both the flag behavior
 and the absence of raw request/options serialization in the embedded worker.
+
+## Installer Safety Boundaries
+
+- PDF pack downloads now have a 650 MiB absolute ceiling. A pinned-size download
+  is stopped before writing the chunk that would exceed the expected size plus
+  a 64 KiB protocol tolerance; the final artifact must still match the exact
+  pinned size and SHA-256.
+- Installation preflight checks free space for the archive, extraction staging,
+  the new pack, and a 256 MiB safety margin while retaining the current pack.
+  The candidate and final pack share one filesystem and are renamed rather than
+  copied, so they do not require two simultaneous unpacked copies.
+- ZIP and tar.gz extraction now use bounded Rust readers. They reject traversal,
+  duplicate paths, escaping links, paths that traverse archive symlinks,
+  excessive unpacked bytes, file/symlink counts, and oversized single files.
+  The tar reader checks cancellation on every underlying read instead of only
+  before starting the platform `tar` process.
+- Upgrades rename the current pack to a sibling backup, activate and finalize
+  the candidate, and delete the backup only after bytecode cleanup and an
+  atomic installed-manifest replacement succeed. Failure or cancellation
+  restores both the previous pack and manifest; fresh-install failure removes
+  the incomplete candidate and manifest.
+- Installed pack manifest schema 2 records `unpackedSizeBytes`, `fileCount`,
+  `symlinkCount`, and `maxSingleFileBytes`. Schema 1 remains readable and keeps
+  its existing identity/capability compatibility behavior. Future release
+  sidecars and local staging manifests emit the same capacity evidence.

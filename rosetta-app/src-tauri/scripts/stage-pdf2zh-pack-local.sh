@@ -268,16 +268,36 @@ PY
   "$PACK_FILENAME" \
   "$PACK_SHA256" <<'PY'
 import json
+import os
+import stat
 import sys
 from pathlib import Path
 
 capability_path, manifest_path, profile_id, pack_filename, pack_sha256 = sys.argv[1:]
 capability_manifest = json.loads(Path(capability_path).read_text(encoding="utf-8"))
+pack_root = Path(manifest_path).parent
+file_sizes = []
+symlink_count = 0
+for current_root, directories, filenames in os.walk(pack_root, followlinks=False):
+    current = Path(current_root)
+    for name in [*directories, *filenames]:
+        path = current / name
+        if path == Path(manifest_path):
+            continue
+        metadata = path.lstat()
+        if stat.S_ISLNK(metadata.st_mode):
+            symlink_count += 1
+        elif stat.S_ISREG(metadata.st_mode):
+            file_sizes.append(metadata.st_size)
 installed_manifest = {
-    "schemaVersion": 1,
+    "schemaVersion": 2,
     "profileId": profile_id,
     "packFilename": pack_filename,
     "sha256": pack_sha256,
+    "unpackedSizeBytes": sum(file_sizes),
+    "fileCount": len(file_sizes),
+    "symlinkCount": symlink_count,
+    "maxSingleFileBytes": max(file_sizes, default=0),
     "customPack": True,
     "engineCapabilitySchemaVersion": capability_manifest["schemaVersion"],
     "engineContractVersion": capability_manifest["engineContractVersion"],
