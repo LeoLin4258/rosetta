@@ -697,8 +697,9 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 - 当前 checkpoint：CP4（`not-started`）
 - last completed：CP3
 - blocked：无
-- last verified HEAD：`62de5bc`
-- 下一步唯一动作：执行 CP4，设计向后兼容的 engine revision/capabilities 与 fail-closed readiness
+- 已知 CP11 release issue：Linux AppImage 页产物压缩子进程继承错误的 `PYTHONHOME` / `PYTHONPATH`，当前会保留未压缩但可用的原始回填页；CP4 不处理此问题，CP11 full-App release gate 前必须修复并复验
+- last verified HEAD：`c3b5a8b`
+- 下一步唯一动作：将当前 CP3 验收修复作为独立提交封存，随后执行 CP4；不要把 CP4 改动混入当前 worktree
 
 ### 记录模板
 
@@ -1005,6 +1006,49 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
   - none
 - 下一步唯一动作：
   - 执行 CP4，设计向后兼容的 engine revision/capabilities 与 fail-closed readiness
+
+#### 2026-07-27 / CP3 user acceptance staging / Codex
+
+- 状态：completed
+- Linux App：`/home/rwkv/Applications/Rosetta-0.1.0-beta.22.AppImage`
+- live pack：`/home/rwkv/.local/share/com.rosetta.desktop/pdf2zh-sidecar/pack/linux-x64`；custom manifest 绑定 CP3 archive SHA-256 `6cd0d56e57b9e2c3fa601789c02486d550b46d1d18e53b0a5b7641fa99215bfa`
+- rollback pack：`/home/rwkv/.local/share/com.rosetta.desktop/pdf2zh-sidecar/pack/linux-x64.before-cp3-20260727`；原 1.8 GB candidate 未删除
+- installed-path validation：10-page fixture prepare 4,492.9 ms、94 units、41,035 source chars、unit SHA-256 `81d6185ffc72f263bbc03a6ab1872e4e8615728ad47ecd359b1b2b1d2f3cecb5`、10/10 identity render、139,293,175 artifact bytes
+- validation artifact：`/home/rwkv/cp3-installed-validation/quality.json`；SHA-256 `cc0406e7034824d7622210379e8f06d336459a1262ec9dc925e5d4c3a8e7e50f`
+- 下一步：用户从现有 AppImage 人工验收 fresh-job 预解析速度与真实中文回填质量；不要删除 rollback pack，直到用户确认
+
+#### 2026-07-28 / CP3 Linux preparse acceptance repair / Codex
+
+- 状态：completed
+- 根因：Linux CP3 pack 的 `onnxruntime 1.27.0` 使用自动 Provider 列表 `AzureExecutionProvider + CPUExecutionProvider`，且 `intra_op_num_threads=0` 在 16C/32T EPYC 上产生 32 个 runnable worker；失败样本在 13 秒 wall time 内累计 331.875 CPU-seconds，而同一 cgroup 的 Tauri/WebKit/RWKV 仅累计 2.604 CPU-seconds，确认性能悬崖位于 Linux ORT CPU thread pool，不是 PDF I/O、预览、缓存或 UI 调度
+- 修复：Linux worker 启动时将纯 CPU layout session 收敛为 `CPUExecutionProvider`，按当前 affinity 的物理核拓扑显式设置 16 intra-op threads；Windows/macOS GPU provider 路径保持不变；移除无效的每次 cache miss 640px synthetic wakeup
+- App：`/home/rwkv/Applications/Rosetta-0.1.0-beta.23-c3b5a8b-ort16.AppImage`；SHA-256 `d86d2163e3b0d917ac80b57b298b1f505ae21a3fc762e965ae6b6131ceb64c08`
+- 真实 UI fresh-job：3,847 ms（layout 1,899 ms）和 3,801 ms（layout 1,869 ms），均为 cache miss；此前真实 UI 失败样本为 10,961–12,973 ms（layout 8,058–10,117 ms）
+- 质量门禁：94 units、41,035 source chars、canonical unit SHA-256 `81d6185ffc72f263bbc03a6ab1872e4e8615728ad47ecd359b1b2b1d2f3cecb5`，与 CP0/CP3 frozen baseline 完全一致
+- 下一步：用户在 `ort16` AppImage 上人工验收冷启动后的预解析体感和真实中文回填；继续保留 prewarm AppImage 与 rollback pack，直到用户确认
+
+#### 2026-07-28 / CP3 Linux user acceptance / Codex
+
+- 状态：completed
+- HEAD：`c3b5a8b`
+- 用户决定：接受最新真实 UI 10-page fresh-job 预解析 6,280 ms 为“足够接近 5 秒”，CP3 不再以严格 `<5s` 阻塞，也不继续为追逐该数字修改 renderer、unit collection 或 RWKV policy
+- 最新任务：`job-1785216764420-2604-17278v1`；preparse cache miss 6,280 ms，其中 layout 4,172 ms、unit collection 1,693 ms，94 units
+- 翻译结果：10/10 pages completed、0 failed、0 fallback units、0 empty output、0 truncated output；总计 5,454 ms，其中 RWKV 3,766 ms、render 1,662 ms；用户认为实际中文回填可接受
+- PDF 视觉复验：10/10 translated page artifacts 均为可渲染的单页 Letter PDF，图、表、公式和主体双栏结构保留；已记录第 1 页竖排 arXiv 标识/专名、第 8 页跨栏断词 `vi-`、第 9–10 页参考文献专名与跨栏衔接等现有质量缺口，本轮不以修改 renderer heuristic 处理
+- 未解决 release issue：artifact compression 0/10 completed；AppImage 注入的 `PYTHONHOME` / `PYTHONPATH` 污染 pack Python，导致 `ModuleNotFoundError: No module named 'encodings'`。原始回填页被安全保留且本次视觉验收不受影响，但 CP11 full-App release gate 前必须修复并复验压缩体积与文本保留
+- 范围审计：没有违反本文冻结边界；未改变 renderer、translation-unit authority、RWKV request plan、持久化 schema 或用户流程。Linux ORT Provider/thread policy 修复超出 CP3 dependency-diet 原始任务清单，但属于用户明确要求的 CP3 Linux 验收修复，且 canonical unit/output authority 未变化，已在上一 ledger 条目单独记录
+- 下一步唯一动作：执行 CP4，设计向后兼容的 engine revision/capabilities 与 fail-closed readiness；不要在 CP4 顺手修改 renderer 或 artifact compression
+
+#### 2026-07-28 / CP3 verification and diagnostic hardening / Codex
+
+- 状态：completed
+- HEAD：`c3b5a8b`；复核对象为当前未提交 CP3 Linux 验收修复 worktree
+- 复核结果：CP3 archive `475,184,227` bytes、unpacked `1,262,340,076` bytes、11,103 regular files、1,044 symlinks、max file `218,461,128` bytes；archive SHA-256 `6cd0d56e57b9e2c3fa601789c02486d550b46d1d18e53b0a5b7641fa99215bfa` 与远端 immutable artifact 一致
+- 质量证据：远端 CP0 quality 仍为 10 pages、94 units、41,035 source chars、unit SHA-256 `81d6185ffc72f263bbc03a6ab1872e4e8615728ad47ecd359b1b2b1d2f3cecb5`、139,293,175 artifact bytes；inventory、SBOM、license inventory、quality、build log 和 installed validation hashes 均与 CP3 ledger 一致
+- 隐私收尾：`ROSETTA_PDF_DIAGNOSTICS` 只接受 `1/true/yes/on`；Rust 不再输出原始 worker JSON，Python prepare diagnostics 不再包含 source/output/scratch/cache path、source fingerprint、raw request 或 normalized options
+- 本地验证：`pnpm typecheck` pass；`python src-tauri/scripts/test-pdf2zh-patches.py -q` 39 passed；`cargo check` pass；`cargo test rosetta_jobs` 134 passed；`cargo test managed_pdf2zh::worker` 8 passed；`cargo fmt -- --check` pass；Python worker `py_compile` pass；`git diff --check` pass
+- 未解决 release issue：AppImage artifact compression 的 `PYTHONHOME` / `PYTHONPATH` 污染仍归 CP11 full-App release gate，不阻塞 CP4
+- 下一步唯一动作：将当前 CP3 验收修复作为独立提交封存，随后执行 CP4；不要把 CP4 改动混入当前 worktree
 
 ## 新 agent 接手提示词
 

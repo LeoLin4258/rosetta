@@ -67,3 +67,38 @@ source characters, unit SHA-256
 `81d6185ffc72f263bbc03a6ab1872e4e8615728ad47ecd359b1b2b1d2f3cecb5`,
 and 139,293,175 identity-render artifact bytes. The final SBOM covers 105
 installed distributions and the license inventory retains 196 license files.
+
+## Linux Preparse Runtime Stabilization
+
+User acceptance exposed a Linux-only ONNX Runtime CPU scheduling cliff. The
+slow ten-page UI samples spent 8.1–10.1 seconds in layout inference while the
+worker accumulated 331.9 CPU-seconds and exposed 32 runnable threads; the rest
+of the application cgroup accumulated only 2.6 CPU-seconds during the same
+sample. Pack I/O, persistent layout caching, preview rasterization, memory
+pressure, CPU frequency, and RWKV contention were excluded on the same host.
+
+The managed Linux worker now replaces the automatic Azure-plus-CPU layout
+session with a CPU-only session and sets ONNX Runtime intra-op concurrency to
+the physical cores visible in the worker's CPU affinity. GPU-backed provider
+paths on Windows and macOS are unchanged. The redundant per-cache-miss
+synthetic layout wakeup was removed.
+
+On the 16-core/32-thread Linux acceptance host, explicit 16-core inference
+reduced standalone ten-page prepare from 4.28 seconds to 3.54–3.62 seconds.
+Two fresh jobs imported through the production UI completed in 3.847 and
+3.801 seconds. Both retained 94 units, 41,035 source characters, and canonical
+unit SHA-256
+`81d6185ffc72f263bbc03a6ab1872e4e8615728ad47ecd359b1b2b1d2f3cecb5`.
+
+## Diagnostic Privacy Hardening
+
+The opt-in Linux preparse diagnostics now emit only bounded operational fields:
+job-local request ID, page count, language direction, thread/layout settings,
+CPU affinity, process ID, and timing counters. They no longer serialize the
+worker request or normalized options, which contained source, output, scratch,
+and persistent-cache paths plus the source fingerprint.
+
+Rust and Python now use the same explicit truthy values (`1`, `true`, `yes`,
+and `on`) for `ROSETTA_PDF_DIAGNOSTICS`. Values such as `0`, `false`, and `off`
+do not enable request diagnostics. Focused tests enforce both the flag behavior
+and the absence of raw request/options serialization in the embedded worker.

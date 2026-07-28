@@ -46,10 +46,7 @@ import type {
 } from "@/types/rosetta";
 import { DocumentPreview } from "@/features/preview/DocumentPreview";
 import { useManagedPdf2zhRuntime } from "@/lib/useManagedPdf2zhRuntime";
-import {
-  prewarmPdf2zhWorker,
-  type Pdf2zhInstallProgress,
-} from "@/lib/pdf2zhRuntime";
+import { type Pdf2zhInstallProgress } from "@/lib/pdf2zhRuntime";
 import {
   defaultPdfSelectedPages,
   nextPdfSelectedPages,
@@ -128,6 +125,7 @@ export function WorkspacePage() {
 
   const cancelRef = useRef<(() => void) | null>(null);
   const pdfPreparseIdentityRef = useRef<string | null>(null);
+  const pdfPreparseJobIdRef = useRef<string | null>(null);
   const pdf2zhRuntime = useManagedPdf2zhRuntime();
 
   // Per-job language selections, with fallback to document default / global default
@@ -269,16 +267,6 @@ export function WorkspacePage() {
         ? selectedRuntimeStatus.message
         : "本地翻译模型正在启动，请稍候。";
 
-  // Prewarm the persistent pdf2zh worker as soon as a PDF document is open,
-  // so Python import and ONNX layout warmup overlap with the user picking pages
-  // instead of delaying the first translate click. The backend command checks pack
-  // readiness itself (this hook's `status` is only populated lazily, so
-  // gating on it here would never fire). Idempotent and fire-and-forget.
-  useEffect(() => {
-    if (!isPdfJob) return;
-    void prewarmPdf2zhWorker().catch(() => {});
-  }, [isPdfJob, activeJobId]);
-
   // Prepare the first translation window after import or page-selection
   // changes. Debouncing prevents checkbox sweeps from queuing obsolete layout
   // work; the backend keeps this content-free and outside durable job state.
@@ -306,6 +294,8 @@ export function WorkspacePage() {
       selectedProvider.id,
     ].join("|");
     if (pdfPreparseIdentityRef.current === identity) return;
+    const delayMs = pdfPreparseJobIdRef.current === activeJobId ? 750 : 0;
+    pdfPreparseJobIdRef.current = activeJobId;
     const timer = window.setTimeout(() => {
       void preparseRosettaPdfPages(activeJobId, {
         pageSelection,
@@ -319,7 +309,7 @@ export function WorkspacePage() {
           }
         })
         .catch(() => {});
-    }, 750);
+    }, delayMs);
 
     return () => window.clearTimeout(timer);
   }, [

@@ -25,6 +25,7 @@ import { createWelcomeDocument, listRosettaJobs, loadRosettaJob } from "@/lib/ro
 import {
   getPdf2zhPrepareCacheStatus,
   getPdf2zhWorkerStatus,
+  prewarmPdf2zhWorker,
   subscribePdf2zhPrepareCacheStatus,
   subscribePdf2zhWorkerStatus,
   type Pdf2zhWorkerStatus,
@@ -146,6 +147,8 @@ function usePdf2zhWorkerStatusEvents() {
   useEffect(() => {
     let unmounted = false;
     let unlisten: (() => void) | null = null;
+
+    void prewarmPdf2zhWorker().catch(() => {});
 
     void getPdf2zhWorkerStatus()
       .then((status) => {

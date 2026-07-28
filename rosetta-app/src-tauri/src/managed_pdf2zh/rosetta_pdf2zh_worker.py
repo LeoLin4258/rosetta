@@ -21,6 +21,97 @@ _DEFAULT_PREPARE_CACHE_ENTRIES = 6
 _MAX_PREPARE_CACHE_ENTRIES = 32
 
 
+def diagnostic_enabled():
+    return os.environ.get("ROSETTA_PDF_DIAGNOSTICS", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def emit_diagnostic(event, **details):
+    if not diagnostic_enabled():
+        return
+    payload = {"event": event, **details}
+    sys.stderr.write(
+        "[rosetta-pdf-diagnostic] "
+        + json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+        + "\n"
+    )
+    sys.stderr.flush()
+
+
+def linux_physical_core_count():
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        allowed_cpus = os.sched_getaffinity(0)
+    except (AttributeError, OSError):
+        allowed_cpus = range(os.cpu_count() or 1)
+    physical_cores = set()
+    for cpu in allowed_cpus:
+        topology = Path(f"/sys/devices/system/cpu/cpu{cpu}/topology")
+        try:
+            package_id = (topology / "physical_package_id").read_text().strip()
+            core_id = (topology / "core_id").read_text().strip()
+        except OSError:
+            continue
+        physical_cores.add((package_id, core_id))
+    if physical_cores:
+        return len(physical_cores)
+    return max(1, len(tuple(allowed_cpus)) // 2)
+
+
+def configure_linux_cpu_layout_session(engine, model_path):
+    if not sys.platform.startswith("linux"):
+        return None
+    get_layout_model = getattr(engine, "get_layout_model", None)
+    if not callable(get_layout_model):
+        return None
+    model = get_layout_model(model_path)
+    active_session = getattr(model, "model", None)
+    get_providers = getattr(active_session, "get_providers", None)
+    if not callable(get_providers):
+        return None
+    active_providers = list(get_providers())
+    if any(
+        provider not in ("AzureExecutionProvider", "CPUExecutionProvider")
+        for provider in active_providers
+    ):
+        return None
+
+    import onnxruntime
+
+    raw_threads = os.environ.get("ROSETTA_PDF_ORT_INTRA_OP_THREADS", "").strip()
+    try:
+        thread_count = int(raw_threads) if raw_threads else linux_physical_core_count()
+    except ValueError:
+        thread_count = linux_physical_core_count()
+    thread_count = max(1, min(int(thread_count or 1), 64))
+    session_options = onnxruntime.SessionOptions()
+    session_options.graph_optimization_level = (
+        onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
+    )
+    session_options.intra_op_num_threads = thread_count
+    session_options.add_session_config_entry(
+        "session.intra_op.allow_spinning", "1"
+    )
+    optimized_path = Path(f"{model_path}.optimized")
+    session_model_path = optimized_path if optimized_path.is_file() else Path(model_path)
+    model.model = onnxruntime.InferenceSession(
+        str(session_model_path),
+        session_options,
+        providers=["CPUExecutionProvider"],
+    )
+    return {
+        "providersBefore": active_providers,
+        "providersAfter": model.model.get_providers(),
+        "intraOpThreads": thread_count,
+        "physicalCoreCount": linux_physical_core_count(),
+    }
+
+
 def make_protocol_channel():
     proto = os.fdopen(
         os.dup(1),
@@ -59,7 +150,7 @@ def emit_stage(proto, job_id, stage, status, duration_ms=None, details=None):
     emit(proto, payload)
 
 
-def timed_prepare_run(engine, *args, **kwargs):
+def timed_prepare_run(engine, job_id, *args, **kwargs):
     buckets = {
         "fontAssets": 0.0,
         "prepareDocument": 0.0,
@@ -80,12 +171,32 @@ def timed_prepare_run(engine, *args, **kwargs):
             continue
         originals[name] = original
 
-        def timed(*call_args, _original=original, _bucket=bucket, **call_kwargs):
+        def timed(
+            *call_args,
+            _name=name,
+            _original=original,
+            _bucket=bucket,
+            **call_kwargs,
+        ):
             started = time.perf_counter()
+            cpu_started = time.process_time()
             try:
                 return _original(*call_args, **call_kwargs)
             finally:
-                buckets[_bucket] += (time.perf_counter() - started) * 1000
+                duration_ms = (time.perf_counter() - started) * 1000
+                cpu_ms = (time.process_time() - cpu_started) * 1000
+                buckets[_bucket] += duration_ms
+                if _name == "build_layout_mask":
+                    page_index = call_args[1] if len(call_args) > 1 else None
+                    call_options = call_args[3] if len(call_args) > 3 else {}
+                    emit_diagnostic(
+                        "layout_page",
+                        jobId=job_id,
+                        pageIndex=page_index,
+                        durationMs=round(duration_ms, 3),
+                        processCpuMs=round(cpu_ms, 3),
+                        layoutImgsz=(call_options or {}).get("layoutImgsz"),
+                    )
 
         setattr(engine, name, timed)
 
@@ -256,6 +367,21 @@ def run_prepare(job, proto, engine):
         os.environ.get("ROSETTA_PDF_SINGLE_PAGE_DEFLATE_IMAGES", "").lower()
         not in ("0", "false", "no", "off"),
     )
+    try:
+        cpu_affinity = sorted(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        cpu_affinity = None
+    emit_diagnostic(
+        "prepare_request",
+        jobId=job_id,
+        pageCount=len(job.get("pages") or []),
+        langIn=job.get("langIn", "en"),
+        langOut=job.get("langOut", "zh"),
+        threadCount=options.get("thread"),
+        layoutImgsz=options.get("layoutImgsz"),
+        cpuAffinity=cpu_affinity,
+        processId=os.getpid(),
+    )
 
     cache_key = str(job.get("cacheKey") or "")
     cache_owner_key = str(job.get("cacheOwnerKey") or "")
@@ -297,6 +423,7 @@ def run_prepare(job, proto, engine):
             dispose_prepare_cache(engine)
         prepared, timings = timed_prepare_run(
             engine,
+            job_id,
             input_pdf,
             job.get("pages"),
             job.get("langIn", "en"),
@@ -325,6 +452,14 @@ def run_prepare(job, proto, engine):
         remember_persistent_cache_owner(cache_owner_key, options)
 
     duration_ms = int((time.perf_counter() - started_at) * 1000)
+    emit_diagnostic(
+        "prepare_result",
+        jobId=job_id,
+        durationMs=duration_ms,
+        timingsMs=timings,
+        pageCount=len(prepared.get("pages") or []),
+        unitCount=len(units),
+    )
     emit_stage(
         proto,
         job_id,
@@ -450,6 +585,7 @@ def main():
                 "ROSETTA_DOCLAYOUT_MODEL is missing or does not point to a file; "
                 "update the Rosetta PDF component pack."
             )
+        linux_cpu_session = configure_linux_cpu_layout_session(engine, model_path)
         emit(
             proto,
             {
@@ -460,6 +596,8 @@ def main():
             },
         )
         capabilities = engine.prewarm({"modelPath": model_path})
+        if linux_cpu_session:
+            capabilities["linuxCpuSession"] = linux_cpu_session
         _persistent_cache_owner_keys.update(
             discover_persistent_cache_owner_keys(engine, model_path)
         )

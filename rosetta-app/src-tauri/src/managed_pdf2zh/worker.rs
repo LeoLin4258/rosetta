@@ -16,6 +16,7 @@
 //! header indicator can stay "已就绪" and translate clicks are always cheap.
 
 use std::{
+    ffi::OsStr,
     path::Path,
     process::Stdio,
     sync::{
@@ -50,6 +51,22 @@ fn sanitize_python_environment(command: &mut Command) {
     command.env_remove("LD_LIBRARY_PATH");
 }
 
+fn diagnostics_flag_enabled(value: Option<&OsStr>) -> bool {
+    value
+        .and_then(OsStr::to_str)
+        .map(str::trim)
+        .is_some_and(|value| {
+            value.eq_ignore_ascii_case("1")
+                || value.eq_ignore_ascii_case("true")
+                || value.eq_ignore_ascii_case("yes")
+                || value.eq_ignore_ascii_case("on")
+        })
+}
+
+fn pdf_diagnostics_enabled() -> bool {
+    diagnostics_flag_enabled(std::env::var_os("ROSETTA_PDF_DIAGNOSTICS").as_deref())
+}
+
 #[cfg(target_os = "linux")]
 fn apply_linux_worker_environment_overrides(
     command: &mut Command,
@@ -73,7 +90,10 @@ fn apply_linux_worker_environment_overrides(
 mod tests {
     #[cfg(target_os = "linux")]
     use super::apply_linux_worker_environment_overrides;
-    use super::{sanitize_python_environment, WorkerState, WORKER_SCRIPT};
+    use super::{
+        diagnostics_flag_enabled, sanitize_python_environment, WorkerState, WORKER_SCRIPT,
+    };
+    use std::ffi::OsStr;
     use tokio::process::Command;
 
     #[test]
@@ -96,6 +116,17 @@ mod tests {
         assert!(removed.iter().any(|key| key == "PYTHONPATH"));
         #[cfg(target_os = "linux")]
         assert!(removed.iter().any(|key| key == "LD_LIBRARY_PATH"));
+    }
+
+    #[test]
+    fn diagnostics_flag_accepts_only_explicit_truthy_values() {
+        for value in ["1", "true", "TRUE", "yes", "on", " on "] {
+            assert!(diagnostics_flag_enabled(Some(OsStr::new(value))));
+        }
+        for value in ["", "0", "false", "off", "no", "debug"] {
+            assert!(!diagnostics_flag_enabled(Some(OsStr::new(value))));
+        }
+        assert!(!diagnostics_flag_enabled(None));
     }
 
     #[cfg(target_os = "linux")]
@@ -198,6 +229,15 @@ mod tests {
         assert!(WORKER_SCRIPT.contains("\"cacheEntryCount\": len(_prepare_cache)"));
         assert!(WORKER_SCRIPT.contains("\"timingsMs\": timings"));
         assert!(WORKER_SCRIPT.contains("dispose_prepare_cache(engine)"));
+        assert!(WORKER_SCRIPT.contains("ROSETTA_PDF_DIAGNOSTICS"));
+        assert!(WORKER_SCRIPT.contains(".strip().lower()"));
+        assert!(WORKER_SCRIPT.contains("\"layout_page\""));
+        assert!(WORKER_SCRIPT.contains("pageCount=len(job.get(\"pages\") or [])"));
+        assert!(!WORKER_SCRIPT.contains("request=job"));
+        assert!(!WORKER_SCRIPT.contains("normalizedOptions=options"));
+        assert!(WORKER_SCRIPT.contains("configure_linux_cpu_layout_session"));
+        assert!(WORKER_SCRIPT.contains("ROSETTA_PDF_ORT_INTRA_OP_THREADS"));
+        assert!(WORKER_SCRIPT.contains("providers=[\"CPUExecutionProvider\"]"));
     }
 
     #[cfg(target_os = "windows")]
@@ -866,6 +906,24 @@ impl WorkerProcess {
         payload["cmd"] = json!("prepare_pdf_window");
         let mut line = payload.to_string();
         line.push('\n');
+
+        if pdf_diagnostics_enabled() {
+            let page_count = payload
+                .get("pages")
+                .and_then(serde_json::Value::as_array)
+                .map_or(0, Vec::len);
+            let lang_in = payload
+                .get("langIn")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown");
+            let lang_out = payload
+                .get("langOut")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown");
+            eprintln!(
+                "[pdf2zh-worker:request] jobId={job_id} pageCount={page_count} langIn={lang_in} langOut={lang_out}"
+            );
+        }
 
         self.stdin
             .write_all(line.as_bytes())
