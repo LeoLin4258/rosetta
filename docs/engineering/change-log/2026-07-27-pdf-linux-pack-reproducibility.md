@@ -127,3 +127,24 @@ and the absence of raw request/options serialization in the embedded worker.
   `symlinkCount`, and `maxSingleFileBytes`. Schema 1 remains readable and keeps
   its existing identity/capability compatibility behavior. Future release
   sidecars and local staging manifests emit the same capacity evidence.
+
+## CP11 Release Candidate
+
+- Generated a Linux RC from the pinned dependency lock and external inputs with
+  complete manifest, inventory, size gate, SBOM, license, freeze, checksum, and
+  build-log evidence. The archive is 475,162,678 bytes and remains within every
+  accepted Linux budget.
+- Fixed the release builder's maximum-file calculation so `pipefail` cannot
+  terminate a successful build after archive creation but before manifest and
+  checksum publication.
+- Added an explicit ignored release-gate test that extracts the real RC under
+  installer limits, performs a fresh activation, and upgrades a real
+  2026-07-15 archive without leaving a backup directory.
+- Isolated page-artifact compression from AppImage-injected Python environment
+  variables. A real RC AppImage compressed all ten accepted translated pages
+  without failures; independent reopening confirmed all ten artifacts remained
+  single-page PDFs with text.
+
+User visual acceptance passed against the isolated RC pack and rebuilt Linux
+AppImage. The immutable asset upload, Linux CI for the final committed source,
+and Linux profile update remain intentionally pending.

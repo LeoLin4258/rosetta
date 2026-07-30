@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
-        Arc,
+        Arc, Mutex, MutexGuard,
     },
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -31,6 +31,7 @@ use crate::{
 
 const PDF2ZH_PROGRESS_EVENT: &str = "rosetta-pdf2zh-progress";
 const PDF_ENGINE_SCRATCH_ROOT: &str = "pdf-engine-scratch";
+const PDF_TRANSLATION_QUEUE_CAPACITY_UNITS: usize = 32;
 static PDF_ENGINE_SCRATCH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 struct PdfEngineScratchDir {
@@ -126,8 +127,18 @@ pub(crate) struct Pdf2zhOutput {
     pub prepare_timings_ms: PdfPrepareTimings,
     pub render_ms: u64,
     pub render_call_count: u32,
-    pub pending_translation_peak_units: u64,
-    pub pending_translation_peak_chars: u64,
+    pub translation_queue_capacity_units: u64,
+    pub translation_queue_peak_units: u64,
+    pub translation_queue_peak_payload_bytes: u64,
+    pub pending_translation_map_peak_units: u64,
+    pub pending_translation_map_peak_chars: u64,
+    pub pending_translation_map_peak_payload_bytes: u64,
+    pub render_payload_peak_units: u64,
+    pub render_payload_peak_chars: u64,
+    pub render_payload_peak_bytes: u64,
+    pub combined_pending_peak_units: u64,
+    pub combined_pending_peak_chars: u64,
+    pub combined_pending_peak_payload_bytes: u64,
     pub rwkv_metrics: PdfUnitTranslationMetrics,
 }
 
@@ -146,41 +157,215 @@ struct PdfRenderMetrics {
     call_count: u32,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct PendingTranslationMetrics {
-    current_chars: u64,
-    peak_units: u64,
-    peak_chars: u64,
+    queue_capacity_units: u64,
+    queue_current_units: u64,
+    queue_current_chars: u64,
+    queue_current_payload_bytes: u64,
+    queue_peak_units: u64,
+    queue_peak_payload_bytes: u64,
+    map_current_units: u64,
+    map_current_chars: u64,
+    map_current_payload_bytes: u64,
+    map_peak_units: u64,
+    map_peak_chars: u64,
+    map_peak_payload_bytes: u64,
+    render_current_units: u64,
+    render_current_chars: u64,
+    render_current_payload_bytes: u64,
+    render_peak_units: u64,
+    render_peak_chars: u64,
+    render_peak_payload_bytes: u64,
+    combined_peak_units: u64,
+    combined_peak_chars: u64,
+    combined_peak_payload_bytes: u64,
+}
+
+impl PendingTranslationMetrics {
+    fn new(queue_capacity: usize) -> Self {
+        Self {
+            queue_capacity_units: queue_capacity as u64,
+            ..Self::default()
+        }
+    }
+
+    fn record_queue_enqueued(&mut self, translation: &PdfUnitTranslation) {
+        let (chars, payload_bytes) = translation_payload_size(translation);
+        self.queue_current_units += 1;
+        self.queue_current_chars += chars;
+        self.queue_current_payload_bytes += payload_bytes;
+        self.queue_peak_units = self.queue_peak_units.max(self.queue_current_units);
+        self.queue_peak_payload_bytes = self
+            .queue_peak_payload_bytes
+            .max(self.queue_current_payload_bytes);
+        self.record_combined_peak();
+    }
+
+    fn record_queue_dequeued(&mut self, translation: &PdfUnitTranslation) {
+        let (chars, payload_bytes) = translation_payload_size(translation);
+        self.queue_current_units = self.queue_current_units.saturating_sub(1);
+        self.queue_current_chars = self.queue_current_chars.saturating_sub(chars);
+        self.queue_current_payload_bytes = self
+            .queue_current_payload_bytes
+            .saturating_sub(payload_bytes);
+    }
+
+    fn record_map_inserted(
+        &mut self,
+        unit_id_bytes: u64,
+        text_chars: u64,
+        text_bytes: u64,
+        previous: Option<&str>,
+    ) {
+        if let Some(previous) = previous {
+            self.map_current_chars = self
+                .map_current_chars
+                .saturating_sub(previous.chars().count() as u64);
+            self.map_current_payload_bytes = self
+                .map_current_payload_bytes
+                .saturating_sub(previous.len() as u64);
+        } else {
+            self.map_current_units += 1;
+            self.map_current_payload_bytes += unit_id_bytes;
+        }
+        self.map_current_chars += text_chars;
+        self.map_current_payload_bytes += text_bytes;
+        self.map_peak_units = self.map_peak_units.max(self.map_current_units);
+        self.map_peak_chars = self.map_peak_chars.max(self.map_current_chars);
+        self.map_peak_payload_bytes = self
+            .map_peak_payload_bytes
+            .max(self.map_current_payload_bytes);
+        self.record_combined_peak();
+    }
+
+    fn record_map_removed(&mut self, unit_id: &str, text: &str) {
+        self.map_current_units = self.map_current_units.saturating_sub(1);
+        self.map_current_chars = self
+            .map_current_chars
+            .saturating_sub(text.chars().count() as u64);
+        self.map_current_payload_bytes = self
+            .map_current_payload_bytes
+            .saturating_sub((unit_id.len() + text.len()) as u64);
+    }
+
+    fn record_render_started(&mut self, units: u64, chars: u64, payload_bytes: u64) {
+        self.render_current_units = units;
+        self.render_current_chars = chars;
+        self.render_current_payload_bytes = payload_bytes;
+        self.render_peak_units = self.render_peak_units.max(units);
+        self.render_peak_chars = self.render_peak_chars.max(chars);
+        self.render_peak_payload_bytes = self.render_peak_payload_bytes.max(payload_bytes);
+        self.record_combined_peak();
+    }
+
+    fn record_render_finished(&mut self) {
+        self.render_current_units = 0;
+        self.render_current_chars = 0;
+        self.render_current_payload_bytes = 0;
+    }
+
+    fn record_combined_peak(&mut self) {
+        self.combined_peak_units = self
+            .combined_peak_units
+            .max(self.queue_current_units + self.map_current_units + self.render_current_units);
+        self.combined_peak_chars = self
+            .combined_peak_chars
+            .max(self.queue_current_chars + self.map_current_chars + self.render_current_chars);
+        self.combined_peak_payload_bytes = self.combined_peak_payload_bytes.max(
+            self.queue_current_payload_bytes
+                + self.map_current_payload_bytes
+                + self.render_current_payload_bytes,
+        );
+    }
+}
+
+type SharedPendingTranslationMetrics = Arc<Mutex<PendingTranslationMetrics>>;
+
+fn lock_pending_metrics(
+    metrics: &SharedPendingTranslationMetrics,
+) -> MutexGuard<'_, PendingTranslationMetrics> {
+    metrics.lock().unwrap_or_else(|error| error.into_inner())
+}
+
+fn translation_payload_size(translation: &PdfUnitTranslation) -> (u64, u64) {
+    (
+        translation.text.chars().count() as u64,
+        (translation.unit_id.len() + translation.text.len()) as u64,
+    )
+}
+
+#[derive(Clone)]
+struct PdfUnitTranslationSender {
+    sender: mpsc::Sender<PdfUnitTranslation>,
+    metrics: SharedPendingTranslationMetrics,
+}
+
+impl PdfUnitTranslationSender {
+    async fn send(&self, translation: PdfUnitTranslation) -> Result<(), String> {
+        let permit = self.sender.reserve().await.map_err(|_| {
+            "PDF renderer stopped receiving translated units before translation completed."
+                .to_string()
+        })?;
+        lock_pending_metrics(&self.metrics).record_queue_enqueued(&translation);
+        permit.send(translation);
+        Ok(())
+    }
+}
+
+struct PdfUnitTranslationReceiver {
+    receiver: mpsc::Receiver<PdfUnitTranslation>,
+    metrics: SharedPendingTranslationMetrics,
+}
+
+impl PdfUnitTranslationReceiver {
+    async fn recv(&mut self) -> Option<PdfUnitTranslation> {
+        let translation = self.receiver.recv().await?;
+        lock_pending_metrics(&self.metrics).record_queue_dequeued(&translation);
+        Some(translation)
+    }
+}
+
+fn bounded_translation_queue(
+    capacity: usize,
+    metrics: SharedPendingTranslationMetrics,
+) -> (PdfUnitTranslationSender, PdfUnitTranslationReceiver) {
+    let (sender, receiver) = mpsc::channel(capacity);
+    (
+        PdfUnitTranslationSender {
+            sender,
+            metrics: Arc::clone(&metrics),
+        },
+        PdfUnitTranslationReceiver { receiver, metrics },
+    )
 }
 
 fn retain_translation(
     translations_by_unit_id: &mut BTreeMap<String, String>,
-    metrics: &mut PendingTranslationMetrics,
+    metrics: &SharedPendingTranslationMetrics,
     translation: PdfUnitTranslation,
 ) {
     let PdfUnitTranslation { unit_id, text, .. } = translation;
-    if let Some(previous) = translations_by_unit_id.insert(unit_id, text.clone()) {
-        metrics.current_chars = metrics
-            .current_chars
-            .saturating_sub(previous.chars().count() as u64);
-    }
-    metrics.current_chars = metrics
-        .current_chars
-        .saturating_add(text.chars().count() as u64);
-    metrics.peak_units = metrics.peak_units.max(translations_by_unit_id.len() as u64);
-    metrics.peak_chars = metrics.peak_chars.max(metrics.current_chars);
+    let unit_id_bytes = unit_id.len() as u64;
+    let text_chars = text.chars().count() as u64;
+    let text_bytes = text.len() as u64;
+    let previous = translations_by_unit_id.insert(unit_id, text);
+    lock_pending_metrics(metrics).record_map_inserted(
+        unit_id_bytes,
+        text_chars,
+        text_bytes,
+        previous.as_deref(),
+    );
 }
 
 fn release_page_translations(
     unit_ids: &[String],
     translations_by_unit_id: &mut BTreeMap<String, String>,
-    metrics: &mut PendingTranslationMetrics,
+    metrics: &SharedPendingTranslationMetrics,
 ) {
     for unit_id in unit_ids {
         if let Some(text) = translations_by_unit_id.remove(unit_id) {
-            metrics.current_chars = metrics
-                .current_chars
-                .saturating_sub(text.chars().count() as u64);
+            lock_pending_metrics(metrics).record_map_removed(unit_id, &text);
         }
     }
 }
@@ -405,10 +590,15 @@ pub(crate) async fn invoke_pdf2zh(
     let ordered_pages = prepared.prepared_run.pages.clone();
     let mut unit_ids_by_page = unit_ids_by_page(&ordered_pages, &prepared.units);
     let mut translations_by_unit_id = BTreeMap::<String, String>::new();
-    let mut pending_translation_metrics = PendingTranslationMetrics::default();
+    let pending_translation_metrics = Arc::new(Mutex::new(PendingTranslationMetrics::new(
+        PDF_TRANSLATION_QUEUE_CAPACITY_UNITS,
+    )));
     let mut rendered_pages = BTreeSet::<u32>::new();
     let mut render_metrics = PdfRenderMetrics::default();
-    let (unit_tx, mut unit_rx) = mpsc::unbounded_channel::<PdfUnitTranslation>();
+    let (unit_tx, mut unit_rx) = bounded_translation_queue(
+        PDF_TRANSLATION_QUEUE_CAPACITY_UNITS,
+        Arc::clone(&pending_translation_metrics),
+    );
     let provider_for_task = options.provider.clone();
     let source_lang_for_task = options.source_lang.clone();
     let target_lang_for_task = options.target_lang.clone();
@@ -416,7 +606,8 @@ pub(crate) async fn invoke_pdf2zh(
     let cancel_for_task = Arc::clone(&cancel_flag);
     let mut translate_task = tokio::spawn(async move {
         let mut on_unit_translation = move |translation: PdfUnitTranslation| {
-            let _ = unit_tx.send(translation);
+            let unit_tx = unit_tx.clone();
+            async move { unit_tx.send(translation).await }
         };
         translate_pdf_units_with_events(
             &provider_for_task,
@@ -443,7 +634,7 @@ pub(crate) async fn invoke_pdf2zh(
         &ordered_pages,
         &mut unit_ids_by_page,
         &mut translations_by_unit_id,
-        &mut pending_translation_metrics,
+        &pending_translation_metrics,
         &mut rendered_pages,
         &mut render_metrics,
         &mut on_stderr,
@@ -473,7 +664,7 @@ pub(crate) async fn invoke_pdf2zh(
                 Some(translation) => {
                     retain_translation(
                         &mut translations_by_unit_id,
-                        &mut pending_translation_metrics,
+                        &pending_translation_metrics,
                         translation,
                     );
                     match render_ready_pages(
@@ -483,7 +674,7 @@ pub(crate) async fn invoke_pdf2zh(
                         &ordered_pages,
                         &mut unit_ids_by_page,
                         &mut translations_by_unit_id,
-                        &mut pending_translation_metrics,
+                        &pending_translation_metrics,
                         &mut rendered_pages,
                         &mut render_metrics,
                         &mut on_stderr,
@@ -514,7 +705,7 @@ pub(crate) async fn invoke_pdf2zh(
                 if let Some(translation) = maybe_translation {
                     retain_translation(
                         &mut translations_by_unit_id,
-                        &mut pending_translation_metrics,
+                        &pending_translation_metrics,
                         translation,
                     );
                     match render_ready_pages(
@@ -524,7 +715,7 @@ pub(crate) async fn invoke_pdf2zh(
                         &ordered_pages,
                         &mut unit_ids_by_page,
                         &mut translations_by_unit_id,
-                        &mut pending_translation_metrics,
+                        &pending_translation_metrics,
                         &mut rendered_pages,
                         &mut render_metrics,
                         &mut on_stderr,
@@ -586,7 +777,7 @@ pub(crate) async fn invoke_pdf2zh(
         &ordered_pages,
         &mut unit_ids_by_page,
         &mut translations_by_unit_id,
-        &mut pending_translation_metrics,
+        &pending_translation_metrics,
         &mut rendered_pages,
         &mut render_metrics,
         &mut on_stderr,
@@ -637,6 +828,7 @@ pub(crate) async fn invoke_pdf2zh(
     );
 
     let process_ms = translate_started.elapsed().as_millis() as u64;
+    let pending_translation_metrics = *lock_pending_metrics(&pending_translation_metrics);
     Ok(Pdf2zhOutput {
         warmup_ms,
         process_ms: process_ms.max(invoke_started.elapsed().as_millis() as u64),
@@ -645,8 +837,20 @@ pub(crate) async fn invoke_pdf2zh(
         prepare_timings_ms: prepared.timings_ms,
         render_ms: render_metrics.total_ms,
         render_call_count: render_metrics.call_count,
-        pending_translation_peak_units: pending_translation_metrics.peak_units,
-        pending_translation_peak_chars: pending_translation_metrics.peak_chars,
+        translation_queue_capacity_units: pending_translation_metrics.queue_capacity_units,
+        translation_queue_peak_units: pending_translation_metrics.queue_peak_units,
+        translation_queue_peak_payload_bytes: pending_translation_metrics.queue_peak_payload_bytes,
+        pending_translation_map_peak_units: pending_translation_metrics.map_peak_units,
+        pending_translation_map_peak_chars: pending_translation_metrics.map_peak_chars,
+        pending_translation_map_peak_payload_bytes: pending_translation_metrics
+            .map_peak_payload_bytes,
+        render_payload_peak_units: pending_translation_metrics.render_peak_units,
+        render_payload_peak_chars: pending_translation_metrics.render_peak_chars,
+        render_payload_peak_bytes: pending_translation_metrics.render_peak_payload_bytes,
+        combined_pending_peak_units: pending_translation_metrics.combined_peak_units,
+        combined_pending_peak_chars: pending_translation_metrics.combined_peak_chars,
+        combined_pending_peak_payload_bytes: pending_translation_metrics
+            .combined_peak_payload_bytes,
         rwkv_metrics: translation_result.metrics,
     })
 }
@@ -673,7 +877,7 @@ async fn render_ready_pages(
     ordered_pages: &[u32],
     unit_ids_by_page: &mut BTreeMap<u32, Vec<String>>,
     translations_by_unit_id: &mut BTreeMap<String, String>,
-    pending_translation_metrics: &mut PendingTranslationMetrics,
+    pending_translation_metrics: &SharedPendingTranslationMetrics,
     rendered_pages: &mut BTreeSet<u32>,
     render_metrics: &mut PdfRenderMetrics,
     on_stderr: &mut (dyn FnMut(&str) + Send),
@@ -702,12 +906,23 @@ async fn render_ready_pages(
                     .map(|text| (unit_id.clone(), text.clone()))
             })
             .collect::<BTreeMap<_, _>>();
+        let render_units = page_translations.len() as u64;
+        let render_chars = page_translations
+            .values()
+            .map(|text| text.chars().count() as u64)
+            .sum();
         let render_payload = serde_json::json!({
             "preparedRunId": prepared_run_id,
             "outputDir": output_dir.to_string_lossy(),
             "translationsByUnitId": page_translations,
             "pages": [page_number],
         });
+        let render_payload_bytes = render_payload.to_string().len() as u64;
+        lock_pending_metrics(pending_translation_metrics).record_render_started(
+            render_units,
+            render_chars,
+            render_payload_bytes,
+        );
         let render_started = std::time::Instant::now();
         let outcome = crate::managed_pdf2zh::worker::render_pdf_window(
             app,
@@ -717,6 +932,7 @@ async fn render_ready_pages(
             cancel_rx,
         )
         .await;
+        lock_pending_metrics(pending_translation_metrics).record_render_finished();
         render_metrics.total_ms += render_started.elapsed().as_millis() as u64;
         render_metrics.call_count += 1;
         match outcome {
@@ -866,12 +1082,19 @@ fn emit_progress(
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, path::PathBuf};
+    use std::{
+        collections::BTreeMap,
+        path::PathBuf,
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
+
+    use tokio::time::timeout;
 
     use super::{
-        completed_page_progress_payload, pdf_prepare_cache_key, persistent_layout_cache_dir,
-        release_page_translations, retain_translation, Pdf2zhInvokeOptions, PdfEngineScratchDir,
-        PendingTranslationMetrics,
+        bounded_translation_queue, completed_page_progress_payload, lock_pending_metrics,
+        pdf_prepare_cache_key, persistent_layout_cache_dir, release_page_translations,
+        retain_translation, Pdf2zhInvokeOptions, PdfEngineScratchDir, PendingTranslationMetrics,
     };
     use crate::rosetta_jobs::formats::pdf::unit_translation::{
         LlamaCppPdfApiConfig, PdfUnitProviderConfig, PdfUnitTranslation,
@@ -886,6 +1109,15 @@ mod tests {
             "rosetta-pdf-engine-scratch-test-{}-{nanos}",
             std::process::id()
         ))
+    }
+
+    fn queued_translation(index: usize) -> PdfUnitTranslation {
+        let text = format!("译文-{index}");
+        PdfUnitTranslation {
+            unit_id: format!("unit-{index}"),
+            output_chars: text.chars().count() as u64,
+            text,
+        }
     }
 
     #[test]
@@ -1015,10 +1247,10 @@ mod tests {
     #[test]
     fn committed_page_translation_state_is_released_and_peak_is_retained() {
         let mut translations = BTreeMap::new();
-        let mut metrics = PendingTranslationMetrics::default();
+        let metrics = Arc::new(Mutex::new(PendingTranslationMetrics::new(2)));
         retain_translation(
             &mut translations,
-            &mut metrics,
+            &metrics,
             PdfUnitTranslation {
                 unit_id: "p0001-u0001".to_string(),
                 text: "第一段译文".to_string(),
@@ -1027,7 +1259,7 @@ mod tests {
         );
         retain_translation(
             &mut translations,
-            &mut metrics,
+            &metrics,
             PdfUnitTranslation {
                 unit_id: "p0001-u0002".to_string(),
                 text: "第二段译文".to_string(),
@@ -1037,12 +1269,148 @@ mod tests {
         release_page_translations(
             &["p0001-u0001".to_string(), "p0001-u0002".to_string()],
             &mut translations,
-            &mut metrics,
+            &metrics,
         );
 
+        let metrics = *lock_pending_metrics(&metrics);
         assert!(translations.is_empty());
-        assert_eq!(metrics.current_chars, 0);
-        assert_eq!(metrics.peak_units, 2);
-        assert_eq!(metrics.peak_chars, 10);
+        assert_eq!(metrics.map_current_chars, 0);
+        assert_eq!(metrics.map_peak_units, 2);
+        assert_eq!(metrics.map_peak_chars, 10);
+    }
+
+    #[tokio::test]
+    async fn slow_renderer_keeps_translation_queue_within_capacity_and_fifo_order() {
+        let metrics = Arc::new(Mutex::new(PendingTranslationMetrics::new(2)));
+        let (sender, mut receiver) = bounded_translation_queue(2, Arc::clone(&metrics));
+        let mut producer = tokio::spawn(async move {
+            for index in 0..5 {
+                sender.send(queued_translation(index)).await?;
+            }
+            Ok::<(), String>(())
+        });
+
+        for _ in 0..100 {
+            if lock_pending_metrics(&metrics).queue_current_units == 2 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(lock_pending_metrics(&metrics).queue_current_units, 2);
+        assert!(timeout(Duration::from_millis(20), &mut producer)
+            .await
+            .is_err());
+
+        let mut received = Vec::new();
+        for _ in 0..5 {
+            received.push(receiver.recv().await.expect("queued translation"));
+        }
+        producer
+            .await
+            .expect("producer task should join")
+            .expect("producer should finish");
+
+        assert_eq!(
+            received
+                .iter()
+                .map(|translation| translation.unit_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["unit-0", "unit-1", "unit-2", "unit-3", "unit-4"]
+        );
+        let metrics = *lock_pending_metrics(&metrics);
+        assert_eq!(metrics.queue_current_units, 0);
+        assert_eq!(metrics.queue_peak_units, 2);
+        assert!(metrics.queue_peak_units <= metrics.queue_capacity_units);
+        assert!(metrics.queue_peak_payload_bytes > 0);
+    }
+
+    #[tokio::test]
+    async fn combined_pending_peak_includes_queue_map_and_render_payload_copies() {
+        let metrics = Arc::new(Mutex::new(PendingTranslationMetrics::new(2)));
+        let (sender, _receiver) = bounded_translation_queue(2, Arc::clone(&metrics));
+        sender
+            .send(queued_translation(0))
+            .await
+            .expect("queue translation");
+        let mut translations = BTreeMap::new();
+        retain_translation(&mut translations, &metrics, queued_translation(1));
+        lock_pending_metrics(&metrics).record_render_started(1, 7, 100);
+
+        let metrics = *lock_pending_metrics(&metrics);
+        assert_eq!(metrics.queue_current_units, 1);
+        assert_eq!(metrics.map_current_units, 1);
+        assert_eq!(metrics.render_current_units, 1);
+        assert_eq!(metrics.combined_peak_units, 3);
+        assert_eq!(
+            metrics.combined_peak_chars,
+            metrics.queue_current_chars + metrics.map_current_chars + 7
+        );
+        assert_eq!(
+            metrics.combined_peak_payload_bytes,
+            metrics.queue_current_payload_bytes + metrics.map_current_payload_bytes + 100
+        );
+    }
+
+    #[tokio::test]
+    async fn renderer_failure_unblocks_a_producer_waiting_for_queue_capacity() {
+        let metrics = Arc::new(Mutex::new(PendingTranslationMetrics::new(1)));
+        let (sender, receiver) = bounded_translation_queue(1, metrics);
+        sender
+            .send(queued_translation(0))
+            .await
+            .expect("fill queue");
+        let blocked_sender = sender.clone();
+        let blocked = tokio::spawn(async move { blocked_sender.send(queued_translation(1)).await });
+        tokio::task::yield_now().await;
+
+        drop(receiver);
+
+        let error = timeout(Duration::from_secs(1), blocked)
+            .await
+            .expect("blocked producer should wake")
+            .expect("producer task should join")
+            .expect_err("renderer failure should close queue");
+        assert!(error.contains("stopped receiving"));
+    }
+
+    #[tokio::test]
+    async fn cancellation_aborts_a_producer_waiting_for_queue_capacity() {
+        let metrics = Arc::new(Mutex::new(PendingTranslationMetrics::new(1)));
+        let (sender, mut receiver) = bounded_translation_queue(1, metrics);
+        sender
+            .send(queued_translation(0))
+            .await
+            .expect("fill queue");
+        let blocked_sender = sender.clone();
+        let blocked = tokio::spawn(async move { blocked_sender.send(queued_translation(1)).await });
+        tokio::task::yield_now().await;
+
+        blocked.abort();
+        let cancelled = timeout(Duration::from_secs(1), blocked)
+            .await
+            .expect("cancelled producer should join")
+            .expect_err("producer task should be cancelled");
+        assert!(cancelled.is_cancelled());
+
+        drop(sender);
+        assert_eq!(
+            receiver.recv().await.expect("first translation").unit_id,
+            "unit-0"
+        );
+        assert!(receiver.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn receiver_drop_is_reported_to_the_translation_callback() {
+        let metrics = Arc::new(Mutex::new(PendingTranslationMetrics::new(1)));
+        let (sender, receiver) = bounded_translation_queue(1, metrics);
+        drop(receiver);
+
+        let error = sender
+            .send(queued_translation(0))
+            .await
+            .expect_err("closed receiver should reject translation");
+
+        assert!(error.contains("stopped receiving"));
     }
 }

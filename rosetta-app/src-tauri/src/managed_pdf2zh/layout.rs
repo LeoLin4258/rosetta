@@ -110,7 +110,8 @@ impl Pdf2zhLayout {
         if manifest.profile_id != profile.id || manifest.pack_filename != profile.pack_filename {
             return Err("组件平台或文件身份与当前 profile 不匹配".to_string());
         }
-        if manifest.custom_pack || has_custom_pack_url_env() {
+        let custom_pack = manifest.custom_pack || has_custom_pack_url_env();
+        if custom_pack {
             if !manifest.sha256.as_deref().is_some_and(is_lowercase_sha256) {
                 return Err("自定义组件安装记录缺少有效 SHA-256".to_string());
             }
@@ -133,14 +134,16 @@ impl Pdf2zhLayout {
             let file_count = manifest
                 .file_count
                 .ok_or_else(|| "组件安装记录缺少文件数".to_string())?;
-            if let Some(expected) = profile.pack_unpacked_size_bytes {
-                if unpacked_size_bytes != expected {
-                    return Err("组件解压体积与当前 profile 不匹配".to_string());
+            if !custom_pack {
+                if let Some(expected) = profile.pack_unpacked_size_bytes {
+                    if unpacked_size_bytes != expected {
+                        return Err("组件解压体积与当前 profile 不匹配".to_string());
+                    }
                 }
-            }
-            if let Some(expected) = profile.pack_file_count {
-                if file_count != expected {
-                    return Err("组件文件数与当前 profile 不匹配".to_string());
+                if let Some(expected) = profile.pack_file_count {
+                    if file_count != expected {
+                        return Err("组件文件数与当前 profile 不匹配".to_string());
+                    }
                 }
             }
         }
@@ -342,6 +345,93 @@ mod tests {
 
         write_matching_manifest(&layout, &WINDOWS_AMD64_PDF2ZH);
         assert!(layout.managed_pack_ready(&WINDOWS_AMD64_PDF2ZH));
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn schema_2_custom_pack_can_differ_from_frozen_release_profile() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        let temp = std::env::temp_dir().join(format!(
+            "rosetta-pdf2zh-layout-custom-manifest-test-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&temp).expect("create temp dir");
+        let layout = Pdf2zhLayout::resolve(temp.clone(), &LINUX_X64_PDF2ZH);
+        std::fs::create_dir_all(layout.manifest_file.parent().expect("manifest parent"))
+            .expect("create manifest dir");
+        std::fs::write(
+            &layout.manifest_file,
+            r#"{
+  "schemaVersion": 2,
+  "profileId": "linux-x64-pdf2zh",
+  "packFilename": "rosetta-pdf2zh-linux-x64.tar.gz",
+  "sha256": "02a4e65328d39652a94f62e6035067232a4cdf73b773ad1009ca33e6cfa6c22a",
+  "sizeBytes": 475162678,
+  "unpackedSizeBytes": 1262340737,
+  "fileCount": 11104,
+  "customPack": true,
+  "engineCapabilitySchemaVersion": 1,
+  "engineContractVersion": 2,
+  "engineRevision": 1,
+  "capabilities": ["authoritative-render-slots", "durable-layout-cache", "partial-page-accounting", "reusable-prepared-run"]
+}"#,
+        )
+        .expect("write custom manifest");
+
+        assert!(
+            layout
+                .pack_manifest_compatibility(&LINUX_X64_PDF2ZH)
+                .is_ok(),
+            "a schema 2 custom RC must not be compared with the frozen release profile"
+        );
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn schema_2_release_pack_still_requires_profile_stats() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        let temp = std::env::temp_dir().join(format!(
+            "rosetta-pdf2zh-layout-release-manifest-test-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&temp).expect("create temp dir");
+        let layout = Pdf2zhLayout::resolve(temp.clone(), &LINUX_X64_PDF2ZH);
+        std::fs::create_dir_all(layout.manifest_file.parent().expect("manifest parent"))
+            .expect("create manifest dir");
+        std::fs::write(
+            &layout.manifest_file,
+            format!(
+                r#"{{
+  "schemaVersion": 2,
+  "profileId": "linux-x64-pdf2zh",
+  "packFilename": "rosetta-pdf2zh-linux-x64.tar.gz",
+  "sha256": "{}",
+  "sizeBytes": {},
+  "unpackedSizeBytes": 1,
+  "fileCount": 1,
+  "engineCapabilitySchemaVersion": 1,
+  "engineContractVersion": 2,
+  "engineRevision": 1,
+  "capabilities": ["authoritative-render-slots", "durable-layout-cache", "partial-page-accounting", "reusable-prepared-run"]
+}}"#,
+                LINUX_X64_PDF2ZH.pack_sha256.unwrap_or_default(),
+                LINUX_X64_PDF2ZH.pack_size_bytes.unwrap_or_default()
+            ),
+        )
+        .expect("write release manifest");
+
+        assert_eq!(
+            layout
+                .pack_manifest_compatibility(&LINUX_X64_PDF2ZH)
+                .expect_err("release metadata mismatch must fail closed"),
+            "组件解压体积与当前 profile 不匹配"
+        );
         let _ = std::fs::remove_dir_all(temp);
     }
 

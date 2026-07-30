@@ -5,7 +5,7 @@
 - 状态：Active
 - 创建日期：2026-07-27
 - 审计窗口：2026-07-17 至当前 `HEAD`；更早代码只在解释该窗口内的设计来源时取证
-- 当前阶段：CP6，已完成；下一步 CP7
+- 当前阶段：CP11，进行中
 - 当前生产 PDF 执行路径：`pdf2zh` prepare / unit collection / page render，Rosetta Rust 负责本地翻译、任务状态、页产物、预览与导出
 - 当前验证基线：仓库 `main` 在 `61ff0ab` 的审计快照；后续 agent 必须重新读取当前 `HEAD`，不能把该 commit 当成永久事实
 - 本文是 PDF 稳定化和治理工作的唯一活跃 handoff authority
@@ -489,7 +489,7 @@ CP8、CP9、CP10 不应与 Linux release candidate 的包内容变化混在同�
 
 ## CP7：production 译文队列背压与真实内存指标
 
-- 状态：`not-started`
+- 状态：`completed`
 - 依赖：CP0
 - 建议单次工作量：一个 agent context
 
@@ -508,11 +508,11 @@ CP8、CP9、CP10 不应与 Linux release candidate 的包内容变化混在同�
 
 ### Acceptance
 
-- [ ] 不存在 production `unbounded_channel<PdfUnitTranslation>`。
-- [ ] slow renderer 测试中 queue 不超过容量。
-- [ ] cancel/failure 不死锁。
-- [ ] unit count、render order 和 CP0 benchmark request plan 不变。
-- [ ] metrics 明确区分或合并 queue 与 map peak。
+- [x] 不存在 production `unbounded_channel<PdfUnitTranslation>`。
+- [x] slow renderer 测试中 queue 不超过容量。
+- [x] cancel/failure 不死锁。
+- [x] unit count、render order 和 CP0 benchmark request plan 不变。
+- [x] metrics 明确区分或合并 queue 与 map peak。
 
 ### 停止条件
 
@@ -638,7 +638,7 @@ CP8、CP9、CP10 不应与 Linux release candidate 的包内容变化混在同�
 
 ## CP11：Linux release candidate、回滚与发布交接
 
-- 状态：`not-started`
+- 状态：`in-progress`
 - 依赖：CP1、CP2、CP3、CP4、CP5、CP6、CP7
 - 建议单次工作量：一个 agent context 生成 RC；人工 visual acceptance 和实际发布可以由用户完成
 
@@ -665,13 +665,13 @@ CP8、CP9、CP10 不应与 Linux release candidate 的包内容变化混在同�
 
 ### Acceptance
 
-- [ ] 所有产物身份和 hash 完整。
-- [ ] size gate 通过。
+- [x] 所有产物身份和 hash 完整。
+- [x] size gate 通过。
 - [ ] Linux CI 通过。
-- [ ] fresh/upgrade install 通过。
-- [ ] 用户视觉验收通过。
+- [x] fresh/upgrade install 通过。
+- [x] 用户视觉验收通过。
 - [ ] profile 只在 immutable asset 验证后更新。
-- [ ] 回滚步骤经过至少一次 dry run 或静态验证。
+- [x] 回滚步骤经过至少一次 dry run 或静态验证。
 
 ### 停止条件
 
@@ -694,12 +694,101 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 
 ### 当前状态摘要
 
-- 当前 checkpoint：CP6（`completed`）
-- last completed：CP6
+- 当前 checkpoint：CP11（`in-progress`）
+- last completed：CP7
 - blocked：无
-- 已知 CP11 release issue：Linux AppImage 页产物压缩子进程继承错误的 `PYTHONHOME` / `PYTHONPATH`，当前会保留未压缩但可用的原始回填页；CP5 不处理此问题，CP11 full-App release gate 前必须修复并复验
-- last verified HEAD：`dfe6a07`
-- 下一步唯一动作：执行 CP7，为 production PDF 译文队列建立背压与覆盖 channel/pending/render payload 的真实内存指标；不要改变 provider chunking、unit order 或页面 ready 判断
+- 已知 CP11 release issue：既有 AppImage 页产物压缩环境污染与 custom RC schema v2 兼容误报均已修复；用户 visual acceptance 已通过，剩余门禁为 final committed-source Linux CI、immutable upload/redownload 与 profile update
+- last verified HEAD：`de9de8f`
+- 下一步唯一动作：提交已通过人工验收的 CP7/CP11 source，运行 final committed-source Linux CI，上传并重新下载校验 immutable asset，最后单独更新 profile
+
+#### 2026-07-28 / CP11 / Codex
+
+- 状态：started
+- HEAD：`de9de8f`
+- worktree baseline：existing CP7 changes: `docs/engineering/plans/2026-07-27-pdf-stabilization-governance.md`, `rosetta-app/src-tauri/src/rosetta_jobs/formats/pdf/pdf2zh_invoke.rs`, `rosetta-app/src-tauri/src/rosetta_jobs/formats/pdf/unit_translation.rs`, `rosetta-app/src-tauri/src/rosetta_jobs/mod.rs`
+- 修改文件：`docs/engineering/plans/2026-07-27-pdf-stabilization-governance.md`
+- 执行命令与结果：
+  - `git status --short` -> pass；确认仅有上一 checkpoint 的四个未提交文件
+  - `git rev-parse --short HEAD` -> `de9de8f`
+  - `rg` CP11、release profile、pack builder、artifact compression 与 Linux workflow 入口 -> pass；CP11 依赖 CP1–CP7 均已完成，profile 在 immutable asset 验证前保持冻结
+- 产物：
+  - pending
+- 已确认事实：
+  - CP11 必须包含 CP7 已接受的 bounded handoff 改动，但真实 release builder 仍须满足 clean-worktree 和可追溯 source identity
+  - 既有 AppImage artifact compression 环境污染是本 checkpoint 的 full-App release blocker
+- 未解决问题或 blocker：
+  - none
+- 下一步唯一动作：
+  - 定位并修复 artifact compression 环境净化，完成本地与 Linux 聚焦验证后生成可追溯 RC
+
+#### 2026-07-28 / CP11 automated gates / Codex
+
+- 状态：started；等待用户 visual acceptance、immutable upload 与 profile update
+- HEAD：`de9de8f`；RC pack 绑定该 committed source identity，AppImage 额外包含上一 checkpoint 未提交 CP7 diff 与本 checkpoint 修复
+- worktree baseline：existing CP7 changes preserved；新增 CP11 builder、installer release-gate、artifact compression 与治理文档改动尚未提交
+- 修改文件：`docs/engineering/plans/2026-07-27-pdf-stabilization-governance.md`、`docs/engineering/change-log/2026-07-27-pdf-linux-pack-reproducibility.md`、`rosetta-app/src-tauri/scripts/build-pdf2zh-pack-linux-x64.sh`、`rosetta-app/src-tauri/src/managed_pdf2zh/install.rs`、`rosetta-app/src-tauri/src/rosetta_jobs/formats/pdf/page_artifact_compression.rs`
+- 执行命令与结果：
+  - isolated Linux pack build with pinned local PBS/model/font/PDFMathTranslate inputs -> pass；in-place、relocation、post-prune real PDF smoke 和 28 runtime imports 通过；final release 仍须在本 checkpoint diff 提交后以 clean worktree 重建
+  - first complete archive attempt -> stopped after archive because `set -o pipefail` made `sort -nr | head -1` return SIGPIPE before manifest generation；改为完整读取的 `awk` 后以新 recipe identity 重建通过
+  - inventory + machine-readable size gate -> pass；0 failures、0 warnings
+  - exact `2604.17278v1.pdf` pages 1–10 `prewarm -> prepareRun -> collectUnits -> identity renderPages` -> pass；94 units、41,035 source chars、canonical unit SHA 与 139,293,175 artifact bytes 保持 CP0 基线
+  - real old/RC archive installer release gate -> pass；RC fresh activation 和从 2026-07-15 archive upgrade 均通过，提交后无 backup 残留
+  - cancellation、failed-upgrade rollback、manifest rollback focused tests -> pass
+  - Linux `pnpm typecheck`、`cargo check`、artifact compression tests、`cargo test rosetta_jobs --lib` -> pass；remote rustfmt component 未安装，format gate 由本地执行
+  - Linux AppImage build -> pass；真实 AppImage 在隔离 RC pack 上恢复已有十页任务并完成 artifact compression 10/10、0 failed、0 skipped
+  - post-compression independent PDF reopen -> pass；10/10 单页 artifact 均保留可提取文本，总 artifact bytes 为 4,474,336
+  - local `pnpm typecheck`、`cargo check`、`cargo test rosetta_jobs`、patch suite、`cargo fmt --all -- --check`、Git Bash `bash -n`、`git diff --check` -> pass；141 Rust tests、44 patch tests
+- 产物：
+  - RC archive：`/home/rwkv/cp11-dist/rosetta-pdf2zh-linux-x64.tar.gz`；475,162,678 bytes；SHA-256 `02a4e65328d39652a94f62e6035067232a4cdf73b773ad1009ca33e6cfa6c22a`
+  - build recipe ID：`a35615e186e42d6c1917fe935da79ebfefcd42ec10aeb5354ea0deaf33ca1c35`
+  - manifest/inventory/size gate/build log/SBOM/license inventory/lock/freeze/quality evidence：`/home/rwkv/cp11-dist/`
+  - CP0 quality SHA-256：`36990286a6e03c7414a156c0067c02391554d54654e3863e0b065adb9329dbaa`
+  - AppImage：`/home/rwkv/Applications/Rosetta-0.1.0-beta.23-cp11-rc.AppImage`；93,018,616 bytes；SHA-256 `e17cd9c9c2fa4554ba33a13fe31868e75109f9d588a889c6a8e6664974b43e03`
+- 已确认事实：
+  - AppImage compression 子进程现在与 persistent worker 一样移除继承的 `PYTHONHOME`、`PYTHONPATH`，Linux 额外移除 `LD_LIBRARY_PATH`；既有 `ModuleNotFoundError: encodings` release blocker 已在真实 AppImage 中复验关闭
+  - live PDF pack 与 `managed_pdf2zh/profile.rs` 未修改；验收 App 使用 `/home/rwkv/cp11-app-data` 下的隔离 RC pack，现有 jobs 被显式复用，因此十页任务的 durable page artifacts 已按既有后台压缩语义更新
+  - RC pack regular files 11,104、unpacked 1,262,340,737 bytes、symlinks 1,044、max file 218,461,128 bytes；全部在 CP1 budget 内
+- 未解决问题或 blocker：
+  - 用户尚未对当前 RC AppImage 完成人工视觉验收
+  - immutable GitHub asset 尚未上传/重新下载校验，Linux CI 尚未针对包含 CP7/CP11 的 committed source 运行，profile 因此保持冻结
+- 下一步唯一动作：
+  - 用户在已打开的 `Rosetta-0.1.0-beta.23-cp11-rc.AppImage` 检查十页中文回填与预览；接受后先提交/运行 Linux CI，再上传新 immutable tag、重新下载校验，最后单独更新 profile
+
+#### 2026-07-30 / CP11 RC managed-pack compatibility / Codex
+
+- 状态：completed；RC managed-pack compatibility blocker 已关闭，CP11 仍等待用户 visual acceptance
+- HEAD：`de9de8f`；保留既有 CP7/CP11 worktree diff
+- 修改文件：`rosetta-app/src-tauri/src/managed_pdf2zh/layout.rs`、`docs/engineering/plans/2026-07-27-pdf-stabilization-governance.md`
+- 执行命令与结果：
+  - 隔离 RC AppImage 启动与工作台检查 -> fail；已安装 schema v2 custom RC pack 被 UI 误报为“PDF 组件需更新”
+  - manifest/profile 核对 -> 定位为 `customPack` 虽跳过 archive SHA/size 的旧 profile 等值校验，但 schema v2 unpacked size/file count 仍无条件对比冻结 profile
+  - `cargo fmt --all -- --check` -> pass
+  - `cargo test managed_pdf2zh::layout --lib` -> pass；5 passed，新增回归同时确认 custom RC 可携带不同统计，official release pack 仍对 profile 统计 fail closed
+  - local `pnpm typecheck`、`cargo check`、`cargo test rosetta_jobs` -> pass；141 Rust tests
+  - Linux `pnpm typecheck`、`cargo test managed_pdf2zh::layout --lib` -> pass；5 passed
+  - Linux `pnpm tauri build --config src-tauri/tauri.linux.conf.json` -> pass；修复后 AppImage 生成
+  - 隔离 RC 数据目录重启与 X11 实机窗口截图 -> pass；主窗口标题为 `Rosetta`，右上角显示绿色“PDF 引擎已就绪”
+- 产物：
+  - 修复后 AppImage：`/home/rwkv/Applications/Rosetta-0.1.0-beta.23-cp11-rc.AppImage`；93,014,520 bytes；SHA-256 `7393f4cfa62b975b078f96295d633558048b4927f09839bd93ba7098c4a384d3`
+  - 修复前可回滚 AppImage：`/home/rwkv/Applications/Rosetta-0.1.0-beta.23-cp11-rc-before-custom-pack-fix.AppImage`；SHA-256 `e17cd9c9c2fa4554ba33a13fe31868e75109f9d588a889c6a8e6664974b43e03`
+  - PDF ready 截图：`/home/rwkv/cp11-dist/cp11-main-pdf-engine-ready.png`
+- 已确认事实：
+  - CP11 custom RC 必须在 immutable upload/profile update 前可验证；其 SHA-256、schema v2 统计完整性和 engine capability 合同仍强制校验
+  - 修复不改变 official release pack 与 profile SHA、archive size、unpacked size、file count 必须精确匹配的规则
+- 未解决问题或 blocker：
+  - 用户尚未对已完成的十页中文回填任务进行人工视觉验收
+- 下一步唯一动作：
+  - 用户在当前 RC 中选择左侧绿色完成状态的 `2604.17278v1.pdf`，检查十页中文回填与预览
+
+#### 2026-07-30 / CP11 visual acceptance / Leo
+
+- 状态：completed
+- 验收对象：修复后 `Rosetta-0.1.0-beta.23-cp11-rc.AppImage`，使用隔离 CP11 RC pack 与十页 `2604.17278v1.pdf` 任务
+- 结果：用户确认“回填质量没问题”；CP11 人工视觉验收门禁通过
+- 未解决问题或 blocker：
+  - none
+- 下一步唯一动作：
+  - 提交当前 CP7/CP11 diff 并在该 committed source 上运行 Linux pack CI
 
 ### 记录模板
 
@@ -722,6 +811,56 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 - 下一步唯一动作：
   - ...
 ```
+
+#### 2026-07-28 / CP7 / Codex
+
+- 状态：started
+- HEAD：`de9de8f`
+- worktree baseline：clean
+- 修改文件：`docs/engineering/plans/2026-07-27-pdf-stabilization-governance.md`
+- 执行命令与结果：
+  - `git status --short` -> pass；开始前 worktree clean
+  - `git rev-parse --short HEAD` -> `de9de8f`
+  - `rg` production translation handoff / pending metrics / render payload -> pass；生产入口仍是 `pdf2zh_invoke.rs` 的 `mpsc::unbounded_channel<PdfUnitTranslation>`，callback 为同步 `FnMut`，现有 peak 只覆盖 pending map
+- 产物：
+  - pending
+- 已确认事实：
+  - CP0 已完成，CP7 依赖满足
+  - 当前 provider callback contract 需要窄化为可异步等待，不能通过 callback 内 spawn task 实现背压
+  - CP7 不改变 provider chunking、unit order、页面 ready 判断、renderer 行为、持久化 schema 或 workbench UI
+- 未解决问题或 blocker：
+  - none
+- 下一步唯一动作：
+  - 实现 bounded translation handoff、真实 combined pending metrics 与 producer/renderer/cancel/drop 测试
+
+#### 2026-07-28 / CP7 completion / Codex
+
+- 状态：completed
+- HEAD：`de9de8f`
+- worktree baseline：clean；本 checkpoint 的 bounded queue、metrics、tests 与治理文档改动尚未提交
+- 修改文件：`docs/engineering/plans/2026-07-27-pdf-stabilization-governance.md`、`rosetta-app/src-tauri/src/rosetta_jobs/formats/pdf/pdf2zh_invoke.rs`、`rosetta-app/src-tauri/src/rosetta_jobs/formats/pdf/unit_translation.rs`、`rosetta-app/src-tauri/src/rosetta_jobs/mod.rs`
+- 执行命令与结果：
+  - `pnpm typecheck` -> pass
+  - `cargo check` -> pass
+  - `cargo test rosetta_jobs::formats::pdf::pdf2zh_invoke::tests --lib` -> pass；10 passed
+  - `cargo test rosetta_jobs::formats::pdf::unit_translation --lib` -> pass；24 passed
+  - `cargo test callback_backpressure_preserves_provider_request_plan_and_unit_order --lib` -> pass；1 passed
+  - `cargo test rosetta_jobs` -> pass；140 passed，0 failed
+  - `cargo fmt --all -- --check`、`git diff --check` -> pass
+  - `rg` production `unbounded_channel<PdfUnitTranslation>` -> no matches
+- 产物：
+  - production translation handoff：32-unit bounded Tokio channel；sender 先等待 capacity permit，再记录入队并发送，不在 callback 内 spawn send task
+  - timeline metrics：queue capacity/peak units/payload bytes、pending map peak units/chars/payload bytes、render payload peak units/chars/bytes、combined pending peak units/chars/payload bytes
+- 已确认事实：
+  - slow renderer test 使用容量 2、5 个 producer events，queue peak 精确为 2 且 FIFO render order 保持 `unit-0..unit-4`
+  - renderer failure、cancelled blocked producer 与 receiver drop 都在 1 秒测试上限内解除等待；receiver drop 作为 callback error 向 provider task 传播
+  - 容量 1 的 callback backpressure 下 scripted provider 仍执行 3 个请求、batch distribution 为 `[1×1, 2×2]`，五个 unit 的 emission/result order 不变；本 checkpoint 未修改 unit collection、provider chunking、页面 ready 判断或 render semantics
+  - queue/map/render payload 使用同一共享 metrics authority 更新；combined peak 计算实际同时存活的三个 payload copy，timeline 不包含原文、译文、路径或凭据
+  - 未运行真实十页 fixture 或 full-App visual acceptance；CP7 不改变 pack、renderer heuristic、translation source payload 或 request planning，质量回归由不变 call graph、request-plan/FIFO tests 与完整 Rust suite 覆盖
+- 未解决问题或 blocker：
+  - CP7 无 blocker；Linux AppImage 页产物压缩子进程环境污染仍是 CP11 release gate 前必须解决的既有问题
+- 下一步唯一动作：
+  - 执行 CP11，生成 Linux release candidate 并完成 fresh/upgrade、full-App 与人工 visual acceptance 门禁；通过前不得修改 release profile 或发布
 
 #### 2026-07-28 / CP6 / Codex
 

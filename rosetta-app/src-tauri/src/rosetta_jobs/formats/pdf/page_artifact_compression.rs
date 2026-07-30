@@ -25,6 +25,12 @@ use super::{
 const ARTIFACT_COMPRESSION_ENV: &str = "ROSETTA_PDF_PAGE_ARTIFACT_COMPRESSION";
 const MIN_SAVINGS_BYTES: u64 = 64 * 1024;
 
+fn sanitize_compression_environment(command: &mut Command) {
+    command.env_remove("PYTHONHOME").env_remove("PYTHONPATH");
+    #[cfg(target_os = "linux")]
+    command.env_remove("LD_LIBRARY_PATH");
+}
+
 const PYMUPDF_COMPRESS_SCRIPT: &str = r#"
 import os
 import sys
@@ -330,7 +336,9 @@ fn compress_one_page_artifact(
     );
 
     let _ = fs::remove_file(&paths.temp);
-    let output = Command::new(python)
+    let mut command = Command::new(python);
+    sanitize_compression_environment(&mut command);
+    let output = command
         .arg("-c")
         .arg(PYMUPDF_COMPRESS_SCRIPT)
         .arg(&paths.source)
@@ -815,7 +823,7 @@ fn unregister_compression_task(key: &str) {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::PathBuf};
+    use std::{fs, path::PathBuf, process::Command};
 
     use crate::rosetta_jobs::{
         formats::pdf::page_state::{
@@ -897,6 +905,27 @@ mod tests {
                 .contains("compression removed translated text drawing operators"),
             "page artifact compression must reject outputs that lose translated text"
         );
+    }
+
+    #[test]
+    fn compression_clears_packaged_app_python_environment() {
+        let mut command = Command::new("python");
+        command
+            .env("PYTHONHOME", "/tmp/app/usr")
+            .env("PYTHONPATH", "/tmp/app/usr/lib/python3.12");
+        #[cfg(target_os = "linux")]
+        command.env("LD_LIBRARY_PATH", "/tmp/app/usr/lib");
+
+        super::sanitize_compression_environment(&mut command);
+
+        let removed = command
+            .get_envs()
+            .filter_map(|(key, value)| value.is_none().then(|| key.to_string_lossy().into_owned()))
+            .collect::<Vec<_>>();
+        assert!(removed.iter().any(|key| key == "PYTHONHOME"));
+        assert!(removed.iter().any(|key| key == "PYTHONPATH"));
+        #[cfg(target_os = "linux")]
+        assert!(removed.iter().any(|key| key == "LD_LIBRARY_PATH"));
     }
 
     fn unique_temp_dir(prefix: &str) -> PathBuf {

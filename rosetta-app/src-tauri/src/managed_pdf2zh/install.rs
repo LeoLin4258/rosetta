@@ -1984,7 +1984,7 @@ mod tests {
         extract_archive_with_limits, ArchiveLimits, DirectoryCleanup, FileCleanup,
         ManifestInstallTransaction, PackInstallTransaction, Pdf2zhInstallOptions,
     };
-    use crate::managed_pdf2zh::profile::WINDOWS_AMD64_PDF2ZH;
+    use crate::managed_pdf2zh::profile::{LINUX_X64_PDF2ZH, WINDOWS_AMD64_PDF2ZH};
 
     #[test]
     fn custom_pack_url_does_not_reuse_profile_hash_or_size() {
@@ -2300,6 +2300,91 @@ mod tests {
                 .count(),
             1,
             "committed upgrade removes old backup"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires ROSETTA_PDF2ZH_OLD_PACK_ARCHIVE and ROSETTA_PDF2ZH_RC_ARCHIVE"]
+    async fn linux_release_archives_support_fresh_and_upgrade_installs() {
+        let old_archive = std::env::var_os("ROSETTA_PDF2ZH_OLD_PACK_ARCHIVE")
+            .map(PathBuf::from)
+            .expect("set ROSETTA_PDF2ZH_OLD_PACK_ARCHIVE");
+        let rc_archive = std::env::var_os("ROSETTA_PDF2ZH_RC_ARCHIVE")
+            .map(PathBuf::from)
+            .expect("set ROSETTA_PDF2ZH_RC_ARCHIVE");
+        let root = unique_temp_root("linux-release-archives");
+        std::fs::create_dir_all(&root).expect("create release gate root");
+        let cancel = AtomicBool::new(false);
+        let limits = ArchiveLimits::for_profile(&LINUX_X64_PDF2ZH);
+
+        let fresh_staging = root.join("fresh-staging");
+        std::fs::create_dir_all(&fresh_staging).expect("create fresh staging");
+        extract_archive_with_limits(
+            &rc_archive,
+            &fresh_staging,
+            LINUX_X64_PDF2ZH.pack_filename,
+            limits,
+            &cancel,
+        )
+        .expect("extract release candidate for fresh install");
+        let fresh_candidate = fresh_staging.join(LINUX_X64_PDF2ZH.pack_directory_name);
+        assert!(fresh_candidate
+            .join(LINUX_X64_PDF2ZH.bin_relative_path)
+            .is_file());
+        assert!(fresh_candidate.join("engine-capabilities.json").is_file());
+        let fresh_live = root.join("fresh-live");
+        PackInstallTransaction::activate(&fresh_candidate, &fresh_live)
+            .expect("activate fresh release candidate")
+            .commit()
+            .await;
+        assert!(fresh_live.join("engine-capabilities.json").is_file());
+
+        let upgrade_live = root.join("upgrade-live");
+        let old_staging = root.join("old-staging");
+        std::fs::create_dir_all(&old_staging).expect("create old staging");
+        extract_archive_with_limits(
+            &old_archive,
+            &old_staging,
+            LINUX_X64_PDF2ZH.pack_filename,
+            limits,
+            &cancel,
+        )
+        .expect("extract 2026-07-15 pack");
+        PackInstallTransaction::activate(
+            &old_staging.join(LINUX_X64_PDF2ZH.pack_directory_name),
+            &upgrade_live,
+        )
+        .expect("activate old pack")
+        .commit()
+        .await;
+
+        let upgrade_staging = root.join("upgrade-staging");
+        std::fs::create_dir_all(&upgrade_staging).expect("create upgrade staging");
+        extract_archive_with_limits(
+            &rc_archive,
+            &upgrade_staging,
+            LINUX_X64_PDF2ZH.pack_filename,
+            limits,
+            &cancel,
+        )
+        .expect("extract release candidate for upgrade");
+        PackInstallTransaction::activate(
+            &upgrade_staging.join(LINUX_X64_PDF2ZH.pack_directory_name),
+            &upgrade_live,
+        )
+        .expect("activate release candidate upgrade")
+        .commit()
+        .await;
+        assert!(upgrade_live.join("engine-capabilities.json").is_file());
+        assert_eq!(
+            std::fs::read_dir(upgrade_live.parent().expect("upgrade parent"))
+                .expect("read upgrade parent")
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().contains("backup"))
+                .count(),
+            0,
+            "committed release upgrade leaves no backup directory"
         );
         let _ = std::fs::remove_dir_all(root);
     }

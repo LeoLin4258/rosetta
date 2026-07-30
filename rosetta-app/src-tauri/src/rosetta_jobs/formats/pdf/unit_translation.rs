@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    future::Future,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -202,7 +203,7 @@ pub(crate) async fn translate_pdf_units(
     units: &[PdfTranslationUnit],
     cancel: Option<Arc<AtomicBool>>,
 ) -> Result<PdfUnitTranslationBatchResult, String> {
-    let mut noop = |_translation: PdfUnitTranslation| {};
+    let mut noop = |_translation: PdfUnitTranslation| std::future::ready(Ok(()));
     translate_pdf_units_with_events(provider, source_lang, target_lang, units, cancel, &mut noop)
         .await
 }
@@ -216,7 +217,7 @@ pub(crate) async fn translate_pdf_v3_page_plan(
     cancel: Option<Arc<AtomicBool>>,
 ) -> Result<PdfV3ProviderTranslationBatchResult, PdfV3ProviderFailure> {
     let units = provider_units_from_v3_plan(plan)?;
-    let mut noop = |_translation: PdfUnitTranslation| {};
+    let mut noop = |_translation: PdfUnitTranslation| std::future::ready(Ok(()));
     let translated = translate_provider_units_with_events(
         provider,
         source_lang,
@@ -250,7 +251,7 @@ pub(crate) async fn translate_pdf_v3_visual_paragraph_plan(
     cancel: Option<Arc<AtomicBool>>,
 ) -> Result<PdfV3ProviderTranslationBatchResult, PdfV3ProviderFailure> {
     let units = provider_units_from_visual_paragraph_plan(plan)?;
-    let mut noop = |_translation: PdfUnitTranslation| {};
+    let mut noop = |_translation: PdfUnitTranslation| std::future::ready(Ok(()));
     let translated = translate_provider_units_with_events(
         provider,
         source_lang,
@@ -275,14 +276,18 @@ pub(crate) async fn translate_pdf_v3_visual_paragraph_plan(
     })
 }
 
-pub(crate) async fn translate_pdf_units_with_events(
+pub(crate) async fn translate_pdf_units_with_events<F, Fut>(
     provider: &PdfUnitProviderConfig,
     source_lang: &str,
     target_lang: &str,
     units: &[PdfTranslationUnit],
     cancel: Option<Arc<AtomicBool>>,
-    on_unit_translation: &mut (dyn FnMut(PdfUnitTranslation) + Send),
-) -> Result<PdfUnitTranslationBatchResult, String> {
+    on_unit_translation: &mut F,
+) -> Result<PdfUnitTranslationBatchResult, String>
+where
+    F: FnMut(PdfUnitTranslation) -> Fut + Send,
+    Fut: Future<Output = Result<(), String>> + Send,
+{
     let provider_units = units
         .iter()
         .map(ProviderTranslationUnit::from)
@@ -298,14 +303,18 @@ pub(crate) async fn translate_pdf_units_with_events(
     .await
 }
 
-async fn translate_provider_units_with_events(
+async fn translate_provider_units_with_events<F, Fut>(
     provider: &PdfUnitProviderConfig,
     source_lang: &str,
     target_lang: &str,
     units: &[ProviderTranslationUnit],
     cancel: Option<Arc<AtomicBool>>,
-    on_unit_translation: &mut (dyn FnMut(PdfUnitTranslation) + Send),
-) -> Result<PdfUnitTranslationBatchResult, String> {
+    on_unit_translation: &mut F,
+) -> Result<PdfUnitTranslationBatchResult, String>
+where
+    F: FnMut(PdfUnitTranslation) -> Fut + Send,
+    Fut: Future<Output = Result<(), String>> + Send,
+{
     let translatable = units
         .iter()
         .filter(|unit| unit.requires_translation && !unit.source_text.trim().is_empty())
@@ -325,7 +334,7 @@ async fn translate_provider_units_with_events(
 
     if translatable.is_empty() {
         for translation in passthrough.iter().cloned() {
-            on_unit_translation(translation);
+            on_unit_translation(translation).await?;
         }
         return Ok(PdfUnitTranslationBatchResult {
             translations: passthrough,
@@ -334,7 +343,7 @@ async fn translate_provider_units_with_events(
     }
 
     for translation in passthrough.iter().cloned() {
-        on_unit_translation(translation);
+        on_unit_translation(translation).await?;
     }
 
     let mut translations = match provider {
@@ -533,15 +542,19 @@ fn provider_failure(_message: String, cancel: Option<&Arc<AtomicBool>>) -> PdfV3
     }
 }
 
-async fn translate_units_lightning(
+async fn translate_units_lightning<F, Fut>(
     config: &LightningPdfApiConfig,
     source_lang: &str,
     target_lang: &str,
     units: &[ProviderTranslationUnit],
     cancel: Option<Arc<AtomicBool>>,
     metrics: &mut PdfUnitTranslationMetrics,
-    on_unit_translation: &mut (dyn FnMut(PdfUnitTranslation) + Send),
-) -> Result<Vec<PdfUnitTranslation>, String> {
+    on_unit_translation: &mut F,
+) -> Result<Vec<PdfUnitTranslation>, String>
+where
+    F: FnMut(PdfUnitTranslation) -> Fut + Send,
+    Fut: Future<Output = Result<(), String>> + Send,
+{
     let prepared = prepare_lightning_chunks(units);
     let mut chunk_outputs = vec![String::new(); prepared.chunks.len()];
     let mut chunk_ready = vec![false; prepared.chunks.len()];
@@ -554,7 +567,8 @@ async fn translate_units_lightning(
         target_lang,
         &mut emitted_unit_ids,
         on_unit_translation,
-    )?;
+    )
+    .await?;
     for batch in prepared.chunks.chunks(LIGHTNING_MAX_BATCH_SIZE) {
         ensure_not_cancelled(cancel.as_ref())?;
         let source_texts = batch
@@ -602,7 +616,8 @@ async fn translate_units_lightning(
                     target_lang,
                     &mut emitted_unit_ids,
                     on_unit_translation,
-                )?;
+                )
+                .await?;
             }
             Ok(translations) => {
                 metrics.record_request(
@@ -650,7 +665,7 @@ enum ProviderKind {
     Scripted(std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<ProviderTranslateResult>>>),
 }
 
-async fn translate_units_provider_batches(
+async fn translate_units_provider_batches<F, Fut>(
     provider: ProviderKind,
     source_lang: &str,
     target_lang: &str,
@@ -658,8 +673,12 @@ async fn translate_units_provider_batches(
     max_batch_size: usize,
     cancel: Option<Arc<AtomicBool>>,
     metrics: &mut PdfUnitTranslationMetrics,
-    on_unit_translation: &mut (dyn FnMut(PdfUnitTranslation) + Send),
-) -> Result<Vec<PdfUnitTranslation>, String> {
+    on_unit_translation: &mut F,
+) -> Result<Vec<PdfUnitTranslation>, String>
+where
+    F: FnMut(PdfUnitTranslation) -> Fut + Send,
+    Fut: Future<Output = Result<(), String>> + Send,
+{
     let prepared = prepare_non_lightning_chunks(units);
     let mut chunk_outputs = vec![String::new(); prepared.chunks.len()];
     let mut chunk_ready = vec![false; prepared.chunks.len()];
@@ -672,7 +691,8 @@ async fn translate_units_provider_batches(
         target_lang,
         &mut emitted_unit_ids,
         on_unit_translation,
-    )?;
+    )
+    .await?;
     for batch in prepared.chunks.chunks(max_batch_size.max(1)) {
         ensure_not_cancelled(cancel.as_ref())?;
         let source_texts = batch
@@ -731,7 +751,8 @@ async fn translate_units_provider_batches(
                     target_lang,
                     &mut emitted_unit_ids,
                     on_unit_translation,
-                )?;
+                )
+                .await?;
                 continue;
             } else {
                 return Err(result.message);
@@ -757,7 +778,8 @@ async fn translate_units_provider_batches(
             target_lang,
             &mut emitted_unit_ids,
             on_unit_translation,
-        )?;
+        )
+        .await?;
     }
 
     build_unit_outputs(units, &prepared, &chunk_outputs, target_lang)
@@ -1064,15 +1086,19 @@ fn build_unit_outputs(
     Ok(outputs)
 }
 
-fn emit_ready_unit_outputs(
+async fn emit_ready_unit_outputs<F, Fut>(
     units: &[ProviderTranslationUnit],
     prepared: &PreparedChunks,
     chunk_outputs: &[String],
     chunk_ready: &[bool],
     target_lang: &str,
     emitted_unit_ids: &mut BTreeSet<String>,
-    on_unit_translation: &mut (dyn FnMut(PdfUnitTranslation) + Send),
-) -> Result<(), String> {
+    on_unit_translation: &mut F,
+) -> Result<(), String>
+where
+    F: FnMut(PdfUnitTranslation) -> Fut + Send,
+    Fut: Future<Output = Result<(), String>> + Send,
+{
     for unit in units {
         if emitted_unit_ids.contains(&unit.unit_id) {
             continue;
@@ -1091,7 +1117,7 @@ fn emit_ready_unit_outputs(
             text,
         };
         emitted_unit_ids.insert(unit.unit_id.clone());
-        on_unit_translation(translation);
+        on_unit_translation(translation).await?;
     }
     Ok(())
 }
@@ -1687,7 +1713,10 @@ mod tests {
             1,
             None,
             &mut metrics,
-            &mut |translation| emitted.push(translation),
+            &mut |translation| {
+                emitted.push(translation);
+                std::future::ready(Ok(()))
+            },
         )
         .await
         .expect("split retry should recover");
@@ -1698,6 +1727,86 @@ mod tests {
         assert_eq!(metrics.request_count, 2);
         assert_eq!(metrics.failed_request_count, 1);
         assert_eq!(metrics.truncated_count, 1);
+    }
+
+    #[tokio::test]
+    async fn callback_backpressure_preserves_provider_request_plan_and_unit_order() {
+        let scripted = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::from(
+            vec![
+                provider_success(vec!["甲".to_string(), "乙".to_string()]),
+                provider_success(vec!["丙".to_string(), "丁".to_string()]),
+                provider_success(vec!["戊".to_string()]),
+            ],
+        )));
+        let provider = PdfUnitProviderConfig::Scripted {
+            results: scripted,
+            max_batch_size: 2,
+        };
+        let units = [
+            unit("unit-a", "First complete sentence."),
+            unit("unit-b", "Second complete sentence."),
+            unit("unit-c", "Third complete sentence."),
+            unit("unit-d", "Fourth complete sentence."),
+            unit("unit-e", "Fifth complete sentence."),
+        ];
+        let (sender, mut receiver) = tokio::sync::mpsc::channel::<PdfUnitTranslation>(1);
+        let consumer = tokio::spawn(async move {
+            let mut unit_ids = Vec::new();
+            while let Some(translation) = receiver.recv().await {
+                unit_ids.push(translation.unit_id);
+                tokio::task::yield_now().await;
+            }
+            unit_ids
+        });
+        let mut on_unit_translation = move |translation| {
+            let sender = sender.clone();
+            async move {
+                sender
+                    .send(translation)
+                    .await
+                    .map_err(|_| "test translation receiver closed".to_string())
+            }
+        };
+
+        let result = translate_provider_units_with_events(
+            &provider,
+            "en",
+            "zh-CN",
+            &units,
+            None,
+            &mut on_unit_translation,
+        )
+        .await
+        .expect("bounded callback translation");
+        drop(on_unit_translation);
+        let emitted_unit_ids = consumer.await.expect("consumer task should join");
+
+        assert_eq!(result.metrics.request_count, 3);
+        assert_eq!(
+            result.metrics.batch_size_distribution,
+            vec![
+                PdfBatchSizeBucket {
+                    batch_size: 1,
+                    request_count: 1,
+                },
+                PdfBatchSizeBucket {
+                    batch_size: 2,
+                    request_count: 2,
+                },
+            ]
+        );
+        assert_eq!(
+            emitted_unit_ids,
+            vec!["unit-a", "unit-b", "unit-c", "unit-d", "unit-e"]
+        );
+        assert_eq!(
+            result
+                .translations
+                .iter()
+                .map(|translation| translation.unit_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["unit-a", "unit-b", "unit-c", "unit-d", "unit-e"]
+        );
     }
 
     #[tokio::test]
@@ -1714,7 +1823,10 @@ mod tests {
             "zh-CN",
             &[non_translation_unit("dup", "Duplicate text layer")],
             None,
-            &mut |translation| emitted.push(translation),
+            &mut |translation| {
+                emitted.push(translation);
+                std::future::ready(Ok(()))
+            },
         )
         .await
         .expect("non-required unit should not call provider");
@@ -1745,7 +1857,10 @@ mod tests {
             "zh-CN",
             &[unit("unit-a", "Source paragraph")],
             None,
-            &mut |translation| emitted.push(translation),
+            &mut |translation| {
+                emitted.push(translation);
+                std::future::ready(Ok(()))
+            },
         )
         .await
         .expect("empty unit output should reach the renderer for source fallback");
@@ -1978,8 +2093,8 @@ mod tests {
         assert_eq!(output[0].text, "{v0}{v1}");
     }
 
-    #[test]
-    fn ready_unit_event_waits_until_all_chunks_are_available() {
+    #[tokio::test]
+    async fn ready_unit_event_waits_until_all_chunks_are_available() {
         let units = [unit(
             "a",
             &"This is a sentence about progressive PDF page rendering. ".repeat(30),
@@ -2003,8 +2118,12 @@ mod tests {
             &chunk_ready,
             "zh-CN",
             &mut emitted_unit_ids,
-            &mut |translation| emitted.push(translation),
+            &mut |translation| {
+                emitted.push(translation);
+                std::future::ready(Ok(()))
+            },
         )
+        .await
         .expect("emit partial");
 
         assert!(emitted.is_empty());
@@ -2021,16 +2140,20 @@ mod tests {
             &chunk_ready,
             "zh-CN",
             &mut emitted_unit_ids,
-            &mut |translation| emitted.push(translation),
+            &mut |translation| {
+                emitted.push(translation);
+                std::future::ready(Ok(()))
+            },
         )
+        .await
         .expect("emit complete");
 
         assert_eq!(emitted.len(), 1);
         assert_eq!(emitted[0].unit_id, "a");
     }
 
-    #[test]
-    fn placeholder_only_unit_event_is_ready_without_provider_chunks() {
+    #[tokio::test]
+    async fn placeholder_only_unit_event_is_ready_without_provider_chunks() {
         let units = [unit("a", "{v0} {v1}")];
         let prepared = prepare_non_lightning_chunks(&units);
         let mut emitted_unit_ids = BTreeSet::new();
@@ -2043,8 +2166,12 @@ mod tests {
             &[],
             "zh-CN",
             &mut emitted_unit_ids,
-            &mut |translation| emitted.push(translation),
+            &mut |translation| {
+                emitted.push(translation);
+                std::future::ready(Ok(()))
+            },
         )
+        .await
         .expect("emit placeholder-only");
 
         assert_eq!(emitted.len(), 1);
