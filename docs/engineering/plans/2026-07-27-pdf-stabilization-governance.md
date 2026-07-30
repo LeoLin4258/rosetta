@@ -790,6 +790,21 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 - 下一步唯一动作：
   - 提交当前 CP7/CP11 diff 并在该 committed source 上运行 Linux pack CI
 
+#### 2026-07-30 / CP11 committed-source Linux CI / Codex
+
+- 状态：started；第一次 workflow 启动失败，已定位并修复 runner 执行权限
+- committed source：`e34689a`（已 push 至 `origin/main`）
+- 执行命令与结果：
+  - `gh workflow run build-pdf2zh-pack-linux.yml --ref main` -> dispatched
+  - GitHub Actions run `30523689042` -> fail before build；`build-pdf2zh-pack-linux-x64.sh: Permission denied`
+  - `git ls-files -s` -> Linux builder 误为 `100644`，而同类 release builder 为 `100755`
+- 修复：
+  - 恢复 `rosetta-app/src-tauri/scripts/build-pdf2zh-pack-linux-x64.sh` executable bit 为 `100755`；不改变 builder 内容或 recipe identity
+- 未解决问题或 blocker：
+  - 修复提交后需重新触发 committed-source Linux CI
+- 下一步唯一动作：
+  - 提交/push executable-mode 修复并重跑 Linux pack workflow
+
 ### 记录模板
 
 ```text
