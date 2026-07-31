@@ -5,7 +5,7 @@
 - 状态：Active
 - 创建日期：2026-07-27
 - 审计窗口：2026-07-17 至当前 `HEAD`；更早代码只在解释该窗口内的设计来源时取证
-- 当前阶段：CP8，in-progress（family 1：resource-manager reuse；两仓本地提交已获授权，正在执行 fresh-checkout pack 与十页基线）
+- 当前阶段：CP8，blocked（family 1：resource-manager reuse；两仓 commits 与 fresh-checkout tests 已通过，本机无 Linux builder，等待 push 授权以运行 workflow pack）
 - 当前生产 PDF 执行路径：`pdf2zh` prepare / unit collection / page render，Rosetta Rust 负责本地翻译、任务状态、页产物、预览与导出
 - 当前验证基线：仓库 `main` 在 `61ff0ab` 的审计快照；后续 agent 必须重新读取当前 `HEAD`，不能把该 commit 当成永久事实
 - 本文是 PDF 稳定化和治理工作的唯一活跃 handoff authority
@@ -522,7 +522,7 @@ CP8、CP9、CP10 不应与 Linux release candidate 的包内容变化混在同�
 
 ## CP8：把 Rosetta Python patch 迁入 PDFMathTranslate fork
 
-- 状态：`in-progress`
+- 状态：`blocked`
 - 依赖：CP0、CP6；建议在第一个稳定 Linux release candidate 后实施
 - 建议单次工作量：一个 agent context 只完成一个可审查 patch family，不要求一次迁移全部 3,000 行
 
@@ -694,13 +694,14 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 
 ### 当前状态摘要
 
-- 当前 checkpoint：CP8（`in-progress`）
+- 当前 checkpoint：CP8（`blocked`）
 - last completed：CP11
 - 当前 family：`resource-manager-reuse`；fork authority test、Rosetta AST capability verification、patch suite 与仓库级静态/Rust 门禁均通过
-- commit authority：用户已明确授权本地提交；未授权 push
+- commits：PDFMathTranslate `681f242`；Rosetta implementation/build-input `6301522` + `8c18449`
+- blocked：本机无 Docker，WSL 探测持续超时；两个 commits 均未位于远端，且 push 未授权，因此不能触发 immutable Linux workflow pack
 - 已知 CP11 release issue：无；AppImage 页产物压缩、custom RC schema v2 兼容、committed-source Linux CI、immutable upload/redownload 与 profile update 门禁均已关闭
-- last verified HEAD：Rosetta `6301522`；PDFMathTranslate fork `681f242f8bab16fca9ccddcfe7c9f32aa7c37947`
-- 下一步唯一动作：把 Linux immutable build input pin 更新到 fork `681f242`，然后从两仓 fresh clean commit worktree 构建并验证 Linux pack 与十页基线
+- last verified HEAD：Rosetta `8c184492fa28be3a57dd235fe3ca05058b27b977`；PDFMathTranslate fork `681f242f8bab16fca9ccddcfe7c9f32aa7c37947`
+- 下一步唯一动作：用户明确授权 push fork `codex/cp8-resource-manager-reuse` 和 Rosetta 临时 `codex/` branch；随后触发 Linux pack workflow 并完成 smoke、十页与视觉基线
 
 #### 2026-07-28 / CP11 / Codex
 
@@ -1508,6 +1509,19 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 - build authority：`pdf2zh-linux-x64-inputs.json` 仍 pin `990bed0`，该旧源码依赖已删除的 resource-manager rewrite；本 family 必须将唯一 commit identity 更新为 fork `681f242`，否则 verifier 会 fail-closed。此项不修改 release profile
 - 修改文件：本文、`rosetta-app/src-tauri/scripts/pdf2zh-linux-x64-inputs.json`、`test-pdf2zh-patches.py`
 - 下一步唯一动作：提交 build-input pin；随后若仍无本地 Linux runtime，取得 push 授权后从该精确 Rosetta commit 触发 workflow artifact build
+
+#### 2026-07-31 / CP8 family 1 local-commit close / Codex
+
+- 状态：blocked
+- PDFMathTranslate commit：`681f242f8bab16fca9ccddcfe7c9f32aa7c37947`（`test(rosetta): cover PDF resource manager reuse`），branch `codex/cp8-resource-manager-reuse`，worktree clean，无 upstream
+- Rosetta commits：`63015223b408bf2deac5032be5611948e19a9043`（capability migration）和 `8c184492fa28be3a57dd235fe3ca05058b27b977`（immutable fork input pin）；`main` clean，相对 `origin/main` ahead 2
+- fresh clean checkout：`C:\Users\Leo\Documents\GitHub\PDFMathTranslate-cp8-fresh-681f242` 与 `C:\Users\Leo\Documents\GitHub\rosetta-cp8-fresh-8c18449` 均 detached、clean、精确匹配上述 commits
+- fresh-checkout tests：fork engine + layout 22 passed；Rosetta patch suite 44 passed，明确从 fresh fork path 验证；build-input manifest 精确 pin `681f242`
+- 先前本地总门禁仍有效：fork focused 1 passed、engine 14 passed、layout 8 passed；Rosetta patch 44 passed；`pnpm typecheck`、`cargo fmt --all -- --check`、`cargo check` pass；`cargo test rosetta_jobs` 141 passed
+- Linux pack environment：Docker command 不存在；`wsl.exe --status` 和 `wsl.exe -e uname -a` 各自 19 秒超时。`.github/workflows/build-pdf2zh-pack-linux.yml` 只支持 `workflow_dispatch`，并从远端 checkout 当前 ref；本机 `gh` 已认证且有 `repo`/`workflow` scope，但未在无授权时 push 或触发 workflow
+- pack identity/hash、十页 page/unit/source/request/cache/artifact 与 PNG comparison：none；未执行，不能声明 visual baseline 或请求人工验收
+- blocked 原因：完成 Linux pack 必须先把 fork commit 与 Rosetta workflow ref push 到远端；用户本轮仅授权提交，未授权 push
+- 下一步唯一动作：用户明确授权 push 两个临时 `codex/` branches 并触发 `build-pdf2zh-pack-linux.yml`；不得迁移第二个 family
 
 ## 新 agent 接手提示词
 
