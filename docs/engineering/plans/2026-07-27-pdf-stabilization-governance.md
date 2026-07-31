@@ -5,7 +5,7 @@
 - 状态：Active
 - 创建日期：2026-07-27
 - 审计窗口：2026-07-17 至当前 `HEAD`；更早代码只在解释该窗口内的设计来源时取证
-- 当前阶段：CP11，进行中
+- 当前阶段：CP8，in-progress（family 1：resource-manager reuse；两仓本地提交已获授权，正在执行 fresh-checkout pack 与十页基线）
 - 当前生产 PDF 执行路径：`pdf2zh` prepare / unit collection / page render，Rosetta Rust 负责本地翻译、任务状态、页产物、预览与导出
 - 当前验证基线：仓库 `main` 在 `61ff0ab` 的审计快照；后续 agent 必须重新读取当前 `HEAD`，不能把该 commit 当成永久事实
 - 本文是 PDF 稳定化和治理工作的唯一活跃 handoff authority
@@ -522,7 +522,7 @@ CP8、CP9、CP10 不应与 Linux release candidate 的包内容变化混在同�
 
 ## CP8：把 Rosetta Python patch 迁入 PDFMathTranslate fork
 
-- 状态：`not-started`
+- 状态：`in-progress`
 - 依赖：CP0、CP6；建议在第一个稳定 Linux release candidate 后实施
 - 建议单次工作量：一个 agent context 只完成一个可审查 patch family，不要求一次迁移全部 3,000 行
 
@@ -694,12 +694,13 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 
 ### 当前状态摘要
 
-- 当前 checkpoint：CP11（`completed`）
+- 当前 checkpoint：CP8（`in-progress`）
 - last completed：CP11
-- blocked：无
+- 当前 family：`resource-manager-reuse`；fork authority test、Rosetta AST capability verification、patch suite 与仓库级静态/Rust 门禁均通过
+- commit authority：用户已明确授权本地提交；未授权 push
 - 已知 CP11 release issue：无；AppImage 页产物压缩、custom RC schema v2 兼容、committed-source Linux CI、immutable upload/redownload 与 profile update 门禁均已关闭
-- last verified HEAD：`9ba4fa9`；最终 profile update 已在该提交之上完成验证
-- 下一步唯一动作：推进 CP8，按 patch family 将构建时 patch 迁入 PDFMathTranslate fork；每个 family 独立验证，不与新的 release profile 变更混合
+- last verified HEAD：Rosetta `39783ca`；PDFMathTranslate fork `5ed2389afcee919101a6a3d048f7594bec46b8c2`
+- 下一步唯一动作：提交 Rosetta capability migration，随后从两仓 fresh clean commit worktree 构建并验证 Linux pack 与十页基线
 
 #### 2026-07-28 / CP11 / Codex
 
@@ -1382,6 +1383,121 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 - 本地验证：`pnpm typecheck` pass；`python src-tauri/scripts/test-pdf2zh-patches.py -q` 39 passed；`cargo check` pass；`cargo test rosetta_jobs` 134 passed；`cargo test managed_pdf2zh::worker` 8 passed；`cargo fmt -- --check` pass；Python worker `py_compile` pass；`git diff --check` pass
 - 未解决 release issue：AppImage artifact compression 的 `PYTHONHOME` / `PYTHONPATH` 污染仍归 CP11 full-App release gate，不阻塞 CP4
 - 下一步唯一动作：将当前 CP3 验收修复作为独立提交封存，随后执行 CP4；不要把 CP4 改动混入当前 worktree
+
+#### 2026-07-31 / CP8 family 1 / Codex
+
+- 状态：started
+- Rosetta HEAD：`39783ca`（`Pin Linux PDF release pack`）
+- Rosetta worktree baseline：clean；`git status --short` 无输出
+- PDFMathTranslate checkout：`C:\Users\Leo\Documents\GitHub\PDFMathTranslate`
+- 执行命令与结果：
+  - `Get-Content -Raw AGENTS.md`、治理计划、project plan、engineering README、frontend/data-model conventions、PDF v1 plan 和相关 ADR 0004/0005/0008/0009/0014/0077 -> pass；确认 ADR 0077 production authority 与 CP8 冻结边界
+  - `git status --short`、`git rev-parse --short HEAD`、`git log -1 --oneline`（Rosetta）-> clean，`39783ca`，`39783ca Pin Linux PDF release pack`
+  - `rg` patch/build/capability/worker references -> pass；现有 source rewrite、tests、builder 和 capability manifest 均仍存在
+- 修改文件：`docs/engineering/plans/2026-07-27-pdf-stabilization-governance.md`
+- 产物：pending
+- 下一步唯一动作：核验 fork instructions、remote、branch、commit、worktree 与 Python test environment，再选择一个 family
+
+#### 2026-07-31 / CP8 family 1 / Codex
+
+- 状态：blocked
+- Rosetta identity：base commit `39783ca`；本轮只有本文状态/ledger 未提交修改，没有创建 Rosetta commit
+- PDFMathTranslate identity：
+  - absolute path：`C:\Users\Leo\Documents\GitHub\PDFMathTranslate`
+  - branch：`main`，tracking `origin/main`
+  - exact commit：`5ed2389afcee919101a6a3d048f7594bec46b8c2`（`fix(rosetta): preserve partial page translations`）
+  - remote：`origin=https://github.com/LeoLin4258/PDFMathTranslate.git`；`upstream=https://github.com/PDFMathTranslate/PDFMathTranslate.git`
+  - instructions：checkout 内没有 `AGENTS.md` 或 `CONTRIBUTING*`；`pyproject.toml` 声明 Python `>=3.11,<3.13` 与 pytest dev dependency
+  - worktree：dirty before CP8 edits；`pdf2zh/doclayout.py` 和 `test/test_doclayout.py` 各有未提交修改
+- dirty-worktree 证据：
+  - `git diff --stat` -> 2 files changed, 17 insertions, 5 deletions
+  - diff 内容 -> 为 ONNX layout 增加 CUDA provider 检测、CUDA/DirectML 统一 CPU fallback、CUDA `preferred_batch_size=5`，并新增 CUDA batch-size test；本 agent 未创建这些修改，不能确认归属
+  - 文件时间戳均为 `2026-07-24 18:53:47`
+  - `pdf2zh/doclayout.py` SHA-256 `5c075780d53a829fb15c8c92f8ce6536b5019392b899b448043f0d2ee7f61360`
+  - `test/test_doclayout.py` SHA-256 `07584dd04d80fdd9d5b333c61f6e13565c1a5943666422ae80d61afb02f1d778`
+- fork test environment：
+  - `.venv\\Scripts\\python.exe --version` -> Python 3.12.12
+  - `.venv\\Scripts\\python.exe -m pytest --version` -> pytest 9.1.1
+  - `PYTHONDONTWRITEBYTECODE=1 .venv\\Scripts\\python.exe -m pytest test\\test_doclayout.py -q -p no:cacheprovider` -> pass；9 passed in 2.12s
+- 现有 Rosetta patch family inventory：
+
+| family | Rosetta patch / tests | fork targets | marker / capability | behavior risk and possible authority impact |
+| --- | --- | --- | --- | --- |
+| DirectML layout batching | `patch-pdf2zh-directml-layout.py`; `test_directml_patch_is_bounded_and_has_cpu_fallback` 等 | `pdf2zh/doclayout.py`, `pdf2zh/rosetta_engine.py` | `predict_batch`, `preferred_batch_size`, `build_layout_masks`; no declared capability | medium-high；layout execution/performance，错误实现可改变 masks、unit authority 与视觉结果；当前 dirty diff 正与此 family 重叠 |
+| scalar layout clamps | `patch_converter_scalar_layout_clamp`; `test_patch_uses_scalar_layout_coordinate_clamps` | `pdf2zh/converter.py` | scalar `min(max(...))`; no capability | low；预期只替代 scalar `np.clip`，不应改变 unit/source/request，边界坐标可能影响视觉 |
+| color/bold/font style | converter bold/color/render-safety patches；对应 color/bold/font tests | `pdf2zh/converter.py`, `pdf2zh/high_level.py`, `pdf2zh/rosetta_engine.py` | bold/font Rosetta comments; no capability | high；直接影响字体、颜色、粗体、artifact 与视觉，不应作为首个 family |
+| centered alignment | `patch_converter_centered_single_line_alignment`; alignment tests | `pdf2zh/converter.py` | `rosetta_pdf_centered_alignment_shift` / centered-alignment comment | high visual；不应改变 unit/request，但直接改变 placement |
+| structural line breaks / TOC / references | converter + engine structural-line-break patches；structural tests | `pdf2zh/converter.py`, `pdf2zh/rosetta_engine.py` | structural-line-break comment and helpers | high；可能改变 source payload、unit segmentation、request plan 与视觉 |
+| formula/table/diagram/nontranslatable filtering | formula classification、nontranslatable helpers、duplicate-layer patch；相关 classification tests | `pdf2zh/converter.py`, `pdf2zh/rosetta_engine.py` | duplicate-layer comment；部分受 `authoritative-render-slots` / `partial-page-accounting` 覆盖 | highest；直接改变 unit authority、source payload、request count/plan 与视觉 |
+| selected-page preparation | `patch_rosetta_engine_selected_page_window`; selected-page test | `pdf2zh/rosetta_engine.py` | `Rosetta: prepare only selected PDF pages...`; no capability | medium-high；影响 prepare page mapping/cache，错误会改变 page/unit authority |
+| authoritative render slots / partial accounting | `patch_rosetta_engine_authoritative_render_slots`; render-slot tests | `pdf2zh/rosetta_engine.py` | comment marker；capabilities `authoritative-render-slots`, `partial-page-accounting` | highest；直接定义 render correspondence、fallback accounting、unit authority 和视觉 |
+| reusable prepared run | `patch_rosetta_engine_prepared_cache`; reset/dispose tests | `pdf2zh/rosetta_engine.py` | `_PRISTINE_PREPARED_PDFS`, `resetRun`; capability `reusable-prepared-run` | medium；应只影响 reset/cache，但 stale state 可改变后续 render |
+| durable layout cache | `patch_rosetta_engine_persistent_layout_cache`; durable-cache tests | `pdf2zh/rosetta_engine.py` | `_PERSISTENT_LAYOUT_CACHE_SCHEMA = 1`; capability `durable-layout-cache` | medium-high；影响 prepare cache，identity bug 可改变 layout/unit/visual |
+| resource-manager reuse | `patch_rosetta_engine_resource_manager_reuse`; `test_patch_reuses_pdfminer_resource_manager_across_pages` | `pdf2zh/rosetta_engine.py` | `rsrcmgr=rsrcmgr`; no declared capability | low；预期仅复用 pdfminer resource manager、改善 prepare 性能，不改变 visual/unit/source/request；clean checkout 后的首选候选 |
+| shared font registration / page subsetting | shared-font and page-subsetting patches；对应 focused tests | `pdf2zh/rosetta_engine.py` | two Rosetta comments; no capability | medium-high；影响 artifact bytes、字体资源、可搜索性和潜在视觉输出 |
+
+- 停止原因：CP8 明确规定 fork 有来源不明的未提交修改时停止。不得自行 reset、stash、commit、复制到 pack，且当前修改与 layout family 重叠，无法安全绕开。
+- 未执行：family 选择定案、fork/Rosetta 实现、fresh clean checkout、pack build/smoke、十页 fixture、视觉 baseline、Rosetta patch suite、typecheck、cargo fmt/check/test；这些门禁只有在 clean fork 上实施 family 后才有意义。
+- pack identity/hash：none；未从 dirty fork 或 mutable installed pack 构建任何产物。
+- 未解决问题或 blocker：需要用户确认两处 CUDA layout 修改的归属，并将其提交到明确分支或移到独立 worktree，从而提供 clean fork checkout。不得通过扩大到第二个 family 绕过。
+- 下一步唯一动作：取得 clean fork checkout 后恢复 CP8 family 1，先从代码/测试复核 `resource-manager-reuse` 的低风险假设，再在不触及 layout dirty changes、unit authority、source payload、request plan 或 release profile 的前提下实施和验证。
+
+#### 2026-07-31 / CP8 family 1 resume / Codex
+
+- 状态：started
+- 用户指令：在保留原始 dirty checkout 的前提下继续推进 CP8
+- Rosetta identity：HEAD `39783ca`（`Pin Linux PDF release pack`）；worktree 仅有本文前一 CP8 状态/ledger 修改
+- PDFMathTranslate clean implementation worktree：
+  - absolute path：`C:\Users\Leo\Documents\GitHub\PDFMathTranslate-cp8-resource-manager`
+  - mode：detached HEAD；exact baseline `5ed2389afcee919101a6a3d048f7594bec46b8c2`
+  - source remote：`origin=https://github.com/LeoLin4258/PDFMathTranslate.git`；`upstream=https://github.com/PDFMathTranslate/PDFMathTranslate.git`
+  - `git status --short` -> clean；checkout 内无 `AGENTS.md` 或 `CONTRIBUTING*`
+- 原始 checkout：`C:\Users\Leo\Documents\GitHub\PDFMathTranslate` 仍为 `main@5ed2389`，原有 `pdf2zh/doclayout.py`、`test/test_doclayout.py` dirty 修改保持不动，不作为实现、测试或打包输入
+- family 选择证据：`git blame` / `git log -S 'rsrcmgr=rsrcmgr'` 确认复用行为已由 fork commit `5101626` 以正常 Python 源码实现并被当前 baseline 继承；当前缺口是 fork authority test，以及 Rosetta 从 source rewrite 切换为 fail-closed capability verification
+- 风险判断：此 family 只要求同一次 `prepareRun` 的 selected pages 共用一个 `PDFResourceManager(caching=True)`；不触及 layout masks、renderer heuristic、unit segmentation/authority、source payload、RWKV request plan、用户流程或持久化
+- 修改文件：本文；fork/Rosetta code pending
+- 下一步唯一动作：添加 fork upstream-style reuse test，并将 Rosetta 仅此 family 改为 AST behavior verification + declared engine capability
+
+#### 2026-07-31 / CP8 family 1 implementation / Codex
+
+- 状态：blocked
+- family：`resource-manager-reuse`
+- 选择原因：当前 fork baseline 已由 commit `5101626` 用正常 Python 源码实现单次 `prepareRun` 共用一个 `PDFResourceManager(caching=True)`；该 family 单文件、单行为面，预期只影响 prepare 性能，不触及 renderer heuristic、unit authority、source payload、RWKV request plan、用户流程或持久化
+- PDFMathTranslate identity：
+  - implementation worktree：`C:\Users\Leo\Documents\GitHub\PDFMathTranslate-cp8-resource-manager`
+  - detached base：`5ed2389afcee919101a6a3d048f7594bec46b8c2`（`fix(rosetta): preserve partial page translations`）
+  - 修改文件：`test/test_rosetta_engine.py`；新增三页真实 prepare 的 shared-object authority test，生产源码逻辑不重写
+  - uncommitted diff identity：Git binary diff hash-object `5d404c00d8e1510be1ab109450300f69acd5ae49`
+  - 原始 `C:\Users\Leo\Documents\GitHub\PDFMathTranslate` checkout 仍停在同一 commit；既有 dirty 文件与 SHA-256 未变：`pdf2zh/doclayout.py` `5c075780d53a829fb15c8c92f8ce6536b5019392b899b448043f0d2ee7f61360`，`test/test_doclayout.py` `07584dd04d80fdd9d5b333c61f6e13565c1a5943666422ae80d61afb02f1d778`
+- Rosetta identity：
+  - base HEAD：`39783cab90da717733bd310b060dffa65a74e5b6`（`Pin Linux PDF release pack`）
+  - 修改文件：本文、`rosetta-app/src-tauri/scripts/patch-pdf2zh-color-preservation.py`、`pdf2zh-engine-capabilities.json`、`test-pdf2zh-patches.py`
+  - 仅此 family 从 `patch_rosetta_engine_resource_manager_reuse` source rewrite 改为 `verify_rosetta_engine_resource_manager_reuse` AST fail-closed verification；其他 patch family 调用保持原状
+  - capability manifest：新增 `resource-manager-reuse`，engine revision `1 -> 2`；未修改 release profile
+  - patch suite 的 authoritative source 可通过 `ROSETTA_TEST_PDF2ZH_SOURCE_PATH` 显式指向隔离 clean fork worktree
+  - uncommitted Rosetta code diff identity（不含自引用 ledger）：Git binary diff hash-object `bf350551ccd3f5c6cafeb420ea6825e2f7417729`
+- 执行命令与结果：
+  - fork focused `pytest test/test_rosetta_engine.py::test_prepare_reuses_pdfminer_resource_manager_across_pages -q -p no:cacheprovider` -> pass；1 passed
+  - fork applicable `pytest test/test_rosetta_engine.py -q -p no:cacheprovider` -> pass；14 passed；`pytest test/test_doclayout.py -q -p no:cacheprovider` -> pass；8 passed
+  - `ROSETTA_TEST_PDF2ZH_SOURCE_PATH=<clean-worktree> python rosetta-app/src-tauri/scripts/test-pdf2zh-patches.py -q` -> pass；44 passed
+  - `pnpm typecheck` -> pass
+  - `cargo fmt --all -- --check` -> pass
+  - `cargo check` -> pass
+  - `cargo test rosetta_jobs` -> pass；141 passed，0 failed
+  - 两仓 `git diff --check` -> pass
+- pack / 十页 / visual：未执行；没有 pack identity/hash。CP8 要求从两个精确 clean commits fresh checkout 构建，当前 WIP 未提交，且不得把 mutable worktree、原始 dirty sibling 或 installed pack 当作替代输入
+- blocked 原因：用户原指令明确“不要提交或推送，除非另行明确要求”。缺少提交授权时无法满足 clean fork commit、Rosetta commit、fresh-checkout pack 和远端 Linux 构建的 immutable input 要求；不通过扩大到第二个 family 绕过
+- 人工视觉验收：尚不应开始；只有 fresh-checkout pack smoke、十页 page/unit/source/request/cache/artifact/PNG 对比全部通过后，才向用户提供人工验收路径，且不得代替用户声明通过
+- 下一步唯一动作：用户明确授权在两个隔离工作区分别创建本 family 的本地 commit；若本机无法提供 Linux x86_64 构建，还需同时明确授权 push 临时 `codex/` 分支并触发 pack workflow
+
+#### 2026-07-31 / CP8 family 1 commit resume / Codex
+
+- 状态：started
+- 用户授权：明确授权提交；本记录按本地 commit 执行，push 仍未授权
+- PDFMathTranslate commit：`681f242`（`test(rosetta): cover PDF resource manager reuse`），branch `codex/cp8-resource-manager-reuse`；implementation worktree clean
+- 原始 fork checkout：仍为 `main@5ed2389`，原有 `pdf2zh/doclayout.py`、`test/test_doclayout.py` dirty 修改保持不动且未纳入 commit
+- Rosetta base：`39783ca`；准备提交本文已记录的单 family capability migration
+- 下一步唯一动作：创建 Rosetta implementation commit，然后从两仓 commit 建立 fresh clean worktrees 执行 pack、smoke、十页与视觉基线
 
 ## 新 agent 接手提示词
 

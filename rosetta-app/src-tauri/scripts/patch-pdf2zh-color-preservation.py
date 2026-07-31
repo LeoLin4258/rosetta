@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import ast
 from pathlib import Path
 import json
 import re
@@ -3723,6 +3724,7 @@ def patch_rosetta_engine_capabilities(root: Path) -> bool:
         "durable-layout-cache": "_PERSISTENT_LAYOUT_CACHE_SCHEMA = 1",
         "authoritative-render-slots": "Rosetta: final page render slots are authoritative.",
         "partial-page-accounting": "fallbackUnitCount",
+        "resource-manager-reuse": "rsrcmgr=rsrcmgr",
     }
     missing_markers = [
         capability
@@ -3775,56 +3777,81 @@ def patch_rosetta_engine_capabilities(root: Path) -> bool:
     return True
 
 
-def patch_rosetta_engine_resource_manager_reuse(root: Path) -> bool:
+def verify_rosetta_engine_resource_manager_reuse(root: Path) -> None:
     target = root / "rosetta_engine.py"
     if not target.is_file():
         raise SystemExit(f"::error::could not find rosetta_engine.py in {root}")
 
     text = target.read_text(encoding="utf-8")
-    if "rsrcmgr=rsrcmgr" in text:
-        return False
-    if "def prepareRun(" not in text or "def collect_page_units(" not in text:
-        return False
+    if "class EngineCapabilities:" not in text:
+        return
+    try:
+        module = ast.parse(text, filename=str(target))
+    except SyntaxError as error:
+        raise SystemExit(f"::error::could not parse {target}: {error}") from error
 
-    prepare_anchor = "    page_caches: dict[int, _PageCache] = {}\n"
-    if prepare_anchor not in text:
-        return False
-    text = text.replace(
-        prepare_anchor,
-        prepare_anchor + "    rsrcmgr = PDFResourceManager(caching=True)\n",
-        1,
+    functions = {
+        node.name: node for node in module.body if isinstance(node, ast.FunctionDef)
+    }
+    prepare_run = functions.get("prepareRun")
+    collect_units = functions.get("collect_page_units")
+    if prepare_run is None or collect_units is None:
+        raise SystemExit(
+            f"::error::resource-manager-reuse capability is missing required functions in {target}"
+        )
+
+    manager_assignments = [
+        node
+        for node in ast.walk(prepare_run)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(assigned, ast.Name) and assigned.id == "rsrcmgr"
+            for assigned in node.targets
+        )
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name)
+        and node.value.func.id == "PDFResourceManager"
+        and any(
+            keyword.arg == "caching"
+            and isinstance(keyword.value, ast.Constant)
+            and keyword.value.value is True
+            for keyword in node.value.keywords
+        )
+    ]
+    collection_calls = [
+        node
+        for node in ast.walk(prepare_run)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "collect_page_units"
+    ]
+    shares_manager = collection_calls and all(
+        any(
+            keyword.arg == "rsrcmgr"
+            and isinstance(keyword.value, ast.Name)
+            and keyword.value.id == "rsrcmgr"
+            for keyword in call.keywords
+        )
+        for call in collection_calls
     )
-
-    call_anchor = "                translator=collector,\n"
-    if call_anchor not in text:
-        return False
-    text = text.replace(
-        call_anchor,
-        call_anchor + "                rsrcmgr=rsrcmgr,\n",
-        1,
+    collect_parameters = {argument.arg for argument in collect_units.args.args}
+    creates_per_page_manager = any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "PDFResourceManager"
+        for node in ast.walk(collect_units)
     )
+    if (
+        len(manager_assignments) != 1
+        or not shares_manager
+        or "rsrcmgr" not in collect_parameters
+        or creates_per_page_manager
+    ):
+        raise SystemExit(
+            f"::error::PDFMathTranslate fork lacks resource-manager-reuse capability in {target}"
+        )
 
-    signature_anchor = "    translator: _UnitCollectorTranslator,\n    lang_in: str,\n"
-    if signature_anchor not in text:
-        return False
-    text = text.replace(
-        signature_anchor,
-        "    translator: _UnitCollectorTranslator,\n    rsrcmgr: PDFResourceManager,\n    lang_in: str,\n",
-        1,
-    )
-
-    local_manager = "    before_count = len(translator.units)\n    rsrcmgr = PDFResourceManager(caching=True)\n"
-    if local_manager not in text:
-        return False
-    text = text.replace(
-        local_manager,
-        "    before_count = len(translator.units)\n",
-        1,
-    )
-
-    target.write_text(text, encoding="utf-8")
-    print(f"[pdf2zh-pack] reused pdfminer resource manager across prepared pages in {target}")
-    return True
+    print(f"[pdf2zh-pack] verified resource-manager-reuse capability in {target}")
 
 
 def patch_rosetta_engine_shared_font_registration(root: Path) -> bool:
@@ -3992,7 +4019,7 @@ if "def rosetta_pdf_is_bold_font(" in text and "rosetta_pdf_is_bold_font(child.f
     engine_structural_line_breaks_changed = patch_rosetta_engine_structural_line_breaks(root)
     prepared_cache_changed = patch_rosetta_engine_prepared_cache(root)
     persistent_layout_cache_changed = patch_rosetta_engine_persistent_layout_cache(root)
-    resource_manager_changed = patch_rosetta_engine_resource_manager_reuse(root)
+    verify_rosetta_engine_resource_manager_reuse(root)
     shared_font_registration_changed = patch_rosetta_engine_shared_font_registration(root)
     page_artifact_subsetting_changed = patch_rosetta_engine_page_artifact_font_subsetting(root)
     any_changed = (
@@ -4013,7 +4040,6 @@ if "def rosetta_pdf_is_bold_font(" in text and "rosetta_pdf_is_bold_font(child.f
         or engine_structural_line_breaks_changed
         or prepared_cache_changed
         or persistent_layout_cache_changed
-        or resource_manager_changed
         or shared_font_registration_changed
         or page_artifact_subsetting_changed
     )
@@ -4350,7 +4376,7 @@ patch_rosetta_engine_authoritative_render_slots(root)
 patch_rosetta_engine_structural_line_breaks(root)
 patch_rosetta_engine_prepared_cache(root)
 patch_rosetta_engine_persistent_layout_cache(root)
-patch_rosetta_engine_resource_manager_reuse(root)
+verify_rosetta_engine_resource_manager_reuse(root)
 patch_rosetta_engine_shared_font_registration(root)
 patch_rosetta_engine_page_artifact_font_subsetting(root)
 patch_rosetta_engine_capabilities(root)

@@ -152,15 +152,15 @@ class Pdf2zhPatchTests(unittest.TestCase):
         self.assertNotIn("np.clip(int(item.x0)", patched)
         self.assertFalse(namespace["patch_converter_scalar_layout_clamp"](patched)[1])
 
-    def test_patch_reuses_pdfminer_resource_manager_across_pages(self) -> None:
+    def test_verifies_pdfminer_resource_manager_reuse_capability(self) -> None:
         module = ast.parse(PATCH_SCRIPT.read_text(encoding="utf-8"))
         function = next(
             node
             for node in module.body
             if isinstance(node, ast.FunctionDef)
-            and node.name == "patch_rosetta_engine_resource_manager_reuse"
+            and node.name == "verify_rosetta_engine_resource_manager_reuse"
         )
-        namespace = {"Path": Path}
+        namespace = {"Path": Path, "ast": ast}
         exec(
             compile(
                 ast.Module(body=[function], type_ignores=[]),
@@ -179,8 +179,12 @@ class _UnitCollectorTranslator:
 class _PageCache:
     pass
 
+class EngineCapabilities:
+    pass
+
 def prepareRun():
     page_caches: dict[int, _PageCache] = {}
+    rsrcmgr = PDFResourceManager(caching=True)
     with open('prepared.pdf', 'rb') as fp:
         for page, page_number in zip([], []):
             cache = collect_page_units(
@@ -189,6 +193,7 @@ def prepareRun():
                 page_number=page_number,
                 layout={},
                 translator=collector,
+                rsrcmgr=rsrcmgr,
                 lang_in='en',
                 lang_out='zh',
                 thread=1,
@@ -202,6 +207,7 @@ def collect_page_units(
     page_number: int,
     layout: dict[int, Any],
     translator: _UnitCollectorTranslator,
+    rsrcmgr: PDFResourceManager,
     lang_in: str,
     lang_out: str,
     thread: int,
@@ -210,7 +216,6 @@ def collect_page_units(
 ) -> _PageCache:
     translator.set_page(page_number)
     before_count = len(translator.units)
-    rsrcmgr = PDFResourceManager(caching=True)
     return _PageCache()
 """
         with tempfile.TemporaryDirectory() as tmp:
@@ -218,15 +223,15 @@ def collect_page_units(
             engine = root / "rosetta_engine.py"
             engine.write_text(fixture, encoding="utf-8")
 
-            changed = namespace["patch_rosetta_engine_resource_manager_reuse"](root)
-            self.assertTrue(changed)
-            patched = engine.read_text(encoding="utf-8")
-            self.assertIn("rsrcmgr = PDFResourceManager(caching=True)", patched)
-            self.assertIn("rsrcmgr=rsrcmgr", patched)
-            self.assertNotIn("    rsrcmgr = PDFResourceManager(caching=True)\n    return _PageCache()", patched)
-            self.assertFalse(
-                namespace["patch_rosetta_engine_resource_manager_reuse"](root)
+            namespace["verify_rosetta_engine_resource_manager_reuse"](root)
+            self.assertEqual(engine.read_text(encoding="utf-8"), fixture)
+
+            engine.write_text(
+                fixture.replace("rsrcmgr=rsrcmgr", "rsrcmgr=PDFResourceManager()"),
+                encoding="utf-8",
             )
+            with self.assertRaisesRegex(SystemExit, "lacks resource-manager-reuse"):
+                namespace["verify_rosetta_engine_resource_manager_reuse"](root)
 
     def test_patch_shares_prepared_pdf_font_objects_across_pages(self) -> None:
         module = ast.parse(PATCH_SCRIPT.read_text(encoding="utf-8"))
@@ -1711,12 +1716,13 @@ def validate_translation_keys(units: list[TranslationUnit], translations: dict[s
         self.assertIn('return ""', patched)
 
     def test_patch_accepts_current_authoritative_pdf2zh_engine(self) -> None:
-        sibling_engine = (
-            SCRIPT_DIR.parents[3]
-            / "PDFMathTranslate"
-            / "pdf2zh"
-            / "rosetta_engine.py"
+        source_root = Path(
+            os.environ.get(
+                "ROSETTA_TEST_PDF2ZH_SOURCE_PATH",
+                SCRIPT_DIR.parents[3] / "PDFMathTranslate",
+            )
         )
+        sibling_engine = source_root / "pdf2zh" / "rosetta_engine.py"
         if not sibling_engine.is_file():
             self.skipTest("sibling PDFMathTranslate checkout is unavailable")
 
@@ -2288,6 +2294,7 @@ def prewarm():
 
 # Rosetta: final page render slots are authoritative.
 fallbackUnitCount = 0
+rsrcmgr=rsrcmgr
 '''
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -2297,7 +2304,7 @@ fallbackUnitCount = 0
 
             self.assertTrue(namespace["patch_rosetta_engine_capabilities"](root))
             declared = target.read_text(encoding="utf-8")
-            self.assertIn("ENGINE_REVISION = 1", declared)
+            self.assertIn("ENGINE_REVISION = 2", declared)
             self.assertIn("ENGINE_CAPABILITIES = (", declared)
             self.assertIn("engineRevision: int", declared)
             self.assertIn("capabilities: list[str]", declared)
@@ -2331,13 +2338,14 @@ fallbackUnitCount = 0
         )
         self.assertEqual(manifest["schemaVersion"], 1)
         self.assertEqual(manifest["engineContractVersion"], 2)
-        self.assertEqual(manifest["engineRevision"], 1)
+        self.assertEqual(manifest["engineRevision"], 2)
         self.assertEqual(
             manifest["capabilities"],
             [
                 "authoritative-render-slots",
                 "durable-layout-cache",
                 "partial-page-accounting",
+                "resource-manager-reuse",
                 "reusable-prepared-run",
             ],
         )

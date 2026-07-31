@@ -1,11 +1,12 @@
 {
   "schemaVersion": 1,
   "engineContractVersion": 2,
-  "engineRevision": 1,
+  "engineRevision": 2,
   "capabilities": [
     "authoritative-render-slots",
     "durable-layout-cache",
     "partial-page-accounting",
+    "resource-manager-reuse",
     "reusable-prepared-run"
   ]
 }
