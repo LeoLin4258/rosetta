@@ -5,7 +5,7 @@
 - 状态：Active
 - 创建日期：2026-07-27
 - 审计窗口：2026-07-17 至当前 `HEAD`；更早代码只在解释该窗口内的设计来源时取证
-- 当前阶段：CP8，blocked（family 1：resource-manager reuse；两仓 commits 与 fresh-checkout tests 已通过，本机无 Linux builder，等待 push 授权以运行 workflow pack）
+- 当前阶段：CP8，in-progress（family 1：resource-manager reuse；自动化 pack、十页 authority、cache、request-plan identity 与 10/10 PNG baseline 已通过，等待用户人工视觉验收）
 - 当前生产 PDF 执行路径：`pdf2zh` prepare / unit collection / page render，Rosetta Rust 负责本地翻译、任务状态、页产物、预览与导出
 - 当前验证基线：仓库 `main` 在 `61ff0ab` 的审计快照；后续 agent 必须重新读取当前 `HEAD`，不能把该 commit 当成永久事实
 - 本文是 PDF 稳定化和治理工作的唯一活跃 handoff authority
@@ -522,7 +522,7 @@ CP8、CP9、CP10 不应与 Linux release candidate 的包内容变化混在同�
 
 ## CP8：把 Rosetta Python patch 迁入 PDFMathTranslate fork
 
-- 状态：`blocked`
+- 状态：`in-progress`（family 1 自动化门禁通过，等待人工视觉验收）
 - 依赖：CP0、CP6；建议在第一个稳定 Linux release candidate 后实施
 - 建议单次工作量：一个 agent context 只完成一个可审查 patch family，不要求一次迁移全部 3,000 行
 
@@ -547,11 +547,11 @@ CP8、CP9、CP10 不应与 Linux release candidate 的包内容变化混在同�
 
 ### Acceptance
 
-- [ ] 本轮 patch family 在 fork 中有正常测试。
-- [ ] clean fork commit 足以重建行为。
-- [ ] Rosetta builder 不再对该 family 字符串替换。
-- [ ] pack smoke 和 visual baseline 不回退。
-- [ ] execution ledger 记录两个仓库的精确 commit。
+- [x] 本轮 patch family 在 fork 中有正常测试。
+- [x] clean fork commit 足以重建行为。
+- [x] Rosetta builder 不再对该 family 字符串替换。
+- [ ] pack smoke 和 visual baseline 不回退（自动化 smoke 与 10/10 PNG pixel baseline 已通过；等待用户人工视觉验收）。
+- [x] execution ledger 记录两个仓库的精确 commit。
 
 ### 停止条件
 
@@ -694,14 +694,16 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 
 ### 当前状态摘要
 
-- 当前 checkpoint：CP8（`blocked`）
+- 当前 checkpoint：CP8（`in-progress`；family 1 自动化门禁通过，等待人工视觉验收）
 - last completed：CP11
-- 当前 family：`resource-manager-reuse`；fork authority test、Rosetta AST capability verification、patch suite 与仓库级静态/Rust 门禁均通过
-- commits：PDFMathTranslate `681f242`；Rosetta implementation/build-input `6301522` + `8c18449`
-- blocked：本机无 Docker，WSL 探测持续超时；两个 commits 均未位于远端，且 push 未授权，因此不能触发 immutable Linux workflow pack
+- 当前 family：`resource-manager-reuse`；fork authority test、Rosetta AST capability verification、fresh-checkout pack、patch suite、仓库级静态/Rust 门禁、十页 authority、persistent cache、request-plan identity 与 10/10 PNG baseline 均通过
+- commits：PDFMathTranslate `681f242f8bab16fca9ccddcfe7c9f32aa7c37947`；Rosetta implementation/build-input `63015223b408bf2deac5032be5611948e19a9043` + `8c184492fa28be3a57dd235fe3ca05058b27b977`
+- Linux workflow：run `30608192155` success；Rosetta `ffdff6716d4c7c082b5bbc473ca5f15a2409bf08`；artifact ID `8784433771`，artifact ZIP digest `f1de8449100dba05df60bda57473ecdc7d053380243f29125b45a560c2360d4b`
+- fresh Linux pack：recipe `de41d93ebcce7cc666d1f763499f2c7f84f50e9e14b1bcd302418ca459621c8b`；archive SHA-256 `12ee5ceef7cb9992b1ee80d2ccc679d10daee68aa05f6098748b19b9048283a0`
+- 自动质量：10 pages、94 units、41,035 source chars、canonical unit SHA-256 `81d6185ffc72f263bbc03a6ab1872e4e8615728ad47ecd359b1b2b1d2f3cecb5`；persistent disk cache hit；accepted request plan 保持 1 request / 253 items / 39,901 input chars；10/10 authority PDFs 除 volatile trailer ID 外相同，10/10 PNG pixel exact
 - 已知 CP11 release issue：无；AppImage 页产物压缩、custom RC schema v2 兼容、committed-source Linux CI、immutable upload/redownload 与 profile update 门禁均已关闭
-- last verified HEAD：Rosetta `8c184492fa28be3a57dd235fe3ca05058b27b977`；PDFMathTranslate fork `681f242f8bab16fca9ccddcfe7c9f32aa7c37947`
-- 下一步唯一动作：用户明确授权 push fork `codex/cp8-resource-manager-reuse` 和 Rosetta 临时 `codex/` branch；随后触发 Linux pack workflow 并完成 smoke、十页与视觉基线
+- last verified HEAD：Rosetta `ffdff6716d4c7c082b5bbc473ca5f15a2409bf08`；PDFMathTranslate fork `681f242f8bab16fca9ccddcfe7c9f32aa7c37947`
+- 下一步唯一动作：用户使用本轮 custom pack 对十页 `2604.17278v1.pdf` 完成中文回填人工视觉验收并明确确认结果；验收前不得迁移第二个 family
 
 #### 2026-07-28 / CP11 / Codex
 
@@ -1522,6 +1524,46 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 - pack identity/hash、十页 page/unit/source/request/cache/artifact 与 PNG comparison：none；未执行，不能声明 visual baseline 或请求人工验收
 - blocked 原因：完成 Linux pack 必须先把 fork commit 与 Rosetta workflow ref push 到远端；用户本轮仅授权提交，未授权 push
 - 下一步唯一动作：用户明确授权 push 两个临时 `codex/` branches 并触发 `build-pdf2zh-pack-linux.yml`；不得迁移第二个 family
+
+#### 2026-07-31 / CP8 family 1 automated acceptance / Codex
+
+- 状态：in-progress；全部自动化门禁通过，等待用户人工视觉验收
+- family：`resource-manager-reuse`；仍是本轮唯一迁移 family，没有推进 CP9、CP10、第二个 family 或 release profile
+- 精确源码身份：
+  - PDFMathTranslate：`C:\Users\Leo\Documents\GitHub\PDFMathTranslate-cp8-resource-manager`，branch `codex/cp8-resource-manager-reuse`，commit `681f242f8bab16fca9ccddcfe7c9f32aa7c37947`，remote branch 与本地精确匹配，worktree clean
+  - Rosetta：开始与自动化验证 HEAD `ffdff6716d4c7c082b5bbc473ca5f15a2409bf08`；implementation commit `63015223b408bf2deac5032be5611948e19a9043`，build-input pin `8c184492fa28be3a57dd235fe3ca05058b27b977`，worktree 在本文收尾前 clean
+  - 原始 fork checkout `C:\Users\Leo\Documents\GitHub\PDFMathTranslate` 保持不动；用户既有 CUDA `doclayout.py` / `test_doclayout.py` 修改已由用户提交到 `origin/main@822fce4`，未纳入本 family、bundle 或 pack
+- GitHub workflow：
+  - `git ls-remote origin refs/heads/codex/cp8-resource-manager-reuse` -> `681f242f8bab16fca9ccddcfe7c9f32aa7c37947`
+  - `gh workflow run build-pdf2zh-pack-linux.yml --ref main` -> run `30608192155`，`https://github.com/LeoLin4258/rosetta/actions/runs/30608192155`
+  - workflow checkout Rosetta `ffdff6716d4c7c082b5bbc473ca5f15a2409bf08`；pinned fork fetch、resource-manager capability verification、in-place/relocation/post-prune real PDF smoke、28 runtime imports、inventory 和 size gate全部通过
+  - workflow pack：475,213,349 bytes；SHA-256 `6b18efcb3a8b37615ef2592d02117ca808387fda36345ba142bc5f2ffcf8b3ff`；recipe `de41d93ebcce7cc666d1f763499f2c7f84f50e9e14b1bcd302418ca459621c8b`
+  - workflow artifact：ID `8784433771`；name `pdf2zh-pack-linux-x64-ffdff6716d4c7c082b5bbc473ca5f15a2409bf08`；471,581,562 bytes；ZIP digest `f1de8449100dba05df60bda57473ecdc7d053380243f29125b45a560c2360d4b`；retention 至 2026-08-14
+- 下载与 fresh-build 取证：
+  - Windows `gh run download 30608192155 ...` -> 10 分钟 timeout，目标目录没有完成文件；artifact API `curl --continue-at -` 与 Linux 直连均约 50 KiB/s，已停止本 agent 启动的精确进程，保留 Windows partial `C:\Users\Leo\Documents\GitHub\rosetta-cp8-artifacts\run-30608192155\artifact.zip` 和 Linux partial `/home/rwkv/cp8-resource-manager-run-30608192155/artifact.zip` 作为证据，均未用于验证
+  - Linux 主机 `rwkv@192.168.0.115` pinned-host-key probe -> pass；Ubuntu x86_64，fixture `/home/rwkv/Downloads/2604.17278v1.pdf` 存在，SHA-256 `5db8200931a2d4104cf435a70701e80d47849c201000ed86ca645ab25d454da2`
+  - GitHub promisor checkout 与首次无本地 model 输入的 build 因外网速度不可接受而停止；对应 partial source/dist 保留且未作为最终输入
+  - `git bundle create` / `git bundle verify` -> pass；Rosetta bundle SHA-256 `c409c81cd6019520dc948ebd6e844fac97848da51b8f9248a5f99d30a827fa18`，fork bundle SHA-256 `a00bf71d3f86ed4fa5d8bc553d0e36d6231f12bea28ff0ceb9813d3fb76dbd29`；SCP 前后 hash/size 精确匹配
+  - Linux fresh clones：`/home/rwkv/cp8-resource-manager-src-bundle-ffdff671` 与 `/home/rwkv/cp8-resource-manager-fork-bundle-681f242`；两仓 detached HEAD 精确匹配、build 前后 clean
+  - final builder 只复用现有已验收 pack 的锁定 model/font bytes，通过 `DOCLAYOUT_MODEL_FILE` / `BABELDOC_FONT_SOURCE_DIR` 输入；builder 重新强制验证 model SHA-256 `fece9af02f618b603ff7921ccec6861d13e7e1f9830e091dfb7e8ad9311e5b21` 和全部 font hashes，不复用 mutable Python pack 或源码
+- fresh Linux pack：
+  - path：`/home/rwkv/cp8-resource-manager-dist-cached-ffdff671/rosetta-pdf2zh-linux-x64.tar.gz`
+  - archive：475,167,016 bytes；SHA-256 `12ee5ceef7cb9992b1ee80d2ccc679d10daee68aa05f6098748b19b9048283a0`
+  - recipe：`de41d93ebcce7cc666d1f763499f2c7f84f50e9e14b1bcd302418ca459621c8b`；inputs manifest SHA-256 `7586b3d2cd4b7f68eda6197e327ca9e6f962690abc27cd6ef7f455bc48a906ee`；engine capability manifest SHA-256 `9b3301a926d7ab284b4cb069c850aa742b72fb0bed3dffc0a023a716c7854cfc`；engine revision 2
+  - size gate：passed，0 failures / 0 warnings；1,262,347,425 unpacked bytes、11,104 regular files、1,044 symlinks、max file 218,461,128 bytes
+  - smoke：in-place、relocation、post-prune real PDF render 全 pass；28/28 runtime imports pass；resource-manager capability verifier fail-closed pass
+- 十页 authority / cache / request / visual：
+  - independent extracted pack：`/home/rwkv/cp8-resource-manager-quality-ffdff671/linux-x64`
+  - repository persistent-worker probe -> pass；first worker miss，second fresh worker disk hit，10 pages / 94 units，restored layout 0 ms，unit count unchanged
+  - authority：10 pages、94 units、41,035 source chars、full unit SHA-256 `81d6185ffc72f263bbc03a6ab1872e4e8615728ad47ecd359b1b2b1d2f3cecb5`，source payload SHA-256 `69c2548d8a8fb55dc99c016620ba38683b93441d6fd5fe69ef2981c40bfe431a`
+  - request plan：accepted profile SHA-256 `d23033729c0788d50e28af21294d864086ff84e95e08b00bc3d7a317e5bb03a8` 记录 1 request / 253 batch items / 39,901 input chars；CP11 base `39783ca` 与当前 `ffdff671` 的完整 `rosetta-app/src-tauri/src` tree 均为 `931bafd9c8ecc7d4d7ce9bdd996e38cb94a0e20b`，且 canonical unit input 精确相同，因此 request planner implementation/input 均未变化
+  - page artifacts：新 identity render 139,293,174 bytes，CP11 authority baseline 139,293,175 bytes；唯一 size delta 是 page 4 `-1` byte；逐页 byte diff 全部只位于随机 PDF trailer `/ID[...]` 表示，移除 trailer ID 后 10/10 content exact
+  - visual：以 PyMuPDF 1.5x raster 比较 CP11 authority PDFs，10/10 geometry exact、10/10 PNG bytes/SHA exact、0 differing pixel bytes；自动 visual baseline 无回退，但本 agent不声明人工视觉通过
+  - evidence：`authority-quality.json` SHA-256 `1126b0ec1cdc256085d2018495cf4004403d6fd9c60fc228fdf1fadab503ea61`；`persistent-cache-probe.txt` `bdba27dcc32894ef9e6750bba07073abe15cc15466fbe5311454b6478c9330b7`；`request-plan-evidence.json` `933d9f2f8bae083664634b76453d972e233312100b8eda3bf182d685eea3d270`；完整 evidence checksum list `762a249c0104c7ae8b61e157c5954799900d50ab7b28a0e68ef309ed0d3177e4`
+- 既有自动化总门禁仍有效：fork focused 1 passed、engine 14 passed、layout 8 passed、fresh fork 22 passed；Rosetta patch suite 44 passed；`pnpm typecheck`、`cargo fmt --all -- --check`、`cargo check` pass；`cargo test rosetta_jobs` 141 passed
+- 修改文件：仅本文收尾状态/ledger；没有修改 renderer heuristic、translation-unit authority、RWKV request plan、用户流程、持久化格式或 release profile
+- 未解决问题或 blocker：自动化 blocker 无；本 family 仍等待用户对 custom pack 的真实十页中文回填做人工视觉验收
+- 下一步唯一动作：用户用 archive `12ee5cee...` 作为 custom pack，强制重新翻译十页 `2604.17278v1.pdf`，检查 10/10 中文回填、图表公式、双栏结构、字体/颜色/粗体与页预览；明确确认后才把 family 1 标记 accepted，验收前不得迁移下一个 family
 
 ## 新 agent 接手提示词
 
