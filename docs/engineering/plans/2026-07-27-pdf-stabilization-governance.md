@@ -5,7 +5,7 @@
 - 状态：Active
 - 创建日期：2026-07-27
 - 审计窗口：2026-07-17 至当前 `HEAD`；更早代码只在解释该窗口内的设计来源时取证
-- 当前阶段：CP8，in-progress（family 1：resource-manager reuse；自动化 pack、十页 authority、cache、request-plan identity 与 10/10 PNG baseline 已通过，等待用户人工视觉验收）
+- 当前阶段：CP9 第一步，ready（CP8 family 1：resource-manager reuse 已通过全部自动化门禁和用户十页 PDF 人工视觉验收；CP8 后续 family 受 Release 后观察门约束，暂不迁移）
 - 当前生产 PDF 执行路径：`pdf2zh` prepare / unit collection / page render，Rosetta Rust 负责本地翻译、任务状态、页产物、预览与导出
 - 当前验证基线：仓库 `main` 在 `61ff0ab` 的审计快照；后续 agent 必须重新读取当前 `HEAD`，不能把该 commit 当成永久事实
 - 本文是 PDF 稳定化和治理工作的唯一活跃 handoff authority
@@ -522,7 +522,7 @@ CP8、CP9、CP10 不应与 Linux release candidate 的包内容变化混在同�
 
 ## CP8：把 Rosetta Python patch 迁入 PDFMathTranslate fork
 
-- 状态：`in-progress`（family 1 自动化门禁通过，等待人工视觉验收）
+- 状态：`in-progress`（family 1 已完成；后续 family 必须等待 Release 后观察再决定）
 - 依赖：CP0、CP6；建议在第一个稳定 Linux release candidate 后实施
 - 建议单次工作量：一个 agent context 只完成一个可审查 patch family，不要求一次迁移全部 3,000 行
 
@@ -550,7 +550,7 @@ CP8、CP9、CP10 不应与 Linux release candidate 的包内容变化混在同�
 - [x] 本轮 patch family 在 fork 中有正常测试。
 - [x] clean fork commit 足以重建行为。
 - [x] Rosetta builder 不再对该 family 字符串替换。
-- [ ] pack smoke 和 visual baseline 不回退（自动化 smoke 与 10/10 PNG pixel baseline 已通过；等待用户人工视觉验收）。
+- [x] pack smoke 和 visual baseline 不回退（自动化 smoke、10/10 PNG pixel baseline 与用户十页 PDF 人工视觉验收均通过）。
 - [x] execution ledger 记录两个仓库的精确 commit。
 
 ### 停止条件
@@ -694,16 +694,16 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 
 ### 当前状态摘要
 
-- 当前 checkpoint：CP8（`in-progress`；family 1 自动化门禁通过，等待人工视觉验收）
-- last completed：CP11
-- 当前 family：`resource-manager-reuse`；fork authority test、Rosetta AST capability verification、fresh-checkout pack、patch suite、仓库级静态/Rust 门禁、十页 authority、persistent cache、request-plan identity 与 10/10 PNG baseline 均通过
+- 当前 checkpoint：CP9 第一步（`ready`；只做未使用 PDF v3 与默认 IPC surface 隔离，不执行第二步删除）
+- last completed：CP8 family 1（`resource-manager-reuse`）；CP11 仍为 completed
+- 当前 family：无 active CP8 family；`resource-manager-reuse` 已通过 fork authority test、Rosetta AST capability verification、fresh-checkout pack、patch suite、仓库级静态/Rust 门禁、十页 authority、persistent cache、request-plan identity、10/10 PNG baseline 和用户人工视觉验收
 - commits：PDFMathTranslate `681f242f8bab16fca9ccddcfe7c9f32aa7c37947`；Rosetta implementation/build-input `63015223b408bf2deac5032be5611948e19a9043` + `8c184492fa28be3a57dd235fe3ca05058b27b977`
 - Linux workflow：run `30608192155` success；Rosetta `ffdff6716d4c7c082b5bbc473ca5f15a2409bf08`；artifact ID `8784433771`，artifact ZIP digest `f1de8449100dba05df60bda57473ecdc7d053380243f29125b45a560c2360d4b`
 - fresh Linux pack：recipe `de41d93ebcce7cc666d1f763499f2c7f84f50e9e14b1bcd302418ca459621c8b`；archive SHA-256 `12ee5ceef7cb9992b1ee80d2ccc679d10daee68aa05f6098748b19b9048283a0`
 - 自动质量：10 pages、94 units、41,035 source chars、canonical unit SHA-256 `81d6185ffc72f263bbc03a6ab1872e4e8615728ad47ecd359b1b2b1d2f3cecb5`；persistent disk cache hit；accepted request plan 保持 1 request / 253 items / 39,901 input chars；10/10 authority PDFs 除 volatile trailer ID 外相同，10/10 PNG pixel exact
 - 已知 CP11 release issue：无；AppImage 页产物压缩、custom RC schema v2 兼容、committed-source Linux CI、immutable upload/redownload 与 profile update 门禁均已关闭
-- last verified HEAD：Rosetta `ffdff6716d4c7c082b5bbc473ca5f15a2409bf08`；PDFMathTranslate fork `681f242f8bab16fca9ccddcfe7c9f32aa7c37947`
-- 下一步唯一动作：用户使用本轮 custom pack 对十页 `2604.17278v1.pdf` 完成中文回填人工视觉验收并明确确认结果；验收前不得迁移第二个 family
+- last verified HEAD：Rosetta governance closeout `200e2a7f72fe6b46254226376688836dfac4e367`；PDFMathTranslate fork `681f242f8bab16fca9ccddcfe7c9f32aa7c37947`
+- 下一步唯一动作：执行 CP9 第一步隔离；不得迁移 CP8 第二个 family、执行 CP9 第二步删除或推进 CP10，直到对应 checkpoint 和 Release 后观察门允许
 
 #### 2026-07-28 / CP11 / Codex
 
@@ -1564,6 +1564,26 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 - 修改文件：仅本文收尾状态/ledger；没有修改 renderer heuristic、translation-unit authority、RWKV request plan、用户流程、持久化格式或 release profile
 - 未解决问题或 blocker：自动化 blocker 无；本 family 仍等待用户对 custom pack 的真实十页中文回填做人工视觉验收
 - 下一步唯一动作：用户用 archive `12ee5cee...` 作为 custom pack，强制重新翻译十页 `2604.17278v1.pdf`，检查 10/10 中文回填、图表公式、双栏结构、字体/颜色/粗体与页预览；明确确认后才把 family 1 标记 accepted，验收前不得迁移下一个 family
+
+#### 2026-07-31 / CP8 family 1 manual visual acceptance / Codex
+
+- 状态：accepted；`resource-manager-reuse` 是本轮唯一迁移 family，CP8 family 1 的自动化与人工门禁全部关闭
+- 开始身份：Rosetta HEAD `200e2a7f72fe6b46254226376688836dfac4e367`（`Record CP8 automated acceptance`），`main` 相对 `origin/main` ahead 1，worktree clean；PDFMathTranslate fork commit 仍为 `681f242f8bab16fca9ccddcfe7c9f32aa7c37947`
+- Linux UI 验收环境：
+  - host `rwkv@192.168.0.115`；GNOME/Xorg desktop `DISPLAY=:1`；沿用 `/home/rwkv/Applications/Rosetta-0.1.0-beta.23-cp11-rc.AppImage`，未启动 dev server、未重建 AppImage、未修改用户数据
+  - 安装前现有 Rosetta 进程通过 `SIGTERM` 正常退出；启动后 `rosetta-app` 与 AppImage 进程持续运行，X11 可见窗口 `Rosetta` 为 `1280x780+0+32`
+  - 旧 live pack 可回滚副本：`/home/rwkv/.local/share/com.rosetta.desktop/pdf2zh-sidecar/pack/linux-x64.before-cp8-ui-20260731T071434Z`
+- pack 安装与身份：
+  - source archive：`/home/rwkv/cp8-resource-manager-dist-cached-ffdff671/rosetta-pdf2zh-linux-x64.tar.gz`；475,167,016 bytes；SHA-256 `12ee5ceef7cb9992b1ee80d2ccc679d10daee68aa05f6098748b19b9048283a0`
+  - 先发现 mutable quality extraction 已增加 1,602 个文件，门禁拒绝把它安装为 live pack；该目录未被打包或安装，live pack 在失败检查期间保持原状
+  - 随后从冻结 archive fresh extraction；写入 schema v2 custom manifest，engine contract/revision `2/2`，capabilities 包含 `resource-manager-reuse`
+  - archive extraction inventory 两次核验一致：1,262,347,425 unpacked bytes、11,104 regular files、1,044 symlinks、max file 218,461,128 bytes；runtime prewarm 返回 engine `rosetta-pdf-engine-v2.1` 和全部 5 个 capabilities
+  - 预热初次计数曾因包内 Python 生成 26 个 `.pyc` 被门禁拒绝；重新 fresh extraction 后使用 system Python 计数、设置 `PYTHONDONTWRITEBYTECODE=1`，并按 builder 规则移除 runtime-generated ONNX optimized file 后才执行原子切换
+- 人工视觉验收：用户在 UI 中实际翻译十页 PDF，并明确确认“目测性能和回填效果都没问题”；因此 CP8 family 1 的 full-App 性能观感与中文回填人工视觉门禁通过。本记录不把该结论外推到尚未迁移的其他 family
+- 执行命令与结果：SSH host/session/process/window inspection、archive `stat`/`sha256sum`、fresh `tar -xzf`、schema v2 inventory、pack Python capability/font/model prewarm、live pack 原子切换、AppImage relaunch 和 X11 window inspection均通过；没有执行无关 production build
+- 修改文件：仅本文状态、Acceptance、当前摘要与本 ledger；未修改 renderer heuristic、translation-unit authority、source payload、RWKV request plan、用户流程、持久化格式或 release profile
+- blocker：无。CP8 后续 patch family 仍受 Release 后观察门约束，不能因 family 1 通过而立即继续迁移
+- 下一步唯一动作：执行 CP9 第一步，隔离未使用 PDF v3 与默认 IPC surface；不得同时迁移 CP8 第二个 family，不得执行 CP9 第二步删除或推进 CP10
 
 ## 新 agent 接手提示词
 
