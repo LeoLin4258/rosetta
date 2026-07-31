@@ -69,13 +69,13 @@ pub const LINUX_X64_PDF2ZH: Pdf2zhProfile = Pdf2zhProfile {
     pack_directory_name: "linux-x64",
     bin_relative_path: "bin/pdf2zh",
     pack_filename: "rosetta-pdf2zh-linux-x64.tar.gz",
-    pack_size_bytes: Some(510_388_352),
-    pack_unpacked_size_bytes: Some(1_353_005_365),
-    pack_file_count: Some(21_573),
-    pack_sha256: Some("f6492939a7ea919d8d01923f59a78e2c5761abd5428264ca4a636da73dda2034"),
+    pack_size_bytes: Some(475_205_783),
+    pack_unpacked_size_bytes: Some(1_262_340_737),
+    pack_file_count: Some(11_104),
+    pack_sha256: Some("7ee995e376d9451095939799d2fc2f8fd2691b04f8111fa9ea3cbfc55e626977"),
     pack_download_urls: &[
-        "https://githubdog.com/https://github.com/LeoLin4258/rosetta-assets/releases/download/pdf-layout-pack-linux-x64-v2026.07.15.1/rosetta-pdf2zh-linux-x64.tar.gz",
-        "https://github.com/LeoLin4258/rosetta-assets/releases/download/pdf-layout-pack-linux-x64-v2026.07.15.1/rosetta-pdf2zh-linux-x64.tar.gz",
+        "https://githubdog.com/https://github.com/LeoLin4258/rosetta-assets/releases/download/pdf-layout-pack-linux-x64-v2026.07.30.1/rosetta-pdf2zh-linux-x64.tar.gz",
+        "https://github.com/LeoLin4258/rosetta-assets/releases/download/pdf-layout-pack-linux-x64-v2026.07.30.1/rosetta-pdf2zh-linux-x64.tar.gz",
     ],
 };
 
@@ -149,15 +149,15 @@ mod tests {
         assert!(LINUX_X64_PDF2ZH.enabled);
         assert_eq!(LINUX_X64_PDF2ZH.pack_directory_name, "linux-x64");
         assert_eq!(LINUX_X64_PDF2ZH.bin_relative_path, "bin/pdf2zh");
-        assert_eq!(LINUX_X64_PDF2ZH.pack_size_bytes, Some(510_388_352));
+        assert_eq!(LINUX_X64_PDF2ZH.pack_size_bytes, Some(475_205_783));
         assert_eq!(
             LINUX_X64_PDF2ZH.pack_unpacked_size_bytes,
-            Some(1_353_005_365)
+            Some(1_262_340_737)
         );
-        assert_eq!(LINUX_X64_PDF2ZH.pack_file_count, Some(21_573));
+        assert_eq!(LINUX_X64_PDF2ZH.pack_file_count, Some(11_104));
         assert_eq!(
             LINUX_X64_PDF2ZH.pack_sha256,
-            Some("f6492939a7ea919d8d01923f59a78e2c5761abd5428264ca4a636da73dda2034")
+            Some("7ee995e376d9451095939799d2fc2f8fd2691b04f8111fa9ea3cbfc55e626977")
         );
         assert!(LINUX_X64_PDF2ZH
             .pack_download_urls

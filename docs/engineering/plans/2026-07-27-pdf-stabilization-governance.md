@@ -638,7 +638,7 @@ CP8、CP9、CP10 不应与 Linux release candidate 的包内容变化混在同�
 
 ## CP11：Linux release candidate、回滚与发布交接
 
-- 状态：`in-progress`
+- 状态：`completed`
 - 依赖：CP1、CP2、CP3、CP4、CP5、CP6、CP7
 - 建议单次工作量：一个 agent context 生成 RC；人工 visual acceptance 和实际发布可以由用户完成
 
@@ -667,10 +667,10 @@ CP8、CP9、CP10 不应与 Linux release candidate 的包内容变化混在同�
 
 - [x] 所有产物身份和 hash 完整。
 - [x] size gate 通过。
-- [ ] Linux CI 通过。
+- [x] Linux CI 通过。
 - [x] fresh/upgrade install 通过。
 - [x] 用户视觉验收通过。
-- [ ] profile 只在 immutable asset 验证后更新。
+- [x] profile 只在 immutable asset 验证后更新。
 - [x] 回滚步骤经过至少一次 dry run 或静态验证。
 
 ### 停止条件
@@ -694,12 +694,12 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 
 ### 当前状态摘要
 
-- 当前 checkpoint：CP11（`in-progress`）
-- last completed：CP7
+- 当前 checkpoint：CP11（`completed`）
+- last completed：CP11
 - blocked：无
-- 已知 CP11 release issue：既有 AppImage 页产物压缩环境污染与 custom RC schema v2 兼容误报均已修复；用户 visual acceptance 已通过，剩余门禁为 final committed-source Linux CI、immutable upload/redownload 与 profile update
-- last verified HEAD：`de9de8f`
-- 下一步唯一动作：提交已通过人工验收的 CP7/CP11 source，运行 final committed-source Linux CI，上传并重新下载校验 immutable asset，最后单独更新 profile
+- 已知 CP11 release issue：无；AppImage 页产物压缩、custom RC schema v2 兼容、committed-source Linux CI、immutable upload/redownload 与 profile update 门禁均已关闭
+- last verified HEAD：`9ba4fa9`；最终 profile update 已在该提交之上完成验证
+- 下一步唯一动作：推进 CP8，按 patch family 将构建时 patch 迁入 PDFMathTranslate fork；每个 family 独立验证，不与新的 release profile 变更混合
 
 #### 2026-07-28 / CP11 / Codex
 
@@ -804,6 +804,34 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
   - 修复提交后需重新触发 committed-source Linux CI
 - 下一步唯一动作：
   - 提交/push executable-mode 修复并重跑 Linux pack workflow
+
+#### 2026-07-30 / CP11 committed-source release / Codex
+
+- 状态：completed
+- HEAD：`9ba4fa9`；最终 profile update 在该 committed-source baseline 之上单独提交
+- worktree baseline：clean；下载 helper 仅为本机临时文件，不进入提交
+- 修改文件：`rosetta-app/src-tauri/src/managed_pdf2zh/profile.rs`、`docs/engineering/change-log/2026-07-27-pdf-linux-pack-reproducibility.md`、`docs/engineering/plans/2026-07-27-pdf-stabilization-governance.md`
+- 执行命令与结果：
+  - GitHub Actions run `30523916772` at `9ba4fa9d25fd896e6c33d06bde49605c492c9ef9` -> pass；build、inventory、size gate 与 artifact upload 全部成功
+  - Actions artifact `8751949654` download + outer digest verification -> pass；471,548,064 bytes，SHA-256 `28b8038987bbed36b08c719ed1eef73240d0d11089e9d2ffefe1b045884dcd24`
+  - checksum、manifest、inventory、build recipe 与 size gate cross-check -> pass；0 failures、0 warnings，source identity 与 committed HEAD 一致
+  - immutable draft upload -> pass；archive 与 11 个 audit sidecars 的远端 size/digest 均与本地逐项一致后才发布
+  - published release independent redownload -> pass；475,205,783 bytes，重新计算 SHA、发布 checksum sidecar 与 GitHub asset digest 三方均为 `7ee995e376d9451095939799d2fc2f8fd2691b04f8111fa9ea3cbfc55e626977`
+  - `pnpm typecheck`、`cargo fmt --all -- --check`、`cargo check` -> pass
+  - `cargo test managed_pdf2zh::profile --lib` -> pass；4 passed
+  - `cargo test managed_pdf2zh --lib` -> pass；56 passed，1 个需要显式 old/RC archive 环境变量的真实安装门禁按设计 ignored
+  - `cargo test rosetta_jobs` -> pass；141 passed
+- 产物：
+  - immutable release：`https://github.com/LeoLin4258/rosetta-assets/releases/tag/pdf-layout-pack-linux-x64-v2026.07.30.1`
+  - archive：475,205,783 bytes；unpacked 1,262,340,737 bytes；11,104 regular files；1,044 symlinks；max file 218,461,128 bytes
+  - build recipe ID：`08d30ed2e219874c9c8878f6e97e517c04767b32d0e0bf717e3f6691555fdbb5`
+- 已确认事实：
+  - Linux profile 只在 published asset 独立回下载验证后更新，并精确固定 tag、archive size、SHA-256、unpacked size 与 file count
+  - 回滚保持静态验证过的旧路径：恢复 `pdf-layout-pack-linux-x64-v2026.07.15.1` profile metadata 并发布新 app build；不得覆盖任一已发布 asset
+- 未解决问题或 blocker：
+  - none
+- 下一步唯一动作：
+  - 执行 CP8，并保持每个 patch family 与 release/profile 变更解耦
 
 ### 记录模板
 

@@ -146,5 +146,17 @@ and the absence of raw request/options serialization in the embedded worker.
   single-page PDFs with text.
 
 User visual acceptance passed against the isolated RC pack and rebuilt Linux
-AppImage. The immutable asset upload, Linux CI for the final committed source,
-and Linux profile update remain intentionally pending.
+AppImage. The final committed-source workflow then rebuilt from Rosetta commit
+`9ba4fa9d25fd896e6c33d06bde49605c492c9ef9`: the archive is 475,205,783
+compressed bytes and 1,262,340,737 unpacked bytes, with 11,104 regular files,
+1,044 symlinks, SHA-256
+`7ee995e376d9451095939799d2fc2f8fd2691b04f8111fa9ea3cbfc55e626977`,
+and build recipe
+`08d30ed2e219874c9c8878f6e97e517c04767b32d0e0bf717e3f6691555fdbb5`.
+
+The archive and eleven audit sidecars were published under immutable tag
+`pdf-layout-pack-linux-x64-v2026.07.30.1`. A fresh download from the published
+release matched the checksum sidecar and GitHub asset digest. The Linux app
+profile now pins that release; rollback remains a new app build restoring the
+known-good `pdf-layout-pack-linux-x64-v2026.07.15.1` metadata, never replacing
+published assets in place.
