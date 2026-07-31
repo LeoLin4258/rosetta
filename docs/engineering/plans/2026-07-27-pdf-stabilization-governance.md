@@ -699,8 +699,8 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 - 当前 family：`resource-manager-reuse`；fork authority test、Rosetta AST capability verification、patch suite 与仓库级静态/Rust 门禁均通过
 - commit authority：用户已明确授权本地提交；未授权 push
 - 已知 CP11 release issue：无；AppImage 页产物压缩、custom RC schema v2 兼容、committed-source Linux CI、immutable upload/redownload 与 profile update 门禁均已关闭
-- last verified HEAD：Rosetta `39783ca`；PDFMathTranslate fork `5ed2389afcee919101a6a3d048f7594bec46b8c2`
-- 下一步唯一动作：提交 Rosetta capability migration，随后从两仓 fresh clean commit worktree 构建并验证 Linux pack 与十页基线
+- last verified HEAD：Rosetta `6301522`；PDFMathTranslate fork `681f242f8bab16fca9ccddcfe7c9f32aa7c37947`
+- 下一步唯一动作：把 Linux immutable build input pin 更新到 fork `681f242`，然后从两仓 fresh clean commit worktree 构建并验证 Linux pack 与十页基线
 
 #### 2026-07-28 / CP11 / Codex
 
@@ -1498,6 +1498,16 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 - 原始 fork checkout：仍为 `main@5ed2389`，原有 `pdf2zh/doclayout.py`、`test/test_doclayout.py` dirty 修改保持不动且未纳入 commit
 - Rosetta base：`39783ca`；准备提交本文已记录的单 family capability migration
 - 下一步唯一动作：创建 Rosetta implementation commit，然后从两仓 commit 建立 fresh clean worktrees 执行 pack、smoke、十页与视觉基线
+
+#### 2026-07-31 / CP8 family 1 build-input pin / Codex
+
+- 状态：started
+- Rosetta implementation commit：`6301522`（`Migrate PDF resource manager reuse capability`）
+- fresh-checkout verification：Rosetta `6301522` 与 fork `681f242` detached worktrees 均 clean；fork `test_rosetta_engine.py + test_doclayout.py` 22 passed；Rosetta patch suite 44 passed
+- Linux environment：本机无 Docker；`wsl.exe --status` 与 `wsl.exe -e uname -a` 均在 19 秒超时，不能作为 Linux x86_64 release builder
+- build authority：`pdf2zh-linux-x64-inputs.json` 仍 pin `990bed0`，该旧源码依赖已删除的 resource-manager rewrite；本 family 必须将唯一 commit identity 更新为 fork `681f242`，否则 verifier 会 fail-closed。此项不修改 release profile
+- 修改文件：本文、`rosetta-app/src-tauri/scripts/pdf2zh-linux-x64-inputs.json`、`test-pdf2zh-patches.py`
+- 下一步唯一动作：提交 build-input pin；随后若仍无本地 Linux runtime，取得 push 授权后从该精确 Rosetta commit 触发 workflow artifact build
 
 ## 新 agent 接手提示词
 

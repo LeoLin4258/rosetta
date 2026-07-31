@@ -2418,7 +2418,7 @@ rsrcmgr=rsrcmgr
         self.assertEqual(inputs["lockGenerator"], {"name": "uv", "version": "0.11.32"})
         self.assertEqual(
             inputs["pdfMathTranslate"]["commit"],
-            "990bed055d372772f5cec8ef4a982a8f767d64a4",
+            "681f242f8bab16fca9ccddcfe7c9f32aa7c37947",
         )
         hashes = [
             inputs["pythonBuildStandalone"]["sha256"],

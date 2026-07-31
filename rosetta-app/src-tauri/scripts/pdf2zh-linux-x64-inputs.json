@@ -15,7 +15,7 @@
   "pdfMathTranslate": {
     "version": "1.9.11",
     "repositoryUrl": "https://github.com/LeoLin4258/PDFMathTranslate.git",
-    "commit": "990bed055d372772f5cec8ef4a982a8f767d64a4"
+    "commit": "681f242f8bab16fca9ccddcfe7c9f32aa7c37947"
   },
   "docLayoutModel": {
     "filename": "doclayout_yolo_docstructbench_imgsz1024.onnx",
