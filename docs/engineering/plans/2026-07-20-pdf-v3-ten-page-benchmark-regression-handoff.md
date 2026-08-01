@@ -1,5 +1,11 @@
 # 2026-07-20 PDF v3 Ten-Page Benchmark Regression Handoff
 
+> **Archived / resolved.** This is failure and benchmark evidence, not an
+> active handoff. Production returned to `pdf2zh` under ADR 0077. Continue from
+> [`2026-07-27-pdf-stabilization-governance.md`](2026-07-27-pdf-stabilization-governance.md)
+> and [`../pdf-pipeline.md`](../pdf-pipeline.md). See
+> [`../archive/pdf-documents.md`](../archive/pdf-documents.md) for document status.
+
 ## Resolution
 
 Resolved on 2026-07-21 by restoring pdf2zh as production extraction and visual

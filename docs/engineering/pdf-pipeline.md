@@ -1,10 +1,29 @@
 # PDF Pipeline
 
-Last updated: 2026-07-14
+Last updated: 2026-08-02
 
 This document describes the current PDF translation implementation. Older PDF
-plans are historical background only when they conflict with this file and
-ADR 0008 or ADR 0009.
+plans are historical background only when they conflict with this file, ADR
+0008, ADR 0009, ADR 0077, or current code. The active implementation handoff is
+`plans/2026-07-27-pdf-stabilization-governance.md`; historical PDF documents are
+indexed in `archive/pdf-documents.md`.
+
+## Current Boundary
+
+- The default production workbench uses the managed `pdf2zh` worker for
+  prepare, translation-unit collection, page rendering, preview artifacts, and
+  export.
+- Rust owns local provider translation, bounded queueing, durable run/page
+  state, cancellation, repair, preview selection, and export assembly.
+- Native PDF v3 command, control, worker, preview, and export modules are not a
+  production authority. They compile only with the default-off
+  `experimental-pdf-v3` Cargo feature and have no production frontend consumer.
+- Production keeps only the v3-named shared primitives that current code still
+  consumes, including canonical `DocumentHandle` source identity and compact
+  translation-plan types. Their module names do not make the v3 runtime active.
+- Existing `pdf-v3/` beta artifacts have no migration path into the production
+  page-artifact model. Do not read them to resume, preview, repair, or export a
+  current PDF job.
 
 Rosetta's PDF path is a local visual PDF translation pipeline:
 

@@ -5,7 +5,7 @@
 - 状态：Active
 - 创建日期：2026-07-27
 - 审计窗口：2026-07-17 至当前 `HEAD`；更早代码只在解释该窗口内的设计来源时取证
-- 当前阶段：CP9 step 1 integration closeout，completed（默认 production 已隔离无消费者 v3 surface，实验 feature 仍可恢复；下一 checkpoint 为 CP10 文档事实收敛，不执行第二步删除；全部治理完成后从同一最终 commit 统一发布三平台 `0.1.0-beta.24`）
+- 当前阶段：CP10 文档事实收敛，completed（当前 production PDF 事实与历史 v3 文档路由已统一；下一步只做最终发布前剩余范围审查，不执行发布）
 - 当前生产 PDF 执行路径：`pdf2zh` prepare / unit collection / page render，Rosetta Rust 负责本地翻译、任务状态、页产物、预览与导出
 - 当前验证基线：仓库 `main` 在 `61ff0ab` 的审计快照；后续 agent 必须重新读取当前 `HEAD`，不能把该 commit 当成永久事实
 - 本文是 PDF 稳定化和治理工作的唯一活跃 handoff authority
@@ -602,7 +602,7 @@ CP8、CP9、CP10 不应与 Linux release candidate 的包内容变化混在同�
 
 ## CP10：文档事实收敛
 
-- 状态：`not-started`
+- 状态：`completed`
 - 依赖：CP9 的隔离方案确定；可在 CP11 后完成
 - 建议单次工作量：一个 agent context
 
@@ -625,10 +625,10 @@ CP8、CP9、CP10 不应与 Linux release candidate 的包内容变化混在同�
 
 ### Acceptance
 
-- [ ] 新 agent 从 engineering README 只能得到一个 active PDF plan。
-- [ ] current pipeline、data model 和代码不再在 production engine 上冲突。
-- [ ] 历史 benchmark/ADR 保留，但有清楚状态。
-- [ ] 本 checkpoint 没有再新增逐任务 change-log。
+- [x] 新 agent 从 engineering README 只能得到一个 active PDF plan。
+- [x] current pipeline、data model 和代码不再在 production engine 上冲突。
+- [x] 历史 benchmark/ADR 保留，但有清楚状态。
+- [x] 本 checkpoint 没有再新增逐任务 change-log。
 
 ### 停止条件
 
@@ -697,8 +697,8 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 
 ### 当前状态摘要
 
-- 当前 checkpoint：CP9 step 1 integration closeout（`completed`；默认 production v3 surface 隔离与 CI 门禁已关闭，第二步删除未执行）
-- last completed：CP9 step 1 integration closeout、CP8 family 1 integration closeout、Linux `beta.22` Release 后观察、CP8 family 1（`resource-manager-reuse`）与 CP11
+- 当前 checkpoint：无 in-progress checkpoint；CP10 document fact convergence 已 `completed`，最终发布仍明确延后
+- last completed：CP10 document fact convergence、CP9 step 1 integration closeout、CP8 family 1 integration closeout、Linux `beta.22` Release 后观察、CP8 family 1（`resource-manager-reuse`）与 CP11
 - 当前 family：无 active CP8 family；`resource-manager-reuse` 已通过 fork authority test、Rosetta AST capability verification、fresh-checkout pack、patch suite、仓库级静态/Rust 门禁、十页 authority、persistent cache、request-plan identity、10/10 PNG baseline 和用户人工视觉验收
 - commits：PDFMathTranslate `681f242f8bab16fca9ccddcfe7c9f32aa7c37947`；Rosetta implementation/build-input `63015223b408bf2deac5032be5611948e19a9043` + `8c184492fa28be3a57dd235fe3ca05058b27b977`
 - Linux workflow：run `30608192155` success；Rosetta `ffdff6716d4c7c082b5bbc473ca5f15a2409bf08`；artifact ID `8784433771`，artifact ZIP digest `f1de8449100dba05df60bda57473ecdc7d053380243f29125b45a560c2360d4b`
@@ -706,8 +706,8 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 - 自动质量：10 pages、94 units、41,035 source chars、canonical unit SHA-256 `81d6185ffc72f263bbc03a6ab1872e4e8615728ad47ecd359b1b2b1d2f3cecb5`；persistent disk cache hit；accepted request plan 保持 1 request / 253 items / 39,901 input chars；10/10 authority PDFs 除 volatile trailer ID 外相同，10/10 PNG pixel exact
 - Linux `beta.22` 观察：公开 AppImage/pack 身份已复核；persistent cache probe 通过；500 页 50×10 窗口 prepare/render/dispose 完成 500/500、0 failed；worker peak RSS 1,067,048,960 bytes，首末窗口 current RSS 增长 432,668,672 bytes；取消 63 ms 退出且无残留进程
 - 已知 CP11 release issue：无；AppImage 页产物压缩、custom RC schema v2 兼容、committed-source Linux CI、immutable upload/redownload 与 profile update 门禁均已关闭
-- last verified HEAD：本轮隔离 patch 基于 Rosetta `49df69b`（未提交，遵守本轮不得提交/推送授权）；历史 CP8 automated acceptance `200e2a7f72fe6b46254226376688836dfac4e367`；PDFMathTranslate fork `681f242f8bab16fca9ccddcfe7c9f32aa7c37947`
-- 下一步唯一动作：执行 CP10 文档事实收敛，让当前 production pdf2zh 路径与历史 PDF v3 文档不再冲突；不得执行 CP9 第二步删除、CP8 新 family、release/profile 修改或任何单平台发布
+- last verified HEAD：CP10 基于已推送 Rosetta `5f2bb824b64f25017c83c7b758d991107bc385f4`；历史 CP8 automated acceptance `200e2a7f72fe6b46254226376688836dfac4e367`；PDFMathTranslate fork `681f242f8bab16fca9ccddcfe7c9f32aa7c37947`
+- 下一步唯一动作：单独审查距离 Windows x64、macOS arm64、Linux x64 从同一最终 commit 统一发布 `0.1.0-beta.24` 还剩哪些必要工作，并明确 CP9 第二步删除与 CP8 后续 family 是发布前必做还是延期；本动作只产出范围结论，不修改 release/profile、版本号、updater metadata，不构建或发布
 
 #### 2026-07-28 / CP11 / Codex
 
@@ -1685,6 +1685,25 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 - 发布与授权边界：未启动 dev server，未执行 production build，未构建 pack，未修改或发布任何平台版本；用户已授权将本 checkpoint 提交并推送 GitHub
 - blocker：无
 - 下一步唯一动作：执行 CP10 文档事实收敛，清理当前 production pdf2zh 路径与历史 PDF v3 文档之间的事实冲突；不得执行 CP9 第二步删除、CP8 新 family、release/profile 修改或任何单平台发布
+
+#### 2026-08-02 / CP10 document fact convergence / Codex
+
+- 状态：started
+- HEAD 与工作区：基于已推送 `main` 的 `5f2bb82`；开始时 worktree clean，本 checkpoint 只修改 engineering 文档
+- 授权边界：完成 CP10 后提交并推送 GitHub；不得修改生产代码、版本号、release profile 或 updater metadata，不执行 CP9 第二步删除，不启动 dev server 或 production build，不发布任何平台版本
+- 核对范围：current PDF pipeline、data model 当前段、旧 v1/v3 plans、rollback closeout、engineering 文档治理规则和 archived PDF document index
+- 下一步唯一动作：完成 CP10 文档 diff 和全文误导陈述审查，运行文档级验证，通过后记录 completion 并推送 `main`
+
+#### 2026-08-02 / CP10 document fact convergence / Codex / completed
+
+- 状态：`completed`
+- 实现结果：`pdf-pipeline.md` 与 `data-models.md` 的当前段统一到 production `pdf2zh` page-artifact pipeline；native v3 contracts 明确归档为 non-production；旧 v1/v3 plans 和 rollback closeout 增加 superseded/archived 路由；engineering README 新增单一 active handoff、checkpoint 回写、aggregate change-log 和 ADR 边界规则；新增短小的 `archive/pdf-documents.md` 状态索引
+- 代码事实复核：`WorkspacePage.tsx` 仍消费 preparse/translate/export production wrappers，`PdfDocumentPreview.tsx` 仍消费 translated-page preview；11 个 native v3 commands 在 `lib.rs` 中仍全部受默认关闭的 `experimental-pdf-v3` 控制
+- 文档全文审查：目标误导措辞只剩旧 v3 change-log 中的历史快照；archived PDF index 已明确这些 change-log 不是当前 handoff，旧 plan/closeout/addendum 均有直接归档 banner
+- 验证：Markdown 相对链接检查通过；目标措辞 `rg` 逐项核对通过；`git diff --check` 通过。由于本 checkpoint 只有 Markdown 文档变化，未运行 TypeScript/Rust 测试、dev server 或 production build
+- 发布与清理边界：未修改生产代码、持久化格式、release profile、应用版本或 updater metadata；未执行 CP9 第二步删除、CP8 新 family、pack 构建或任何平台发布；未新增逐任务 change-log
+- blocker：无
+- 下一步唯一动作：单独完成三平台 `0.1.0-beta.24` 最终发布前剩余范围审查，明确哪些清理是发布前必要项、哪些应延期；审查阶段不得修改或发布 release artifacts
 
 ## 新 agent 接手提示词
 

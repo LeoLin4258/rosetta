@@ -1,8 +1,15 @@
 # PDF v3 Native Rewrite Plan
 
+> **Archived / superseded.** This plan records the 2026-07-16 native rewrite
+> experiment. It is not an active handoff and does not describe the production
+> workbench. Continue from
+> [`2026-07-27-pdf-stabilization-governance.md`](2026-07-27-pdf-stabilization-governance.md)
+> and [`../pdf-pipeline.md`](../pdf-pipeline.md). See
+> [`../archive/pdf-documents.md`](../archive/pdf-documents.md) for document status.
+
 Date: 2026-07-16
 
-Status: In progress
+Status: Archived; production routing superseded by ADR 0077
 
 Branch: `codex/pdf-v3-rewrite`
 

@@ -2,9 +2,10 @@
 
 > Historical document. This plan records the original PDF v1 direction. The
 > current PDF implementation is the visual `pdf2zh` page-artifact pipeline
-> described in `docs/engineering/pdf-pipeline.md` and ADR 0008. When this file
-> conflicts with those documents or current code, treat it as historical
-> context only.
+> described in `docs/engineering/pdf-pipeline.md`, ADR 0008/0009/0077, and the
+> active governance plan. The PDF v3 addendum below is also superseded. When
+> this file conflicts with those documents or current code, treat it as
+> historical context only.
 
 ## Summary
 
@@ -197,18 +198,23 @@ Choosing a new PDF parsing crate is a dependency decision. Record the choice in 
 
 ## PDF v3 Rewrite Addendum (2026-07-19)
 
-This historical v1 plan no longer describes the active high-fidelity PDF
-architecture. The native PDF v3 rewrite now has durable page-bounded
+> **Superseded addendum.** The statements below describe the native v3
+> experiment at its 2026-07-19 checkpoint. They are not current production
+> facts; ADR 0077 restored the `pdf2zh` page-artifact workbench, and CP9 later
+> moved the unused v3 runtime surface behind a default-off feature.
+
+At this historical checkpoint, the native PDF v3 rewrite had durable page-bounded
 extraction/translation authority, atomic trusted run creation, native bounded
 worker supervision, owner heartbeat and stale recovery, pause/resume/cancel,
 and exact failed-page retry.
 
-The visible workbench now uses native v3 run authority end to end. It discovers
-the newest target-language run, polls bounded control/page windows, creates new
-native revisions, and exposes pause/resume/cancel/recover/retry without a
-frontend run index or fake segment run. Completed pages render lazily and
-preserved pages reuse the source preview. The workbench no longer reads legacy
-PDF progress events, page state or translated-PDF paths.
+The visible workbench at that checkpoint used native v3 run authority end to
+end. It discovered the newest target-language run, polled bounded control/page
+windows, created new native revisions, and exposed
+pause/resume/cancel/recover/retry without a frontend run index or fake segment
+run. Completed pages rendered lazily and preserved pages reused the source
+preview. The workbench no longer read legacy PDF progress events, page state or
+translated-PDF paths.
 
 Still pending as beta gates:
 

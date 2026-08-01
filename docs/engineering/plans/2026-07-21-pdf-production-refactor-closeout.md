@@ -1,10 +1,11 @@
 # 2026-07-21 PDF Production Refactor Closeout
 
-> Historical closeout. As of 2026-07-27 this document is no longer the active
-> handoff authority. Continue from
+> **Archived closeout.** This file preserves benchmark and rollback evidence;
+> it is not an active handoff. Continue from
 > [`2026-07-27-pdf-stabilization-governance.md`](2026-07-27-pdf-stabilization-governance.md),
-> verify all architecture claims against current code, and retain this file only
-> for its benchmark and rollback history.
+> verify architecture claims against [`../pdf-pipeline.md`](../pdf-pipeline.md)
+> and current code, and use
+> [`../archive/pdf-documents.md`](../archive/pdf-documents.md) for document status.
 
 ## Status
 

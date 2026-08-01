@@ -154,14 +154,13 @@ AppData/Rosetta/jobs/
 - TXT 按空行切分为段落。
 - Markdown 使用轻量 block parser，首版只保留标题、段落、列表、引用、代码块和空行等基础结构。
 - fenced code block、纯 URL 行和空白行默认 `skipped`。
-- PDF v3 是当前视觉 PDF 翻译主路径：导入阶段只创建 job-local `source.pdf` 和 PDF skeleton document；翻译阶段创建 trusted native run，由 bounded scheduler、PageGraph、TranslationPatch 和统一译文字体 renderer 组成持久化权威。旧的 PDFMathTranslate/pdf2zh、页级译文 PDF 和“PDF 转 RosettaBlock/Segment”路径都不是工作台权威。
+- 当前视觉 PDF 生产主路径是受管 `pdf2zh` page-artifact pipeline：导入阶段创建 job-local `source.pdf` 和 PDF skeleton document；Rust 持久化 `pdf_pages.<targetLang>.json`、`pdf_run.<targetLang>.json` 与逐页译文 PDF，Python worker 只负责 prepare、translation-unit collection 和 page render。
 - PDF importer 应输出 `RosettaDocument(format: "pdf")`、一个 `RosettaSourceFile(format: "pdf")`、空 `RosettaBlock[]` 和空 `Segment[]`。PDF 仍进入普通 job/workbench 模型，但页面翻译事实不保存在 `Segment[]` 中。
 - PDF importer 遇到 image-only、加密或无法解析的文件时必须返回清晰错误，不能创建空任务。
 - 系统文件选择和导出路径选择必须通过非阻塞 Tauri dialog command 完成，不能在 command 中调用 `blocking_pick_file` 或 `blocking_save_file`，避免 Windows 原生对话框打开时卡住应用窗口。
-- PDF v3 把 PDF 作为版面保持型文档处理，但页面状态来自 native scheduler shard，提取事实来自 PageGraph store，译文事实来自 TranslationPatch store；这些事实不经过普通文档 `Segment[]` 调度，也不投影成前端 `ActiveTranslationRun`。
-- 工作台在创建 run 前必须先通过窄 Tauri command 持久化当前文件的 source/target language metadata。trusted run creation 只接受 `jobId`、exact PageSet 和 target language，source language 由 native 从持久化 metadata 解析，前端不得把它作为未验证 authority 传入 run command。
-- `pdf_source.json` 是 PDF source 元数据文件，记录 `pageCount`、`sourceFingerprint`、导入文件名、原始路径快照和时间戳。`sourceFingerprint` 使用 canonical `sha256:<64 lowercase hex>`，并与 PDF v3 `DocumentHandle` identity 完全一致；它只用于 source authority、诊断和未来显式去重，不触发隐式跨 job 共享状态。旧 beta 裸 64-hex 值不迁移，其 PDF 派生状态从缓存 `source.pdf` 重建。
-- `pdf_pages.<targetLang>.json` 是 legacy v2 页状态，不再由 PDF v3 工作台读取或写入。
+- PDF 页面翻译不经过普通文档 `Segment[]` 调度，也不投影成前端 segment translation run；工作台通过 PDF 专用 page/run commands 读取进度、预览和导出事实。
+- `pdf_source.json` 是 PDF source 元数据文件，记录 `pageCount`、`sourceFingerprint`、导入文件名、原始路径快照和时间戳。`sourceFingerprint` 使用 canonical `sha256:<64 lowercase hex>`，并与共享 `pdf_v3::document::DocumentHandle` identity primitive 完全一致；该共享 primitive 不代表 native v3 runtime 已启用。
+- `pdf_pages.<targetLang>.json` schema v2 是当前 durable 页状态；`translated-pages/<targetLang>/page-000N.pdf` 是对应页的正式译文 artifact。
 - `pdf_pages.<targetLang>.json` v2 中，`resultKind` 可为 `translated`、`partial`、`no_text`、`failed`。`resultKind="partial"` 表示页面 artifact 已成功生成，但至少一个已知渲染单元因译文为空、缺失或占位符损坏而保留原文；`translatedUnitCount + fallbackUnitCount` 必须等于 `sourceUnitCount`。`resultKind="no_text"` 表示该页完成但无可提取文本，不应伪造 `translatedPdfPath` 或译文字数。
 - PDF v2 不迁移 beta v1 页状态。读取到 `schemaVersion < 2` 的 PDF page state 时，Rosetta 必须清理派生译文 artifacts 和旧 page-state 文件，保留 `source.pdf`，并返回空的 v2 pending state。
 - `pdf_run.<targetLang>.json` 是当前或最近一次 PDF 翻译 run。`running` / `pausing` run 必须绑定 `ownerSessionId`；新 app session 看到旧 live run 时必须恢复为 `paused`。
@@ -276,7 +275,7 @@ PDF cleanup task:
 - Markdown 导出只承诺保留基础 marker，不承诺完整 CommonMark AST 级别还原。
 - 任务工作台的导出最小单位是当前选中的译文文件，而不是整个项目。项目是文件集合与共享设置容器，不能让用户在当前文件视图里误触发整项目导出。
 - 当前译文文件必须完成翻译后才能导出；`done`、`edited` 和 `skipped` 视为已处理，`pending`、`translating`、`failed` 或空译文不能导出。
-- PDF v3 导出必须由 native export coordinator 从 immutable source、durable patches、统一字体和 merge-checked object delta 生成。公开导出 command 接入前，工作台必须隐藏 PDF 导出，不得回退到 legacy `translated-pages/` 产物。
+- 当前 PDF 导出由 production exporter 从 `source.pdf` 与已提交的 `translated-pages/<targetLang>/page-000N.pdf` 组装完整 PDF；native v3 export coordinator 不在默认 command surface 中。
 - 当前译文文件导出到用户选择的具体文件路径，输出文件名默认来自源文件名和目标语言，例如 `chapter.zh-CN.md` 或 `chapter.zh-CN.bilingual.md`。
 - 多文件项目的批量导出如果后续恢复，应作为单独的项目级入口，并明确提示会导出项目内所有文件。删除项目只删除 Rosetta job cache，不删除用户原始文件或已导出目录。
 
@@ -321,6 +320,17 @@ PDF cleanup task:
 - 旧任务是否还能读取
 - 是否需要迁移脚本
 - 导出结果是否受影响
+
+## Archived PDF v3 Contracts (Non-Production)
+
+本节及其后的 PDF v3 数据模型只记录 2026-07-16 至 2026-07-20 native
+rewrite 的历史 contract，供 feature-gated 回归测试和未来取证使用。即使历史正文使用
+“当前”“production”或“authority”等措辞，也不得解释为当前产品事实。默认 App 不注册
+native v3 command/control/export/worker surface；当前 production authority 以本文前面的
+PDF page-artifact 约定、`docs/engineering/pdf-pipeline.md`、ADR 0077 和当前代码为准。
+
+这些 beta v3 artifacts 不迁移到 production page state。若未来重新启用任何 v3 contract，
+必须先建立新的 active plan/ADR、定义持久化迁移或 reset 边界，并重新通过真实文档和三平台验收。
 
 ## PDF v3 PageGraph
 

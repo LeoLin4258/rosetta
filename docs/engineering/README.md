@@ -17,6 +17,7 @@ engineering/
   conventions/   开发约定，指导后续功能如何保持一致
   benchmarks/    性能实测记录，记录可复查的测试环境、方法、结果和结论
   plans/         较大功能或架构工作的执行计划，记录尚未定案的推进路径
+  archive/       历史文档索引，只负责状态和当前权威路由
   pdf-pipeline.md 当前 PDF 翻译管线的文件布局、状态机、恢复和删除规则
 ```
 
@@ -71,6 +72,14 @@ ADR 放在 `decisions/`。它回答“为什么选择这个方案”。文件名
 计划文档放在 `plans/`。它回答“还没有完全定案的大功能准备怎么推进”。计划可以包含待验证假设、阶段目标、风险和退出标准。方案被验证并形成长期约束后，应新增 ADR 或更新对应约定，而不是让计划文档承担最终决策记录。
 
 较长实施应拆成可独立交接的 checkpoint，并在同一活跃计划内维护状态、验证结果和下一步动作。不要为每个 agent 或每个 checkpoint 新建 handoff 文档。
+
+## 文档治理
+
+- 同一领域只能有一个 active handoff；checkpoint 开始、验证结果、blocker 和下一步动作都回写这份 active plan。
+- 历史 plan、closeout、benchmark、ADR 和 change-log 不因过时而删除，但必须通过归档 banner 或短索引指向当前事实来源。
+- 一个 release 最多维护一份 aggregate change-log。checkpoint 过程记录属于 active plan，不应为每个 agent 或小任务继续新增 change-log。
+- ADR 只记录会长期约束实现、数据或发布边界且不应被普通重构静默改变的决定。实验步骤、临时 handoff 和可逆实现细节留在 plan 或 change-log。
+- 当前行为说明必须优先引用代码、conventions 和领域 current-pipeline 文档；历史文件中的 `current`、`production`、`authority` 只代表其写作时点。
 
 ## 写作原则
 
