@@ -2301,10 +2301,17 @@ rsrcmgr=rsrcmgr
             root = Path(tmp)
             target = root / "rosetta_engine.py"
             target.write_text(fixture, encoding="utf-8")
+            manifest = json.loads(
+                (SCRIPT_DIR / "pdf2zh-engine-capabilities.json").read_text(
+                    encoding="utf-8"
+                )
+            )
 
             self.assertTrue(namespace["patch_rosetta_engine_capabilities"](root))
             declared = target.read_text(encoding="utf-8")
-            self.assertIn("ENGINE_REVISION = 2", declared)
+            self.assertIn(
+                f"ENGINE_REVISION = {manifest['engineRevision']}", declared
+            )
             self.assertIn("ENGINE_CAPABILITIES = (", declared)
             self.assertIn("engineRevision: int", declared)
             self.assertIn("capabilities: list[str]", declared)
@@ -2338,14 +2345,13 @@ rsrcmgr=rsrcmgr
         )
         self.assertEqual(manifest["schemaVersion"], 1)
         self.assertEqual(manifest["engineContractVersion"], 2)
-        self.assertEqual(manifest["engineRevision"], 2)
+        self.assertEqual(manifest["engineRevision"], 1)
         self.assertEqual(
             manifest["capabilities"],
             [
                 "authoritative-render-slots",
                 "durable-layout-cache",
                 "partial-page-accounting",
-                "resource-manager-reuse",
                 "reusable-prepared-run",
             ],
         )

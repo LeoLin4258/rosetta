@@ -5,7 +5,7 @@
 - 状态：Active
 - 创建日期：2026-07-27
 - 审计窗口：2026-07-17 至当前 `HEAD`；更早代码只在解释该窗口内的设计来源时取证
-- 当前阶段：CP9 第一步，ready（CP8 family 1：resource-manager reuse 已通过全部自动化门禁和用户十页 PDF 人工视觉验收；CP8 后续 family 受 Release 后观察门约束，暂不迁移）
+- 当前阶段：CP9 step 1 integration closeout，completed（默认 production 已隔离无消费者 v3 surface，实验 feature 仍可恢复；下一 checkpoint 为 CP10 文档事实收敛，不执行第二步删除；全部治理完成后从同一最终 commit 统一发布三平台 `0.1.0-beta.24`）
 - 当前生产 PDF 执行路径：`pdf2zh` prepare / unit collection / page render，Rosetta Rust 负责本地翻译、任务状态、页产物、预览与导出
 - 当前验证基线：仓库 `main` 在 `61ff0ab` 的审计快照；后续 agent 必须重新读取当前 `HEAD`，不能把该 commit 当成永久事实
 - 本文是 PDF 稳定化和治理工作的唯一活跃 handoff authority
@@ -563,7 +563,7 @@ CP8、CP9、CP10 不应与 Linux release candidate 的包内容变化混在同�
 
 ## CP9：隔离未使用 PDF v3 与默认 IPC surface
 
-- 状态：`not-started`
+- 状态：`completed`（第一步隔离实现、CI 门禁和集成验证完成；第二步删除保持禁止）
 - 依赖：CP0、CP6；不得与 CP8 同时实施
 - 建议单次工作量：一个 agent context 先完成隔离，删除留到后续重复 checkpoint
 
@@ -588,11 +588,11 @@ CP8、CP9、CP10 不应与 Linux release candidate 的包内容变化混在同�
 
 ### Acceptance
 
-- [ ] 默认 workbench 无 v3 command path。
-- [ ] production binary command surface 不注册未使用 v3 control/export commands。
-- [ ] 删除/feature gate 没有影响 source preview、translated-page preview 或 export。
-- [ ] dead-code suppression 范围明显缩小并有理由。
-- [ ] v3 历史可以通过 git 精确恢复。
+- [x] 默认 workbench 无 v3 command path。
+- [x] production binary command surface 不注册未使用 v3 control/export commands。
+- [x] 删除/feature gate 没有影响 source preview、translated-page preview 或 export。
+- [x] dead-code suppression 范围明显缩小并有理由。
+- [x] v3 历史可以通过 git 精确恢复。
 
 ### 停止条件
 
@@ -683,6 +683,9 @@ CP8、CP9、CP10 不应与 Linux release candidate 的包内容变化混在同�
 
 Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 后续 patch family：
 
+- 状态：`completed`
+- 发布决策：当前公开渠道为 Windows/macOS `0.1.0-beta.23`、Linux `0.1.0-beta.22`。用户明确决定不单独补发 Linux `beta.23`；本观察门以现有 Linux `beta.22` 为公开版本基线，全部治理完成后必须从同一最终 commit、同一版本统一发布 Windows x64、macOS arm64 和 Linux x64 `0.1.0-beta.24`。观察与治理完成前不得发布任何单平台新版本。
+
 - pack 下载/安装失败率只能来自本地用户反馈和隐私安全日志，不新增遥测。
 - 记录实际安装磁盘占用、首次 worker 启动、prepare cache、长文档内存和取消行为。
 - 至少完成一次 500 页级 soak；不能仅凭队列有界就宣称 1,000 页认证。
@@ -694,16 +697,17 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 
 ### 当前状态摘要
 
-- 当前 checkpoint：CP9 第一步（`ready`；只做未使用 PDF v3 与默认 IPC surface 隔离，不执行第二步删除）
-- last completed：CP8 family 1（`resource-manager-reuse`）；CP11 仍为 completed
+- 当前 checkpoint：CP9 step 1 integration closeout（`completed`；默认 production v3 surface 隔离与 CI 门禁已关闭，第二步删除未执行）
+- last completed：CP9 step 1 integration closeout、CP8 family 1 integration closeout、Linux `beta.22` Release 后观察、CP8 family 1（`resource-manager-reuse`）与 CP11
 - 当前 family：无 active CP8 family；`resource-manager-reuse` 已通过 fork authority test、Rosetta AST capability verification、fresh-checkout pack、patch suite、仓库级静态/Rust 门禁、十页 authority、persistent cache、request-plan identity、10/10 PNG baseline 和用户人工视觉验收
 - commits：PDFMathTranslate `681f242f8bab16fca9ccddcfe7c9f32aa7c37947`；Rosetta implementation/build-input `63015223b408bf2deac5032be5611948e19a9043` + `8c184492fa28be3a57dd235fe3ca05058b27b977`
 - Linux workflow：run `30608192155` success；Rosetta `ffdff6716d4c7c082b5bbc473ca5f15a2409bf08`；artifact ID `8784433771`，artifact ZIP digest `f1de8449100dba05df60bda57473ecdc7d053380243f29125b45a560c2360d4b`
 - fresh Linux pack：recipe `de41d93ebcce7cc666d1f763499f2c7f84f50e9e14b1bcd302418ca459621c8b`；archive SHA-256 `12ee5ceef7cb9992b1ee80d2ccc679d10daee68aa05f6098748b19b9048283a0`
 - 自动质量：10 pages、94 units、41,035 source chars、canonical unit SHA-256 `81d6185ffc72f263bbc03a6ab1872e4e8615728ad47ecd359b1b2b1d2f3cecb5`；persistent disk cache hit；accepted request plan 保持 1 request / 253 items / 39,901 input chars；10/10 authority PDFs 除 volatile trailer ID 外相同，10/10 PNG pixel exact
+- Linux `beta.22` 观察：公开 AppImage/pack 身份已复核；persistent cache probe 通过；500 页 50×10 窗口 prepare/render/dispose 完成 500/500、0 failed；worker peak RSS 1,067,048,960 bytes，首末窗口 current RSS 增长 432,668,672 bytes；取消 63 ms 退出且无残留进程
 - 已知 CP11 release issue：无；AppImage 页产物压缩、custom RC schema v2 兼容、committed-source Linux CI、immutable upload/redownload 与 profile update 门禁均已关闭
-- last verified HEAD：Rosetta governance closeout `200e2a7f72fe6b46254226376688836dfac4e367`；PDFMathTranslate fork `681f242f8bab16fca9ccddcfe7c9f32aa7c37947`
-- 下一步唯一动作：执行 CP9 第一步隔离；不得迁移 CP8 第二个 family、执行 CP9 第二步删除或推进 CP10，直到对应 checkpoint 和 Release 后观察门允许
+- last verified HEAD：本轮隔离 patch 基于 Rosetta `49df69b`（未提交，遵守本轮不得提交/推送授权）；历史 CP8 automated acceptance `200e2a7f72fe6b46254226376688836dfac4e367`；PDFMathTranslate fork `681f242f8bab16fca9ccddcfe7c9f32aa7c37947`
+- 下一步唯一动作：执行 CP10 文档事实收敛，让当前 production pdf2zh 路径与历史 PDF v3 文档不再冲突；不得执行 CP9 第二步删除、CP8 新 family、release/profile 修改或任何单平台发布
 
 #### 2026-07-28 / CP11 / Codex
 
@@ -1584,6 +1588,103 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 - 修改文件：仅本文状态、Acceptance、当前摘要与本 ledger；未修改 renderer heuristic、translation-unit authority、source payload、RWKV request plan、用户流程、持久化格式或 release profile
 - blocker：无。CP8 后续 patch family 仍受 Release 后观察门约束，不能因 family 1 通过而立即继续迁移
 - 下一步唯一动作：执行 CP9 第一步，隔离未使用 PDF v3 与默认 IPC surface；不得同时迁移 CP8 第二个 family，不得执行 CP9 第二步删除或推进 CP10
+
+#### 2026-07-31 / CP9 step 1 isolation / Codex
+
+- 状态：started
+- HEAD：`49df69b`（`Accept CP8 resource manager visual gate`）；`main...origin/main` 无 ahead/behind，worktree clean
+- 开始检查：`git status --short` -> 无输出；`git rev-parse --short HEAD` -> `49df69b`；`git log -1 --oneline` -> `49df69b Accept CP8 resource manager visual gate`；`git status -sb` -> `## main...origin/main`
+- production consumer inventory：默认 workbench 使用 `preparseRosettaPdfPages`、`translateRosettaPdfPages`、`exportRosettaTranslatedPdf`、`renderRosettaPdfPageAsPng` 与 `renderRosettaPdfTranslatedPageAsPng`；Rust production source state/test identity 使用 `pdf_v3::document::DocumentHandle`，source/translated preview 使用 `formats::pdf::rasterize` 与 `pdfium-render`，这些 primitive 必须保留
+- 待隔离 inventory：Tauri 默认 handler 仍注册 11 个无 production consumer 的 v3 commands（probe/list/create/cancel/status/pause/recover/v3 translated-page render/retry/resume/export）；frontend `usePdfV3RunControl.ts`、`usePdfV3Preview.ts` 以及其 `rosettaJobs.ts` wrappers/`PdfV3ComponentStatus` 和 `types/rosetta.ts` 的 `PdfV3*` types 仅互相引用，没有 production import
+- 选择边界：默认关闭的 `experimental-pdf-v3` Cargo feature 只包围 native v3 command/control/export modules、Tauri handler/state/cleanup 和对应 Rust command helpers；不 gate `pdf_v3` 根目录中 production 仍消费的 `document`/translation-unit primitive，不移除 `pdfium-render`
+- 修改文件：开始记录时仅本文；实现与验证结果在本 checkpoint 结束条目追加
+- blocker：无；consumer graph 已证明待隔离 surface 不影响 source preview、translated-page preview 或 production export
+- 下一步唯一动作：完成并验证 CP9 第一步的单一隔离 patch；不得执行 CP9 第二步删除、CP8 新 family、CP10 或 release/profile 变更
+
+#### 2026-07-31 / CP9 step 1 isolation / Codex / completed
+
+- 状态：`completed`（仅 CP9 第一步；未执行第二步删除）
+- HEAD 与工作区：基于 `49df69b Accept CP8 resource manager visual gate`；本轮未提交或推送，worktree 保留本隔离 patch
+- 开始基线：`git status --short` 无输出；`git rev-parse --short HEAD` 为 `49df69b`；`git log -1 --oneline` 为 `49df69b Accept CP8 resource manager visual gate`；`git status -sb` 为 `## main...origin/main`
+- command/frontend/consumer inventory：11 个无 production consumer 的 commands 为 `probe_rosetta_pdf_v3_component`、`list_rosetta_pdf_v3_runs`、`create_rosetta_pdf_v3_run`、`cancel_rosetta_pdf_v3_run`、`get_rosetta_pdf_v3_run_status`、`pause_rosetta_pdf_v3_run`、`recover_rosetta_pdf_v3_run`、`render_rosetta_pdf_v3_translated_page_as_png`、`retry_rosetta_pdf_v3_page`、`resume_rosetta_pdf_v3_run`、`export_rosetta_pdf_v3_run`；对应 Tauri registration、v3 control/export/lifecycle/preview/worker modules、states 和 cleanup 仅在默认关闭的 `experimental-pdf-v3` feature 下启用。无消费者 frontend `usePdfV3RunControl.ts`、`usePdfV3Preview.ts`、`rosettaJobs.ts` v3 wrappers/`PdfV3ComponentStatus` 与 `types/rosetta.ts` `PdfV3*` types 已隔离移除。
+- 明确保留的 production primitives：`pdf_v3::document::DocumentHandle`/source identity 相关共享类型、`formats::pdf::rasterize` 的 source/translated page PNG preview、`formats::pdf::source_state` 的 native PDF v3 fingerprint identity、production wrappers `preparseRosettaPdfPages`、`translateRosettaPdfPages`、`exportRosettaTranslatedPdf`、`renderRosettaPdfPageAsPng`、`renderRosettaPdfTranslatedPageAsPng` 及 `pdfium-render` 依赖；这些仍被 production preview/export 或 source identity consumer 使用，未整目录删除 `pdf_v3`。
+- 隔离边界：Cargo 默认 feature 为空；native v3 历史模块默认不编译，显式 `--features experimental-pdf-v3` 仍可恢复；v3 states/exit-reset/job-delete cleanup 通过 feature-aware helper 默认 no-op。根目录无条件 `#![allow(dead_code)]` 已移除，仅 shared primitive 局部保留理由明确的 suppression。未改变 renderer heuristic、translation-unit authority、source payload、RWKV request plan、用户流程、持久化格式或 release profile。
+- 修改文件：`docs/engineering/plans/2026-07-27-pdf-stabilization-governance.md`、`rosetta-app/package.json`、`rosetta-app/src-tauri/Cargo.toml`、`rosetta-app/src-tauri/src/lib.rs`、`rosetta-app/src-tauri/src/local_data_reset.rs`、`rosetta-app/src-tauri/src/pdf_v3/mod.rs`、`rosetta-app/src-tauri/src/rosetta_jobs/formats/pdf/mod.rs`、`rosetta-app/src-tauri/src/rosetta_jobs/mod.rs`、`rosetta-app/src/lib/rosettaJobs.ts`、`rosetta-app/src/types/rosetta.ts`、新增 `rosetta-app/scripts/check-pdf-v3-isolation.mjs`，删除两个无消费者 frontend v3 hooks。
+- 验证命令与结果：`cd rosetta-app && pnpm typecheck` 通过；`pnpm check:pdf-v3-isolation` 通过；`cd src-tauri && cargo fmt --all -- --check` 通过；`cargo check` 通过（仅既有 5 个非本 patch dead-code warnings）；`cargo check --features experimental-pdf-v3` 通过且无 warning；`cargo test rosetta_jobs` 通过（94 passed）；`cargo test --features experimental-pdf-v3 rosetta_jobs::formats::pdf::v3_run_list` 通过（5 passed）。未启动 dev server，未执行 production build。
+- blocker：无。默认 production command surface 已不注册上述 11 个 v3 commands；`rg` 复核默认 frontend 无 `PdfV3|pdfV3|rosetta_pdf_v3`，同时确认 production PDF preview/export wrappers、rasterize、source identity 和 PDFium consumers 仍存在。
+- 下一步唯一动作：等待并记录至少一个 Linux release 后观察版本，再依观察门决定 CP9 第二步删除或 CP8 后续 family；在该观察门前仍禁止 CP9 第二步删除、CP8 新 family、CP10 和 release/profile 变更。
+
+#### 2026-07-31 / Linux beta.22 post-release observation / Codex
+
+- 状态：started
+- HEAD 与工作区：`49df69b Accept CP8 resource manager visual gate`；`main...origin/main` 无 ahead/behind；worktree 保留上一 CP9 第一步未提交隔离 patch，本 checkpoint 只更新同一治理计划并采集观察证据，不混入新的 production code、release/profile 或版本改动
+- 渠道事实：公开 updater endpoint 返回 Windows `0.1.0-beta.23`、macOS `0.1.0-beta.23`、Linux `0.1.0-beta.22`；GitHub 最新 Linux prerelease/tag 为 `v0.1.0-beta.22`，仓库版本文件当前为 `0.1.0-beta.23`
+- 用户发布决策：不单独发布 Linux `beta.23`；完成观察和剩余治理后，从同一最终 commit 构建、验收并统一发布 Windows x64、macOS arm64、Linux x64 `0.1.0-beta.24`；此前不发布任何单平台新版本
+- 观察边界：以已发布 Linux `beta.22` 为公开版本基线；CP8 family 1 的 custom pack/AppImage 验收只能作为补充证据，不能伪称已公开 `beta.23`。本 checkpoint 只盘点/补齐安装占用、首次 worker 启动、prepare cache、长文档内存、取消行为和 500 页级 soak，不推进 CP8/CP9 第二步/CP10
+- 下一步唯一动作：连接既有 Ubuntu x86_64 验收主机，核对当前 AppImage/pack/job/日志与可用 500 页 fixture，先形成可复核 observation inventory，再执行不改变 release/profile 的聚焦 soak
+
+#### 2026-07-31 / Linux beta.22 post-release observation / Codex / completed
+
+- 状态：`completed`；Release 后观察要求的安装占用、首次 worker、prepare cache、长文档内存、取消行为和 500 页级 soak 均已形成可复核证据。本记录不把 Linux `beta.22` 伪称为 `beta.23`，也不授权 CP9 第二步删除或任何后续 family
+- HEAD 与工作区：基于 `49df69b Accept CP8 resource manager visual gate`，`main...origin/main` 无 ahead/behind；保留 CP9 第一步未提交隔离 patch，本观察只修改本文，未提交、未推送、未修改 production code、release/profile 或版本
+- release/source 身份：Git tag `v0.1.0-beta.22` 对应 commit `d765f3c4a659efc5195b7a85976d66de6be5f1e4`（`Release beta.22 with durable PDF prepare cache`）；公开 AppImage `/home/rwkv/Applications/Rosetta-0.1.0-beta.22.AppImage` 为 90,987,000 bytes，SHA-256 `f360f6477a40e95450f8f4279c37b6a55c8ec3e6ba8b6f33bb26b1fff4b60704`；tag worker SHA-256 `152fe42cb6e2a0d97203c4aec3ed0ff15e63af9e4ffb95a7eac6f44e808bf7ef`
+- 已发布 pack/安装占用：使用 live pack 的精确 beta.22 回滚副本 `/home/rwkv/.local/share/com.rosetta.desktop/pdf2zh-sidecar/pack/linux-x64.before-eed557b-20260724`，对应 release archive identity 为 510,388,352 bytes / SHA-256 `f6492939a7ea919d8d01923f59a78e2c5761abd5428264ca4a636da73dda2034`；实际已安装副本 apparent bytes 1,431,637,265、allocated bytes 1,516,556,288、regular files 21,705、symlinks 1,048。测试前复制到 observation 目录，未修改该回滚副本或当前 CP8 live pack
+- fixture：源 `/home/rwkv/Downloads/2604.17278v1.pdf` 为 10 pages、3,032,412 bytes、SHA-256 `5db8200931a2d4104cf435a70701e80d47849c201000ed86ca645ab25d454da2`；用 beta.22 pack PyMuPDF `insert_pdf` 完整重复 50 次生成 `/home/rwkv/beta22-post-release-observation-20260731/fixture/2604.17278v1-repeat-500p.pdf`，得到 500 pages、3,655,599 bytes、SHA-256 `931906480197f4f224c2a42401b19fb140688a858cbdaf71b39d7a652a0e2b9b`；第 1/10/11/491/500 页 1.5x raster 与对应源页像素 hash 一致
+- worker/cache：隔离 soak worker 首次 `ready.importMs=3058`，synthetic layout warmup 386 ms，engine `rosetta-pdf-engine-v2.1` / contract 2；两次 fresh worker 的 10 页 durable cache probe 通过，首次 miss `7027 ms`，第二次 disk hit `4155 ms`，restored layout 0 ms，105 units 保持不变
+- 500 页 soak：在 `/home/rwkv/beta22-post-release-observation-20260731/soak-500` 以 production 大文档窗口策略执行 50×10 页，每窗依次 `prepare_pdf_window`、identity translation `render_pdf_window`、`dispose_pdf_window`；432,168 ms 内完成 50/50 windows、500/500 single-page artifacts、0 failed。每窗 105 units / 96 translatable units；prepare total min/median/mean/p95/max 为 6370/6836/6848/7147/7543 ms，layout 为 1948/2443/2457/2780/3082 ms，unit collection 为 3531/3657/3645/3691/3727 ms
+- 产物与内存：独立 reopen 500/500 artifact，全部是可读单页 PDF；output 10,495,690,285 bytes / 500 files，结束后 scratch 0 bytes / 0 files，persistent prepare cache 1,533,420 bytes / 24 files。worker peak RSS 1,067,048,960 bytes；首窗结束 current RSS 634,376,192 bytes，末窗 1,067,044,864 bytes，增长 432,668,672 bytes。500 页最大产品边界内未 OOM 或失败，但该增长作为残余风险保留，不能外推为 1,000 页认证
+- 取消行为：独立 fresh worker 在 10 页 prepare `started` 后按 production process-group 语义发送 `SIGTERM`，63 ms 内以 `-15` 退出；无 child/surviving observation process。中断时 scratch 为 24,336,790 bytes / 1 file，两次相隔 1 秒的采样完全一致，证明停止后不再增长且范围可控
+- 隔离与 live 保护：正式 soak/cancel 将 `HOME`、`XDG_CACHE_HOME`、jobs、scratch、cache、output 和 pack copy 全部定向到 observation 目录；先导 harness 暴露 TextIOWrapper/select 缓冲和共享 `$HOME/.cache/pdf2zh` 问题后立即停止，失败证据保留在 `soak-500-harness-buffering-20260731T1717`，修正 reader queue 和 HOME 隔离后从空目录重跑。当前 CP11 RC AppImage 与 live worker PID `1532337` 全程保持运行，未停止、替换或修改
+- 证据：根目录 `/home/rwkv/beta22-post-release-observation-20260731`；`fixture.json` SHA-256 `a775110e4f6f9d1c18608aa801669032696b695a174a642597496ce439940fbe`；cache probe `36a11cca9d073b174f587dad4ad80db566d674119eaad4871eaef9e00ca032bc`；soak summary `3034601ed5808cec29aba213704afb654a4964c9ce03e092059e7ea4ba7ed832`；artifact validation `a6c91e77d0d75cdd86ed5082ef62f74dc69fb3dfc7acdb0e01b52b161651eedf`；cancel summary `82acff8ca0569f3846698f4ddee4f7208ec313a03fec41a29cbe14e9c00fb7d3`
+- 执行命令与结果：pinned-host-key SSH inventory、tag/archive extraction、AppImage/pack/fixture `sha256sum`/size/count、PyMuPDF fixture generation/raster validation、beta.22 persistent-worker probe、50-window protocol soak、psutil RSS/process-group cancel probe、500 artifact independent reopen 和 live-process复核全部通过；未启动 dev server，未执行 production build
+- 仓库最终验证：`pnpm typecheck`、`pnpm check:pdf-v3-isolation`、`cargo fmt --all -- --check`、默认 `cargo check`、`cargo check --features experimental-pdf-v3`、`cargo test rosetta_jobs`（94 passed）、`cargo test --features experimental-pdf-v3 rosetta_jobs::formats::pdf::v3_run_list`（5 passed）和 `git diff --check` 全部通过；默认 check 只有既有 5 个非本 patch dead-code warnings，显式 feature check 无新增 warning
+- 修改文件：仅本文收尾；CP9 第一步已有未提交 code/frontend isolation patch保持不变。远端 observation pack copy 因测试 harness 自身由 pack Python 启动而新增 `.pyc`，原 beta.22 回滚副本与 live CP8 pack未改变，该 copy不作为 release artifact
+- blocker：无 release-observation hard blocker；残余风险为 500 页 current RSS 相对首窗增加 432,668,672 bytes，且本证据只认证 500 页 product maximum，不认证 1,000 页。公开渠道仍是 Windows/macOS `beta.23`、Linux `beta.22`
+- 发布决策：不补发 Linux `beta.23`；所有剩余治理完成后，从同一最终 commit统一构建、验收和发布 Windows x64、macOS arm64、Linux x64 `0.1.0-beta.24`，此前不发布任何单平台新版本
+- 下一步唯一动作：基于本观察证据做一次独立 checkpoint 选择审查，并由用户明确授权下一单一 scope；当前 patch仍禁止 CP9 第二步删除、CP8 新 family、CP10、release/profile修改和任何单平台发布
+
+#### 2026-08-01 / CP8 family 1 integration closeout / Codex
+
+- 状态：started
+- 用户目标：Linux 与 Windows、macOS 回到同一发布节奏，随后三平台共同清理无用 PDF v3 代码
+- HEAD 与工作区：`49df69b`；保留上一 CP9 第一步未提交隔离 patch，本 checkpoint 只修正 CP8 family 1 capability/profile 兼容边界和对应测试
+- 开始验证：`pnpm typecheck`、`pnpm check:pdf-v3-isolation`、默认及 experimental `cargo check`、`cargo test rosetta_jobs`（94 passed）、patch suite（44 passed）、rustfmt 和 `git diff --check` 通过；`cargo test managed_pdf2zh` 为 52 passed、4 failed、1 ignored
+- 根因：`resource-manager-reuse` 只是构建配方锁定并由 AST 验证的 prepare 性能优化，不是 App 正确运行所依赖的协议能力；把它加入 runtime minimum 并把 engine revision 提升到 2，会让当前冻结的三平台 release profile pack 被错误判为过期
+- 授权 scope：保持 fork commit、Linux build input 和 `verify_rosetta_engine_resource_manager_reuse` 不变；runtime capability manifest 恢复 revision 1，不再声明该性能优化；恢复 managed PDF tests。不得迁移新 family、修改 release profile 或执行 CP9 第二步删除
+- 下一步唯一动作：完成聚焦与仓库级验证，确认现有 release profile 和后续新 pack 都保持兼容，并记录 CP8 family 1 integration closeout 结果
+
+#### 2026-08-01 / CP8 family 1 integration closeout / Codex / completed
+
+- 状态：`completed`
+- HEAD 与工作区：基于 `49df69b Accept CP8 resource manager visual gate`；保留上一 CP9 第一步未提交隔离 patch，本 checkpoint 未提交、未推送
+- 根因与修正：`resource-manager-reuse` 是 prepare 路径的构建时性能优化，不是 App 正确运行所必需的 runtime 协议能力。runtime capability manifest 已从错误的 engine revision 2 恢复为 revision 1，并移除 `resource-manager-reuse` capability，因此冻结的 Windows、macOS、Linux release profile pack 不再被错误判为过期
+- 构建时保证保持不变：PDFMathTranslate fork commit `681f242f8bab16fca9ccddcfe7c9f32aa7c37947`、Linux build input pin 和 `verify_rosetta_engine_resource_manager_reuse` AST verification 均保留；后续新 pack 仍必须在构建阶段证明该优化存在，但 App runtime minimum 不强制它
+- 测试与 CI：patch suite 的 manifest 期望恢复 revision 1，capability declaration test 改为读取 manifest revision，避免重复硬编码；主应用 CI 新增 `cargo test managed_pdf2zh`，防止 release profile compatibility 再次静默回归
+- 最终验证：`pnpm typecheck` 通过；`pnpm check:pdf-v3-isolation` 通过；`cargo fmt --all -- --check` 通过；`cargo check` 通过；`cargo check --features experimental-pdf-v3` 通过；`cargo test rosetta_jobs` 94 passed；`cargo test managed_pdf2zh` 56 passed、0 failed、1 ignored；`python scripts/test-pdf2zh-patches.py -q` 44 passed；`git diff --check` 通过。默认 Rust check 只有既有 5 个与本 checkpoint 无关的 dead-code warnings
+- 发布边界：未构建新 pack，未修改 release profile、应用版本或 updater metadata，未启动 dev server，未执行 production build，未发布任何单平台版本
+- blocker：无。当前三平台 runtime minimum 与现有冻结 pack 兼容，后续 `beta.24` 新 pack 仍在统一发布门中从同一最终 commit 构建和更新 profile
+- 下一步唯一动作：单独完成 CP9 第一步 integration closeout，把现有 `check:pdf-v3-isolation` 接入 CI 并复核整组未提交隔离 patch；不得执行第二步删除、迁移 CP8 新 family、推进 CP10、修改 release/profile 或发布任何单平台版本
+
+#### 2026-08-01 / CP9 step 1 integration closeout / Codex
+
+- 状态：started
+- HEAD 与工作区：基于 `49df69b Accept CP8 resource manager visual gate`；工作区包含已完成本地验证但尚未集成的 CP9 第一步隔离 patch，以及随后完成的 CP8 family 1 integration closeout compatibility fix
+- 用户授权：允许完成当前推荐动作并提交、推送 GitHub；若直连 GitHub 失败，可检查本机 Clash 代理，但不得修改 release/profile、版本号或发布任何平台
+- 复核结论：默认 production 路径继续保留 pdf2zh 翻译、source/translated page PNG preview、export、PDFium 和 `pdf_v3::document::DocumentHandle` source identity；11 个无 frontend consumer 的 v3 command/control/export/worker surface 仅由默认关闭的 `experimental-pdf-v3` feature 恢复
+- 本 checkpoint 修改：把 `check:pdf-v3-isolation` 接入主应用 CI，并增加 `cargo check --features experimental-pdf-v3` recovery build 门禁；补充 change-log。第二步 native module 删除仍禁止
+- 下一步唯一动作：运行完整本地门禁、审查最终 diff，验证通过后提交并推送；不得执行 CP9 第二步删除、CP8 新 family、CP10、release/profile 修改或任何平台发布
+
+#### 2026-08-01 / CP9 step 1 integration closeout / Codex / completed
+
+- 状态：`completed`（仅第一步隔离；第二步 native module 删除未执行）
+- 实现结果：默认 Cargo feature 为空，11 个无 production frontend consumer 的 v3 commands、对应 Tauri state、lifecycle/control/export/preview/worker modules 仅在 `experimental-pdf-v3` 下编译和注册；两个无消费者 frontend hooks、v3 wrappers 与 frontend response types 已移除
+- production 保留：pdf2zh preparse/translation/export、source 和 translated-page PNG preview、PDFium、page artifact 与 `pdf_v3::document::DocumentHandle` source identity 均保持默认启用；job 删除、本地数据清理和 App 退出通过 feature-aware helper 在两种构建下保持同一调用语义
+- CI 门禁：主应用 workflow 新增 `pnpm check:pdf-v3-isolation`、`cargo check --features experimental-pdf-v3` 和 `cargo test managed_pdf2zh`；前两项锁定默认隔离与历史恢复边界，后一项锁定 CP8 runtime capability/profile compatibility
+- 工程记录：新增 `docs/engineering/change-log/2026-08-01-pdf-v3-default-isolation.md`；未修改持久化格式、release profile、应用版本或 updater metadata
+- 最终验证：`pnpm typecheck` 通过；`pnpm check:pdf-v3-isolation` 通过；`cargo fmt --all -- --check` 通过；`cargo check` 通过；`cargo check --features experimental-pdf-v3` 通过；`cargo test rosetta_jobs` 94 passed；`cargo test managed_pdf2zh` 56 passed、0 failed、1 ignored；`cargo test --features experimental-pdf-v3 rosetta_jobs::formats::pdf::v3_run_list` 5 passed；patch suite 44 passed；`git diff --check` 通过。默认 Rust 构建仍只有既有 5 个无关 dead-code warnings
+- 发布与授权边界：未启动 dev server，未执行 production build，未构建 pack，未修改或发布任何平台版本；用户已授权将本 checkpoint 提交并推送 GitHub
+- blocker：无
+- 下一步唯一动作：执行 CP10 文档事实收敛，清理当前 production pdf2zh 路径与历史 PDF v3 文档之间的事实冲突；不得执行 CP9 第二步删除、CP8 新 family、release/profile 修改或任何单平台发布
 
 ## 新 agent 接手提示词
 

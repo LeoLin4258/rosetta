@@ -16,16 +16,27 @@ pub(crate) mod run_state;
 pub(crate) mod runtime;
 pub(crate) mod source_state;
 pub(crate) mod unit_translation;
+#[cfg(feature = "experimental-pdf-v3")]
 pub(crate) mod v3_component;
+#[cfg(feature = "experimental-pdf-v3")]
 pub(crate) mod v3_control;
+#[cfg(feature = "experimental-pdf-v3")]
 pub(crate) mod v3_export;
+#[cfg(feature = "experimental-pdf-v3")]
 pub(crate) mod v3_lifecycle;
+#[cfg(feature = "experimental-pdf-v3")]
 pub(crate) mod v3_preview;
+#[cfg(feature = "experimental-pdf-v3")]
 pub(crate) mod v3_processor;
+#[cfg(feature = "experimental-pdf-v3")]
 pub(crate) mod v3_run_creation;
+#[cfg(feature = "experimental-pdf-v3")]
 pub(crate) mod v3_run_list;
+#[cfg(feature = "experimental-pdf-v3")]
 pub(crate) mod v3_runtime;
+#[cfg(feature = "experimental-pdf-v3")]
 pub(crate) mod v3_source_identity;
+#[cfg(feature = "experimental-pdf-v3")]
 pub(crate) mod v3_worker;
 
 pub(crate) use rasterize::{count_pages, render_page_as_png};

@@ -86,13 +86,24 @@ jobs:
       - name: Typecheck frontend
         run: pnpm typecheck
 
+      - name: Check PDF v3 isolation boundary
+        run: pnpm check:pdf-v3-isolation
+
       - name: Check Rust application
         working-directory: rosetta-app/src-tauri
         run: cargo check
 
+      - name: Check experimental PDF v3 recovery build
+        working-directory: rosetta-app/src-tauri
+        run: cargo check --features experimental-pdf-v3
+
       - name: Test job system
         working-directory: rosetta-app/src-tauri
         run: cargo test rosetta_jobs
+
+      - name: Test managed PDF runtime
+        working-directory: rosetta-app/src-tauri
+        run: cargo test managed_pdf2zh
 
       - name: Test PDF patch suite
         working-directory: rosetta-app/src-tauri

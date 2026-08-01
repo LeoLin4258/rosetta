@@ -8,6 +8,7 @@
     "typecheck": "tsc --noEmit",
     "build": "tsc && vite build",
     "preview": "vite preview",
+    "check:pdf-v3-isolation": "node scripts/check-pdf-v3-isolation.mjs",
     "tauri": "tauri",
     "dev:tauri": "tauri dev",
     "build:tauri": "tauri build",

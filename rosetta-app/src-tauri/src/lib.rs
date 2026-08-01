@@ -31,17 +31,20 @@ pub fn run() {
 
     let exit_cleanup_started = Arc::new(AtomicBool::new(false));
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .manage(rwkv_api::RwkvTranslationRunRegistry::default())
         .manage(managed_rwkv::Registry::default())
         .manage(managed_rwkv::InstallStateRegistry::default())
         .manage(managed_pdf2zh::InstallStateRegistry::default())
         .manage(managed_pdf2zh::Pdf2zhWorkerState::default())
-        .manage(rosetta_jobs::PdfTranslationCancelState::default())
+        .manage(rosetta_jobs::PdfTranslationCancelState::default());
+    #[cfg(feature = "experimental-pdf-v3")]
+    let builder = builder
         .manage(rosetta_jobs::PdfV3ComponentState::default())
         .manage(rosetta_jobs::PdfV3RunLifecycleState::default())
         .manage(rosetta_jobs::PdfV3SourceIdentityState::default())
-        .manage(rosetta_jobs::PdfV3RunWorkerState::default())
+        .manage(rosetta_jobs::PdfV3RunWorkerState::default());
+    builder
         .manage(rosetta_jobs::PdfPngCache::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -226,39 +229,50 @@ pub fn run() {
             rosetta_jobs::ensure_rosetta_translation_file,
             rosetta_jobs::export_rosetta_job_file,
             rosetta_jobs::export_rosetta_translated_pdf,
+            #[cfg(feature = "experimental-pdf-v3")]
             rosetta_jobs::export_rosetta_pdf_v3_run,
             rosetta_jobs::export_rosetta_translation_file,
             rosetta_jobs::create_welcome_document,
             rosetta_jobs::import_rosetta_document_from_path,
             rosetta_jobs::import_rosetta_project_from_directory,
+            #[cfg(feature = "experimental-pdf-v3")]
             rosetta_jobs::list_rosetta_pdf_v3_runs,
             rosetta_jobs::list_rosetta_jobs,
             rosetta_jobs::load_rosetta_job,
             rosetta_jobs::load_rosetta_translation_file,
             rosetta_jobs::count_rosetta_pdf_pages,
+            #[cfg(feature = "experimental-pdf-v3")]
             rosetta_jobs::create_rosetta_pdf_v3_run,
+            #[cfg(feature = "experimental-pdf-v3")]
             rosetta_jobs::cancel_rosetta_pdf_v3_run,
             rosetta_jobs::cancel_rosetta_translated_pdf,
             rosetta_jobs::generate_rosetta_translated_pdf,
             rosetta_jobs::get_rosetta_pdf_assets,
             rosetta_jobs::get_rosetta_pdf_page_status,
             rosetta_jobs::get_rosetta_pdf_snapshot,
+            #[cfg(feature = "experimental-pdf-v3")]
             rosetta_jobs::get_rosetta_pdf_v3_run_status,
             rosetta_jobs::pause_rosetta_pdf_run,
+            #[cfg(feature = "experimental-pdf-v3")]
             rosetta_jobs::pause_rosetta_pdf_v3_run,
             rosetta_jobs::preparse_rosetta_pdf_pages,
             rosetta_jobs::pick_rosetta_export_path,
             rosetta_jobs::pick_rosetta_import_directory,
             rosetta_jobs::pick_rosetta_import_path,
+            #[cfg(feature = "experimental-pdf-v3")]
             rosetta_jobs::probe_rosetta_pdf_v3_component,
             rosetta_jobs::probe_pdf_runtime,
             rosetta_jobs::read_rosetta_pdf_bytes,
+            #[cfg(feature = "experimental-pdf-v3")]
             rosetta_jobs::recover_rosetta_pdf_v3_run,
             rosetta_jobs::repair_rosetta_pdf_job,
             rosetta_jobs::render_rosetta_pdf_page_as_png,
             rosetta_jobs::render_rosetta_pdf_translated_page_as_png,
+            #[cfg(feature = "experimental-pdf-v3")]
             rosetta_jobs::render_rosetta_pdf_v3_translated_page_as_png,
+            #[cfg(feature = "experimental-pdf-v3")]
             rosetta_jobs::retry_rosetta_pdf_v3_page,
+            #[cfg(feature = "experimental-pdf-v3")]
             rosetta_jobs::resume_rosetta_pdf_v3_run,
             rosetta_jobs::rename_rosetta_job,
             rosetta_jobs::save_rosetta_segments,
@@ -288,16 +302,10 @@ pub fn run() {
 
                 let exit_code = code.unwrap_or(0);
                 api.prevent_exit();
-                app_handle
-                    .state::<rosetta_jobs::PdfV3RunWorkerState>()
-                    .request_shutdown();
+                rosetta_jobs::request_pdf_v3_shutdown(app_handle);
                 let app = app_handle.clone();
                 tauri::async_runtime::spawn(async move {
-                    app.state::<rosetta_jobs::PdfV3RunWorkerState>()
-                        .shutdown()
-                        .await;
-                    app.state::<rosetta_jobs::PdfV3RunLifecycleState>()
-                        .shutdown();
+                    rosetta_jobs::shutdown_pdf_v3_for_exit(&app).await;
                     managed_rwkv::shutdown_managed_rwkv_runtime_for_exit(&app).await;
                     managed_pdf2zh::shutdown_worker_for_exit(&app).await;
                     app.exit(exit_code);

@@ -1,17 +1,22 @@
 use std::{
-    fs::{self, File},
-    io::BufReader,
+    fs,
     path::{Component, Path},
     str::FromStr,
     sync::{
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         Arc, Mutex,
     },
-    time::Instant,
 };
 
-use serde::{Deserialize, Serialize};
+#[cfg(feature = "experimental-pdf-v3")]
+use std::{fs::File, io::BufReader, time::Instant};
+
+#[cfg(feature = "experimental-pdf-v3")]
+use serde::Deserialize;
+use serde::Serialize;
 use serde_json::json;
+#[cfg(feature = "experimental-pdf-v3")]
+use tauri::Manager;
 use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_dialog::DialogExt;
 use tokio::sync::oneshot;
@@ -225,16 +230,50 @@ impl Default for PdfTranslationCancelState {
 }
 
 pub use formats::pdf::runtime::PngCache as PdfPngCache;
+#[cfg(feature = "experimental-pdf-v3")]
 pub use formats::pdf::v3_component::PdfV3ComponentState;
+#[cfg(feature = "experimental-pdf-v3")]
 pub use formats::pdf::v3_lifecycle::PdfV3RunLifecycleState;
+#[cfg(feature = "experimental-pdf-v3")]
 pub use formats::pdf::v3_source_identity::PdfV3SourceIdentityState;
+#[cfg(feature = "experimental-pdf-v3")]
 pub use formats::pdf::v3_worker::PdfV3RunWorkerState;
+
+#[cfg(feature = "experimental-pdf-v3")]
+pub(crate) fn request_pdf_v3_shutdown(app: &AppHandle) {
+    app.state::<PdfV3RunWorkerState>().request_shutdown();
+}
+
+#[cfg(not(feature = "experimental-pdf-v3"))]
+pub(crate) fn request_pdf_v3_shutdown(_app: &AppHandle) {}
+
+#[cfg(feature = "experimental-pdf-v3")]
+pub(crate) async fn shutdown_pdf_v3_for_exit(app: &AppHandle) {
+    app.state::<PdfV3RunWorkerState>().shutdown().await;
+    app.state::<PdfV3RunLifecycleState>().shutdown();
+}
+
+#[cfg(not(feature = "experimental-pdf-v3"))]
+pub(crate) async fn shutdown_pdf_v3_for_exit(_app: &AppHandle) {}
+
+#[cfg(feature = "experimental-pdf-v3")]
+async fn shutdown_pdf_v3_for_job(app: &AppHandle, job_directory: &Path) -> Result<(), String> {
+    app.state::<PdfV3RunWorkerState>()
+        .shutdown_job(job_directory)
+        .await
+}
+
+#[cfg(not(feature = "experimental-pdf-v3"))]
+async fn shutdown_pdf_v3_for_job(_app: &AppHandle, _job_directory: &Path) -> Result<(), String> {
+    Ok(())
+}
 
 #[tauri::command]
 pub fn cancel_rosetta_translated_pdf(cancel_state: State<'_, PdfTranslationCancelState>) {
     cancel_state.request_cancel();
 }
 
+#[cfg(feature = "experimental-pdf-v3")]
 #[tauri::command]
 pub async fn probe_rosetta_pdf_v3_component(
     app: AppHandle,
@@ -252,6 +291,7 @@ pub async fn probe_rosetta_pdf_v3_component(
         .map_err(|error| error.to_string())
 }
 
+#[cfg(feature = "experimental-pdf-v3")]
 #[tauri::command]
 pub async fn create_rosetta_pdf_v3_run(
     app: AppHandle,
@@ -382,10 +422,12 @@ pub async fn create_rosetta_pdf_v3_run(
     Ok(final_status)
 }
 
+#[cfg(feature = "experimental-pdf-v3")]
 fn elapsed_ms(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
+#[cfg(feature = "experimental-pdf-v3")]
 #[tauri::command]
 pub async fn list_rosetta_pdf_v3_runs(
     app: AppHandle,
@@ -416,6 +458,7 @@ pub async fn list_rosetta_pdf_v3_runs(
     .map_err(|_| "PDF v3 run 列表任务异常结束。".to_string())?
 }
 
+#[cfg(feature = "experimental-pdf-v3")]
 #[tauri::command]
 pub async fn render_rosetta_pdf_v3_translated_page_as_png(
     app: AppHandle,
@@ -482,6 +525,7 @@ pub async fn render_rosetta_pdf_v3_translated_page_as_png(
     Ok(tauri::ipc::Response::new(png))
 }
 
+#[cfg(feature = "experimental-pdf-v3")]
 #[tauri::command]
 pub async fn export_rosetta_pdf_v3_run(
     app: AppHandle,
@@ -528,6 +572,7 @@ pub async fn export_rosetta_pdf_v3_run(
     .map_err(|error| error.to_string())
 }
 
+#[cfg(feature = "experimental-pdf-v3")]
 struct PreparedPdfV3RunJob {
     source_identity: crate::pdf_v3::document::VerifiedDocumentIdentity,
     source_fingerprint: String,
@@ -535,6 +580,7 @@ struct PreparedPdfV3RunJob {
     source_language: String,
 }
 
+#[cfg(feature = "experimental-pdf-v3")]
 fn prepare_pdf_v3_run_job(
     app: &AppHandle,
     job_id: &str,
@@ -585,6 +631,7 @@ fn prepare_pdf_v3_run_job(
     })
 }
 
+#[cfg(feature = "experimental-pdf-v3")]
 async fn prepare_pdf_v3_worker_binding(
     app: &AppHandle,
     registry: &crate::managed_rwkv::Registry,
@@ -628,6 +675,7 @@ async fn prepare_pdf_v3_worker_binding(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg(feature = "experimental-pdf-v3")]
 struct PdfV3DocumentLanguageMetadata {
     format: String,
     #[serde(default)]
@@ -638,11 +686,13 @@ struct PdfV3DocumentLanguageMetadata {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg(feature = "experimental-pdf-v3")]
 struct PdfV3SourceFileLanguageMetadata {
     #[serde(default)]
     source_lang: Option<String>,
 }
 
+#[cfg(feature = "experimental-pdf-v3")]
 fn read_pdf_v3_document_language_metadata(
     job_directory: &Path,
 ) -> Result<PdfV3DocumentLanguageMetadata, String> {
@@ -652,6 +702,7 @@ fn read_pdf_v3_document_language_metadata(
         .map_err(|_| "PDF document metadata 无效。".to_string())
 }
 
+#[cfg(feature = "experimental-pdf-v3")]
 #[tauri::command]
 pub fn get_rosetta_pdf_v3_run_status(
     app: AppHandle,
@@ -684,6 +735,7 @@ pub fn get_rosetta_pdf_v3_run_status(
     )
 }
 
+#[cfg(feature = "experimental-pdf-v3")]
 #[tauri::command]
 pub fn pause_rosetta_pdf_v3_run(
     app: AppHandle,
@@ -702,6 +754,7 @@ pub fn pause_rosetta_pdf_v3_run(
     )
 }
 
+#[cfg(feature = "experimental-pdf-v3")]
 #[tauri::command]
 pub fn resume_rosetta_pdf_v3_run(
     app: AppHandle,
@@ -720,6 +773,7 @@ pub fn resume_rosetta_pdf_v3_run(
     )
 }
 
+#[cfg(feature = "experimental-pdf-v3")]
 #[tauri::command]
 pub fn cancel_rosetta_pdf_v3_run(
     app: AppHandle,
@@ -738,6 +792,7 @@ pub fn cancel_rosetta_pdf_v3_run(
     )
 }
 
+#[cfg(feature = "experimental-pdf-v3")]
 #[tauri::command]
 pub async fn retry_rosetta_pdf_v3_page(
     app: AppHandle,
@@ -824,6 +879,7 @@ pub async fn retry_rosetta_pdf_v3_page(
     )
 }
 
+#[cfg(feature = "experimental-pdf-v3")]
 #[tauri::command]
 pub async fn recover_rosetta_pdf_v3_run(
     app: AppHandle,
@@ -903,6 +959,7 @@ pub async fn recover_rosetta_pdf_v3_run(
     Ok(result)
 }
 
+#[cfg(feature = "experimental-pdf-v3")]
 fn control_rosetta_pdf_v3_run(
     app: &AppHandle,
     lifecycle: &PdfV3RunLifecycleState,
@@ -942,6 +999,7 @@ fn control_rosetta_pdf_v3_run(
     )
 }
 
+#[cfg(feature = "experimental-pdf-v3")]
 fn synchronize_pdf_v3_run_lifecycle(
     lifecycle: &PdfV3RunLifecycleState,
     worker_state: &PdfV3RunWorkerState,
@@ -3391,13 +3449,12 @@ pub fn rename_rosetta_job(
 pub async fn delete_rosetta_job(
     app: AppHandle,
     cancel_state: State<'_, PdfTranslationCancelState>,
-    pdf_v3_workers: State<'_, PdfV3RunWorkerState>,
     job_id: String,
 ) -> Result<RosettaJobDeleteResult, String> {
     cancel_state.request_cancel_for_job(&job_id);
     let root = path::jobs_root(&app)?;
     let job_directory = path::checked_job_dir(&root, &job_id)?;
-    pdf_v3_workers.shutdown_job(&job_directory).await?;
+    shutdown_pdf_v3_for_job(&app, &job_directory).await?;
     import::delete_job(&app, &job_id)
 }
 
