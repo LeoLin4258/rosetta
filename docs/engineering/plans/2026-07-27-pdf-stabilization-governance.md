@@ -5,7 +5,7 @@
 - 状态：Active
 - 创建日期：2026-07-27
 - 审计窗口：2026-07-17 至当前 `HEAD`；更早代码只在解释该窗口内的设计来源时取证
-- 当前阶段：CP10 文档事实收敛，completed（当前 production PDF 事实与历史 v3 文档路由已统一；下一步只做最终发布前剩余范围审查，不执行发布）
+- 当前阶段：最终发布前剩余范围审查，completed（按用户最新“发版放在最后”指令，下一 checkpoint 只执行 CP9 第二步删除；CP8 后续 family 延期）
 - 当前生产 PDF 执行路径：`pdf2zh` prepare / unit collection / page render，Rosetta Rust 负责本地翻译、任务状态、页产物、预览与导出
 - 当前验证基线：仓库 `main` 在 `61ff0ab` 的审计快照；后续 agent 必须重新读取当前 `HEAD`，不能把该 commit 当成永久事实
 - 本文是 PDF 稳定化和治理工作的唯一活跃 handoff authority
@@ -522,7 +522,7 @@ CP8、CP9、CP10 不应与 Linux release candidate 的包内容变化混在同�
 
 ## CP8：把 Rosetta Python patch 迁入 PDFMathTranslate fork
 
-- 状态：`in-progress`（family 1 已完成；后续 family 必须等待 Release 后观察再决定）
+- 状态：`completed`（family 1 已完成；后续 family 不属于 `beta.24` 发布前范围，统一发布并观察后再建立新 checkpoint）
 - 依赖：CP0、CP6；建议在第一个稳定 Linux release candidate 后实施
 - 建议单次工作量：一个 agent context 只完成一个可审查 patch family，不要求一次迁移全部 3,000 行
 
@@ -563,7 +563,7 @@ CP8、CP9、CP10 不应与 Linux release candidate 的包内容变化混在同�
 
 ## CP9：隔离未使用 PDF v3 与默认 IPC surface
 
-- 状态：`completed`（第一步隔离实现、CI 门禁和集成验证完成；第二步删除保持禁止）
+- 状态：`in-progress`（第一步隔离完成；第二步删除经最终发布前范围审查选为下一 checkpoint，尚未开始）
 - 依赖：CP0、CP6；不得与 CP8 同时实施
 - 建议单次工作量：一个 agent context 先完成隔离，删除留到后续重复 checkpoint
 
@@ -691,23 +691,67 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 - 至少完成一次 500 页级 soak；不能仅凭队列有界就宣称 1,000 页认证。
 - 任何 visual regression 优先回滚 pack/profile，不在用户已发布版本上远程替换 asset。
 
+## 最终发布前剩余范围审查（2026-08-02）
+
+- 状态：`completed`
+- 约束：本审查只产出范围结论；不修改生产代码、版本号、release profile、updater metadata 或 release artifacts，不运行 dev server 或 production build。
+- 顺序决议：历史 ledger 曾记录“先同步版本，再共同清理”，用户随后明确要求“发版应该放在最后做”。因此 `beta.24` 前只插入一个聚焦的 CP9 第二步删除 checkpoint；删除通过三平台门禁后，再从同一最终 commit 统一发版。
+
+### 量化清理边界
+
+- `src/pdf_v3/` 有 40 个 Rust 文件、41,451 行；`rosetta_jobs/formats/pdf/v3_*.rs` 有 11 个文件、6,748 行，总计 48,199 行 v3-labeled Rust。
+- 其中 43,432 行已经只在 experimental feature/test 下编译，可直接作为删除主体。其余 4,767 行位于所谓 shared modules，但外部 production consumer 只实际读取 provider translation plan/result DTO；这些 DTO 应搬到当前 production PDF module 后再删除旧模块。
+- `source_state.rs` 的 production fingerprint 使用独立 canonical SHA-256；`DocumentHandle` 只剩 Windows test equivalence 引用。删除时应把该测试改为直接锁定 canonical fingerprint contract，不能为保留测试而留下 `document -> source_object` 的整条 v3 依赖链。
+
+### 当前发布事实
+
+- 公开 updater：Windows x64 与 macOS arm64 为 `0.1.0-beta.23`，Linux x64 为 `0.1.0-beta.22`。
+- App source version 三处仍一致为 `0.1.0-beta.23`；`beta.24` 尚未建立版本提交或 release notes。
+- 三平台 production PDF pack profile 均已启用且可复用：Windows/macOS 为 2026-07-24 immutable assets，Linux 为 2026-07-30 immutable asset。只要后续清理不改变 pack builder、PDFMathTranslate fork、renderer、translation unit authority 或 request plan，就不需要为了 app-side 删除重建 pack。
+- 主应用 Linux CI 在 `5f2bb82` 成功；Windows/macOS 仍是 release-time manual gates。三平台 release scripts 都要求相同版本和 clean worktree，并必须在各自 native host 构建。
+
+### `beta.24` 前必须完成
+
+1. 只执行 CP9 第二步删除，不迁移 CP8 新 family：
+   - 在删除前为当前 pre-delete `main` 建立明确、可推送的 git tag 或 branch snapshot；
+   - 把 production 实际消费的 PDF provider plan/result DTO 从 `pdf_v3` 搬入当前 PDF production module，并保持 schema、request plan、unit order 和 provider payload 不变；
+   - 用当前 `source_state` canonical SHA-256 contract 的直接测试取代 test-only `DocumentHandle` equivalence，删除不再有 production consumer 的 document/source-object chain；
+   - 移除 feature/test-only native v3 runtime、11 个 v3 command/runtime modules、Tauri feature wiring、空 no-op lifecycle helpers 和 experimental CI recovery build；
+   - 删除后重新确认 `pdf`, `memmap2`, `subsetter`, `ttf-parser` 是否已无 consumer，再移除确定无用的 Cargo dependencies；不得删除 production 仍使用的 `pdfium-render`, `lopdf`, `lru`, `once_cell`, `flate2` 或 `tar`；
+   - 把 `check:pdf-v3-isolation` 改为更小的 archived-v3-absence / production-PDF-boundary 门禁，防止旧 command/type 再次进入默认代码。
+2. 对删除 patch 执行默认 production 验证：frontend typecheck、production boundary check、rustfmt、`cargo check`、`cargo test rosetta_jobs`、`cargo test managed_pdf2zh`、patch suite 和 Linux Main app CI。因为 experimental surface 被删除，不再运行或保留 `cargo check --features experimental-pdf-v3`。
+3. 删除 patch 不改 pack、renderer 或 request plan 时，不要求重建三平台 PDF pack，也不重复 CP8 十页视觉基线；最终 App release smoke 仍必须在 Windows/macOS/Linux 分别覆盖 PDF 安装、翻译、预览、导出与退出清理。
+
+### 延期到统一发布后
+
+- CP8 后续 render-slot authority、color/style、diagram filtering、alignment 等 patch family。它们会改变 PDFMathTranslate fork/build recipe 或 renderer，需要 fresh pack、三平台 profile 更新和十页视觉重验，不应与 app-side dead-code 删除或 `beta.24` release 混在一起。
+- 任何 native v3 重启、历史 schema 迁移或 renderer 重写。若未来重启，必须建立新的 active architecture plan/ADR 和真实文档 benchmark gate。
+- 与本次 PDF v3 删除无关的全仓 dead-code、warning 或依赖清理；另开小 checkpoint，不能借机扩大 CP9 diff。
+
+### 删除完成后的最终发布门
+
+1. 从删除后的同一 clean `main` commit 把 `package.json`、`Cargo.toml`、`tauri.conf.json` 统一提升到 `0.1.0-beta.24`，同步 Cargo lock，并添加 in-app/repository aggregate release notes。
+2. Windows x64、macOS arm64、Linux x64 在各自 native host 构建；先上传 unpublished artifacts，逐平台完成 fresh install、旧版 upgrade、managed RWKV/PDF onboarding、TXT/Markdown/PDF translation、preview/export、退出清理和 updater/website smoke。
+3. Windows 如果没有有效 Authenticode 证书，只能明确标为 Windows Preview；不得伪称签名正式版。
+4. 三个平台必须指向同一 release commit 和版本。全部 unpublished smoke 通过后才逐平台 publish；任一平台失败只回滚该平台 row，不能修改已上传 immutable artifact。
+
 ## Execution Ledger
 
 本节是唯一实施交接记录。每个 agent 在开始和结束时追加一个简短条目；不要删除以前记录。
 
 ### 当前状态摘要
 
-- 当前 checkpoint：无 in-progress checkpoint；CP10 document fact convergence 已 `completed`，最终发布仍明确延后
-- last completed：CP10 document fact convergence、CP9 step 1 integration closeout、CP8 family 1 integration closeout、Linux `beta.22` Release 后观察、CP8 family 1（`resource-manager-reuse`）与 CP11
-- 当前 family：无 active CP8 family；`resource-manager-reuse` 已通过 fork authority test、Rosetta AST capability verification、fresh-checkout pack、patch suite、仓库级静态/Rust 门禁、十页 authority、persistent cache、request-plan identity、10/10 PNG baseline 和用户人工视觉验收
+- 当前 checkpoint：无 in-progress implementation checkpoint；final pre-release scope review 已 `completed`，最终发布仍明确延后
+- last completed：final pre-release scope review、CP10 document fact convergence、CP9 step 1 integration closeout、CP8 family 1 integration closeout、Linux `beta.22` Release 后观察、CP8 family 1（`resource-manager-reuse`）与 CP11
+- 当前 family：无 active CP8 family；`resource-manager-reuse` 已通过 fork authority test、Rosetta AST capability verification、fresh-checkout pack、patch suite、仓库级静态/Rust 门禁、十页 authority、persistent cache、request-plan identity、10/10 PNG baseline 和用户人工视觉验收；其余 CP8 family 延期到统一 `beta.24` 发布并观察后
 - commits：PDFMathTranslate `681f242f8bab16fca9ccddcfe7c9f32aa7c37947`；Rosetta implementation/build-input `63015223b408bf2deac5032be5611948e19a9043` + `8c184492fa28be3a57dd235fe3ca05058b27b977`
 - Linux workflow：run `30608192155` success；Rosetta `ffdff6716d4c7c082b5bbc473ca5f15a2409bf08`；artifact ID `8784433771`，artifact ZIP digest `f1de8449100dba05df60bda57473ecdc7d053380243f29125b45a560c2360d4b`
 - fresh Linux pack：recipe `de41d93ebcce7cc666d1f763499f2c7f84f50e9e14b1bcd302418ca459621c8b`；archive SHA-256 `12ee5ceef7cb9992b1ee80d2ccc679d10daee68aa05f6098748b19b9048283a0`
 - 自动质量：10 pages、94 units、41,035 source chars、canonical unit SHA-256 `81d6185ffc72f263bbc03a6ab1872e4e8615728ad47ecd359b1b2b1d2f3cecb5`；persistent disk cache hit；accepted request plan 保持 1 request / 253 items / 39,901 input chars；10/10 authority PDFs 除 volatile trailer ID 外相同，10/10 PNG pixel exact
 - Linux `beta.22` 观察：公开 AppImage/pack 身份已复核；persistent cache probe 通过；500 页 50×10 窗口 prepare/render/dispose 完成 500/500、0 failed；worker peak RSS 1,067,048,960 bytes，首末窗口 current RSS 增长 432,668,672 bytes；取消 63 ms 退出且无残留进程
 - 已知 CP11 release issue：无；AppImage 页产物压缩、custom RC schema v2 兼容、committed-source Linux CI、immutable upload/redownload 与 profile update 门禁均已关闭
-- last verified HEAD：CP10 基于已推送 Rosetta `5f2bb824b64f25017c83c7b758d991107bc385f4`；历史 CP8 automated acceptance `200e2a7f72fe6b46254226376688836dfac4e367`；PDFMathTranslate fork `681f242f8bab16fca9ccddcfe7c9f32aa7c37947`
-- 下一步唯一动作：单独审查距离 Windows x64、macOS arm64、Linux x64 从同一最终 commit 统一发布 `0.1.0-beta.24` 还剩哪些必要工作，并明确 CP9 第二步删除与 CP8 后续 family 是发布前必做还是延期；本动作只产出范围结论，不修改 release/profile、版本号、updater metadata，不构建或发布
+- last verified HEAD：范围审查基于已推送 Rosetta `c8d9569f2697736527ec1d0c230258881ff3f693`；最后代码提交 `5f2bb82` 的 Main app CI run `30706804237` success；PDFMathTranslate fork `681f242f8bab16fca9ccddcfe7c9f32aa7c37947`
+- 下一步唯一动作：执行一个聚焦的 CP9 第二步删除 checkpoint：先建立并推送 pre-delete snapshot，只搬出 production provider plan/result DTO 和 canonical fingerprint test，再删除 archived v3 runtime/commands/feature/dependencies 并跑默认 production + Linux CI 门禁；不得迁移 CP8 新 family、修改版本/profile/updater metadata、构建 pack 或发布任何平台
 
 #### 2026-07-28 / CP11 / Codex
 
@@ -1704,6 +1748,27 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 - 发布与清理边界：未修改生产代码、持久化格式、release profile、应用版本或 updater metadata；未执行 CP9 第二步删除、CP8 新 family、pack 构建或任何平台发布；未新增逐任务 change-log
 - blocker：无
 - 下一步唯一动作：单独完成三平台 `0.1.0-beta.24` 最终发布前剩余范围审查，明确哪些清理是发布前必要项、哪些应延期；审查阶段不得修改或发布 release artifacts
+
+#### 2026-08-02 / final pre-release scope review / Codex
+
+- 状态：started
+- HEAD 与工作区：基于已推送、clean `main` 的 `c8d9569`；本审查只修改本文
+- 授权边界：继续推进但发版放在最后；当前只做 read-only 代码、历史、CI、公开 updater 与 release-script 审查，不修改生产代码、版本、profile 或 artifacts
+- 审查问题：CP9 第二步是否是 `beta.24` 前必做；CP8 后续 family 是否延期；三平台从同一最终 commit 发布还缺哪些明确门禁
+- 下一步唯一动作：完成范围结论的一致性和文档级验证，通过后记录 completion 并推送 `main`
+
+#### 2026-08-02 / final pre-release scope review / Codex / completed
+
+- 状态：`completed`
+- 发布事实：公开 updater 实测为 Windows/macOS `0.1.0-beta.23`、Linux `0.1.0-beta.22`；source version 三处为 `0.1.0-beta.23`；三平台 PDF pack profile 均已启用且当前删除 scope 不要求重建；Windows/macOS 为 manual release gates，Linux Main app CI 在 `5f2bb82` 的 run `30706804237` success
+- v3 inventory：`src/pdf_v3/` 40 files / 41,451 lines，PDF `v3_*.rs` 11 files / 6,748 lines，总计 48,199 lines；43,432 lines 已是 feature/test-only。非 v3 production consumer 复核只发现 `unit_translation.rs` 的 plan/result DTO；`source_state.rs` 的 `DocumentHandle` 引用只在 Windows test 中
+- dependency boundary：`pdf`, `memmap2`, `subsetter`, `ttf-parser` 只见于待删除 v3 chain，删除后须由 `rg`/Cargo 再确认再移除；`pdfium-render`, `lopdf`, `lru`, `once_cell`, `flate2`, `tar` 仍有 production consumer，明确保留
+- scope decision：CP9 第二步是 `beta.24` 前唯一代码清理；CP8 后续 patch family、native v3 重启和无关 dead-code 清理全部延期。该选择满足用户最新“发版放在最后”要求，同时避免 renderer/pack/profile 变化混入删除 diff
+- release gate：删除完成并通过默认 production tests/Linux CI 后，才建立统一 `beta.24` 版本与 aggregate release notes；三平台必须从同一 clean commit 在 native host 构建，先 unpublished smoke，再逐平台 publish
+- 验证：公开 updater endpoint、GitHub release list、Main app CI history、三平台 profile、release scripts、Cargo feature/module wiring、production consumers 与 v3 LOC inventory 均完成只读核对；Markdown relative links 和 `git diff --check` 通过。因为本 checkpoint 只有计划文档变化，未运行 TypeScript/Rust tests、dev server 或 production build
+- 修改范围：仅本文；未修改生产代码、版本号、Cargo lock、release profile、updater metadata 或 release artifacts，未新增 change-log
+- blocker：无
+- 下一步唯一动作：单独执行 CP9 第二步删除并完整验证；不得在该 checkpoint 中迁移 CP8 family、构建 pack、改版本或发布
 
 ## 新 agent 接手提示词
 
