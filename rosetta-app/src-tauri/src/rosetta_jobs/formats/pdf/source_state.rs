@@ -82,30 +82,23 @@ pub(crate) fn fingerprint_file(path: &Path) -> Result<String, String> {
     Ok(format!("sha256:{:x}", hasher.finalize()))
 }
 
-#[cfg(all(test, target_os = "windows"))]
+#[cfg(test)]
 mod tests {
     use super::build_pdf_source_metadata;
-    use crate::{
-        pdf_v3::document::DocumentHandle,
-        rosetta_jobs::formats::pdf::test_helpers::{fixture_path, pdfium_test_lock, shared_pdfium},
-    };
+    use crate::rosetta_jobs::formats::pdf::test_helpers::fixture_path;
 
     #[test]
-    fn source_metadata_uses_the_native_pdf_v3_fingerprint_identity() {
-        let _guard = pdfium_test_lock();
+    fn source_metadata_uses_the_canonical_source_fingerprint() {
         let source = fixture_path("simple-one-page.pdf");
-        let handle = DocumentHandle::open(shared_pdfium(), &source).expect("document handle");
 
-        let metadata = build_pdf_source_metadata(
-            &source,
-            handle.page_count(),
-            "simple-one-page.pdf".to_string(),
-            None,
-            None,
-        )
-        .expect("source metadata");
+        let metadata =
+            build_pdf_source_metadata(&source, 1, "simple-one-page.pdf".to_string(), None, None)
+                .expect("source metadata");
 
-        assert_eq!(metadata.source_fingerprint, handle.source_fingerprint());
+        assert_eq!(
+            metadata.source_fingerprint,
+            "sha256:0c2b5dc1169e7c0a0ac00b97e29747052002b3275b8265a8a988b2eb810e3ffe"
+        );
         assert_eq!(metadata.source_fingerprint.len(), "sha256:".len() + 64);
     }
 }

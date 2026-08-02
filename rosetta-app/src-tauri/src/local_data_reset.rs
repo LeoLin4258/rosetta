@@ -45,8 +45,6 @@ pub async fn clear_rosetta_local_data(
         .map(|result| result.cancelled)
         .unwrap_or(false);
     let cancelled_pdf_translation = cancel_pdf_translation(pdf_translation_cancel_state);
-    rosetta_jobs::request_pdf_v3_shutdown(&app);
-    rosetta_jobs::shutdown_pdf_v3_for_exit(&app).await;
     managed_pdf2zh::shutdown_worker(&app).await;
 
     let stop_result = managed_rwkv::stop_all_managed_rwkv_runtimes(&app, &rwkv_registry).await;

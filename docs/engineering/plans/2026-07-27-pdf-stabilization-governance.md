@@ -700,7 +700,7 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 ### 量化清理边界
 
 - `src/pdf_v3/` 有 40 个 Rust 文件、41,451 行；`rosetta_jobs/formats/pdf/v3_*.rs` 有 11 个文件、6,748 行，总计 48,199 行 v3-labeled Rust。
-- 其中 43,432 行已经只在 experimental feature/test 下编译，可直接作为删除主体。其余 4,767 行位于所谓 shared modules，但外部 production consumer 只实际读取 provider translation plan/result DTO；这些 DTO 应搬到当前 production PDF module 后再删除旧模块。
+- 其中 43,432 行已经只在 experimental feature/test 下编译，可直接作为删除主体。删除前更深的 caller graph 复核确认，其余所谓 shared modules 的 provider plan/result DTO 也只被 v3 函数和 v3 tests 使用；production `pdf2zh` 只调用 `translate_pdf_units_with_events`，因此无需搬 DTO，可直接删除整条 v3 plan/type chain。
 - `source_state.rs` 的 production fingerprint 使用独立 canonical SHA-256；`DocumentHandle` 只剩 Windows test equivalence 引用。删除时应把该测试改为直接锁定 canonical fingerprint contract，不能为保留测试而留下 `document -> source_object` 的整条 v3 依赖链。
 
 ### 当前发布事实
@@ -714,7 +714,7 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 
 1. 只执行 CP9 第二步删除，不迁移 CP8 新 family：
    - 在删除前为当前 pre-delete `main` 建立明确、可推送的 git tag 或 branch snapshot；
-   - 把 production 实际消费的 PDF provider plan/result DTO 从 `pdf_v3` 搬入当前 PDF production module，并保持 schema、request plan、unit order 和 provider payload 不变；
+   - 复核 PDF provider plan/result DTO 的真实 caller；若 production 有消费者则搬入当前 PDF module，若只属于 v3 chain 则直接删除，并保持现有 `pdf2zh` request plan、unit order 和 provider payload 不变；实际复核结果为无需搬 DTO；
    - 用当前 `source_state` canonical SHA-256 contract 的直接测试取代 test-only `DocumentHandle` equivalence，删除不再有 production consumer 的 document/source-object chain；
    - 移除 feature/test-only native v3 runtime、11 个 v3 command/runtime modules、Tauri feature wiring、空 no-op lifecycle helpers 和 experimental CI recovery build；
    - 删除后重新确认 `pdf`, `memmap2`, `subsetter`, `ttf-parser` 是否已无 consumer，再移除确定无用的 Cargo dependencies；不得删除 production 仍使用的 `pdfium-render`, `lopdf`, `lru`, `once_cell`, `flate2` 或 `tar`；
@@ -741,8 +741,8 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 
 ### 当前状态摘要
 
-- 当前 checkpoint：无 in-progress implementation checkpoint；final pre-release scope review 已 `completed`，最终发布仍明确延后
-- last completed：final pre-release scope review、CP10 document fact convergence、CP9 step 1 integration closeout、CP8 family 1 integration closeout、Linux `beta.22` Release 后观察、CP8 family 1（`resource-manager-reuse`）与 CP11
+- 当前 checkpoint：CP9 step 2 deletion 已完成本地实现与验证，等待删除 commit 的 Linux Main app CI；最终发布仍明确延后
+- last completed：CP9 step 2 本地删除门禁、final pre-release scope review、CP10 document fact convergence、CP9 step 1 integration closeout、CP8 family 1 integration closeout、Linux `beta.22` Release 后观察、CP8 family 1（`resource-manager-reuse`）与 CP11
 - 当前 family：无 active CP8 family；`resource-manager-reuse` 已通过 fork authority test、Rosetta AST capability verification、fresh-checkout pack、patch suite、仓库级静态/Rust 门禁、十页 authority、persistent cache、request-plan identity、10/10 PNG baseline 和用户人工视觉验收；其余 CP8 family 延期到统一 `beta.24` 发布并观察后
 - commits：PDFMathTranslate `681f242f8bab16fca9ccddcfe7c9f32aa7c37947`；Rosetta implementation/build-input `63015223b408bf2deac5032be5611948e19a9043` + `8c184492fa28be3a57dd235fe3ca05058b27b977`
 - Linux workflow：run `30608192155` success；Rosetta `ffdff6716d4c7c082b5bbc473ca5f15a2409bf08`；artifact ID `8784433771`，artifact ZIP digest `f1de8449100dba05df60bda57473ecdc7d053380243f29125b45a560c2360d4b`
@@ -750,8 +750,8 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 - 自动质量：10 pages、94 units、41,035 source chars、canonical unit SHA-256 `81d6185ffc72f263bbc03a6ab1872e4e8615728ad47ecd359b1b2b1d2f3cecb5`；persistent disk cache hit；accepted request plan 保持 1 request / 253 items / 39,901 input chars；10/10 authority PDFs 除 volatile trailer ID 外相同，10/10 PNG pixel exact
 - Linux `beta.22` 观察：公开 AppImage/pack 身份已复核；persistent cache probe 通过；500 页 50×10 窗口 prepare/render/dispose 完成 500/500、0 failed；worker peak RSS 1,067,048,960 bytes，首末窗口 current RSS 增长 432,668,672 bytes；取消 63 ms 退出且无残留进程
 - 已知 CP11 release issue：无；AppImage 页产物压缩、custom RC schema v2 兼容、committed-source Linux CI、immutable upload/redownload 与 profile update 门禁均已关闭
-- last verified HEAD：范围审查基于已推送 Rosetta `c8d9569f2697736527ec1d0c230258881ff3f693`；最后代码提交 `5f2bb82` 的 Main app CI run `30706804237` success；PDFMathTranslate fork `681f242f8bab16fca9ccddcfe7c9f32aa7c37947`
-- 下一步唯一动作：执行一个聚焦的 CP9 第二步删除 checkpoint：先建立并推送 pre-delete snapshot，只搬出 production provider plan/result DTO 和 canonical fingerprint test，再删除 archived v3 runtime/commands/feature/dependencies 并跑默认 production + Linux CI 门禁；不得迁移 CP8 新 family、修改版本/profile/updater metadata、构建 pack 或发布任何平台
+- last verified HEAD：CP9 step 2 基于已推送 Rosetta `aedc8647e999e6808e8b5df36ee5c03f84b646a6`；删除前快照 tag `archive/pdf-v3-pre-removal-2026-08-02` 已推送并指向同一 commit；本地 production 门禁通过，Linux CI 待删除 commit 推送后记录；PDFMathTranslate fork `681f242f8bab16fca9ccddcfe7c9f32aa7c37947`
+- 下一步唯一动作：审查 CP9 step 2 最终 diff，提交并推送删除 commit，等待 Linux Main app CI；成功后只追加 CI completion 记录。不得迁移 CP8 新 family、修改版本/profile/updater metadata、构建 pack 或发布任何平台
 
 #### 2026-07-28 / CP11 / Codex
 
@@ -1769,6 +1769,19 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 - 修改范围：仅本文；未修改生产代码、版本号、Cargo lock、release profile、updater metadata 或 release artifacts，未新增 change-log
 - blocker：无
 - 下一步唯一动作：单独执行 CP9 第二步删除并完整验证；不得在该 checkpoint 中迁移 CP8 family、构建 pack、改版本或发布
+
+#### 2026-08-02 / CP9 step 2 deletion / Codex
+
+- 状态：`local-completed`，等待删除 commit 的 Linux Main app CI
+- HEAD 与快照：基于已推送 `main` 的 `aedc8647e999e6808e8b5df36ee5c03f84b646a6`；删除前 tag `archive/pdf-v3-pre-removal-2026-08-02` 已推送并指向该 commit
+- caller 复核：production `pdf2zh` 只调用 `translate_pdf_units_with_events`；`TranslationPagePlan`、`VisualParagraphPagePlan`、`TranslationUnitResult` 和相关 helper/tests 全部只属于 v3 chain，因此无需搬 DTO，也未改变 request plan、unit order 或 provider payload
+- 删除结果：删除 `src/pdf_v3/` 40 个 Rust 文件、PDF `v3_*.rs` 11 个文件及剩余专用 translation helpers/tests；移除 11 个 native v3 commands、Tauri state/handler/cleanup、`experimental-pdf-v3` feature 和 experimental CI build；删除 `pdf`、`memmap2`、`subsetter`、`ttf-parser` 依赖并更新 Cargo lock
+- production 保留：managed `pdf2zh` prepare/translate/render/export、source/translated page PNG preview、canonical SHA-256 source identity，以及 `pdfium-render`、`lopdf`、`lru`、`once_cell`、`flate2`、`tar` 均保留；persistent job schema、pack、renderer、release profile、版本和 updater metadata 未改变
+- 防回归：`check:pdf-production-boundary` 取代 isolation check，拒绝恢复 v3 feature/module/commands/frontend types/unused dependencies，同时要求 production wrappers、SHA-256 identity、PDFium 和 lopdf 仍存在；Main app CI 改为运行该门禁并移除 experimental recovery build
+- 本地验证：`pnpm typecheck` 通过；`pnpm check:pdf-production-boundary` 通过；`cargo fmt --all -- --check` 通过；`cargo check` 通过；`cargo test rosetta_jobs` 89 passed；`cargo test managed_pdf2zh` 56 passed、0 failed、1 ignored；patch suite 44 passed；最终 `git diff --check` 在提交前复核
+- 发布边界：未启动 dev server，未执行 production build，未构建 pack，未修改版本/profile/updater metadata，未发任何平台版本
+- blocker：无本地 blocker；仅等待删除 commit 的 Linux Main app CI
+- 下一步唯一动作：提交并推送本删除 patch，等待 Main app CI 成功后追加 completion 记录；发版仍是最后一步
 
 ## 新 agent 接手提示词
 

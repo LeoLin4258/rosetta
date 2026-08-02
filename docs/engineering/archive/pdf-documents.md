@@ -32,8 +32,9 @@ override current code or the sources below.
 - Original v1 plan and superseded v3 addendum:
   [`../plans/2026-05-12-pdf-v1-support.md`](../plans/2026-05-12-pdf-v1-support.md).
 - ADRs 0015 through 0076 record native v3 design contracts. Their
-  production-routing portions are superseded by ADR 0077; feature-gated code
-  may still preserve selected contracts for tests and source history.
+  production-routing portions are superseded by ADR 0077. The implementation
+  was deleted in CP9 step 2; the pre-removal source remains available at tag
+  `archive/pdf-v3-pre-removal-2026-08-02`.
 - PDF v3 change-logs dated 2026-07-16 through 2026-07-21 are implementation
   snapshots, not current handoffs.
 - PDF v3 benchmarks remain measurement evidence for their named commit,

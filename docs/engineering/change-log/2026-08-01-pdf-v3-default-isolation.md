@@ -1,31 +1,36 @@
-# 2026-08-01 PDF v3 Default Isolation
+# 2026-08-01 PDF v3 Isolation and Removal
 
 ## Summary
 
-Removed the unused PDF v3 frontend control surface from the production app and
-moved its native command, lifecycle, preview, export, and worker implementation
-behind a default-off Cargo feature. Production PDF translation, source preview,
-translated-page preview, export, and shared source-identity primitives remain
-enabled.
+Removed the unused PDF v3 frontend control surface, then deleted its archived
+native command, lifecycle, preview, export, worker, IR, and renderer
+implementation after the Linux observation gate. Production PDF translation,
+source preview, translated-page preview, export, and canonical SHA-256 source
+identity remain enabled.
 
 ## Changes
 
-- Added the default-off `experimental-pdf-v3` Cargo feature.
-- Stopped registering eleven unused PDF v3 Tauri commands in default builds.
+- First isolated eleven unused PDF v3 Tauri commands behind the default-off
+  `experimental-pdf-v3` Cargo feature.
 - Removed the unused frontend PDF v3 hooks, command wrappers, and response
   types.
-- Kept native PDF v3 history recoverable through an explicit feature build.
-- Replaced unconditional PDF v3 shutdown state dependencies with feature-aware
-  helpers so app exit, local-data reset, and job deletion behave correctly in
-  both build modes.
-- Narrowed broad dead-code suppression to the shared primitives still consumed
-  by the production PDF path.
-- Added a static isolation check and CI gates for both the default production
-  boundary and the experimental recovery build.
+- Created and pushed the pre-removal snapshot tag
+  `archive/pdf-v3-pre-removal-2026-08-02`.
+- Deleted 48,199 lines of archived native v3 Rust, its eleven runtime modules,
+  command/state/cleanup wiring, feature, and recovery build.
+- Removed the now-unused `pdf`, `memmap2`, `subsetter`, and `ttf-parser`
+  dependencies while retaining production PDF dependencies.
+- Replaced the test-only `DocumentHandle` comparison with a direct canonical
+  SHA-256 fixture contract. A deeper caller audit showed the proposed v3 DTO
+  move was unnecessary because those plan/result types had no production
+  consumer.
+- Replaced the isolation check with a production-boundary check that rejects
+  restored v3 modules, commands, frontend types, feature wiring, or unused
+  dependencies while requiring the production wrappers and renderer crates.
 
-This is the first isolation step only. It does not delete the feature-gated
-native implementation, change persistent job formats, migrate existing data,
-or alter the production PDF translation workflow.
+The removal does not change persistent job formats, migrate existing data,
+alter the production PDF translation workflow, rebuild PDF packs, or release a
+new app version.
 
 ## Managed PDF Compatibility
 
@@ -38,13 +43,11 @@ PDF test suite now runs in main application CI.
 ## Validation
 
 - `pnpm typecheck`
-- `pnpm check:pdf-v3-isolation`
+- `pnpm check:pdf-production-boundary`
 - `cargo fmt --all -- --check`
 - `cargo check`
-- `cargo check --features experimental-pdf-v3`
 - `cargo test rosetta_jobs`
 - `cargo test managed_pdf2zh`
-- `cargo test --features experimental-pdf-v3 rosetta_jobs::formats::pdf::v3_run_list`
 - `python scripts/test-pdf2zh-patches.py -q`
 - `git diff --check`
 

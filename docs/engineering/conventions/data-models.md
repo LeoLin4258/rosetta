@@ -159,7 +159,7 @@ AppData/Rosetta/jobs/
 - PDF importer 遇到 image-only、加密或无法解析的文件时必须返回清晰错误，不能创建空任务。
 - 系统文件选择和导出路径选择必须通过非阻塞 Tauri dialog command 完成，不能在 command 中调用 `blocking_pick_file` 或 `blocking_save_file`，避免 Windows 原生对话框打开时卡住应用窗口。
 - PDF 页面翻译不经过普通文档 `Segment[]` 调度，也不投影成前端 segment translation run；工作台通过 PDF 专用 page/run commands 读取进度、预览和导出事实。
-- `pdf_source.json` 是 PDF source 元数据文件，记录 `pageCount`、`sourceFingerprint`、导入文件名、原始路径快照和时间戳。`sourceFingerprint` 使用 canonical `sha256:<64 lowercase hex>`，并与共享 `pdf_v3::document::DocumentHandle` identity primitive 完全一致；该共享 primitive 不代表 native v3 runtime 已启用。
+- `pdf_source.json` 是 PDF source 元数据文件，记录 `pageCount`、`sourceFingerprint`、导入文件名、原始路径快照和时间戳。`sourceFingerprint` 由 production `source_state` 直接计算 canonical `sha256:<64 lowercase hex>`；CP9 删除 native v3 后不再依赖共享 `DocumentHandle` identity primitive。
 - `pdf_pages.<targetLang>.json` schema v2 是当前 durable 页状态；`translated-pages/<targetLang>/page-000N.pdf` 是对应页的正式译文 artifact。
 - `pdf_pages.<targetLang>.json` v2 中，`resultKind` 可为 `translated`、`partial`、`no_text`、`failed`。`resultKind="partial"` 表示页面 artifact 已成功生成，但至少一个已知渲染单元因译文为空、缺失或占位符损坏而保留原文；`translatedUnitCount + fallbackUnitCount` 必须等于 `sourceUnitCount`。`resultKind="no_text"` 表示该页完成但无可提取文本，不应伪造 `translatedPdfPath` 或译文字数。
 - PDF v2 不迁移 beta v1 页状态。读取到 `schemaVersion < 2` 的 PDF page state 时，Rosetta 必须清理派生译文 artifacts 和旧 page-state 文件，保留 `source.pdf`，并返回空的 v2 pending state。
@@ -275,7 +275,7 @@ PDF cleanup task:
 - Markdown 导出只承诺保留基础 marker，不承诺完整 CommonMark AST 级别还原。
 - 任务工作台的导出最小单位是当前选中的译文文件，而不是整个项目。项目是文件集合与共享设置容器，不能让用户在当前文件视图里误触发整项目导出。
 - 当前译文文件必须完成翻译后才能导出；`done`、`edited` 和 `skipped` 视为已处理，`pending`、`translating`、`failed` 或空译文不能导出。
-- 当前 PDF 导出由 production exporter 从 `source.pdf` 与已提交的 `translated-pages/<targetLang>/page-000N.pdf` 组装完整 PDF；native v3 export coordinator 不在默认 command surface 中。
+- 当前 PDF 导出由 production exporter 从 `source.pdf` 与已提交的 `translated-pages/<targetLang>/page-000N.pdf` 组装完整 PDF；已归档的 native v3 export coordinator 和 command surface 已删除。
 - 当前译文文件导出到用户选择的具体文件路径，输出文件名默认来自源文件名和目标语言，例如 `chapter.zh-CN.md` 或 `chapter.zh-CN.bilingual.md`。
 - 多文件项目的批量导出如果后续恢复，应作为单独的项目级入口，并明确提示会导出项目内所有文件。删除项目只删除 Rosetta job cache，不删除用户原始文件或已导出目录。
 
@@ -324,10 +324,10 @@ PDF cleanup task:
 ## Archived PDF v3 Contracts (Non-Production)
 
 本节及其后的 PDF v3 数据模型只记录 2026-07-16 至 2026-07-20 native
-rewrite 的历史 contract，供 feature-gated 回归测试和未来取证使用。即使历史正文使用
-“当前”“production”或“authority”等措辞，也不得解释为当前产品事实。默认 App 不注册
-native v3 command/control/export/worker surface；当前 production authority 以本文前面的
-PDF page-artifact 约定、`docs/engineering/pdf-pipeline.md`、ADR 0077 和当前代码为准。
+rewrite 的历史 contract，供源代码历史取证使用。相关实现、Cargo feature、命令和测试已在
+2026-08-02 的 CP9 第二步删除；下文出现的 command、schema、artifact 和“当前”措辞都只是
+历史记录，不表示仍受支持或可恢复。当前 production authority 以本文前面的 PDF
+page-artifact 约定、`docs/engineering/pdf-pipeline.md`、ADR 0077 和当前代码为准。
 
 这些 beta v3 artifacts 不迁移到 production page state。若未来重新启用任何 v3 contract，
 必须先建立新的 active plan/ADR、定义持久化迁移或 reset 边界，并重新通过真实文档和三平台验收。

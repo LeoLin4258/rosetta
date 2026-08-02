@@ -8,7 +8,7 @@
     "typecheck": "tsc --noEmit",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "check:pdf-v3-isolation": "node scripts/check-pdf-v3-isolation.mjs",
+    "check:pdf-production-boundary": "node scripts/check-pdf-production-boundary.mjs",
     "tauri": "tauri",
     "dev:tauri": "tauri dev",
     "build:tauri": "tauri build",

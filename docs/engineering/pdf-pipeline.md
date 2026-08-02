@@ -15,12 +15,13 @@ indexed in `archive/pdf-documents.md`.
   export.
 - Rust owns local provider translation, bounded queueing, durable run/page
   state, cancellation, repair, preview selection, and export assembly.
-- Native PDF v3 command, control, worker, preview, and export modules are not a
-  production authority. They compile only with the default-off
-  `experimental-pdf-v3` Cargo feature and have no production frontend consumer.
-- Production keeps only the v3-named shared primitives that current code still
-  consumes, including canonical `DocumentHandle` source identity and compact
-  translation-plan types. Their module names do not make the v3 runtime active.
+- The archived native PDF v3 command, control, worker, preview, export, IR, and
+  renderer implementation was deleted in CP9 step 2. There is no recovery
+  Cargo feature or production frontend consumer; source history is preserved by
+  the `archive/pdf-v3-pre-removal-2026-08-02` tag.
+- Production source identity is computed directly as canonical SHA-256 in
+  `source_state.rs`. The current provider translation path uses only managed
+  `pdf2zh` translation units and does not retain native v3 plan/result DTOs.
 - Existing `pdf-v3/` beta artifacts have no migration path into the production
   page-artifact model. Do not read them to resume, preview, repair, or export a
   current PDF job.
@@ -36,7 +37,7 @@ Rosetta's PDF path is a local visual PDF translation pipeline:
 4. Rust translates the returned units through the selected local provider.
    Lightning keeps large batches inside the window while splitting oversized
    units at sentence and consecutive-reference boundaries. llama.cpp and
-   other non-Lightning providers use the same Rust `translate_pdf_units`
+   other non-Lightning providers use the same Rust `translate_pdf_units_with_events`
    contract with stricter chunking/retry and truncation rejection.
 5. The Python worker renders the prepared window from `unitId -> translation`
    and emits formal `PageResult` records. Rust commits one page-level PDF

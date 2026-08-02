@@ -12,23 +12,12 @@ use serde::Serialize;
 
 use crate::{
     managed_pdf2zh::worker::PdfTranslationUnit,
-    pdf_v3::{
-        paragraph_translation_plan::{
-            VisualParagraphPagePlan, VISUAL_PARAGRAPH_PLAN_SCHEMA_VERSION,
-        },
-        translation_plan::{
-            TranslationPagePlan, TranslationUnitResult, TRANSLATION_PLAN_SCHEMA_VERSION,
-        },
-    },
     rwkv_providers::{
         llama_cpp_chat,
         mobile_batch_chat::{self, MobileBatchChatConfig},
         ProviderTranslateBatch, ProviderTranslateResult,
     },
 };
-
-#[cfg(test)]
-use crate::pdf_v3::translation_plan::TranslationUnitPlan;
 
 const LIGHTNING_MAX_BATCH_SIZE: usize = 256;
 const LIGHTNING_TARGET_PROMPT_TOKENS: usize = 160;
@@ -86,13 +75,6 @@ struct ProviderTranslationUnit {
     unit_id: String,
     source_text: String,
     requires_translation: bool,
-    chunking: ProviderUnitChunking,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProviderUnitChunking {
-    Semantic,
-    VisualParagraph,
 }
 
 impl From<&PdfTranslationUnit> for ProviderTranslationUnit {
@@ -101,41 +83,8 @@ impl From<&PdfTranslationUnit> for ProviderTranslationUnit {
             unit_id: unit.unit_id.clone(),
             source_text: unit.source_text.clone(),
             requires_translation: unit.requires_translation,
-            chunking: ProviderUnitChunking::Semantic,
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
-pub(crate) enum PdfV3ProviderFailureKind {
-    NoTranslatableUnits,
-    InvalidPlan,
-    Cancelled,
-    Provider,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
-pub(crate) struct PdfV3ProviderFailure {
-    pub kind: PdfV3ProviderFailureKind,
-    pub retryable: bool,
-    pub message: String,
-}
-
-impl std::fmt::Display for PdfV3ProviderFailure {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.message)
-    }
-}
-
-impl std::error::Error for PdfV3ProviderFailure {}
-
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub(crate) struct PdfV3ProviderTranslationBatchResult {
-    pub results: Vec<TranslationUnitResult>,
-    pub metrics: PdfUnitTranslationMetrics,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -193,87 +142,6 @@ impl PdfUnitTranslationMetrics {
         self.total_output_chars += output_chars;
         add_batch_bucket(&mut self.batch_size_distribution, batch_size as u64);
     }
-}
-
-#[allow(dead_code)]
-pub(crate) async fn translate_pdf_units(
-    provider: &PdfUnitProviderConfig,
-    source_lang: &str,
-    target_lang: &str,
-    units: &[PdfTranslationUnit],
-    cancel: Option<Arc<AtomicBool>>,
-) -> Result<PdfUnitTranslationBatchResult, String> {
-    let mut noop = |_translation: PdfUnitTranslation| std::future::ready(Ok(()));
-    translate_pdf_units_with_events(provider, source_lang, target_lang, units, cancel, &mut noop)
-        .await
-}
-
-#[allow(dead_code)]
-pub(crate) async fn translate_pdf_v3_page_plan(
-    provider: &PdfUnitProviderConfig,
-    source_lang: &str,
-    target_lang: &str,
-    plan: &TranslationPagePlan,
-    cancel: Option<Arc<AtomicBool>>,
-) -> Result<PdfV3ProviderTranslationBatchResult, PdfV3ProviderFailure> {
-    let units = provider_units_from_v3_plan(plan)?;
-    let mut noop = |_translation: PdfUnitTranslation| std::future::ready(Ok(()));
-    let translated = translate_provider_units_with_events(
-        provider,
-        source_lang,
-        target_lang,
-        &units,
-        cancel.clone(),
-        &mut noop,
-    )
-    .await
-    .map_err(|message| provider_failure(message, cancel.as_ref()))?;
-    let results = translated
-        .translations
-        .into_iter()
-        .map(|translation| TranslationUnitResult {
-            unit_id: translation.unit_id,
-            translated_text: translation.text,
-        })
-        .collect();
-    Ok(PdfV3ProviderTranslationBatchResult {
-        results,
-        metrics: translated.metrics,
-    })
-}
-
-#[allow(dead_code)]
-pub(crate) async fn translate_pdf_v3_visual_paragraph_plan(
-    provider: &PdfUnitProviderConfig,
-    source_lang: &str,
-    target_lang: &str,
-    plan: &VisualParagraphPagePlan,
-    cancel: Option<Arc<AtomicBool>>,
-) -> Result<PdfV3ProviderTranslationBatchResult, PdfV3ProviderFailure> {
-    let units = provider_units_from_visual_paragraph_plan(plan)?;
-    let mut noop = |_translation: PdfUnitTranslation| std::future::ready(Ok(()));
-    let translated = translate_provider_units_with_events(
-        provider,
-        source_lang,
-        target_lang,
-        &units,
-        cancel.clone(),
-        &mut noop,
-    )
-    .await
-    .map_err(|message| provider_failure(message, cancel.as_ref()))?;
-    let results = translated
-        .translations
-        .into_iter()
-        .map(|translation| TranslationUnitResult {
-            unit_id: translation.unit_id,
-            translated_text: translation.text,
-        })
-        .collect();
-    Ok(PdfV3ProviderTranslationBatchResult {
-        results,
-        metrics: translated.metrics,
-    })
 }
 
 pub(crate) async fn translate_pdf_units_with_events<F, Fut>(
@@ -433,113 +301,6 @@ where
         translations,
         metrics,
     })
-}
-
-#[allow(dead_code)]
-fn provider_units_from_v3_plan(
-    plan: &TranslationPagePlan,
-) -> Result<Vec<ProviderTranslationUnit>, PdfV3ProviderFailure> {
-    if plan.schema_version != TRANSLATION_PLAN_SCHEMA_VERSION
-        || plan.page_number == 0
-        || plan.source_page_hash.is_empty()
-    {
-        return Err(PdfV3ProviderFailure {
-            kind: PdfV3ProviderFailureKind::InvalidPlan,
-            retryable: false,
-            message: "PDF v3 translation plan identity is invalid.".to_string(),
-        });
-    }
-    if plan.units.is_empty() {
-        return Err(PdfV3ProviderFailure {
-            kind: PdfV3ProviderFailureKind::NoTranslatableUnits,
-            retryable: false,
-            message: "PDF v3 translation plan has no safe units.".to_string(),
-        });
-    }
-    let mut unit_ids = BTreeSet::new();
-    let mut units = Vec::with_capacity(plan.units.len());
-    for unit in &plan.units {
-        if unit.unit_id.is_empty()
-            || unit.provider_text.trim().is_empty()
-            || !unit_ids.insert(unit.unit_id.as_str())
-        {
-            return Err(PdfV3ProviderFailure {
-                kind: PdfV3ProviderFailureKind::InvalidPlan,
-                retryable: false,
-                message: "PDF v3 translation plan unit identity is invalid.".to_string(),
-            });
-        }
-        units.push(ProviderTranslationUnit {
-            unit_id: unit.unit_id.clone(),
-            source_text: unit.provider_text.clone(),
-            requires_translation: true,
-            chunking: ProviderUnitChunking::Semantic,
-        });
-    }
-    Ok(units)
-}
-
-#[allow(dead_code)]
-fn provider_units_from_visual_paragraph_plan(
-    plan: &VisualParagraphPagePlan,
-) -> Result<Vec<ProviderTranslationUnit>, PdfV3ProviderFailure> {
-    if plan.schema_version != VISUAL_PARAGRAPH_PLAN_SCHEMA_VERSION
-        || plan.page_number == 0
-        || plan.source_page_hash.is_empty()
-    {
-        return Err(PdfV3ProviderFailure {
-            kind: PdfV3ProviderFailureKind::InvalidPlan,
-            retryable: false,
-            message: "PDF v3 visual paragraph plan identity is invalid.".to_string(),
-        });
-    }
-    if plan.units.is_empty() {
-        return Err(PdfV3ProviderFailure {
-            kind: PdfV3ProviderFailureKind::NoTranslatableUnits,
-            retryable: false,
-            message: "PDF v3 visual paragraph plan has no safe units.".to_string(),
-        });
-    }
-    let mut unit_ids = BTreeSet::new();
-    let mut units = Vec::with_capacity(plan.units.len());
-    for unit in &plan.units {
-        if unit.unit_id.is_empty()
-            || unit.paragraph_group_id.is_empty()
-            || unit.flow_container_group_id.is_empty()
-            || unit.provider_text.trim().is_empty()
-            || !unit_ids.insert(unit.unit_id.as_str())
-        {
-            return Err(PdfV3ProviderFailure {
-                kind: PdfV3ProviderFailureKind::InvalidPlan,
-                retryable: false,
-                message: "PDF v3 visual paragraph unit identity is invalid.".to_string(),
-            });
-        }
-        units.push(ProviderTranslationUnit {
-            unit_id: unit.unit_id.clone(),
-            source_text: unit.provider_text.clone(),
-            requires_translation: true,
-            chunking: ProviderUnitChunking::VisualParagraph,
-        });
-    }
-    Ok(units)
-}
-
-#[allow(dead_code)]
-fn provider_failure(_message: String, cancel: Option<&Arc<AtomicBool>>) -> PdfV3ProviderFailure {
-    if cancel.is_some_and(|cancel| cancel.load(Ordering::SeqCst)) {
-        PdfV3ProviderFailure {
-            kind: PdfV3ProviderFailureKind::Cancelled,
-            retryable: true,
-            message: "PDF v3 translation provider request was cancelled.".to_string(),
-        }
-    } else {
-        PdfV3ProviderFailure {
-            kind: PdfV3ProviderFailureKind::Provider,
-            retryable: true,
-            message: "PDF v3 translation provider request failed.".to_string(),
-        }
-    }
 }
 
 async fn translate_units_lightning<F, Fut>(
@@ -1006,24 +767,6 @@ fn prepare_provider_chunks(
     let mut chunks = Vec::new();
     let mut unit_plans = BTreeMap::new();
     for unit in units {
-        if unit.chunking == ProviderUnitChunking::VisualParagraph {
-            let normalized = normalize_pdf_text(&unit.source_text);
-            let trimmed = normalized.trim();
-            let parts = if trimmed.is_empty() {
-                Vec::new()
-            } else if should_passthrough_pdf_fragment(trimmed) {
-                vec![UnitPlanPart::Literal(trimmed.to_string())]
-            } else {
-                let chunk_index = chunks.len();
-                chunks.push(PreparedChunk {
-                    chunk_index,
-                    text: trimmed.to_string(),
-                });
-                vec![UnitPlanPart::Text(vec![chunk_index])]
-            };
-            unit_plans.insert(unit.unit_id.clone(), UnitChunkPlan { parts });
-            continue;
-        }
         let mut parts = Vec::new();
         for part in split_pdf_placeholder_parts(&unit.source_text) {
             match part {
@@ -1527,37 +1270,6 @@ mod tests {
             unit_id: unit_id.to_string(),
             source_text: text.to_string(),
             requires_translation: true,
-            chunking: ProviderUnitChunking::Semantic,
-        }
-    }
-
-    #[test]
-    fn visual_paragraph_uses_one_provider_chunk_until_a_real_provider_limit_retry() {
-        let source = "A complete visual paragraph with several sentences. ".repeat(20);
-        let unit = ProviderTranslationUnit {
-            unit_id: "visual-paragraph".to_string(),
-            source_text: source.clone(),
-            requires_translation: true,
-            chunking: ProviderUnitChunking::VisualParagraph,
-        };
-        let prepared = prepare_non_lightning_chunks(&[unit]);
-        assert_eq!(prepared.chunks.len(), 1);
-        assert_eq!(prepared.chunks[0].text, source.trim());
-    }
-
-    fn visual_paragraph_unit(
-        unit_id: &str,
-        text: &str,
-    ) -> crate::pdf_v3::paragraph_translation_plan::VisualParagraphUnitPlan {
-        crate::pdf_v3::paragraph_translation_plan::VisualParagraphUnitPlan {
-            unit_id: unit_id.to_string(),
-            paragraph_group_id: format!("{unit_id}-group"),
-            flow_container_group_id: "container-1".to_string(),
-            order_on_page: 1,
-            atom_ids: vec![format!("{unit_id}-atom")],
-            source_text: text.to_string(),
-            provider_text: text.to_string(),
-            protected_spans: Vec::new(),
         }
     }
 
@@ -1874,121 +1586,6 @@ mod tests {
         assert_eq!(result.metrics.empty_output_count, 1);
     }
 
-    #[tokio::test]
-    async fn pdf_v3_plan_uses_provider_text_and_returns_identity_keyed_results() {
-        let scripted = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::from(
-            vec![provider_success(vec!["甲".to_string(), "乙".to_string()])],
-        )));
-        let provider = PdfUnitProviderConfig::Scripted {
-            results: Arc::clone(&scripted),
-            max_batch_size: 8,
-        };
-        let plan = pdf_v3_plan(vec![("unit-a", "Alpha {v0} beta."), ("unit-b", "2.")]);
-
-        let translated = translate_pdf_v3_page_plan(&provider, "en", "zh-CN", &plan, None)
-            .await
-            .expect("translate PDF v3 plan");
-
-        assert_eq!(translated.results.len(), 2);
-        assert_eq!(translated.results[0].unit_id, "unit-a");
-        assert_eq!(translated.results[0].translated_text, "甲{v0}乙");
-        assert_eq!(translated.results[1].unit_id, "unit-b");
-        assert_eq!(translated.results[1].translated_text, "2.");
-        assert_eq!(translated.metrics.request_count, 1);
-        assert_eq!(translated.metrics.total_input_chars, 10);
-        assert_eq!(scripted.lock().expect("scripted queue").len(), 0);
-    }
-
-    #[tokio::test]
-    async fn visual_paragraph_plan_batches_clean_paragraphs_instead_of_source_objects() {
-        let scripted = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::from(
-            vec![provider_success(vec![
-                "完整段落甲".to_string(),
-                "完整段落乙".to_string(),
-            ])],
-        )));
-        let provider = PdfUnitProviderConfig::Scripted {
-            results: Arc::clone(&scripted),
-            max_batch_size: 16,
-        };
-        let plan = VisualParagraphPagePlan {
-            schema_version: VISUAL_PARAGRAPH_PLAN_SCHEMA_VERSION,
-            page_number: 1,
-            source_page_hash: "sha256:visual-paragraph-provider".to_string(),
-            units: vec![
-                visual_paragraph_unit("paragraph-a", "Clean paragraph one."),
-                visual_paragraph_unit("paragraph-b", "Clean paragraph two."),
-            ],
-            preserved_containers: Vec::new(),
-        };
-
-        let translated =
-            translate_pdf_v3_visual_paragraph_plan(&provider, "en", "zh-CN", &plan, None)
-                .await
-                .expect("translate visual paragraph plan");
-
-        assert_eq!(translated.results.len(), 2);
-        assert_eq!(translated.results[0].translated_text, "完整段落甲");
-        assert_eq!(translated.results[1].translated_text, "完整段落乙");
-        assert_eq!(translated.metrics.request_count, 1);
-        assert_eq!(translated.metrics.total_input_chars, 40);
-        assert_eq!(scripted.lock().expect("scripted queue").len(), 0);
-    }
-
-    #[tokio::test]
-    async fn pdf_v3_plan_cancellation_stops_before_provider_request() {
-        let scripted = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::from(
-            vec![provider_success(vec!["甲".to_string()])],
-        )));
-        let provider = PdfUnitProviderConfig::Scripted {
-            results: Arc::clone(&scripted),
-            max_batch_size: 1,
-        };
-        let cancel = Arc::new(AtomicBool::new(true));
-        let plan = pdf_v3_plan(vec![("unit-a", "Translate me")]);
-
-        let failure = translate_pdf_v3_page_plan(&provider, "en", "zh-CN", &plan, Some(cancel))
-            .await
-            .expect_err("cancelled provider request");
-
-        assert_eq!(failure.kind, PdfV3ProviderFailureKind::Cancelled);
-        assert!(failure.retryable);
-        assert_eq!(scripted.lock().expect("scripted queue").len(), 1);
-    }
-
-    #[tokio::test]
-    async fn pdf_v3_empty_or_duplicate_unit_plan_is_rejected_without_provider_io() {
-        let scripted = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::from(
-            vec![provider_success(Vec::new())],
-        )));
-        let provider = PdfUnitProviderConfig::Scripted {
-            results: Arc::clone(&scripted),
-            max_batch_size: 1,
-        };
-        let empty = pdf_v3_plan(Vec::new());
-
-        let empty_failure = translate_pdf_v3_page_plan(&provider, "en", "zh-CN", &empty, None)
-            .await
-            .expect_err("empty plan");
-        assert_eq!(
-            empty_failure.kind,
-            PdfV3ProviderFailureKind::NoTranslatableUnits
-        );
-        assert!(!empty_failure.retryable);
-
-        let duplicate = pdf_v3_plan(vec![("unit-a", "First"), ("unit-a", "Second")]);
-        let duplicate_failure =
-            translate_pdf_v3_page_plan(&provider, "en", "zh-CN", &duplicate, None)
-                .await
-                .expect_err("duplicate unit identity");
-        assert_eq!(
-            duplicate_failure.kind,
-            PdfV3ProviderFailureKind::InvalidPlan
-        );
-        assert!(!duplicate_failure.retryable);
-        assert_eq!(scripted.lock().expect("scripted queue").len(), 1);
-    }
-
     #[test]
     fn duplicate_source_text_keeps_distinct_unit_ids() {
         let prepared = prepare_non_lightning_chunks(&[unit("a", "Repeat."), unit("b", "Repeat.")]);
@@ -2188,27 +1785,6 @@ mod tests {
             })
             .flatten()
             .collect()
-    }
-
-    fn pdf_v3_plan(units: Vec<(&str, &str)>) -> TranslationPagePlan {
-        TranslationPagePlan {
-            schema_version: TRANSLATION_PLAN_SCHEMA_VERSION,
-            page_number: 1,
-            source_page_hash: "sha256:test-page".to_string(),
-            units: units
-                .into_iter()
-                .enumerate()
-                .map(|(order, (unit_id, provider_text))| TranslationUnitPlan {
-                    unit_id: unit_id.to_string(),
-                    order_on_page: u32::try_from(order).expect("test order"),
-                    atom_ids: vec![format!("atom-{order}")],
-                    source_text: provider_text.to_string(),
-                    provider_text: provider_text.to_string(),
-                    protected_spans: Vec::new(),
-                })
-                .collect(),
-            preserved_regions: Vec::new(),
-        }
     }
 
     fn provider_success(translations: Vec<String>) -> ProviderTranslateResult {
