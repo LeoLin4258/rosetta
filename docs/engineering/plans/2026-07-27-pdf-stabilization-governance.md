@@ -741,8 +741,8 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 
 ### 当前状态摘要
 
-- 当前 checkpoint：CP9 step 2 deletion 已完成本地实现与验证，等待删除 commit 的 Linux Main app CI；最终发布仍明确延后
-- last completed：CP9 step 2 本地删除门禁、final pre-release scope review、CP10 document fact convergence、CP9 step 1 integration closeout、CP8 family 1 integration closeout、Linux `beta.22` Release 后观察、CP8 family 1（`resource-manager-reuse`）与 CP11
+- 当前 checkpoint：无 in-progress implementation checkpoint；CP9 step 2 deletion 已完成并通过 Linux Main app CI，统一 `beta.24` 发布是最后一个 checkpoint，等待用户明确授权
+- last completed：CP9 step 2 deletion、final pre-release scope review、CP10 document fact convergence、CP9 step 1 integration closeout、CP8 family 1 integration closeout、Linux `beta.22` Release 后观察、CP8 family 1（`resource-manager-reuse`）与 CP11
 - 当前 family：无 active CP8 family；`resource-manager-reuse` 已通过 fork authority test、Rosetta AST capability verification、fresh-checkout pack、patch suite、仓库级静态/Rust 门禁、十页 authority、persistent cache、request-plan identity、10/10 PNG baseline 和用户人工视觉验收；其余 CP8 family 延期到统一 `beta.24` 发布并观察后
 - commits：PDFMathTranslate `681f242f8bab16fca9ccddcfe7c9f32aa7c37947`；Rosetta implementation/build-input `63015223b408bf2deac5032be5611948e19a9043` + `8c184492fa28be3a57dd235fe3ca05058b27b977`
 - Linux workflow：run `30608192155` success；Rosetta `ffdff6716d4c7c082b5bbc473ca5f15a2409bf08`；artifact ID `8784433771`，artifact ZIP digest `f1de8449100dba05df60bda57473ecdc7d053380243f29125b45a560c2360d4b`
@@ -750,8 +750,8 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 - 自动质量：10 pages、94 units、41,035 source chars、canonical unit SHA-256 `81d6185ffc72f263bbc03a6ab1872e4e8615728ad47ecd359b1b2b1d2f3cecb5`；persistent disk cache hit；accepted request plan 保持 1 request / 253 items / 39,901 input chars；10/10 authority PDFs 除 volatile trailer ID 外相同，10/10 PNG pixel exact
 - Linux `beta.22` 观察：公开 AppImage/pack 身份已复核；persistent cache probe 通过；500 页 50×10 窗口 prepare/render/dispose 完成 500/500、0 failed；worker peak RSS 1,067,048,960 bytes，首末窗口 current RSS 增长 432,668,672 bytes；取消 63 ms 退出且无残留进程
 - 已知 CP11 release issue：无；AppImage 页产物压缩、custom RC schema v2 兼容、committed-source Linux CI、immutable upload/redownload 与 profile update 门禁均已关闭
-- last verified HEAD：CP9 step 2 基于已推送 Rosetta `aedc8647e999e6808e8b5df36ee5c03f84b646a6`；删除前快照 tag `archive/pdf-v3-pre-removal-2026-08-02` 已推送并指向同一 commit；本地 production 门禁通过，Linux CI 待删除 commit 推送后记录；PDFMathTranslate fork `681f242f8bab16fca9ccddcfe7c9f32aa7c37947`
-- 下一步唯一动作：审查 CP9 step 2 最终 diff，提交并推送删除 commit，等待 Linux Main app CI；成功后只追加 CI completion 记录。不得迁移 CP8 新 family、修改版本/profile/updater metadata、构建 pack 或发布任何平台
+- last verified HEAD：CP9 step 2 删除 commit `1aaa03fecbf488a1073399ae3bba1c597da98923` 已推送；Main app CI run `30743850442` success；删除前快照 tag `archive/pdf-v3-pre-removal-2026-08-02` 指向 `aedc8647e999e6808e8b5df36ee5c03f84b646a6`；PDFMathTranslate fork `681f242f8bab16fca9ccddcfe7c9f32aa7c37947`
+- 下一步唯一动作：等待用户明确授权最终统一 `0.1.0-beta.24` release checkpoint；届时从同一 clean commit 提升版本、准备 aggregate release notes，并在 Windows/macOS/Linux native host 完成 unpublished smoke 后统一发布。在明确授权前不得改版本/profile/updater metadata、构建 release artifact 或发布任何平台
 
 #### 2026-07-28 / CP11 / Codex
 
@@ -1782,6 +1782,15 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 - 发布边界：未启动 dev server，未执行 production build，未构建 pack，未修改版本/profile/updater metadata，未发任何平台版本
 - blocker：无本地 blocker；仅等待删除 commit 的 Linux Main app CI
 - 下一步唯一动作：提交并推送本删除 patch，等待 Main app CI 成功后追加 completion 记录；发版仍是最后一步
+
+#### 2026-08-02 / CP9 step 2 deletion / Codex / completed
+
+- 状态：`completed`
+- 提交与推送：`1aaa03fecbf488a1073399ae3bba1c597da98923 Remove archived PDF v3 implementation` 已推送 `main`；删除前 snapshot tag `archive/pdf-v3-pre-removal-2026-08-02` 继续指向 `aedc8647e999e6808e8b5df36ee5c03f84b646a6`
+- Linux gate：Main app CI run `30743850442` success，job `91485922392` 在 3m48s 内通过 frontend typecheck、production PDF boundary、Rust check、`rosetta_jobs`、`managed_pdf2zh` 和 PDF patch suite
+- 结果：CP9 第二步删除已关闭，无 blocker；production `pdf2zh` 路径、三平台冻结 pack/profile、应用版本 `0.1.0-beta.23` 和 updater metadata 未改变
+- 发布边界：未构建 dev/prod App、pack 或 release artifact，未发布任何平台；用户要求的“发版放最后”仍生效
+- 下一步唯一动作：等待用户明确授权最终统一 `0.1.0-beta.24` release checkpoint；在授权前不得开始版本提升、native host release build 或 publish
 
 ## 新 agent 接手提示词
 
