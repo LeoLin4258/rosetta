@@ -2,15 +2,15 @@
 
 ## 文档状态
 
-- 状态：Active
+- 状态：Completed
 - 创建日期：2026-07-27
 - 审计窗口：2026-07-17 至当前 `HEAD`；更早代码只在解释该窗口内的设计来源时取证
-- 当前阶段：最终发布前剩余范围审查，completed（按用户最新“发版放在最后”指令，下一 checkpoint 只执行 CP9 第二步删除；CP8 后续 family 延期）
+- 当前阶段：`0.1.0-beta.24` 三平台统一发布与治理封账，completed
 - 当前生产 PDF 执行路径：`pdf2zh` prepare / unit collection / page render，Rosetta Rust 负责本地翻译、任务状态、页产物、预览与导出
-- 当前验证基线：仓库 `main` 在 `61ff0ab` 的审计快照；后续 agent 必须重新读取当前 `HEAD`，不能把该 commit 当成永久事实
-- 本文是 PDF 稳定化和治理工作的唯一活跃 handoff authority
+- 最终 release source 基线：`0.1.0-beta.24` tag 和三平台 artifacts 固定到 `f9154b5ff97b7a5c0f5166f8b4d6fee9a50ddf38`；随后仅文档封账提交可以推进 `main`，不得改变该 release identity；Windows x64、Linux x64、macOS arm64 的公开版本均为 `0.1.0-beta.24`
+- 本文已封账，不再授权后续实现；延期的 CP8 family 或无关 dead-code 清理必须在用户批准后建立新的独立 checkpoint/plan
 
-本文取代以下文档作为“下一位 agent 从哪里继续”的入口，但不删除它们的历史证据：
+本文在治理期间取代以下文档作为唯一实施入口；现在作为完成记录保留，并继续索引它们的历史证据：
 
 - `docs/engineering/plans/2026-07-21-pdf-production-refactor-closeout.md`
 - `docs/engineering/plans/2026-07-20-pdf-v3-ten-page-benchmark-regression-handoff.md`
@@ -563,9 +563,9 @@ CP8、CP9、CP10 不应与 Linux release candidate 的包内容变化混在同�
 
 ## CP9：隔离未使用 PDF v3 与默认 IPC surface
 
-- 状态：`in-progress`（第一步隔离完成；第二步删除经最终发布前范围审查选为下一 checkpoint，尚未开始）
+- 状态：`completed`（第一步隔离和第二步删除均已完成；删除前恢复 tag 已推送）
 - 依赖：CP0、CP6；不得与 CP8 同时实施
-- 建议单次工作量：一个 agent context 先完成隔离，删除留到后续重复 checkpoint
+- 执行结果：先隔离再删除；production 所需 PDFium/source identity 能力已保留，历史 v3 可通过删除前 tag 恢复
 
 ### 目标
 
@@ -722,9 +722,9 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 2. 对删除 patch 执行默认 production 验证：frontend typecheck、production boundary check、rustfmt、`cargo check`、`cargo test rosetta_jobs`、`cargo test managed_pdf2zh`、patch suite 和 Linux Main app CI。因为 experimental surface 被删除，不再运行或保留 `cargo check --features experimental-pdf-v3`。
 3. 删除 patch 不改 pack、renderer 或 request plan 时，不要求重建三平台 PDF pack，也不重复 CP8 十页视觉基线；最终 App release smoke 仍必须在 Windows/macOS/Linux 分别覆盖 PDF 安装、翻译、预览、导出与退出清理。
 
-### 延期到统一发布后
+### 本计划不实施的后续工作
 
-- CP8 后续 render-slot authority、color/style、diagram filtering、alignment 等 patch family。它们会改变 PDFMathTranslate fork/build recipe 或 renderer，需要 fresh pack、三平台 profile 更新和十页视觉重验，不应与 app-side dead-code 删除或 `beta.24` release 混在一起。
+- CP8 后续 render-slot authority、color/style、diagram filtering、alignment 等 patch family。它们会改变 PDFMathTranslate fork/build recipe 或 renderer，需要 fresh pack、三平台 profile 更新和十页视觉重验；如未来重启，必须建立新的独立计划。
 - 任何 native v3 重启、历史 schema 迁移或 renderer 重写。若未来重启，必须建立新的 active architecture plan/ADR 和真实文档 benchmark gate。
 - 与本次 PDF v3 删除无关的全仓 dead-code、warning 或依赖清理；另开小 checkpoint，不能借机扩大 CP9 diff。
 
@@ -741,17 +741,17 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 
 ### 当前状态摘要
 
-- 当前 checkpoint：统一 `0.1.0-beta.24` native release gate；Windows PDF smoke 与 onboarding 窗口生命周期修复已通过，等待从最终同一 commit 重建三平台 unpublished artifacts
-- last completed：CP9 step 2 deletion、final pre-release scope review、CP10 document fact convergence、CP9 step 1 integration closeout、CP8 family 1 integration closeout、Linux `beta.22` Release 后观察、CP8 family 1（`resource-manager-reuse`）与 CP11
-- 当前 family：无 active CP8 family；`resource-manager-reuse` 已通过 fork authority test、Rosetta AST capability verification、fresh-checkout pack、patch suite、仓库级静态/Rust 门禁、十页 authority、persistent cache、request-plan identity、10/10 PNG baseline 和用户人工视觉验收；其余 CP8 family 延期到统一 `beta.24` 发布并观察后
+- 当前 checkpoint：无；本治理计划和统一 `0.1.0-beta.24` native release gate 均已完成
+- last completed：三平台 `0.1.0-beta.24` 统一发布、CP9 step 2 deletion、final pre-release scope review、CP10 document fact convergence、CP9 step 1 integration closeout、CP8 family 1 integration closeout、Linux `beta.22` Release 后观察、CP8 family 1（`resource-manager-reuse`）与 CP11
+- 当前 family：无；`resource-manager-reuse` 已通过 fork authority test、Rosetta AST capability verification、fresh-checkout pack、patch suite、仓库级静态/Rust 门禁、十页 authority、persistent cache、request-plan identity、10/10 PNG baseline 和用户人工视觉验收；其余 CP8 family 不属于本计划的未完成项，未来如重启必须建立新计划并重新通过 pack/视觉门禁
 - commits：PDFMathTranslate `681f242f8bab16fca9ccddcfe7c9f32aa7c37947`；Rosetta implementation/build-input `63015223b408bf2deac5032be5611948e19a9043` + `8c184492fa28be3a57dd235fe3ca05058b27b977`
 - Linux workflow：run `30608192155` success；Rosetta `ffdff6716d4c7c082b5bbc473ca5f15a2409bf08`；artifact ID `8784433771`，artifact ZIP digest `f1de8449100dba05df60bda57473ecdc7d053380243f29125b45a560c2360d4b`
 - fresh Linux pack：recipe `de41d93ebcce7cc666d1f763499f2c7f84f50e9e14b1bcd302418ca459621c8b`；archive SHA-256 `12ee5ceef7cb9992b1ee80d2ccc679d10daee68aa05f6098748b19b9048283a0`
 - 自动质量：10 pages、94 units、41,035 source chars、canonical unit SHA-256 `81d6185ffc72f263bbc03a6ab1872e4e8615728ad47ecd359b1b2b1d2f3cecb5`；persistent disk cache hit；accepted request plan 保持 1 request / 253 items / 39,901 input chars；10/10 authority PDFs 除 volatile trailer ID 外相同，10/10 PNG pixel exact
 - Linux `beta.22` 观察：公开 AppImage/pack 身份已复核；persistent cache probe 通过；500 页 50×10 窗口 prepare/render/dispose 完成 500/500、0 failed；worker peak RSS 1,067,048,960 bytes，首末窗口 current RSS 增长 432,668,672 bytes；取消 63 ms 退出且无残留进程
 - 已知 CP11 release issue：无；AppImage 页产物压缩、custom RC schema v2 兼容、committed-source Linux CI、immutable upload/redownload 与 profile update 门禁均已关闭
-- last verified HEAD：onboarding 修复 commit `22e1bd43f6ddfc632c54f55b2a0a5e79653b32f4` 已推送；Main app CI run `30785738327` success；用户已通过此前同源 Windows PDF 组件启动、预解析与文档加载 smoke；PDFMathTranslate fork `681f242f8bab16fca9ccddcfe7c9f32aa7c37947`
-- 下一步唯一动作：只从最终同一 clean commit 重建 Windows/macOS/Linux unpublished artifacts；先执行 Windows onboarding/PDF 简短 smoke，再完成 Linux/macOS native smoke，全部通过前不得 publish
+- last verified release source：最终 release commit `f9154b5ff97b7a5c0f5166f8b4d6fee9a50ddf38` 已推送，发布时 `main` / `origin/main` 一致；三平台 native artifacts、人工 smoke、公开 updater/download endpoint 和 immutable artifact hash 均已验证；PDFMathTranslate fork `681f242f8bab16fca9ccddcfe7c9f32aa7c37947`
+- 下一步唯一动作：无；本计划封账。任何延期的 CP8 family、native v3 重启或无关 dead-code/warning 清理均须另立范围，不得继续追加为本计划 checkpoint
 
 #### 2026-08-03 / `0.1.0-beta.24` release preparation / Codex
 
@@ -1844,20 +1844,32 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 - blocker：无代码或 CI blocker；macOS 原生构建机访问状态仍待重试
 - 下一步唯一动作：从最终同一 clean commit 重建三平台 unpublished artifacts 并执行人工 smoke，全部通过前不得 publish
 
-## 新 agent 接手提示词
+#### 2026-08-03 / `0.1.0-beta.24` cross-platform release and governance closeout / Codex / completed
+
+- 状态：`completed`
+- 最终 source identity：发布时 `main`、`origin/main`、GitHub prerelease tag `v0.1.0-beta.24` 均指向 `f9154b5ff97b7a5c0f5166f8b4d6fee9a50ddf38`；工作区在发布与封账审查开始时 clean；后续仅文档封账提交不改变 tag 或 artifacts 的源码身份
+- native artifacts：Windows x64 Preview、Linux x64 AppImage 和 macOS arm64 DMG/updater 均从该最终 commit 在对应原生主机构建；macOS updater/DMG 完成 Developer ID 签名、公证和 Gatekeeper 验证，公证 submission ID 为 `10f093e3-5538-41c1-a610-b99faf556aa9`
+- 人工验收：用户确认 Windows、Linux、macOS 安装与核心 smoke 无问题；Windows 额外覆盖官方 PDF 组件安装/启动和实际 PDF 文档处理，onboarding 生命周期修复随最终同源产物进入三平台验收
+- 发布结果：Supabase `windows/x86_64`、`linux/x86_64`、`darwin/aarch64` 三条 `0.1.0-beta.24` metadata 均已设为 `is_published=true`；公开 updater 和 latest-download endpoint 均返回 `0.1.0-beta.24`，以当前版本检查更新均返回 HTTP 204
+- artifact verification：Windows installer SHA-256 `3d84c856aebcd90df3ec7bbcb2b4f298c8711e7c85dd8e3cca906ed9664564ee` / 17,097,744 bytes；Linux AppImage SHA-256 `4e08dee045ac71458000c720fb21de9ccbe67a11b6a44ccc32f61205b0c55904` / 90,978,808 bytes；macOS DMG SHA-256 `2cb4e174994a079fc591283418f5a2df19cb3834c118e53baecfd3dbbab4e9b0` / 31,756,819 bytes；云端下载与本地最终产物一致
+- GitHub release：`https://github.com/LeoLin4258/rosetta/releases/tag/v0.1.0-beta.24` 保持 prerelease，包含 7 个 Linux assets，tag 精确指向最终 release commit
+- 发布边界：Windows 没有 Authenticode 签名，继续明确标为 Windows Preview；Linux beta 只声明 Ubuntu 24.04+ x64；未改变已接受的 PDF renderer、translation-unit authority、RWKV request plan、持久化 schema 或本地优先产品边界
+- 治理结论：CP0-CP11、CP9 v3 删除、CP10 文档收敛、发布后观察和三平台统一发布门全部关闭，无 blocker；CP8 后续 family 与无关全仓 warning/dead-code 清理是未来可选新工作，不是本计划欠账
+- 下一步唯一动作：无；本计划封账
+
+## 封账后的后续工作边界
 
 ```text
-接手 Rosetta PDF 稳定化治理。
+本 PDF 稳定化治理计划已完成并封账，不存在可继续执行的 active checkpoint。
 
-先阅读：
+若用户批准新的 PDF 优化、native v3 重启或全仓 dead-code/warning 清理，先阅读：
 - AGENTS.md
 - docs/engineering/plans/2026-07-27-pdf-stabilization-governance.md
-- 当前 checkpoint 指定的代码和脚本
+- 当前 production 代码和相关工程约定
 
-以代码和实际产物为准，不以历史 PDF 文档为准。
+以代码和实际产物为准，不以本计划的历史 execution ledger 代替新证据。
 运行 git status --short 和 git rev-parse --short HEAD。
-只推进 execution ledger 中“下一步唯一动作”指向的一个 checkpoint。
-开始和结束都更新本文状态与 ledger；不要新建 handoff/change-log 文档。
+先建立用户批准、范围独立的新计划或 checkpoint；不要把新工作追加成本计划的未完成项。
 不要改变当前已接受的预解析、RWKV request plan 或视觉回填行为，除非 checkpoint 明确授权且用户重新验收。
 不要运行 dev server 或 production app build，除非 checkpoint 或用户明确要求 runtime/release verification。
 ```
