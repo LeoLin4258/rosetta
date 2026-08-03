@@ -209,7 +209,10 @@ pub async fn complete_onboarding_and_open_main(
         return Err("主窗口未声明 (期望 label = 'main')。".to_string());
     }
     if let Some(onb) = app.get_webview_window("onboarding") {
-        onb.close().ok();
+        // Keep the pre-created window available for macOS Reopen and avoid
+        // treating this programmatic transition as a user-requested app exit
+        // on Windows/Linux.
+        onb.hide().ok();
     }
 
     // Signal the main window to discard any stale job history from a

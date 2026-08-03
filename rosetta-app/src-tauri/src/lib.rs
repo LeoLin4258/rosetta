@@ -18,6 +18,21 @@ use std::sync::{
     Arc,
 };
 
+const MAIN_WINDOW_LABEL: &str = "main";
+const ONBOARDING_WINDOW_LABEL: &str = "onboarding";
+
+fn primary_window_label(needs_onboarding: bool) -> &'static str {
+    if needs_onboarding {
+        ONBOARDING_WINDOW_LABEL
+    } else {
+        MAIN_WINDOW_LABEL
+    }
+}
+
+fn is_primary_window_label(label: &str) -> bool {
+    matches!(label, MAIN_WINDOW_LABEL | ONBOARDING_WINDOW_LABEL)
+}
+
 #[cfg(target_os = "macos")]
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{Emitter, Manager};
@@ -58,11 +73,7 @@ pub fn run() {
             managed_rwkv::migrate::run_migrations(handle);
 
             let decision = onboarding::decide(handle);
-            let target_label = if decision.needs_onboarding {
-                "onboarding"
-            } else {
-                "main"
-            };
+            let target_label = primary_window_label(decision.needs_onboarding);
             if let Some(window) = handle.get_webview_window(target_label) {
                 window.show().ok();
                 window.set_focus().ok();
@@ -166,25 +177,24 @@ pub fn run() {
             app.emit("rosetta-menu-event", payload).ok();
         })
         .on_window_event(|_window, _event| {
-            // Windows and Linux users expect closing the primary window to
-            // exit the application. Destroying only `main` leaves the
-            // pre-created onboarding/preview windows alive, so ExitRequested
-            // never runs and managed RWKV/PDF child processes remain alive.
+            // Windows and Linux users expect closing either session window to
+            // exit the application. Other pre-created windows stay hidden, so
+            // destroying only the visible window would leave Rosetta alive.
             #[cfg(any(target_os = "windows", target_os = "linux"))]
             if let tauri::WindowEvent::CloseRequested { api, .. } = _event {
-                if _window.label() == "main" {
+                if is_primary_window_label(_window.label()) {
                     api.prevent_close();
                     _window.app_handle().exit(0);
                     return;
                 }
             }
 
-            // macOS: hide instead of destroy so the window can be restored
-            // from the dock. Without this, close destroys the window handle,
-            // Reopen can't find "main", and falls back to showing onboarding.
+            // macOS: hide either session window instead of destroying it so
+            // Reopen can restore the window selected by the current onboarding
+            // decision.
             #[cfg(target_os = "macos")]
             if let tauri::WindowEvent::CloseRequested { api, .. } = _event {
-                if _window.label() == "main" {
+                if is_primary_window_label(_window.label()) {
                     api.prevent_close();
                     let _ = _window.hide();
                 }
@@ -285,7 +295,7 @@ pub fn run() {
             // fires Reopen. Without handling it, the app sits in the dock
             // with the running-dot but no way to surface the window short
             // of right-click → Quit. Re-show whichever window we previously
-            // chose at startup (main or onboarding).
+            // should own the session now (main or onboarding).
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen {
                 has_visible_windows,
@@ -295,9 +305,9 @@ pub fn run() {
                 if has_visible_windows {
                     return;
                 }
-                let target = app_handle
-                    .get_webview_window("main")
-                    .or_else(|| app_handle.get_webview_window("onboarding"));
+                let decision = onboarding::decide(app_handle);
+                let target_label = primary_window_label(decision.needs_onboarding);
+                let target = app_handle.get_webview_window(target_label);
                 if let Some(window) = target {
                     let _ = window.show();
                     let _ = window.unminimize();
@@ -307,4 +317,22 @@ pub fn run() {
             #[cfg(not(target_os = "macos"))]
             let _ = (app_handle, event);
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_primary_window_label, primary_window_label};
+
+    #[test]
+    fn primary_window_follows_onboarding_decision() {
+        assert_eq!(primary_window_label(true), "onboarding");
+        assert_eq!(primary_window_label(false), "main");
+    }
+
+    #[test]
+    fn both_session_windows_are_primary() {
+        assert!(is_primary_window_label("main"));
+        assert!(is_primary_window_label("onboarding"));
+        assert!(!is_primary_window_label("preview"));
+    }
 }
