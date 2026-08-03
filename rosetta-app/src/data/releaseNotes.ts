@@ -34,6 +34,16 @@ export type ReleaseNote = {
  * appearing in `package.json` (e.g. `"0.1.0-beta.8"`), not semver tuples.
  */
 export const RELEASE_NOTES: Record<string, ReleaseNote> = {
+  "0.1.0-beta.24": {
+    version: "0.1.0-beta.24",
+    highlights: [
+      "Windows、macOS 和 Linux 重新使用同一版本线，Linux 同步获得 beta.23 的 PDF 稳定性改进",
+      "Linux PDF 首次准备更快、更稳定，并可可靠复用已完成的版面准备结果",
+      "PDF 组件安装新增下载、磁盘空间和解压安全限制，失败或取消升级时会恢复原有组件",
+      "Linux PDF 组件改为锁定完整依赖和构建输入，并附带可核验的清单、许可证与包体证据",
+      "移除未投入使用的旧 PDF 实验代码，保留现有翻译、预览、导出和本地缓存行为",
+    ],
+  },
   "0.1.0-beta.23": {
     version: "0.1.0-beta.23",
     highlights: [

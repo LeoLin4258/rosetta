@@ -741,7 +741,7 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 
 ### 当前状态摘要
 
-- 当前 checkpoint：无 in-progress implementation checkpoint；CP9 step 2 deletion 已完成并通过 Linux Main app CI，统一 `beta.24` 发布是最后一个 checkpoint，等待用户明确授权
+- 当前 checkpoint：统一 `0.1.0-beta.24` native release gate，等待 Windows/macOS/Linux 从同一 release candidate commit 构建 unpublished artifacts；版本与 aggregate release notes 准备已完成
 - last completed：CP9 step 2 deletion、final pre-release scope review、CP10 document fact convergence、CP9 step 1 integration closeout、CP8 family 1 integration closeout、Linux `beta.22` Release 后观察、CP8 family 1（`resource-manager-reuse`）与 CP11
 - 当前 family：无 active CP8 family；`resource-manager-reuse` 已通过 fork authority test、Rosetta AST capability verification、fresh-checkout pack、patch suite、仓库级静态/Rust 门禁、十页 authority、persistent cache、request-plan identity、10/10 PNG baseline 和用户人工视觉验收；其余 CP8 family 延期到统一 `beta.24` 发布并观察后
 - commits：PDFMathTranslate `681f242f8bab16fca9ccddcfe7c9f32aa7c37947`；Rosetta implementation/build-input `63015223b408bf2deac5032be5611948e19a9043` + `8c184492fa28be3a57dd235fe3ca05058b27b977`
@@ -751,7 +751,19 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 - Linux `beta.22` 观察：公开 AppImage/pack 身份已复核；persistent cache probe 通过；500 页 50×10 窗口 prepare/render/dispose 完成 500/500、0 failed；worker peak RSS 1,067,048,960 bytes，首末窗口 current RSS 增长 432,668,672 bytes；取消 63 ms 退出且无残留进程
 - 已知 CP11 release issue：无；AppImage 页产物压缩、custom RC schema v2 兼容、committed-source Linux CI、immutable upload/redownload 与 profile update 门禁均已关闭
 - last verified HEAD：CP9 step 2 删除 commit `1aaa03fecbf488a1073399ae3bba1c597da98923` 已推送；Main app CI run `30743850442` success；删除前快照 tag `archive/pdf-v3-pre-removal-2026-08-02` 指向 `aedc8647e999e6808e8b5df36ee5c03f84b646a6`；PDFMathTranslate fork `681f242f8bab16fca9ccddcfe7c9f32aa7c37947`
-- 下一步唯一动作：等待用户明确授权最终统一 `0.1.0-beta.24` release checkpoint；届时从同一 clean commit 提升版本、准备 aggregate release notes，并在 Windows/macOS/Linux native host 完成 unpublished smoke 后统一发布。在明确授权前不得改版本/profile/updater metadata、构建 release artifact 或发布任何平台
+- 下一步唯一动作：提交并推送 `0.1.0-beta.24` release candidate metadata；随后在 Windows/macOS/Linux native host 从该同一 commit 构建 unpublished artifacts，逐平台完成 fresh install、upgrade、managed component、翻译/预览/导出、退出清理和 updater smoke，全部通过前不得 publish
+
+#### 2026-08-03 / `0.1.0-beta.24` release preparation / Codex
+
+- 状态：started
+- HEAD 与工作区：基于已推送、clean `main` 的 `f61de32f78297d3985cf8cbecbfeda7c1063d850`
+- 用户授权：开始最终发版流程并密切参与；先准备统一版本和发布说明，未通过静态门禁前不构建，三平台 unpublished smoke 全部通过前不发布
+- scope：把 `package.json`、`Cargo.toml`、`tauri.conf.json` 和 Cargo lock 统一提升到 `0.1.0-beta.24`；增加 in-app/repository aggregate release notes；不修改 pack/profile/updater metadata、renderer、request plan 或持久化格式
+- 结果：三处 app source version 与 Cargo lock 已统一为 `0.1.0-beta.24`；in-app/repository notes 汇总 Linux 回归统一版本线、PDF 性能与安装治理以及旧 v3 清理；Windows 无 Authenticode 时仍只可标为 Preview
+- 验证：版本一致性与 JSON parse 通过；`pnpm typecheck`、`pnpm check:pdf-production-boundary`、`cargo fmt --all -- --check`、`cargo check`、`cargo test rosetta_jobs`（89 passed）、`cargo test managed_pdf2zh`（56 passed、1 ignored）、patch suite（44 passed）和 `git diff --check` 均通过；Cargo 仍只有既有 5 个 dead-code warnings
+- 状态：completed
+- 发布边界：未启动 dev server，未执行 production build，未构建或上传 release artifact，未修改 pack/profile/updater metadata，未发布任何平台版本
+- 下一步唯一动作：提交并推送 release candidate metadata，然后从同一 commit 进入三平台 native unpublished build 与人工 acceptance gate
 
 #### 2026-07-28 / CP11 / Codex
 
