@@ -20,7 +20,10 @@ use tokio::{
 };
 
 use super::{
-    capabilities::{read_pack_engine_capabilities, Pdf2zhEngineCapabilities},
+    capabilities::{
+        read_pack_engine_capabilities, required_engine_capabilities, Pdf2zhEngineCapabilities,
+        PACK_CAPABILITIES_FILENAME,
+    },
     layout::{Pdf2zhLayout, DOCLAYOUT_MODEL_FILENAME},
     profile::Pdf2zhProfile,
 };
@@ -395,6 +398,9 @@ async fn install_inner(
             return Err(e);
         }
     };
+    let actual_size = std::fs::metadata(&archive_path)
+        .map_err(|error| format!("无法读取组件文件大小: {error}"))?
+        .len();
     if let Some(expected) = expected_sha.as_deref() {
         if actual_sha != expected {
             let _ = std::fs::remove_file(&archive_path);
@@ -406,9 +412,6 @@ async fn install_inner(
         }
     }
     if let Some(expected) = expected_size {
-        let actual_size = std::fs::metadata(&archive_path)
-            .map_err(|error| format!("无法读取组件文件大小: {error}"))?
-            .len();
         if actual_size != expected {
             let _ = std::fs::remove_file(&archive_path);
             let message =
@@ -433,6 +436,8 @@ async fn install_inner(
         profile,
         archive_limits,
         custom_pack,
+        &actual_sha,
+        actual_size,
         cancel,
     )
     .await?;
@@ -766,6 +771,8 @@ async fn extract_pack(
     profile: &Pdf2zhProfile,
     limits: ArchiveLimits,
     custom_pack: bool,
+    actual_archive_sha256: &str,
+    actual_archive_size: u64,
     cancel: &Arc<AtomicBool>,
 ) -> Result<
     (
@@ -835,9 +842,14 @@ async fn extract_pack(
             "PDF 版面处理组件结构不正确，缺少 models/{DOCLAYOUT_MODEL_FILENAME}"
         ));
     }
-    let engine_capabilities = read_pack_engine_capabilities(&candidate).map_err(|error| {
-        format!("PDF 版面处理组件需要更新：{error}。请安装当前版本的 PDF 组件。")
-    })?;
+    let engine_capabilities = resolve_pack_engine_capabilities(
+        &candidate,
+        profile,
+        custom_pack,
+        actual_archive_sha256,
+        actual_archive_size,
+    )
+    .map_err(|error| format!("PDF 版面处理组件需要更新：{error}。请安装当前版本的 PDF 组件。"))?;
 
     if cancel.load(Ordering::SeqCst) {
         return Err("PDF 版面处理组件安装已取消。".to_string());
@@ -856,6 +868,29 @@ async fn extract_pack(
     }
     let transaction = PackInstallTransaction::activate(&candidate, &layout.pack_dir)?;
     Ok((engine_capabilities, stats, transaction))
+}
+
+fn resolve_pack_engine_capabilities(
+    pack_dir: &Path,
+    profile: &Pdf2zhProfile,
+    custom_pack: bool,
+    actual_archive_sha256: &str,
+    actual_archive_size: u64,
+) -> Result<Pdf2zhEngineCapabilities, String> {
+    let capability_manifest = pack_dir.join(PACK_CAPABILITIES_FILENAME);
+    match read_pack_engine_capabilities(pack_dir) {
+        Ok(capabilities) => Ok(capabilities),
+        Err(_)
+            if !capability_manifest.exists()
+                && profile.trusted_legacy_capabilities
+                && !custom_pack
+                && profile.pack_sha256 == Some(actual_archive_sha256)
+                && profile.pack_size_bytes == Some(actual_archive_size) =>
+        {
+            Ok(required_engine_capabilities())
+        }
+        Err(error) => Err(error),
+    }
 }
 
 struct DirectoryCleanup {
@@ -1981,9 +2016,11 @@ mod tests {
 
     use super::{
         checked_download_size, copy_archive_entry, effective_sha, effective_size,
-        extract_archive_with_limits, ArchiveLimits, DirectoryCleanup, FileCleanup,
-        ManifestInstallTransaction, PackInstallTransaction, Pdf2zhInstallOptions,
+        extract_archive_with_limits, resolve_pack_engine_capabilities, ArchiveLimits,
+        DirectoryCleanup, FileCleanup, ManifestInstallTransaction, PackInstallTransaction,
+        Pdf2zhInstallOptions,
     };
+    use crate::managed_pdf2zh::capabilities::required_engine_capabilities;
     use crate::managed_pdf2zh::profile::{LINUX_X64_PDF2ZH, WINDOWS_AMD64_PDF2ZH};
 
     #[test]
@@ -2025,6 +2062,93 @@ mod tests {
             effective_size(&WINDOWS_AMD64_PDF2ZH, &options),
             WINDOWS_AMD64_PDF2ZH.pack_size_bytes
         );
+    }
+
+    #[test]
+    fn exact_trusted_profile_pack_may_omit_capability_manifest() {
+        let root = unique_temp_root("trusted-legacy-capabilities");
+        std::fs::create_dir_all(&root).expect("create pack root");
+
+        let capabilities = resolve_pack_engine_capabilities(
+            &root,
+            &WINDOWS_AMD64_PDF2ZH,
+            false,
+            WINDOWS_AMD64_PDF2ZH.pack_sha256.unwrap(),
+            WINDOWS_AMD64_PDF2ZH.pack_size_bytes.unwrap(),
+        )
+        .expect("exact immutable legacy profile may use bundled capability claim");
+
+        assert_eq!(capabilities, required_engine_capabilities());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn custom_pack_without_capability_manifest_fails_closed() {
+        let root = unique_temp_root("custom-missing-capabilities");
+        std::fs::create_dir_all(&root).expect("create pack root");
+
+        let error = resolve_pack_engine_capabilities(
+            &root,
+            &WINDOWS_AMD64_PDF2ZH,
+            true,
+            WINDOWS_AMD64_PDF2ZH.pack_sha256.unwrap(),
+            WINDOWS_AMD64_PDF2ZH.pack_size_bytes.unwrap(),
+        )
+        .expect_err("custom packs must carry their own capability manifest");
+
+        assert!(error.contains("engine-capabilities.json"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn legacy_capability_fallback_requires_exact_profile_identity() {
+        let root = unique_temp_root("legacy-capability-identity");
+        std::fs::create_dir_all(&root).expect("create pack root");
+
+        let hash_error = resolve_pack_engine_capabilities(
+            &root,
+            &WINDOWS_AMD64_PDF2ZH,
+            false,
+            "00d82633bf08bbac1274ebfdf2ea00d203d1e57267b8b71afc2b6ee10397ea84",
+            WINDOWS_AMD64_PDF2ZH.pack_size_bytes.unwrap(),
+        )
+        .expect_err("a different archive hash must fail closed");
+        let size_error = resolve_pack_engine_capabilities(
+            &root,
+            &WINDOWS_AMD64_PDF2ZH,
+            false,
+            WINDOWS_AMD64_PDF2ZH.pack_sha256.unwrap(),
+            WINDOWS_AMD64_PDF2ZH.pack_size_bytes.unwrap() + 1,
+        )
+        .expect_err("a different archive size must fail closed");
+
+        assert!(hash_error.contains("engine-capabilities.json"));
+        assert!(size_error.contains("engine-capabilities.json"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn pack_capability_manifest_remains_authoritative_when_present() {
+        let root = unique_temp_root("current-pack-capabilities");
+        std::fs::create_dir_all(&root).expect("create pack root");
+        let required = required_engine_capabilities();
+        std::fs::write(
+            root.join("engine-capabilities.json"),
+            serde_json::to_vec_pretty(&required).expect("serialize capabilities"),
+        )
+        .expect("write capability manifest");
+
+        let capabilities = resolve_pack_engine_capabilities(
+            &root,
+            &LINUX_X64_PDF2ZH,
+            false,
+            "different-hash-is-irrelevant-when-manifest-is-present",
+            1,
+        )
+        .expect("current packs validate their own manifest");
+
+        assert_eq!(capabilities, required);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

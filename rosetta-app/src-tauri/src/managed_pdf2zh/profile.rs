@@ -13,6 +13,10 @@ pub struct Pdf2zhProfile {
     pub pack_unpacked_size_bytes: Option<u64>,
     pub pack_file_count: Option<u64>,
     pub pack_sha256: Option<&'static str>,
+    /// Allows this exact immutable profile artifact to omit the pack-root
+    /// capability manifest. The installer still requires its actual size and
+    /// SHA-256 to match this profile and never applies this to custom packs.
+    pub trusted_legacy_capabilities: bool,
     pub pack_download_urls: &'static [&'static str],
 }
 
@@ -35,6 +39,7 @@ pub const MACOS_ARM64_PDF2ZH: Pdf2zhProfile = Pdf2zhProfile {
     pack_unpacked_size_bytes: None,
     pack_file_count: None,
     pack_sha256: Some("47f2e41d7c92be4aaaf07583b460ad474fcfc49c367f6c681c67f77e4eccf303"),
+    trusted_legacy_capabilities: true,
     pack_download_urls: &[
         "https://githubdog.com/https://github.com/LeoLin4258/rosetta-assets/releases/download/pdf-layout-pack-macos-arm64-v2026.07.24.1/rosetta-pdf2zh-macos-arm64.tar.gz",
         "https://github.com/LeoLin4258/rosetta-assets/releases/download/pdf-layout-pack-macos-arm64-v2026.07.24.1/rosetta-pdf2zh-macos-arm64.tar.gz",
@@ -53,6 +58,7 @@ pub const WINDOWS_AMD64_PDF2ZH: Pdf2zhProfile = Pdf2zhProfile {
     pack_unpacked_size_bytes: None,
     pack_file_count: None,
     pack_sha256: Some("10d82633bf08bbac1274ebfdf2ea00d203d1e57267b8b71afc2b6ee10397ea84"),
+    trusted_legacy_capabilities: true,
     pack_download_urls: &[
         "https://githubdog.com/https://github.com/LeoLin4258/rosetta-assets/releases/download/pdf-layout-pack-windows-x64-v2026.07.24.1/rosetta-pdf2zh-windows-amd64.zip",
         "https://github.com/LeoLin4258/rosetta-assets/releases/download/pdf-layout-pack-windows-x64-v2026.07.24.1/rosetta-pdf2zh-windows-amd64.zip",
@@ -73,6 +79,7 @@ pub const LINUX_X64_PDF2ZH: Pdf2zhProfile = Pdf2zhProfile {
     pack_unpacked_size_bytes: Some(1_262_340_737),
     pack_file_count: Some(11_104),
     pack_sha256: Some("7ee995e376d9451095939799d2fc2f8fd2691b04f8111fa9ea3cbfc55e626977"),
+    trusted_legacy_capabilities: false,
     pack_download_urls: &[
         "https://githubdog.com/https://github.com/LeoLin4258/rosetta-assets/releases/download/pdf-layout-pack-linux-x64-v2026.07.30.1/rosetta-pdf2zh-linux-x64.tar.gz",
         "https://github.com/LeoLin4258/rosetta-assets/releases/download/pdf-layout-pack-linux-x64-v2026.07.30.1/rosetta-pdf2zh-linux-x64.tar.gz",

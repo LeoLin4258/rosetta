@@ -741,7 +741,7 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 
 ### 当前状态摘要
 
-- 当前 checkpoint：统一 `0.1.0-beta.24` native release gate，等待 Windows/macOS/Linux 从同一 release candidate commit 构建 unpublished artifacts；版本与 aggregate release notes 准备已完成
+- 当前 checkpoint：统一 `0.1.0-beta.24` native release gate；Windows unpublished smoke 发现冻结组件包缺少后加的 capability manifest，正在完成精确 artifact 身份限定的兼容修复并重建三平台产物
 - last completed：CP9 step 2 deletion、final pre-release scope review、CP10 document fact convergence、CP9 step 1 integration closeout、CP8 family 1 integration closeout、Linux `beta.22` Release 后观察、CP8 family 1（`resource-manager-reuse`）与 CP11
 - 当前 family：无 active CP8 family；`resource-manager-reuse` 已通过 fork authority test、Rosetta AST capability verification、fresh-checkout pack、patch suite、仓库级静态/Rust 门禁、十页 authority、persistent cache、request-plan identity、10/10 PNG baseline 和用户人工视觉验收；其余 CP8 family 延期到统一 `beta.24` 发布并观察后
 - commits：PDFMathTranslate `681f242f8bab16fca9ccddcfe7c9f32aa7c37947`；Rosetta implementation/build-input `63015223b408bf2deac5032be5611948e19a9043` + `8c184492fa28be3a57dd235fe3ca05058b27b977`
@@ -751,7 +751,7 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 - Linux `beta.22` 观察：公开 AppImage/pack 身份已复核；persistent cache probe 通过；500 页 50×10 窗口 prepare/render/dispose 完成 500/500、0 failed；worker peak RSS 1,067,048,960 bytes，首末窗口 current RSS 增长 432,668,672 bytes；取消 63 ms 退出且无残留进程
 - 已知 CP11 release issue：无；AppImage 页产物压缩、custom RC schema v2 兼容、committed-source Linux CI、immutable upload/redownload 与 profile update 门禁均已关闭
 - last verified HEAD：CP9 step 2 删除 commit `1aaa03fecbf488a1073399ae3bba1c597da98923` 已推送；Main app CI run `30743850442` success；删除前快照 tag `archive/pdf-v3-pre-removal-2026-08-02` 指向 `aedc8647e999e6808e8b5df36ee5c03f84b646a6`；PDFMathTranslate fork `681f242f8bab16fca9ccddcfe7c9f32aa7c37947`
-- 下一步唯一动作：提交并推送 `0.1.0-beta.24` release candidate metadata；随后在 Windows/macOS/Linux native host 从该同一 commit 构建 unpublished artifacts，逐平台完成 fresh install、upgrade、managed component、翻译/预览/导出、退出清理和 updater smoke，全部通过前不得 publish
+- 下一步唯一动作：完成并推送 Windows PDF 组件安装兼容修复，作废 `b751410` 构建产物；随后从同一新 commit 重建 Windows/macOS/Linux unpublished artifacts 并重新执行逐平台 smoke，全部通过前不得 publish
 
 #### 2026-08-03 / `0.1.0-beta.24` release preparation / Codex
 
@@ -764,6 +764,19 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 - 状态：completed
 - 发布边界：未启动 dev server，未执行 production build，未构建或上传 release artifact，未修改 pack/profile/updater metadata，未发布任何平台版本
 - 下一步唯一动作：提交并推送 release candidate metadata，然后从同一 commit 进入三平台 native unpublished build 与人工 acceptance gate
+
+#### 2026-08-03 / `0.1.0-beta.24` Windows PDF component smoke blocker / Codex
+
+- 状态：completed；等待新 commit 的 Windows/Linux 重建与 Windows 人工重验
+- HEAD 与工作区：基于已推送 `b751410495cb7e4090a493db8efdf26c8f2cc90b Prepare Rosetta 0.1.0-beta.24 release`；Windows Preview 安装器和 Linux signed artifacts 已构建但未发布，macOS 尚未构建
+- 用户实测：Windows 安装 App 后，PDF 组件下载完成但在候选 pack 激活前报错缺少 `engine-capabilities.json`；安装事务正确回滚，未破坏原 pack
+- 根因证据：下载 ZIP 为 profile 锁定的 366,073,383 bytes / SHA-256 `10d82633bf08bbac1274ebfdf2ea00d203d1e57267b8b71afc2b6ee10397ea84`，11,923 entries 且没有 capability manifest；2026-07-24 Windows/macOS immutable pack 早于 2026-07-27 capability manifest enforcement，Linux 2026-07-30 pack 已包含清单
+- 修复边界：profile 显式标记仅 Windows/macOS 两个冻结旧官方 artifact；只有非 custom pack、实际 archive size 与 SHA-256 同时精确匹配 profile 且 pack-root 清单确实不存在时，安装器才写入 App 内置 canonical capability claim。custom pack、hash/size 不匹配、存在但损坏/不兼容的清单继续 fail closed；Linux 和未来新 pack 继续以包内清单为 authority
+- 聚焦测试：新增 exact trusted legacy、custom missing manifest、wrong hash/size、current manifest authority 四组覆盖；`cargo test managed_pdf2zh` 为 60 passed、0 failed、1 ignored
+- 完整门禁：`pnpm typecheck`、`pnpm check:pdf-production-boundary`、`cargo fmt --all -- --check`、`cargo check`、`cargo test rosetta_jobs`（89 passed）、`cargo test managed_pdf2zh`（60 passed、1 ignored）、patch suite（44 passed）和 `git diff --check` 全部通过；Rust 仍只有既有 5 个无关 dead-code warnings
+- 发布说明：repository 与 in-app beta.24 notes 已补充 Windows/macOS 既有官方组件安装兼容修复；版本号保持 `0.1.0-beta.24`
+- 发布边界：`b751410` 的 Windows/Linux artifacts 已作废；修复通过完整门禁并形成新 clean commit 前不得重建，Windows 重验通过且 macOS/Linux 同源 gate 完成前不得 publish
+- 下一步唯一动作：提交并推送本修复；等待 Main app CI 成功后，从该同一新 commit 重建 unpublished Windows 与 Linux artifacts并重新执行 Windows PDF 安装 smoke
 
 #### 2026-07-28 / CP11 / Codex
 
