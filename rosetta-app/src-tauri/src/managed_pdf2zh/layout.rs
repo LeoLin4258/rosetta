@@ -3,7 +3,10 @@ use std::path::PathBuf;
 use serde::Deserialize;
 use tauri::{AppHandle, Manager};
 
-use super::{capabilities::validate_installed_capabilities, profile::Pdf2zhProfile};
+use super::{
+    capabilities::{validate_installed_capabilities, PACK_CAPABILITIES_FILENAME},
+    profile::Pdf2zhProfile,
+};
 
 pub const DOCLAYOUT_MODEL_FILENAME: &str = "doclayout_yolo_docstructbench_imgsz1024.onnx";
 const REQUIRED_BABELDOC_FONTS: [&str; 3] = [
@@ -155,6 +158,27 @@ impl Pdf2zhLayout {
         )
     }
 
+    pub fn trusted_legacy_worker_capabilities(&self, profile: &Pdf2zhProfile) -> bool {
+        if !profile.trusted_legacy_capabilities
+            || has_custom_pack_url_env()
+            || self.pack_dir.join(PACK_CAPABILITIES_FILENAME).exists()
+        {
+            return false;
+        }
+        let Ok(contents) = std::fs::read_to_string(&self.manifest_file) else {
+            return false;
+        };
+        let Ok(manifest) = serde_json::from_str::<Pdf2zhPackManifest>(&contents) else {
+            return false;
+        };
+        !manifest.custom_pack
+            && profile.pack_sha256.is_some()
+            && manifest.sha256.as_deref() == profile.pack_sha256
+            && profile.pack_size_bytes.is_some()
+            && manifest.size_bytes == profile.pack_size_bytes
+            && self.pack_manifest_compatibility(profile).is_ok()
+    }
+
     pub fn ensure_dirs(&self) -> Result<(), String> {
         for dir in [&self.root_dir, &self.logs_dir, &self.downloads_dir] {
             std::fs::create_dir_all(dir)
@@ -182,7 +206,7 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{Pdf2zhLayout, REQUIRED_BABELDOC_FONTS};
+    use super::{Pdf2zhLayout, PACK_CAPABILITIES_FILENAME, REQUIRED_BABELDOC_FONTS};
     use crate::managed_pdf2zh::profile::{
         LINUX_X64_PDF2ZH, MACOS_ARM64_PDF2ZH, WINDOWS_AMD64_PDF2ZH,
     };
@@ -386,6 +410,39 @@ mod tests {
                 .pack_manifest_compatibility(&LINUX_X64_PDF2ZH)
                 .is_ok(),
             "a schema 2 custom RC must not be compared with the frozen release profile"
+        );
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn legacy_worker_fallback_requires_exact_official_install_without_pack_manifest() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        let temp = std::env::temp_dir().join(format!(
+            "rosetta-pdf2zh-layout-legacy-worker-test-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&temp).expect("create temp dir");
+        let layout = Pdf2zhLayout::resolve(temp.clone(), &WINDOWS_AMD64_PDF2ZH);
+        std::fs::create_dir_all(&layout.pack_dir).expect("create pack dir");
+        write_matching_manifest(&layout, &WINDOWS_AMD64_PDF2ZH);
+
+        assert!(layout.trusted_legacy_worker_capabilities(&WINDOWS_AMD64_PDF2ZH));
+
+        std::fs::write(
+            layout.pack_dir.join(PACK_CAPABILITIES_FILENAME),
+            b"current pack owns its capability claim",
+        )
+        .expect("write pack capability marker");
+        assert!(
+            !layout.trusted_legacy_worker_capabilities(&WINDOWS_AMD64_PDF2ZH),
+            "a current pack must use its own strict worker claim"
+        );
+        assert!(
+            !layout.trusted_legacy_worker_capabilities(&LINUX_X64_PDF2ZH),
+            "profiles not explicitly marked as legacy must fail closed"
         );
         let _ = std::fs::remove_dir_all(temp);
     }

@@ -1817,6 +1817,18 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 - 发布边界：未构建 dev/prod App、pack 或 release artifact，未发布任何平台；用户要求的“发版放最后”仍生效
 - 下一步唯一动作：等待用户明确授权最终统一 `0.1.0-beta.24` release checkpoint；在授权前不得开始版本提升、native host release build 或 publish
 
+#### 2026-08-03 / beta.24 legacy PDF worker runtime compatibility / Codex / completed
+
+- 状态：`completed`；基于 `0a8983f3fcf072ac46e09b91deb9e573f81f14bc` 的未发布三平台 release checkpoint继续修正 Windows 实机 smoke 暴露的问题
+- 实机证据：官方 Windows pack 安装后，设置页静态检查从“检查中”恢复“已就绪”，但首次 worker 握手拒绝旧版 `rosetta-pdf-engine-v2.1` 报告，因为 2026-07-24 冻结 pack早于 2026-07-27 的 `engineRevision` / capabilities 字段；仅合成 installed manifest不足以让 runtime握手通过
+- 修正边界：只有 profile显式标记 trusted legacy、pack-root `engine-capabilities.json` 缺失、安装记录为非 custom、安装记录 SHA-256/size精确匹配冻结 profile且完整静态兼容检查通过时，才允许旧式 worker报告；runtime override、custom pack、modified pack、Linux/current pack继续走严格能力校验
+- 旧式报告仍须精确声明 `rosetta-pdf-engine-v2.1`、contract 2、prepare/unit collection/page rendering/single-page artifact四个布尔能力和非空预热计时；包含歧义的新字段、缺失能力或版本不符继续 fail closed
+- 状态收敛：安装命令成功后后台重新预热 worker，通过既有 worker-status event替换 App启动时缓存的 `not-installed` 状态；文档页拿到更新的静态 installed状态后也不再被旧 worker快照覆盖，避免设置页已就绪而文档页仍提示更新
+- 聚焦验证：`cargo test managed_pdf2zh` 63 passed、0 failed、1 ignored；新增 exact official install授权、current-pack拒绝 fallback、旧式握手显式授权及 partial/ambiguous claim拒绝测试
+- 发布影响：此前从 `0a8983f` 生成的 Windows Preview与 Linux候选包全部作废；修正提交推送并通过完整门禁后，Windows、Linux和 macOS必须从同一新 commit重建。当前未上传、未发布任何 artifact
+- blocker：macOS Apple Silicon构建机 SSH仍不可用；Windows新候选包须由用户手动复测组件启动和 PDF预解析
+- 下一步唯一动作：完成完整仓库门禁，提交并推送修正；随后重建 Windows候选包交由用户手动 smoke，不得提前发布
+
 ## 新 agent 接手提示词
 
 ```text

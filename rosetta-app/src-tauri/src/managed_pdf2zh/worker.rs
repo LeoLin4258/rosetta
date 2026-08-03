@@ -605,6 +605,12 @@ async fn spawn_worker(app: &AppHandle) -> Result<WorkerProcess, String> {
         );
         return Err(status.install_plan.message);
     }
+    let using_runtime_overrides = std::env::var_os("ROSETTA_PDF2ZH_BIN").is_some()
+        || std::env::var_os("ROSETTA_DOCLAYOUT_MODEL").is_some();
+    let allow_trusted_legacy_capabilities = !using_runtime_overrides
+        && status
+            .layout
+            .trusted_legacy_worker_capabilities(status.profile);
     let doclayout_model = status
         .doclayout_model_path
         .clone()
@@ -790,7 +796,10 @@ async fn spawn_worker(app: &AppHandle) -> Result<WorkerProcess, String> {
                             let capabilities = event.capabilities.as_ref().ok_or_else(|| {
                                 "PDF 组件未报告 engine 能力，请更新 PDF 组件。".to_string()
                             })?;
-                            validate_worker_capabilities(capabilities).map_err(|error| {
+                            validate_worker_capabilities(
+                                capabilities,
+                                allow_trusted_legacy_capabilities,
+                            ).map_err(|error| {
                                 format!("PDF 组件需要更新：{error}。请重新安装 PDF 组件。")
                             })?;
                             let import_ms = event.import_ms.unwrap_or(0);

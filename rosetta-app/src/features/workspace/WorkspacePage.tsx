@@ -233,11 +233,11 @@ export function WorkspacePage() {
     : [];
   const pdfEngineUnavailable =
     isPdfJob &&
-    (pdf2zhWorkerStatus?.state === "not-installed" ||
-      pdf2zhRuntime.status?.state === "not-installed");
+    (pdf2zhRuntime.status?.state === "not-installed" ||
+      (pdf2zhRuntime.status == null && pdf2zhWorkerStatus?.state === "not-installed"));
   const pdfEngineUnavailableMessage =
-    pdf2zhWorkerStatus?.message ??
     pdf2zhRuntime.status?.message ??
+    pdf2zhWorkerStatus?.message ??
     "PDF 组件未安装，请在设置中安装后再翻译。";
   const selectedRuntimeStatus = selectManagedRuntimeProfileStatus(
     managedRuntimeStatus,

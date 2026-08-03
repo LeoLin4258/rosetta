@@ -78,14 +78,23 @@ pub async fn install_pdf2zh_pack(
     let profile = profile::current_profile()
         .ok_or_else(|| "当前平台尚未支持自动安装 PDF 版面处理组件。".to_string())?;
     let layout = layout::Pdf2zhLayout::from_app(&app, profile)?;
-    install::install_pack(
+    let result = install::install_pack(
         &app,
         install_registry.inner(),
         profile,
         &layout,
         options.unwrap_or_default(),
     )
-    .await
+    .await?;
+    if result.ready {
+        let app_for_prewarm = app.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(error) = worker::prewarm_worker(&app_for_prewarm).await {
+                eprintln!("[pdf2zh-worker] post-install prewarm failed: {error}");
+            }
+        });
+    }
+    Ok(result)
 }
 
 #[tauri::command]

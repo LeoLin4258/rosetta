@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -22,6 +23,20 @@ struct WorkerEngineCapabilities {
     engine_revision: u32,
     #[serde(default)]
     capabilities: Vec<String>,
+}
+
+const TRUSTED_LEGACY_ENGINE_VERSION: &str = "rosetta-pdf-engine-v2.1";
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TrustedLegacyWorkerEngineCapabilities {
+    engine_version: String,
+    contract_version: u32,
+    supports_prepare_window: bool,
+    supports_unit_collection: bool,
+    supports_page_rendering: bool,
+    supports_single_page_artifacts: bool,
+    timings_ms: HashMap<String, u64>,
 }
 
 pub fn required_engine_capabilities() -> Pdf2zhEngineCapabilities {
@@ -66,17 +81,53 @@ pub fn validate_installed_capabilities(
     )
 }
 
-pub fn validate_worker_capabilities(value: &serde_json::Value) -> Result<(), String> {
-    let actual = serde_json::from_value::<WorkerEngineCapabilities>(value.clone())
-        .map_err(|_| "运行中的 PDF engine 未报告兼容能力".to_string())?;
+pub fn validate_worker_capabilities(
+    value: &serde_json::Value,
+    allow_trusted_legacy: bool,
+) -> Result<(), String> {
     let required = required_engine_capabilities();
-    validate_claim(
-        required.schema_version,
-        actual.contract_version,
-        actual.engine_revision,
-        &actual.capabilities,
-        &required,
-    )
+    match serde_json::from_value::<WorkerEngineCapabilities>(value.clone()) {
+        Ok(actual) => validate_claim(
+            required.schema_version,
+            actual.contract_version,
+            actual.engine_revision,
+            &actual.capabilities,
+            &required,
+        ),
+        Err(_) if allow_trusted_legacy => validate_trusted_legacy_worker(value, &required),
+        Err(_) => Err("运行中的 PDF engine 未报告兼容能力".to_string()),
+    }
+}
+
+fn validate_trusted_legacy_worker(
+    value: &serde_json::Value,
+    required: &Pdf2zhEngineCapabilities,
+) -> Result<(), String> {
+    let actual = serde_json::from_value::<TrustedLegacyWorkerEngineCapabilities>(value.clone())
+        .map_err(|_| "运行中的 PDF engine 未报告兼容能力".to_string())?;
+    if actual.engine_version != TRUSTED_LEGACY_ENGINE_VERSION {
+        return Err(format!(
+            "PDF engine 版本不兼容（需要 {TRUSTED_LEGACY_ENGINE_VERSION}，当前为 {}）",
+            actual.engine_version
+        ));
+    }
+    if actual.contract_version != required.engine_contract_version {
+        return Err(format!(
+            "PDF engine contract 不兼容（需要 {}，当前为 {}）",
+            required.engine_contract_version, actual.contract_version
+        ));
+    }
+    if !actual.supports_prepare_window
+        || !actual.supports_unit_collection
+        || !actual.supports_page_rendering
+        || !actual.supports_single_page_artifacts
+    {
+        return Err("旧版 PDF engine 未报告完整的 v2 功能支持".to_string());
+    }
+    if actual.timings_ms.is_empty() {
+        return Err("旧版 PDF engine 未报告预热计时".to_string());
+    }
+    Ok(())
 }
 
 fn validate_claim(
@@ -147,6 +198,49 @@ mod tests {
             "capabilities": required.capabilities,
         });
 
-        assert!(validate_worker_capabilities(&value).is_ok());
+        assert!(validate_worker_capabilities(&value, false).is_ok());
+    }
+
+    #[test]
+    fn trusted_legacy_worker_requires_explicit_immutable_pack_authorization() {
+        let value = serde_json::json!({
+            "engineVersion": "rosetta-pdf-engine-v2.1",
+            "contractVersion": 2,
+            "supportsPrepareWindow": true,
+            "supportsUnitCollection": true,
+            "supportsPageRendering": true,
+            "supportsSinglePageArtifacts": true,
+            "timingsMs": { "total": 1 },
+        });
+
+        assert!(validate_worker_capabilities(&value, true).is_ok());
+        assert!(validate_worker_capabilities(&value, false).is_err());
+    }
+
+    #[test]
+    fn trusted_legacy_worker_rejects_partial_or_ambiguous_claims() {
+        let partial = serde_json::json!({
+            "engineVersion": "rosetta-pdf-engine-v2.1",
+            "contractVersion": 2,
+            "supportsPrepareWindow": true,
+            "supportsUnitCollection": true,
+            "supportsPageRendering": true,
+            "supportsSinglePageArtifacts": false,
+            "timingsMs": { "total": 1 },
+        });
+        let current_fields_with_invalid_revision = serde_json::json!({
+            "engineVersion": "rosetta-pdf-engine-v2.1",
+            "contractVersion": 2,
+            "engineRevision": "invalid",
+            "capabilities": [],
+            "supportsPrepareWindow": true,
+            "supportsUnitCollection": true,
+            "supportsPageRendering": true,
+            "supportsSinglePageArtifacts": true,
+            "timingsMs": { "total": 1 },
+        });
+
+        assert!(validate_worker_capabilities(&partial, true).is_err());
+        assert!(validate_worker_capabilities(&current_fields_with_invalid_revision, true).is_err());
     }
 }
