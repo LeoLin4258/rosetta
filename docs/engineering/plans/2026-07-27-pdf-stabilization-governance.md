@@ -741,7 +741,7 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 
 ### 当前状态摘要
 
-- 当前 checkpoint：统一 `0.1.0-beta.24` native release gate；Windows PDF smoke 已通过，正在修复 release review 发现的三平台 onboarding 窗口生命周期问题
+- 当前 checkpoint：统一 `0.1.0-beta.24` native release gate；Windows PDF smoke 与 onboarding 窗口生命周期修复已通过，等待从最终同一 commit 重建三平台 unpublished artifacts
 - last completed：CP9 step 2 deletion、final pre-release scope review、CP10 document fact convergence、CP9 step 1 integration closeout、CP8 family 1 integration closeout、Linux `beta.22` Release 后观察、CP8 family 1（`resource-manager-reuse`）与 CP11
 - 当前 family：无 active CP8 family；`resource-manager-reuse` 已通过 fork authority test、Rosetta AST capability verification、fresh-checkout pack、patch suite、仓库级静态/Rust 门禁、十页 authority、persistent cache、request-plan identity、10/10 PNG baseline 和用户人工视觉验收；其余 CP8 family 延期到统一 `beta.24` 发布并观察后
 - commits：PDFMathTranslate `681f242f8bab16fca9ccddcfe7c9f32aa7c37947`；Rosetta implementation/build-input `63015223b408bf2deac5032be5611948e19a9043` + `8c184492fa28be3a57dd235fe3ca05058b27b977`
@@ -750,8 +750,8 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 - 自动质量：10 pages、94 units、41,035 source chars、canonical unit SHA-256 `81d6185ffc72f263bbc03a6ab1872e4e8615728ad47ecd359b1b2b1d2f3cecb5`；persistent disk cache hit；accepted request plan 保持 1 request / 253 items / 39,901 input chars；10/10 authority PDFs 除 volatile trailer ID 外相同，10/10 PNG pixel exact
 - Linux `beta.22` 观察：公开 AppImage/pack 身份已复核；persistent cache probe 通过；500 页 50×10 窗口 prepare/render/dispose 完成 500/500、0 failed；worker peak RSS 1,067,048,960 bytes，首末窗口 current RSS 增长 432,668,672 bytes；取消 63 ms 退出且无残留进程
 - 已知 CP11 release issue：无；AppImage 页产物压缩、custom RC schema v2 兼容、committed-source Linux CI、immutable upload/redownload 与 profile update 门禁均已关闭
-- last verified HEAD：legacy PDF worker 修复 commit `70a1939cd6fe7120b2e90a2ab67de700788a1571` 已推送；Main app CI run `30784447350` success；用户已通过 Windows PDF 组件启动、预解析与文档加载 smoke；PDFMathTranslate fork `681f242f8bab16fca9ccddcfe7c9f32aa7c37947`
-- 下一步唯一动作：完成 onboarding 窗口生命周期修复与完整门禁，提交并推送；随后只从该最终 commit 重建 Windows/macOS/Linux unpublished artifacts，全部 smoke 通过前不得 publish
+- last verified HEAD：onboarding 修复 commit `22e1bd43f6ddfc632c54f55b2a0a5e79653b32f4` 已推送；Main app CI run `30785738327` success；用户已通过此前同源 Windows PDF 组件启动、预解析与文档加载 smoke；PDFMathTranslate fork `681f242f8bab16fca9ccddcfe7c9f32aa7c37947`
+- 下一步唯一动作：只从最终同一 clean commit 重建 Windows/macOS/Linux unpublished artifacts；先执行 Windows onboarding/PDF 简短 smoke，再完成 Linux/macOS native smoke，全部通过前不得 publish
 
 #### 2026-08-03 / `0.1.0-beta.24` release preparation / Codex
 
@@ -1838,10 +1838,11 @@ Linux 发布后至少观察一个版本，再决定 CP9 第二步删除和 CP8 �
 - 修复边界：启动与 macOS Reopen 共用当前 onboarding decision 的窗口 label；Windows/Linux 关闭 `main` 或 `onboarding` 均走既有完整退出清理；macOS 两个 session 窗口关闭均隐藏；完成 onboarding 改为隐藏引导窗口，避免程序切换窗口被误判为用户退出
 - 测试覆盖：新增纯逻辑测试锁定 onboarding decision 到 `main`/`onboarding` 的映射，并锁定仅两个 session 窗口触发主窗口关闭策略；未操作运行中 UI，跨平台原生窗口行为仍由逐平台 unpublished smoke 最终确认
 - 完整门禁：`pnpm typecheck`、`pnpm check:pdf-production-boundary`、`cargo fmt --all -- --check`、`cargo check`、`cargo test rosetta_jobs`（89 passed）、`cargo test managed_pdf2zh`（63 passed、1 ignored）、全部 Rust tests（307 passed、1 ignored）、patch suite（44 passed）和 `git diff --check` 全部通过；Rust 仍只有既有 5 个无关 dead-code warnings
+- 提交与 CI：`22e1bd43f6ddfc632c54f55b2a0a5e79653b32f4 Fix onboarding window lifecycle` 已推送 `main`；Main app CI run `30785738327` success，Linux required gate 全部步骤通过
 - 发布说明：repository 与 in-app beta.24 notes 已补充首次引导关闭和 macOS Dock Reopen 修复，版本与 pack/profile/updater metadata 均未改变
 - 发布影响：从 `70a1939` 生成且已通过 PDF smoke 的 Windows Preview 再次作废；完成门禁和 CI 后，三平台必须从新的同一 clean commit 重建，当前仍不得 publish
-- blocker：无本地 blocker；macOS 原生构建机访问状态仍待重试
-- 下一步唯一动作：提交并推送本修复，等待 Main app CI；成功后从同一最终 commit 重建三平台 unpublished artifacts 并执行人工 smoke，全部通过前不得 publish
+- blocker：无代码或 CI blocker；macOS 原生构建机访问状态仍待重试
+- 下一步唯一动作：从最终同一 clean commit 重建三平台 unpublished artifacts 并执行人工 smoke，全部通过前不得 publish
 
 ## 新 agent 接手提示词
 
