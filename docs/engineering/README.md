@@ -5,8 +5,13 @@
 ## 当前活跃计划
 
 - PDF 稳定化、Linux 包体与可维护性治理：[`plans/2026-07-27-pdf-stabilization-governance.md`](plans/2026-07-27-pdf-stabilization-governance.md)
+- DOCX v1 支持：[`plans/2026-08-06-docx-v1-support.md`](plans/2026-08-06-docx-v1-support.md)
 
 同一领域只能有一份活跃 handoff authority。历史 plan、closeout、ADR 和 change-log 可能保留当时的事实，但下一位 agent 应从这里列出的活跃计划进入，并以当前代码和实际验证为准。
+
+## 已批准待实施计划
+
+- PDF Markdown 翻译（PyMuPDF4LLM Layout）：[`plans/2026-08-06-pdf-markdown-translation.md`](plans/2026-08-06-pdf-markdown-translation.md)
 
 ## 目录
 
