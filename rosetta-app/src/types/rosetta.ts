@@ -11,6 +11,8 @@ export type RosettaSourceDocumentFormat = Extract<
   "txt" | "markdown" | "pdf"
 >;
 
+export type RosettaTranslationOutputFormat = RosettaSourceDocumentFormat;
+
 export type RosettaBlockType =
   | "heading"
   | "paragraph"
@@ -159,6 +161,7 @@ export type RosettaTranslationFile = {
   id: string;
   sourceFileId: string;
   targetLang: string;
+  outputFormat: RosettaTranslationOutputFormat;
   status: SourceFileTranslationStatus;
   segmentCount: number;
   completedSegments: number;

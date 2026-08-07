@@ -2,10 +2,19 @@ import type {
   RosettaDocument,
   RosettaJobSummary,
   RosettaTranslationFile,
+  RosettaTranslationOutputFormat,
 } from "@/types/rosetta";
 
 export function sourceSelectionKey(jobId: string, sourceFileId: string) {
   return `${jobId}:${sourceFileId}`;
+}
+
+export function translationSelectionKey(
+  jobId: string,
+  sourceFileId: string,
+  outputFormat: RosettaTranslationOutputFormat
+) {
+  return `${sourceSelectionKey(jobId, sourceFileId)}:${outputFormat}`;
 }
 
 export function resolveJobsPageSelection({
@@ -15,6 +24,7 @@ export function resolveJobsPageSelection({
   activeSourceFileIdByJobId,
   activeTranslationFileId,
   activeTranslationFileIdBySourceKey,
+  activeOutputFormatBySourceKey,
   jobs,
   routeJobId,
   routeSourceFileId,
@@ -26,6 +36,10 @@ export function resolveJobsPageSelection({
   activeSourceFileIdByJobId: Record<string, string>;
   activeTranslationFileId: string | null;
   activeTranslationFileIdBySourceKey: Record<string, string>;
+  activeOutputFormatBySourceKey: Record<
+    string,
+    RosettaTranslationOutputFormat
+  >;
   jobs: RosettaJobSummary[];
   routeJobId?: string;
   routeSourceFileId?: string;
@@ -45,17 +59,32 @@ export function resolveJobsPageSelection({
     null;
   const selectedSourceFile =
     sourceFiles.find((file) => file.id === selectedSourceFileId) ?? null;
-  const selectedTranslationFileId =
+  const selectedOutputFormat =
     currentJobId && selectedSourceFileId
-      ? activeTranslationFileIdBySourceKey[
+      ? activeOutputFormatBySourceKey[
           sourceSelectionKey(currentJobId, selectedSourceFileId)
-        ] ?? activeTranslationFileId
+        ] ?? selectedSourceFile?.format ?? null
+      : selectedSourceFile?.format ?? null;
+  const selectedTranslationFileId =
+    currentJobId && selectedSourceFileId && selectedOutputFormat
+      ? activeTranslationFileIdBySourceKey[
+          translationSelectionKey(
+            currentJobId,
+            selectedSourceFileId,
+            selectedOutputFormat
+          )
+        ] ??
+        activeTranslationFileIdBySourceKey[
+          sourceSelectionKey(currentJobId, selectedSourceFileId)
+        ] ??
+        activeTranslationFileId
       : activeTranslationFileId;
   const selectedTranslationFile =
     translationFiles.find(
       (file) =>
         file.id === selectedTranslationFileId &&
-        file.sourceFileId === selectedSourceFileId
+        file.sourceFileId === selectedSourceFileId &&
+        file.outputFormat === selectedOutputFormat
     ) ?? null;
 
   return {
@@ -65,6 +94,7 @@ export function resolveJobsPageSelection({
     isCurrentBundleLoaded,
     selectedSourceFile,
     selectedSourceFileId,
+    selectedOutputFormat,
     selectedTranslationFile,
     sourceFiles,
   };

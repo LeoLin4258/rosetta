@@ -528,6 +528,8 @@ fn legacy_segments_migrate_to_translation_file() {
         .find(|file| file.source_file_id == "file-1")
         .expect("file-1 translation file");
     assert_eq!(file_one.target_lang, "zh-CN");
+    assert_eq!(file_one.output_format, "txt");
+    assert_eq!(file_one.id, translation_file_id("file-1", "zh-CN"));
     assert_eq!(file_one.segment_count, 2);
     assert_eq!(file_one.completed_segments, 1);
     let restored = read_translation_segments(&dir, &file_one.id).expect("read migrated segments");
@@ -551,6 +553,7 @@ fn missing_pdf_translation_segments_file_repairs_to_empty_compat_file() {
         id: translation_file_id("file-1", "zh-CN"),
         source_file_id: "file-1".to_string(),
         target_lang: "zh-CN".to_string(),
+        output_format: "pdf".to_string(),
         status: "untranslated".to_string(),
         segment_count: 60,
         completed_segments: 0,
@@ -584,6 +587,7 @@ fn translation_file_status_drives_job_sidebar_summary() {
         id: translation_file_id("file-1", "zh-CN"),
         source_file_id: "file-1".to_string(),
         target_lang: "zh-CN".to_string(),
+        output_format: "txt".to_string(),
         status: "translated".to_string(),
         segment_count: 2,
         completed_segments: 2,
@@ -623,6 +627,114 @@ fn translation_file_status_drives_job_sidebar_summary() {
     assert_eq!(job.status, "ready");
     assert_eq!(job.segment_count, 3);
     assert_eq!(job.completed_segments, 2);
+}
+
+#[test]
+fn legacy_translation_files_infer_native_output_without_changing_ids() {
+    for source_format in ["pdf", "markdown", "txt"] {
+        let dir = unique_temp_dir(&format!("translation-output-migration-{source_format}"));
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let mut document = test_document();
+        document.format = source_format.to_string();
+        document.files.truncate(1);
+        document.files[0].format = source_format.to_string();
+        let legacy_id = translation_file_id("file-1", "zh-CN");
+        let legacy = serde_json::json!([{
+            "id": legacy_id,
+            "sourceFileId": "file-1",
+            "targetLang": "zh-CN",
+            "status": "untranslated",
+            "segmentCount": 0,
+            "completedSegments": 0,
+            "failedSegments": 0,
+            "updatedAt": "1000",
+            "exportedAt": null
+        }]);
+        fs::write(
+            dir.join(TRANSLATION_FILES_FILENAME),
+            serde_json::to_vec_pretty(&legacy).expect("serialize legacy translation files"),
+        )
+        .expect("write legacy translation files");
+
+        let migrated =
+            read_or_migrate_translation_files(&dir, &document, &[]).expect("migrate output format");
+
+        assert_eq!(migrated.len(), 1);
+        assert_eq!(migrated[0].id, legacy_id);
+        assert_eq!(migrated[0].output_format, source_format);
+        let persisted = fs::read_to_string(dir.join(TRANSLATION_FILES_FILENAME))
+            .expect("read migrated translation files");
+        assert!(persisted.contains(&format!("\"outputFormat\": \"{source_format}\"")));
+        fs::remove_dir_all(dir).ok();
+    }
+}
+
+#[test]
+fn pdf_translation_output_ids_preserve_native_and_qualify_markdown() {
+    let pdf = build_translation_file("file-1", "zh-CN", "pdf", "pdf", Vec::new());
+    let markdown = build_translation_file("file-1", "zh-CN", "markdown", "pdf", Vec::new());
+
+    assert_eq!(pdf.id, translation_file_id("file-1", "zh-CN"));
+    assert_eq!(markdown.id, "tr-file-1-zh-cn-markdown");
+    assert_ne!(pdf.id, markdown.id);
+    assert_eq!(pdf.output_format, "pdf");
+    assert_eq!(markdown.output_format, "markdown");
+}
+
+#[test]
+fn translation_output_format_matrix_is_narrow() {
+    assert_eq!(validate_output_format("pdf", "pdf").as_deref(), Ok("pdf"));
+    assert_eq!(
+        validate_output_format("pdf", "MARKDOWN").as_deref(),
+        Ok("markdown")
+    );
+    assert_eq!(
+        validate_output_format("markdown", "markdown").as_deref(),
+        Ok("markdown")
+    );
+    assert_eq!(validate_output_format("txt", "txt").as_deref(), Ok("txt"));
+    assert!(validate_output_format("txt", "markdown").is_err());
+    assert!(validate_output_format("markdown", "pdf").is_err());
+    assert!(validate_output_format("pdf", "txt").is_err());
+}
+
+#[test]
+fn markdown_output_does_not_override_pdf_page_summary() {
+    let mut document = test_document();
+    document.format = "pdf".to_string();
+    document.files.truncate(1);
+    document.files[0].format = "pdf".to_string();
+    let markdown = RosettaTranslationFile {
+        id: "tr-file-1-zh-cn-markdown".to_string(),
+        source_file_id: "file-1".to_string(),
+        target_lang: "zh-CN".to_string(),
+        output_format: "markdown".to_string(),
+        status: "translated".to_string(),
+        segment_count: 12,
+        completed_segments: 12,
+        failed_segments: 0,
+        updated_at: "2000".to_string(),
+        exported_at: None,
+    };
+    let pdf = RosettaTranslationFile {
+        id: translation_file_id("file-1", "zh-CN"),
+        source_file_id: "file-1".to_string(),
+        target_lang: "zh-CN".to_string(),
+        output_format: "pdf".to_string(),
+        status: "untranslated".to_string(),
+        segment_count: 60,
+        completed_segments: 4,
+        failed_segments: 1,
+        updated_at: "2000".to_string(),
+        exported_at: None,
+    };
+
+    sync_document_file_translation_statuses(&mut document, &[markdown, pdf]);
+
+    assert_eq!(document.files[0].translation_status, "untranslated");
+    assert_eq!(document.files[0].segment_count, 60);
+    assert_eq!(document.files[0].completed_segments, 4);
+    assert_eq!(document.files[0].failed_segments, 1);
 }
 
 #[test]

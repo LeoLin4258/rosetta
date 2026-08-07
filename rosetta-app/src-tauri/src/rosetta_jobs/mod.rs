@@ -2476,6 +2476,7 @@ fn sync_pdf_page_translation_summary(
     let now = path::timestamp_ms_string();
 
     if let Some(file) = translation_files.iter_mut().find(|file| file.id == id) {
+        file.output_format = "pdf".to_string();
         file.status = status.clone();
         file.segment_count = segment_count;
         file.completed_segments = completed_segments;
@@ -2486,6 +2487,7 @@ fn sync_pdf_page_translation_summary(
             id,
             source_file_id: source_file_id.to_string(),
             target_lang: target_lang.to_string(),
+            output_format: "pdf".to_string(),
             status: status.clone(),
             segment_count,
             completed_segments,
@@ -2549,8 +2551,15 @@ pub fn ensure_rosetta_translation_file(
     job_id: String,
     source_file_id: String,
     target_lang: String,
+    output_format: String,
 ) -> Result<RosettaTranslationFileBundle, String> {
-    translation_files::ensure_translation_file(&app, &job_id, &source_file_id, &target_lang)
+    translation_files::ensure_translation_file(
+        &app,
+        &job_id,
+        &source_file_id,
+        &target_lang,
+        &output_format,
+    )
 }
 
 #[tauri::command]

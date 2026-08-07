@@ -97,6 +97,20 @@ pub(crate) fn translation_file_id(source_file_id: &str, target_lang: &str) -> St
     )
 }
 
+pub(crate) fn output_qualified_translation_file_id(
+    source_file_id: &str,
+    target_lang: &str,
+    output_format: &str,
+    native_output_format: &str,
+) -> String {
+    let legacy_id = translation_file_id(source_file_id, target_lang);
+    if output_format.eq_ignore_ascii_case(native_output_format) {
+        legacy_id
+    } else {
+        format!("{legacy_id}-{}", safe_id_component(output_format))
+    }
+}
+
 pub(crate) fn safe_id_component(value: &str) -> String {
     let normalized = value
         .chars()

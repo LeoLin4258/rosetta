@@ -222,6 +222,8 @@ pub struct RosettaTranslationFile {
     pub(crate) id: String,
     pub(crate) source_file_id: String,
     pub(crate) target_lang: String,
+    #[serde(default)]
+    pub(crate) output_format: String,
     pub(crate) status: String,
     pub(crate) segment_count: usize,
     pub(crate) completed_segments: usize,

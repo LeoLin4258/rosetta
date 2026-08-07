@@ -7,6 +7,7 @@ import type {
   RosettaJobBundle,
   RosettaJobSummary,
   RosettaTranslationFileBundle,
+  RosettaTranslationOutputFormat,
   Segment,
   TranslationSegment,
   TranslationRevisionReason,
@@ -172,12 +173,14 @@ export function saveRosettaSegments(jobId: string, segments: Segment[]) {
 export function ensureRosettaTranslationFile(
   jobId: string,
   sourceFileId: string,
-  targetLang: string
+  targetLang: string,
+  outputFormat: RosettaTranslationOutputFormat
 ) {
   return invoke<RosettaTranslationFileBundle>("ensure_rosetta_translation_file", {
     jobId,
     sourceFileId,
     targetLang,
+    outputFormat,
   });
 }
 

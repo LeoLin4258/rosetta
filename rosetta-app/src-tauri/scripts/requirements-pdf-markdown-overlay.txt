@@ -1,0 +1,4 @@
+pymupdf4llm==1.28.0
+pymupdf-layout==1.28.0
+PyMuPDF==1.28.0
+tabulate==0.10.0

@@ -15,9 +15,7 @@ use crate::rosetta_jobs::{
     model::{Segment, TranslationSegment},
     path::{checked_job_dir, jobs_root},
     store::read_json,
-    translation_files::{
-        build_translation_file, read_translation_segments, write_translation_segments,
-    },
+    translation_files::{read_translation_segments, write_translation_segments},
 };
 use crate::rwkv_providers::{
     llama_cpp_chat::{self, LlamaCppChatConfig},
@@ -1501,13 +1499,16 @@ fn save_run_segments(
     };
 
     write_translation_segments(dir, translation_file_id, &segments)?;
-    let source_file_id = translation_files[index].source_file_id.clone();
     let target_lang = if target_lang.trim().is_empty() {
         translation_files[index].target_lang.clone()
     } else {
         target_lang.to_string()
     };
-    let translation_file = build_translation_file(&source_file_id, &target_lang, segments.clone());
+    translation_files[index].target_lang = target_lang;
+    let translation_file = crate::rosetta_jobs::translation_files::rebuild_translation_file(
+        &translation_files[index],
+        segments.clone(),
+    );
     translation_files[index] = translation_file.clone();
     write_translation_files(dir, &translation_files)?;
 

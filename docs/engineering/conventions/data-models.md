@@ -70,14 +70,19 @@ Document
 
 ## Translation File
 
-`RosettaTranslationFile` 表示一个源文件在某个目标语言下的内部译文文件。
+`RosettaTranslationFile` 表示一个源文件在某个目标语言和输出格式下的内部译文文件。
 
 约定：
 
-- 一个 `RosettaSourceFile` 可以对应多个 `RosettaTranslationFile`，例如同一章同时有 `zh-CN` 和 `ja` 译文。
+- 译文文件唯一身份是 `(sourceFileId, targetLang, outputFormat)`。一个 PDF 源文件可同时拥有 `pdf` 与 `markdown` 输出；Markdown 源文件只允许 `markdown`，TXT 源文件只允许 `txt`。
+- `outputFormat` 是必填持久化字段。旧 `translation_files.json` 缺失该字段时，按源格式推断原生输出：PDF → `pdf`、Markdown → `markdown`、TXT → `txt`，并在加载时回写。
+- 原生输出继续使用旧 ID `tr-{source}-{target}`，保证旧 PDF/Markdown/TXT 缓存和深链接兼容；非原生 sibling 使用 `tr-{source}-{target}-{output}`，例如 PDF 的 Markdown 输出。
+- 一个 `RosettaSourceFile` 可以对应多个 `RosettaTranslationFile`，例如同一 PDF 同时有 PDF/Markdown 输出，或同一章同时有 `zh-CN` 和 `ja` 译文。
 - `translation_files.json` 保存译文文件列表和状态统计；每个译文文件的正文保存在 `translations/<translationFileId>.json`。
 - `TranslationSegment.sourceSegmentId` 指向源 `Segment.id`，译文状态和文本不再与源 segment 混在一起。
 - 工作台和导出必须以当前选中的 `translationFileId` 为译文事实来源。
+- 前端以 `activeOutputFormatBySourceKey[jobId:sourceFileId]` 持久化当前输出格式，并以 `jobId:sourceFileId:outputFormat` 保存对应的 active translation ID；旧二元 selection key 仅作为兼容读取回退。
+- 旧 job/source 的页面统计只同步原生输出；PDF 的 Markdown 段落进度不得覆盖 PDF 页面进度或 legacy PDF counters。
 - 旧项目如果只有 `segments.json.translatedText`，加载时迁移成默认目标语言译文文件；旧字段暂不删除。
 - 译文文件是 Rosetta 内部管理对象，不自动写入用户磁盘路径；用户点击导出时才生成外部文件。
 - `TranslationSegment.status === "translating"` 只表示一次前端翻译运行已把该批次交给模型请求，不能视为跨应用重启仍然存在的真实后台任务。工作台加载项目时必须把遗留的 `translating` segments 恢复为 `pending`，并重建 `RosettaTranslationFile.status`，避免异常退出或模型卡住后项目永久停在“翻译中”。

@@ -10,6 +10,7 @@ import type {
   RosettaJobSummary,
   RosettaTranslationFile,
   RosettaTranslationFileBundle,
+  RosettaTranslationOutputFormat,
   RwkvConnectionConfig,
   Segment,
   TranslationSegment,
@@ -86,6 +87,10 @@ type RosettaState = {
   activeTranslationFileId: string | null;
   activeSourceFileIdByJobId: Record<string, string>;
   activeTranslationFileIdBySourceKey: Record<string, string>;
+  activeOutputFormatBySourceKey: Record<
+    string,
+    RosettaTranslationOutputFormat
+  >;
   translationSegments: TranslationSegment[];
   translationRevisions: TranslationRevision[];
   activeTranslationRun: ActiveTranslationRun | null;
@@ -122,6 +127,11 @@ type RosettaState = {
     jobId: string,
     sourceFileId: string | null,
     translationFileId?: string | null
+  ) => void;
+  setActiveOutputFormat: (
+    jobId: string,
+    sourceFileId: string,
+    outputFormat: RosettaTranslationOutputFormat
   ) => void;
   setActiveBundle: (bundle: RosettaJobBundle) => void;
   refreshJobBundle: (bundle: RosettaJobBundle) => void;
@@ -250,7 +260,10 @@ function syncJobWithTranslationFile(
   job: RosettaJobSummary,
   translationFile: RosettaTranslationFile
 ): RosettaJobSummary {
-  if (!job.sourceFiles.some((file) => file.id === translationFile.sourceFileId)) {
+  const sourceFile = job.sourceFiles.find(
+    (file) => file.id === translationFile.sourceFileId
+  );
+  if (!sourceFile || sourceFile.format !== translationFile.outputFormat) {
     return job;
   }
 
@@ -325,6 +338,14 @@ function sourceSelectionKey(jobId: string, sourceFileId: string) {
   return `${jobId}:${sourceFileId}`;
 }
 
+function translationSelectionKey(
+  jobId: string,
+  sourceFileId: string,
+  outputFormat: RosettaTranslationOutputFormat
+) {
+  return `${sourceSelectionKey(jobId, sourceFileId)}:${outputFormat}`;
+}
+
 export const useRosettaStore = create<RosettaState>()(
   persist(
     (set, get) => ({
@@ -350,6 +371,7 @@ export const useRosettaStore = create<RosettaState>()(
       activeTranslationFileId: null,
       activeSourceFileIdByJobId: {},
       activeTranslationFileIdBySourceKey: {},
+      activeOutputFormatBySourceKey: {},
       translationSegments: [],
       translationRevisions: [],
       activeTranslationRun: null,
@@ -477,14 +499,26 @@ export const useRosettaStore = create<RosettaState>()(
           const selectedFileId = jobId
             ? state.activeFileIdByJobId[jobId] ?? job?.sourceFiles[0]?.id ?? null
             : null;
+          const selectedSourceFile = job?.sourceFiles.find(
+            (file) => file.id === selectedFileId
+          );
+          const outputFormat =
+            jobId && selectedFileId
+              ? state.activeOutputFormatBySourceKey[
+                  sourceSelectionKey(jobId, selectedFileId)
+                ] ?? selectedSourceFile?.format
+              : undefined;
           const isSwitchingJob = state.activeJobId !== jobId;
 
           return {
             activeJobId: jobId,
             activeFileId: selectedFileId,
             activeSourceFileId: selectedFileId,
-            activeTranslationFileId: jobId && selectedFileId
+            activeTranslationFileId: jobId && selectedFileId && outputFormat
               ? state.activeTranslationFileIdBySourceKey[
+                  translationSelectionKey(jobId, selectedFileId, outputFormat)
+                ] ??
+                state.activeTranslationFileIdBySourceKey[
                   sourceSelectionKey(jobId, selectedFileId)
                 ] ?? null
               : null,
@@ -508,12 +542,29 @@ export const useRosettaStore = create<RosettaState>()(
             }
           }
 
+          const sourceFile = state.activeDocument?.files.find(
+            (file) => file.id === fileId
+          );
+          const outputFormat =
+            state.activeJobId && fileId
+              ? state.activeOutputFormatBySourceKey[
+                  sourceSelectionKey(state.activeJobId, fileId)
+                ] ?? sourceFile?.format
+              : undefined;
+
           return {
             activeFileId: fileId,
             activeSourceFileId: fileId,
             activeTranslationFileId:
-              state.activeJobId && fileId
+              state.activeJobId && fileId && outputFormat
                 ? state.activeTranslationFileIdBySourceKey[
+                    translationSelectionKey(
+                      state.activeJobId,
+                      fileId,
+                      outputFormat
+                    )
+                  ] ??
+                  state.activeTranslationFileIdBySourceKey[
                     sourceSelectionKey(state.activeJobId, fileId)
                   ] ?? null
                 : null,
@@ -529,15 +580,35 @@ export const useRosettaStore = create<RosettaState>()(
           const activeTranslationFileIdBySourceKey = {
             ...state.activeTranslationFileIdBySourceKey,
           };
+          const activeOutputFormatBySourceKey = {
+            ...state.activeOutputFormatBySourceKey,
+          };
           const isSwitchingJob = state.activeJobId !== jobId;
           if (fileId) {
             activeFileIdByJobId[jobId] = fileId;
             activeSourceFileIdByJobId[jobId] = fileId;
-            const key = sourceSelectionKey(jobId, fileId);
+            const sourceKey = sourceSelectionKey(jobId, fileId);
+            const translationFile = state.translationFiles.find(
+              (file) => file.id === translationFileId
+            );
+            const sourceFile =
+              state.activeDocument?.files.find((file) => file.id === fileId) ??
+              state.jobs
+                .find((job) => job.id === jobId)
+                ?.sourceFiles.find((file) => file.id === fileId);
+            const outputFormat =
+              translationFile?.outputFormat ??
+              activeOutputFormatBySourceKey[sourceKey] ??
+              sourceFile?.format;
+            if (outputFormat) {
+              activeOutputFormatBySourceKey[sourceKey] = outputFormat;
+            }
             if (translationFileId) {
-              activeTranslationFileIdBySourceKey[key] = translationFileId;
-            } else {
-              delete activeTranslationFileIdBySourceKey[key];
+              if (outputFormat) {
+                activeTranslationFileIdBySourceKey[
+                  translationSelectionKey(jobId, fileId, outputFormat)
+                ] = translationFileId;
+              }
             }
           } else {
             delete activeFileIdByJobId[jobId];
@@ -552,6 +623,7 @@ export const useRosettaStore = create<RosettaState>()(
             activeTranslationFileId: translationFileId,
             activeSourceFileIdByJobId,
             activeTranslationFileIdBySourceKey,
+            activeOutputFormatBySourceKey,
             activeDocument: isSwitchingJob ? null : state.activeDocument,
             previewSegments: isSwitchingJob ? [] : state.previewSegments,
             translationFiles: isSwitchingJob ? [] : state.translationFiles,
@@ -559,6 +631,37 @@ export const useRosettaStore = create<RosettaState>()(
             translationRevisions: isSwitchingJob
               ? []
               : state.translationRevisions,
+          };
+        }),
+      setActiveOutputFormat: (jobId, sourceFileId, outputFormat) =>
+        set((state) => {
+          const sourceKey = sourceSelectionKey(jobId, sourceFileId);
+          const activeOutputFormatBySourceKey = {
+            ...state.activeOutputFormatBySourceKey,
+            [sourceKey]: outputFormat,
+          };
+          const activeTranslationFileId =
+            state.activeTranslationFileIdBySourceKey[
+              translationSelectionKey(jobId, sourceFileId, outputFormat)
+            ] ??
+            state.translationFiles.find(
+              (file) =>
+                file.sourceFileId === sourceFileId &&
+                file.outputFormat === outputFormat
+            )?.id ??
+            null;
+          return {
+            activeOutputFormatBySourceKey,
+            activeTranslationFileId:
+              state.activeJobId === jobId &&
+              state.activeSourceFileId === sourceFileId
+                ? activeTranslationFileId
+                : state.activeTranslationFileId,
+            translationSegments:
+              state.activeJobId === jobId &&
+              state.activeSourceFileId === sourceFileId
+                ? []
+                : state.translationSegments,
           };
         }),
       setActiveBundle: (bundle) =>
@@ -577,20 +680,58 @@ export const useRosettaStore = create<RosettaState>()(
           if (selectedFileId) {
             activeFileIdByJobId[bundle.job.id] = selectedFileId;
           }
+          const selectedSourceFile = bundle.document.files.find(
+            (file) => file.id === selectedFileId
+          );
+          const selectedSourceKey = selectedFileId
+            ? sourceSelectionKey(bundle.job.id, selectedFileId)
+            : null;
+          const outputFormat = selectedSourceKey
+            ? state.activeOutputFormatBySourceKey[selectedSourceKey] ??
+              selectedSourceFile?.format
+            : undefined;
+          const persistedTranslationFileId =
+            selectedFileId && outputFormat
+              ? state.activeTranslationFileIdBySourceKey[
+                  translationSelectionKey(
+                    bundle.job.id,
+                    selectedFileId,
+                    outputFormat
+                  )
+                ] ?? state.activeTranslationFileIdBySourceKey[selectedSourceKey!]
+              : undefined;
           const selectedTranslationFile =
-            selectedFileId != null
+            selectedFileId != null && outputFormat
               ? bundle.translationFiles.find(
                   (file) =>
-                    file.id ===
-                    state.activeTranslationFileIdBySourceKey[
-                      sourceSelectionKey(bundle.job.id, selectedFileId)
-                    ]
+                    file.id === persistedTranslationFileId &&
+                    file.outputFormat === outputFormat
                 ) ??
                 bundle.translationFiles.find(
-                  (file) => file.sourceFileId === selectedFileId
+                  (file) =>
+                    file.sourceFileId === selectedFileId &&
+                    file.outputFormat === outputFormat
                 ) ??
                 null
               : null;
+          const activeOutputFormatBySourceKey = {
+            ...state.activeOutputFormatBySourceKey,
+          };
+          const activeTranslationFileIdBySourceKey = {
+            ...state.activeTranslationFileIdBySourceKey,
+          };
+          if (selectedSourceKey && outputFormat) {
+            activeOutputFormatBySourceKey[selectedSourceKey] = outputFormat;
+            if (selectedTranslationFile) {
+              activeTranslationFileIdBySourceKey[
+                translationSelectionKey(
+                  bundle.job.id,
+                  selectedFileId!,
+                  outputFormat
+                )
+              ] = selectedTranslationFile.id;
+            }
+          }
 
           return {
             jobs: replaceJob(state.jobs, syncedJob),
@@ -599,6 +740,8 @@ export const useRosettaStore = create<RosettaState>()(
             activeSourceFileId: selectedFileId,
             activeTranslationFileId: selectedTranslationFile?.id ?? null,
             activeFileIdByJobId,
+            activeOutputFormatBySourceKey,
+            activeTranslationFileIdBySourceKey,
             activeDocument: bundle.document,
             previewSegments: bundle.segments,
             translationFiles: bundle.translationFiles ?? [],
@@ -630,20 +773,58 @@ export const useRosettaStore = create<RosettaState>()(
           } else {
             delete activeFileIdByJobId[bundle.job.id];
           }
+          const selectedSourceFile = bundle.document.files.find(
+            (file) => file.id === selectedFileId
+          );
+          const selectedSourceKey = selectedFileId
+            ? sourceSelectionKey(bundle.job.id, selectedFileId)
+            : null;
+          const outputFormat = selectedSourceKey
+            ? state.activeOutputFormatBySourceKey[selectedSourceKey] ??
+              selectedSourceFile?.format
+            : undefined;
+          const persistedTranslationFileId =
+            selectedFileId && outputFormat
+              ? state.activeTranslationFileIdBySourceKey[
+                  translationSelectionKey(
+                    bundle.job.id,
+                    selectedFileId,
+                    outputFormat
+                  )
+                ] ?? state.activeTranslationFileIdBySourceKey[selectedSourceKey!]
+              : undefined;
           const selectedTranslationFile =
-            selectedFileId != null
+            selectedFileId != null && outputFormat
               ? bundle.translationFiles.find(
                   (file) =>
-                    file.id ===
-                    state.activeTranslationFileIdBySourceKey[
-                      sourceSelectionKey(bundle.job.id, selectedFileId)
-                    ]
+                    file.id === persistedTranslationFileId &&
+                    file.outputFormat === outputFormat
                 ) ??
                 bundle.translationFiles.find(
-                  (file) => file.sourceFileId === selectedFileId
+                  (file) =>
+                    file.sourceFileId === selectedFileId &&
+                    file.outputFormat === outputFormat
                 ) ??
                 null
               : null;
+          const activeOutputFormatBySourceKey = {
+            ...state.activeOutputFormatBySourceKey,
+          };
+          const activeTranslationFileIdBySourceKey = {
+            ...state.activeTranslationFileIdBySourceKey,
+          };
+          if (selectedSourceKey && outputFormat) {
+            activeOutputFormatBySourceKey[selectedSourceKey] = outputFormat;
+            if (selectedTranslationFile) {
+              activeTranslationFileIdBySourceKey[
+                translationSelectionKey(
+                  bundle.job.id,
+                  selectedFileId!,
+                  outputFormat
+                )
+              ] = selectedTranslationFile.id;
+            }
+          }
 
           return {
             jobs,
@@ -651,6 +832,8 @@ export const useRosettaStore = create<RosettaState>()(
             activeSourceFileId: selectedFileId,
             activeTranslationFileId: selectedTranslationFile?.id ?? null,
             activeFileIdByJobId,
+            activeOutputFormatBySourceKey,
+            activeTranslationFileIdBySourceKey,
             activeDocument: bundle.document,
             previewSegments: bundle.segments,
             translationFiles: bundle.translationFiles ?? [],
@@ -668,11 +851,21 @@ export const useRosettaStore = create<RosettaState>()(
           const activeTranslationFileIdBySourceKey = {
             ...state.activeTranslationFileIdBySourceKey,
           };
+          const activeOutputFormatBySourceKey = {
+            ...state.activeOutputFormatBySourceKey,
+          };
           if (state.activeJobId) {
+            const sourceKey = sourceSelectionKey(
+              state.activeJobId,
+              bundle.translationFile.sourceFileId
+            );
+            activeOutputFormatBySourceKey[sourceKey] =
+              bundle.translationFile.outputFormat;
             activeTranslationFileIdBySourceKey[
-              sourceSelectionKey(
+              translationSelectionKey(
                 state.activeJobId,
-                bundle.translationFile.sourceFileId
+                bundle.translationFile.sourceFileId,
+                bundle.translationFile.outputFormat
               )
             ] = bundle.translationFile.id;
           }
@@ -683,6 +876,7 @@ export const useRosettaStore = create<RosettaState>()(
             activeFileId: bundle.translationFile.sourceFileId,
             activeTranslationFileId: bundle.translationFile.id,
             activeTranslationFileIdBySourceKey,
+            activeOutputFormatBySourceKey,
             translationSegments: bundle.segments,
           };
         }),
@@ -725,6 +919,7 @@ export const useRosettaStore = create<RosettaState>()(
           activeTranslationFileId: null,
           activeSourceFileIdByJobId: {},
           activeTranslationFileIdBySourceKey: {},
+          activeOutputFormatBySourceKey: {},
           activeDocument: null,
           previewSegments: [],
           translationFiles: [],
@@ -952,6 +1147,9 @@ export const useRosettaStore = create<RosettaState>()(
           activeTranslationFileIdBySourceKey:
             persistedState?.activeTranslationFileIdBySourceKey ??
             current.activeTranslationFileIdBySourceKey,
+          activeOutputFormatBySourceKey:
+            persistedState?.activeOutputFormatBySourceKey ??
+            current.activeOutputFormatBySourceKey,
           rwkv: {
             ...current.rwkv,
             ...persistedRwkv,
@@ -985,6 +1183,7 @@ export const useRosettaStore = create<RosettaState>()(
         activeSourceFileIdByJobId: state.activeSourceFileIdByJobId,
         activeTranslationFileIdBySourceKey:
           state.activeTranslationFileIdBySourceKey,
+        activeOutputFormatBySourceKey: state.activeOutputFormatBySourceKey,
         langByJobId: state.langByJobId,
       }),
     }

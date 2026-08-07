@@ -502,7 +502,7 @@ export function WorkspacePage() {
   }
 
   async function handleTranslate(targetLang: string, srcLang: string) {
-    if (!activeJobId || !activeSourceFileId) return;
+    if (!activeJobId || !activeSourceFileId || !sourceFile) return;
     setPageError(null);
     setPdfError(null);
     setSelectedBlockIds([]);
@@ -536,7 +536,8 @@ export function WorkspacePage() {
       const tfBundle = await ensureRosettaTranslationFile(
         activeJobId,
         activeSourceFileId,
-        targetLang
+        targetLang,
+        sourceFile.format,
       );
       setActiveTranslationFileBundle(tfBundle);
 
@@ -640,6 +641,7 @@ export function WorkspacePage() {
           activeJobId,
           activeSourceFileId,
           pageTargetLang,
+          "pdf",
         ));
       setActiveTranslationFileBundle(tfBundle);
       const provider = buildProvider();
@@ -724,7 +726,7 @@ export function WorkspacePage() {
   }
 
   async function handleRetranslateSelected() {
-    if (!activeJobId || !activeSourceFileId) return;
+    if (!activeJobId || !activeSourceFileId || !sourceFile) return;
     const retranslateTargetLang = activeTranslationFile?.targetLang ?? targetLang;
     setPageError(null);
 
@@ -764,7 +766,8 @@ export function WorkspacePage() {
       const tfBundle = await ensureRosettaTranslationFile(
         activeJobId,
         activeSourceFileId,
-        retranslateTargetLang
+        retranslateTargetLang,
+        sourceFile.format,
       );
 
       // Use previewSegments from the store (always populated) rather than
@@ -844,7 +847,7 @@ export function WorkspacePage() {
   }
 
   async function handleRetranslateAll() {
-    if (!activeJobId || !activeSourceFileId) return;
+    if (!activeJobId || !activeSourceFileId || !sourceFile) return;
     const retranslateTargetLang = activeTranslationFile?.targetLang ?? targetLang;
     setPageError(null);
     setPdfError(null);
@@ -882,7 +885,8 @@ export function WorkspacePage() {
       const tfBundle = await ensureRosettaTranslationFile(
         activeJobId,
         activeSourceFileId,
-        retranslateTargetLang
+        retranslateTargetLang,
+        sourceFile.format,
       );
 
       const targets = translationTargetsForStatuses({

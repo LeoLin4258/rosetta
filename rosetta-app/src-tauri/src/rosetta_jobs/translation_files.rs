@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
 };
@@ -13,7 +13,10 @@ use crate::rosetta_jobs::{
         RosettaDocument, RosettaTranslationFile, RosettaTranslationFileBundle, Segment,
         TranslationSegment, TRANSLATIONS_DIRNAME, TRANSLATION_FILES_FILENAME,
     },
-    path::{checked_job_dir, is_safe_job_id, jobs_root, timestamp_ms_string, translation_file_id},
+    path::{
+        checked_job_dir, is_safe_job_id, jobs_root, output_qualified_translation_file_id,
+        timestamp_ms_string,
+    },
     store::{read_json, read_translation_files, write_json, write_translation_files},
 };
 
@@ -51,8 +54,11 @@ pub(crate) fn read_or_migrate_translation_files(
     document: &RosettaDocument,
     segments: &[Segment],
 ) -> Result<Vec<RosettaTranslationFile>, String> {
-    let existing = read_translation_files(dir)?;
+    let mut existing = read_translation_files(dir)?;
     if !existing.is_empty() || dir.join(TRANSLATION_FILES_FILENAME).exists() {
+        if normalize_translation_file_output_formats(&mut existing, document)? {
+            write_translation_files(dir, &existing)?;
+        }
         return Ok(existing);
     }
 
@@ -76,6 +82,8 @@ pub(crate) fn read_or_migrate_translation_files(
         let translation_file = build_translation_file(
             &source_file.id,
             &target_lang,
+            &source_file.format,
+            &source_file.format,
             source_file_segments
                 .iter()
                 .map(|segment| legacy_translation_segment(segment, &target_lang))
@@ -98,6 +106,7 @@ pub(crate) fn ensure_translation_file(
     job_id: &str,
     source_file_id: &str,
     target_lang: &str,
+    output_format: &str,
 ) -> Result<RosettaTranslationFileBundle, String> {
     let target_lang = normalize_required_lang(target_lang.to_string())?;
     let root = jobs_root(app)?;
@@ -107,13 +116,21 @@ pub(crate) fn ensure_translation_file(
     let segments: Vec<Segment> = read_json(&dir.join("segments.json"))?;
     let mut translation_files = read_or_migrate_translation_files(&dir, &document, &segments)?;
 
-    if !document.files.iter().any(|file| file.id == source_file_id) {
-        return Err("当前源文件不存在，无法创建译文。".to_string());
-    }
+    let source_file = document
+        .files
+        .iter()
+        .find(|file| file.id == source_file_id)
+        .ok_or_else(|| "当前源文件不存在，无法创建译文。".to_string())?;
+    let output_format = validate_output_format(&source_file.format, output_format)?;
+    let native_output_format = native_output_format(&source_file.format)?;
 
     if let Some(translation_file) = translation_files
         .iter()
-        .find(|file| file.source_file_id == source_file_id && file.target_lang == target_lang)
+        .find(|file| {
+            file.source_file_id == source_file_id
+                && file.target_lang == target_lang
+                && file.output_format == output_format
+        })
         .cloned()
     {
         let segments = read_translation_segments_or_repair_pdf(&dir, &document, &translation_file)?;
@@ -131,8 +148,13 @@ pub(crate) fn ensure_translation_file(
         .iter()
         .map(|segment| empty_translation_segment(segment, &target_lang))
         .collect::<Vec<_>>();
-    let translation_file =
-        build_translation_file(source_file_id, &target_lang, translation_segments.clone());
+    let translation_file = build_translation_file(
+        source_file_id,
+        &target_lang,
+        &output_format,
+        &native_output_format,
+        translation_segments.clone(),
+    );
     write_translation_segments(&dir, &translation_file.id, &translation_segments)?;
     translation_files.push(translation_file.clone());
     write_translation_files(&dir, &translation_files)?;
@@ -152,7 +174,8 @@ pub(crate) fn load_translation_file_bundle(
     let dir = checked_job_dir(&root, job_id)?;
     let mut document: RosettaDocument = read_json(&dir.join("document.json"))?;
     ensure_document_files(&mut document);
-    let translation_file = read_translation_files(&dir)?
+    let source_segments: Vec<Segment> = read_json(&dir.join("segments.json"))?;
+    let translation_file = read_or_migrate_translation_files(&dir, &document, &source_segments)?
         .into_iter()
         .find(|file| file.id == translation_file_id)
         .ok_or_else(|| "译文文件不存在。".to_string())?;
@@ -171,7 +194,11 @@ pub(crate) fn save_translation_segments(
 ) -> Result<RosettaTranslationFileBundle, String> {
     let root = jobs_root(app)?;
     let dir = checked_job_dir(&root, job_id)?;
-    let mut translation_files = read_translation_files(&dir)?;
+    let mut document: RosettaDocument = read_json(&dir.join("document.json"))?;
+    ensure_document_files(&mut document);
+    let source_segments: Vec<Segment> = read_json(&dir.join("segments.json"))?;
+    let mut translation_files =
+        read_or_migrate_translation_files(&dir, &document, &source_segments)?;
     let Some(index) = translation_files
         .iter()
         .position(|file| file.id == translation_file_id)
@@ -180,10 +207,8 @@ pub(crate) fn save_translation_segments(
     };
 
     write_translation_segments(&dir, translation_file_id, &segments)?;
-    let source_file_id = translation_files[index].source_file_id.clone();
-    let target_lang = translation_files[index].target_lang.clone();
     translation_files[index] =
-        build_translation_file(&source_file_id, &target_lang, segments.clone());
+        rebuild_translation_file(&translation_files[index], segments.clone());
     write_translation_files(&dir, &translation_files)?;
 
     Ok(RosettaTranslationFileBundle {
@@ -217,7 +242,7 @@ pub(crate) fn read_translation_segments_or_repair_pdf(
     write_translation_segments(dir, &translation_file.id, &segments)?;
     eprintln!(
         "[rosetta-jobs] repaired missing PDF translation segment file: {}",
-        path.display()
+        translation_file.id
     );
     Ok(segments)
 }
@@ -261,6 +286,45 @@ fn is_pdf_source_file(document: &RosettaDocument, source_file_id: &str) -> bool 
 pub(crate) fn build_translation_file(
     source_file_id: &str,
     target_lang: &str,
+    output_format: &str,
+    native_output_format: &str,
+    segments: Vec<TranslationSegment>,
+) -> RosettaTranslationFile {
+    summarize_translation_file(
+        output_qualified_translation_file_id(
+            source_file_id,
+            target_lang,
+            output_format,
+            native_output_format,
+        ),
+        source_file_id.to_string(),
+        target_lang.to_string(),
+        output_format.to_string(),
+        None,
+        segments,
+    )
+}
+
+pub(crate) fn rebuild_translation_file(
+    translation_file: &RosettaTranslationFile,
+    segments: Vec<TranslationSegment>,
+) -> RosettaTranslationFile {
+    summarize_translation_file(
+        translation_file.id.clone(),
+        translation_file.source_file_id.clone(),
+        translation_file.target_lang.clone(),
+        translation_file.output_format.clone(),
+        translation_file.exported_at.clone(),
+        segments,
+    )
+}
+
+fn summarize_translation_file(
+    id: String,
+    source_file_id: String,
+    target_lang: String,
+    output_format: String,
+    exported_at: Option<String>,
     segments: Vec<TranslationSegment>,
 ) -> RosettaTranslationFile {
     let segment_count = segments
@@ -289,16 +353,76 @@ pub(crate) fn build_translation_file(
     };
 
     RosettaTranslationFile {
-        id: translation_file_id(source_file_id, target_lang),
-        source_file_id: source_file_id.to_string(),
-        target_lang: target_lang.to_string(),
+        id,
+        source_file_id,
+        target_lang,
+        output_format,
         status: status.to_string(),
         segment_count,
         completed_segments,
         failed_segments,
         updated_at: timestamp_ms_string(),
-        exported_at: None,
+        exported_at,
     }
+}
+
+pub(crate) fn native_output_format(source_format: &str) -> Result<String, String> {
+    match source_format.trim().to_ascii_lowercase().as_str() {
+        "pdf" => Ok("pdf".to_string()),
+        "markdown" => Ok("markdown".to_string()),
+        "txt" => Ok("txt".to_string()),
+        _ => Err("当前源文件格式不支持创建译文。".to_string()),
+    }
+}
+
+pub(crate) fn validate_output_format(
+    source_format: &str,
+    output_format: &str,
+) -> Result<String, String> {
+    let source_format = source_format.trim().to_ascii_lowercase();
+    let output_format = output_format.trim().to_ascii_lowercase();
+    let supported = matches!(
+        (source_format.as_str(), output_format.as_str()),
+        ("pdf", "pdf") | ("pdf", "markdown") | ("markdown", "markdown") | ("txt", "txt")
+    );
+    if supported {
+        Ok(output_format)
+    } else {
+        Err("当前源文件不支持请求的译文输出格式。".to_string())
+    }
+}
+
+fn normalize_translation_file_output_formats(
+    translation_files: &mut [RosettaTranslationFile],
+    document: &RosettaDocument,
+) -> Result<bool, String> {
+    let source_files = document_files(document);
+    let mut changed = false;
+    let mut identities = HashSet::new();
+    for translation_file in translation_files {
+        let source_file = source_files
+            .iter()
+            .find(|source_file| source_file.id == translation_file.source_file_id)
+            .ok_or_else(|| "译文文件引用的源文件不存在。".to_string())?;
+        let normalized = if translation_file.output_format.trim().is_empty() {
+            native_output_format(&source_file.format)?
+        } else {
+            validate_output_format(&source_file.format, &translation_file.output_format)?
+        };
+        if translation_file.output_format != normalized {
+            translation_file.output_format = normalized;
+            changed = true;
+        }
+        let identity = (
+            translation_file.source_file_id.clone(),
+            translation_file.target_lang.clone(),
+            translation_file.output_format.clone(),
+        );
+        if !identities.insert(identity) {
+            return Err("译文文件身份重复。".to_string());
+        }
+    }
+    Ok(changed)
 }
 
 pub(crate) fn empty_translation_segment(

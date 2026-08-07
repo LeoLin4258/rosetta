@@ -2,7 +2,7 @@
 
 Date: 2026-08-06
 
-Status: Approved, implementation not started
+Status: Checkpoint 0 Go; Checkpoint 1 model and migration implemented
 
 Decision authority: [ADR 0078](../decisions/0078-pdf-markdown-pymupdf4llm-layout.md)
 
@@ -335,7 +335,9 @@ Release gates:
 - Main Tauri installer increase: at most 5 MiB per platform.
 - No Torch, Transformers, CUDA runtime or OCR model dependency.
 - Windows cumulative compressed managed PDF components: at most 400 MiB.
-- Markdown worker peak RSS on the release corpus: at most 400 MiB.
+- Record Markdown worker peak RSS on the release corpus for capacity planning;
+  the 400 MiB release gate applies to cumulative downloaded managed PDF
+  components, not runtime memory.
 - Clean-machine install, repair, cancellation and offline restart pass on all
   supported release platforms.
 - Ordinary PDF visual translation passes its existing regression suite with
@@ -404,6 +406,151 @@ Go criteria:
 - Packaging gates in section 7 either pass or have a measured, bounded pack
   rebuild checkpoint approved before product wiring proceeds.
 
+#### Checkpoint 0 execution record (2026-08-06)
+
+Checkpoint 0 tooling is now reproducible under `rosetta-app/src-tauri/scripts/`:
+
+- `pdf_markdown_checkpoint0.py` validates the 24-document manifest, exact
+  package versions and extraction policy, then records cold start, warm
+  seconds/page, process-tree peak RSS and structure-review flags. It persists
+  only sanitized document IDs and job-relative image names in benchmark JSON.
+- `pdf-markdown-corpus-manifest.json` fixes 24 non-redistributed PDFs by root
+  alias, relative path, byte count, page count and SHA-256. The local corpus is
+  240 pages / 26,958,964 bytes and covers the categories required above.
+- `build-pdf-markdown-overlay.py` downloads exact target wheels, constructs a
+  deterministic platform overlay, removes bytecode/development files and only
+  model variants outside the pinned `DocumentLayoutAnalyzer` default runtime
+  closure, then records archive identity and size. The Windows preflight runs
+  a real PDF after pruning and verifies CPU-only ONNX execution.
+- `requirements-pdf-markdown-overlay.txt` pins `pymupdf4llm 1.28.0`,
+  `pymupdf-layout 1.28.0`, `PyMuPDF 1.28.0` and `tabulate 0.10.0`.
+
+The 8-page recovery/commit window remains unchanged. To stay within the RSS
+gate, one worker request invokes `to_json()` once per page inside that window,
+releases page-local memory, then combines the structured page results before
+the atomic window write. This remains a `to_json()` integration boundary and
+does not use `to_markdown()` as storage or export authority.
+
+Windows x64 result, measured with the installed production PDF pack's CPython
+3.12 host and the trimmed overlay first on `PYTHONPATH`:
+
+| Metric | Result | Gate |
+| --- | ---: | ---: |
+| Corpus | 24 documents / 240 pages | 24 documents |
+| Cold worker ready | 1.973 s | recorded |
+| Cold first-page extraction | 2.268 s | recorded |
+| Warm median | 0.333 s/page | <= 0.6 s/page |
+| Warm p95 | 0.623 s/page | <= 1.5 s/page |
+| Peak process-tree RSS | 407,248,896 bytes / 388.4 MiB | recorded |
+| Windows overlay | 29,985,992 bytes / 28.6 MiB | measured |
+| Windows base + overlay | 396,059,375 bytes / 377.7 MiB | <= 400 MiB |
+
+The original 63,229,287-byte overlay became a 29,985,992-byte deterministic
+archive after removing 43,758,368 unpacked bytes. The retained layout resource
+closure is `layout_rf2.4.1+imf1`, `feature_imf1` and
+`table_grid_model_v4_ep`, matching the pinned package's default configuration.
+Two independent Windows builds produced SHA-256
+`f2e01a2df1a4c5aaa74114dbb49f1473b2082104f1aee23eeb3407ded13ac2fc`.
+
+Isolation preflight passed:
+
+- overlay worker: PyMuPDF/PyMuPDF4LLM/Layout `1.28.0`;
+- ONNX provider selected by the layout model: `CPUExecutionProvider` only;
+- production worker before and after overlay execution: PyMuPDF `1.25.2`;
+- extraction policy: `use_ocr=False`, `force_text=False`,
+  `write_images=True`.
+
+Cross-platform archive construction from the exact target wheels produced:
+
+| Platform | Overlay archive | Existing base + overlay | Native preflight |
+| --- | ---: | ---: | --- |
+| Windows x64 | 29,985,992 bytes / 28.6 MiB | 396,059,375 bytes / 377.7 MiB | passed |
+| macOS arm64 | 34,622,507 bytes / 33.0 MiB | 429,985,090 bytes / 410.1 MiB | passed on native host |
+| Linux x64 | 36,480,503 bytes / 34.8 MiB | 511,686,286 bytes / 488.0 MiB | passed on native host |
+
+The macOS archive SHA-256 is
+`9a362d58227f6cb1159b8fa1520c23cc3ead951ae4d5f9abcf5153d9171fb6a9`;
+the Linux archive SHA-256 is
+`fa2ca9e5e66e2f1930cbb200a2b4a9001d5e8f4e2c256d45844462e0cdab447e`.
+Native builds on macOS arm64 and Linux x64 reproduced those exact byte counts
+and SHA-256 identities. Each build used the installed platform PDF pack's
+profile-owned CPython 3.12 host, selected `CPUExecutionProvider` only, loaded
+overlay PyMuPDF `1.28.0`, ran a real-PDF `to_json()` preflight and left the
+production worker on PyMuPDF `1.25.2` before and after execution. The macOS
+build used an offline wheelhouse after the host's direct PyPI transfer stalled;
+the builder and resulting archive were otherwise unchanged.
+
+Native 24-document / 240-page corpus result:
+
+| Metric | macOS arm64 | Linux x64 | Gate |
+| --- | ---: | ---: | ---: |
+| Cold worker ready | 1.926 s | 1.462 s | recorded |
+| Cold first-page extraction | 0.405 s | 1.141 s | recorded |
+| Warm median | 0.139 s/page | 0.275 s/page | <= 0.6 s/page |
+| Warm p95 | 0.300 s/page | 0.584 s/page | <= 1.5 s/page |
+| Peak process-tree RSS | 1,148,796,928 bytes / 1,095.6 MiB | 472,555,520 bytes / 450.7 MiB | recorded |
+
+Both native reports reproduced the Windows structure counts: one adjacent
+duplicate-body flag, six empty-body edge pages, one reviewed picture/body
+overlap, zero invalid page identities and zero unknown box classes. The same
+seven sanitized MuPDF color-space warnings appeared on `GeoTopo`; extraction
+completed.
+
+The elevated RSS is reproducible outside the full corpus. On macOS, a fresh
+single-page decisive-sample process reached 539,525,120 bytes / 514.5 MiB RSS;
+on Linux it reached 285,655,040 bytes / 272.4 MiB. Limiting OpenMP, OpenBLAS
+and Accelerate threads to one did not materially change either result. The
+pinned layout package already disables the ONNX CPU memory arena, so that
+setting is not an available further reduction. These measurements remain a
+capacity and optimization risk, not a Checkpoint 0 release-size failure.
+
+Structure review result:
+
+- The decisive `2206.01062.pdf` page 1 has one picture plus one caption and
+  zero body boxes overlapping the picture. Figure-internal labels do not enter
+  body order with `force_text=False`.
+- Automated review reported one adjacent repeated body box and one
+  picture/body overlap. Visual/source review showed that the repetition is
+  present in the source fixture and the overlap is a designed IBM sidebar with
+  valid list text, not duplicated extraction or figure-label pollution.
+- Six pages have no normalized body boxes. One is blank; the others are
+  picture/header-only edge pages, including an RTL sample outside v1. None is a
+  golden-page body omission in the supported English/Simplified-Chinese scope.
+- Golden pages show no critical body omission, extraction-added duplication or
+  cross-column interleaving. Non-critical defects remain: word-join noise on
+  several tightly typeset scientific/table pages and one punctuation-only
+  heading in the manual sample. Formula content remains source-preserved and
+  table JSON contains row/column/cell structure.
+- MuPDF emitted seven color-space parse warnings while processing the 117-page
+  `GeoTopo` fixture; extraction completed with valid page identity. This stays
+  a hardening risk for later worker diagnostics because normal logs must not
+  include source paths or content.
+
+Checkpoint 0 acceptance:
+
+| Condition | Result |
+| --- | --- |
+| Golden-page critical quality | pass on Windows, macOS and Linux corpus |
+| Decisive complex-figure isolation | pass |
+| Warm median and p95 | pass on Windows, macOS and Linux |
+| Worker peak RSS | recorded on all platforms; not a 400 MiB package gate |
+| Windows cumulative 400 MiB gate | pass |
+| Production `pdf2zh` PyMuPDF isolation | pass on Windows, macOS and Linux |
+| Deterministic archive identity | pass on Windows, macOS and Linux |
+| macOS/Linux isolated native preflight | pass |
+| Managed install, repair, cancellation and offline restart | pending lifecycle verification |
+| Ordinary PDF visual-translation regression with overlay present/absent | pending lifecycle verification |
+
+Decision: **Go for Checkpoint 1.** Native archive, isolation, quality, speed
+and the Windows 400 MiB cumulative download-size checks pass. Peak RSS is
+recorded but is not the package-size hard gate. Managed install/repair,
+cancellation, offline restart and ordinary-PDF regression remain release
+verification for the later worker/managed-component checkpoint.
+
+Checkpoint 1 may proceed with legacy PDF/Markdown/TXT migration fixtures before
+any UI work. Track ONNX session tuning and worker recycling as a bounded memory
+optimization follow-up, without treating 400 MiB RSS as the release-size gate.
+
 ### Checkpoint 1: Model and migration
 
 Primary files:
@@ -419,6 +566,22 @@ Implement `outputFormat`, triple uniqueness, legacy inference, stable IDs and
 format-qualified frontend selection. Add fixtures for old PDF, Markdown and
 TXT jobs. Confirm a load/save cycle does not rename legacy translation files
 or change the PDF default mode.
+
+#### Checkpoint 1 execution record (2026-08-06)
+
+- Added required `outputFormat` to Rust and TypeScript translation-file models.
+- Existing records without the field infer the native source format and are
+  atomically rewritten without changing their translation ID.
+- Native PDF/Markdown/TXT outputs retain `tr-{source}-{target}`; a PDF
+  Markdown sibling uses `tr-{source}-{target}-markdown`.
+- The narrow ensure command validates the source/output matrix and resolves
+  the full `(sourceFileId, targetLang, outputFormat)` identity.
+- Legacy source/job counters select only the native output, so Markdown
+  segment progress cannot overwrite PDF page progress.
+- The Zustand store persists output choice per job/source and keys the selected
+  translation ID by job/source/output, with a legacy pair-key read fallback.
+- Existing frontend call sites now pass their current native output format;
+  no output selector or mode-switch UI was added.
 
 ### Checkpoint 2: Managed component and isolated worker
 

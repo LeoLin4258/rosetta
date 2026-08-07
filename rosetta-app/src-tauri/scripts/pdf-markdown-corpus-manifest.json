@@ -1,0 +1,385 @@
+{
+  "description": "Local Checkpoint 0 acceptance corpus. Paths are resolved only through caller-supplied root aliases; PDF bytes are not part of Rosetta.",
+  "documents": [
+    {
+      "bytes": 7215177,
+      "categories": [
+        "paper",
+        "multi-column",
+        "footnotes",
+        "long"
+      ],
+      "goldenPages": [
+        1,
+        16
+      ],
+      "id": "docling-paper-2203",
+      "pageCount": 16,
+      "path": "tests/data/pdf/sources/2203.01017v2.pdf",
+      "root": "docling",
+      "sha256": "4fa8dff93d74a84069210c84a38d14d62a39ec8f4e4c90bf955fdebdebcf6636"
+    },
+    {
+      "bytes": 4310680,
+      "categories": [
+        "paper",
+        "multi-column",
+        "figures",
+        "captions",
+        "long"
+      ],
+      "goldenPages": [
+        1
+      ],
+      "id": "docling-decisive-figure",
+      "pageCount": 9,
+      "path": "tests/data/pdf/sources/2206.01062.pdf",
+      "root": "docling",
+      "sha256": "5dfbd8c115a15fd3396b68409124cfee29fc8efac7b5c846634ff924e635e0dc"
+    },
+    {
+      "bytes": 162131,
+      "categories": [
+        "paper",
+        "tables"
+      ],
+      "goldenPages": [
+        1
+      ],
+      "id": "docling-table-page",
+      "pageCount": 1,
+      "path": "tests/data/pdf/sources/2305.03393v1-pg9.pdf",
+      "root": "docling",
+      "sha256": "a07f5c34601ba2c234d898cbfaa9e29a7045996ccd82ccab3012516220a1f3a4"
+    },
+    {
+      "bytes": 4318934,
+      "categories": [
+        "paper",
+        "multi-column",
+        "tables",
+        "long"
+      ],
+      "goldenPages": [
+        1,
+        9,
+        14
+      ],
+      "id": "docling-paper-2305",
+      "pageCount": 14,
+      "path": "tests/data/pdf/sources/2305.03393v1.pdf",
+      "root": "docling",
+      "sha256": "62f2a2163d768d5b125a207967797aefa6c9cc113de8bb5c725c582595dd0c1d"
+    },
+    {
+      "bytes": 673416,
+      "categories": [
+        "manual",
+        "multi-column",
+        "figures"
+      ],
+      "goldenPages": [
+        1
+      ],
+      "id": "docling-amt-manual",
+      "pageCount": 1,
+      "path": "tests/data/pdf/sources/amt_handbook_sample.pdf",
+      "root": "docling",
+      "sha256": "7099fe05ade36067cf66e72b23277972a1a2b7d2da1cb82c8d690efd70143fe0"
+    },
+    {
+      "bytes": 89031,
+      "categories": [
+        "formulas",
+        "code"
+      ],
+      "goldenPages": [
+        1,
+        2
+      ],
+      "id": "docling-code-formula",
+      "pageCount": 2,
+      "path": "tests/data/pdf/sources/code_and_formula.pdf",
+      "root": "docling",
+      "sha256": "6cb63fba2ad42dd0e0afe6a26dcf3b3bff5a86919c4c06157c71c65ebc0fc9e6"
+    },
+    {
+      "bytes": 128322,
+      "categories": [
+        "single-column",
+        "report"
+      ],
+      "goldenPages": [
+        1
+      ],
+      "id": "docling-multi-page",
+      "pageCount": 5,
+      "path": "tests/data/pdf/sources/multi_page.pdf",
+      "root": "docling",
+      "sha256": "956846c28f9ed9d3b5cbe071865c082bd415f56e3e299c479aeea1f615eefa61"
+    },
+    {
+      "bytes": 359233,
+      "categories": [
+        "cjk",
+        "multi-column",
+        "tables",
+        "footnotes"
+      ],
+      "goldenPages": [
+        1,
+        4
+      ],
+      "id": "docling-cjk-multicolumn",
+      "pageCount": 4,
+      "path": "tests/data/pdf/sources/normal_4pages.pdf",
+      "root": "docling",
+      "sha256": "ca9c83b1653221a66b30cdb543c1ef7b116827762ae65fca36b87b332532b51e"
+    },
+    {
+      "bytes": 212855,
+      "categories": [
+        "figures",
+        "captions"
+      ],
+      "goldenPages": [
+        1
+      ],
+      "id": "docling-picture-classification",
+      "pageCount": 2,
+      "path": "tests/data/pdf/sources/picture_classification.pdf",
+      "root": "docling",
+      "sha256": "dc38947ee802b7bcf82915804ccb8d04c4611e1b17491c415972821a329352fb"
+    },
+    {
+      "bytes": 1277938,
+      "categories": [
+        "report",
+        "tables",
+        "long"
+      ],
+      "goldenPages": [
+        1
+      ],
+      "id": "docling-redp-report",
+      "pageCount": 18,
+      "path": "tests/data/pdf/sources/redp5110_sampled.pdf",
+      "root": "docling",
+      "sha256": "2f6bc92861997d1434c069040dc63447c3e415e8e9eadbd1a8129ba2327ddba5"
+    },
+    {
+      "bytes": 102852,
+      "categories": [
+        "rtl",
+        "single-column"
+      ],
+      "goldenPages": [
+        1
+      ],
+      "id": "docling-rtl-01",
+      "pageCount": 1,
+      "path": "tests/data/pdf/sources/right_to_left_01.pdf",
+      "root": "docling",
+      "sha256": "30d675db2a5c9613f2b12cb03e74c8f9384f473274216ee6a271cf0c99301f14"
+    },
+    {
+      "bytes": 92036,
+      "categories": [
+        "rtl",
+        "single-column"
+      ],
+      "goldenPages": [
+        1
+      ],
+      "id": "docling-rtl-02",
+      "pageCount": 1,
+      "path": "tests/data/pdf/sources/right_to_left_02.pdf",
+      "root": "docling",
+      "sha256": "1f0d0b33d156b073907436b74acb2b2d2afe6ff3b037ed4e5ce87300226ec195"
+    },
+    {
+      "bytes": 278131,
+      "categories": [
+        "rtl",
+        "single-column"
+      ],
+      "goldenPages": [
+        1
+      ],
+      "id": "docling-rtl-03",
+      "pageCount": 1,
+      "path": "tests/data/pdf/sources/right_to_left_03.pdf",
+      "root": "docling",
+      "sha256": "ecfb67cbdbd082308765c070ba692033d6e92fc33d03e9448f4d7ad2b398440c"
+    },
+    {
+      "bytes": 204648,
+      "categories": [
+        "edge-case",
+        "single-column"
+      ],
+      "goldenPages": [
+        1
+      ],
+      "id": "docling-skipped-one-page",
+      "pageCount": 3,
+      "path": "tests/data/pdf/sources/skipped_1page.pdf",
+      "root": "docling",
+      "sha256": "827288488d4497fc02adc18313c6bffe9d43c2e73256b0330ce4d33da9ba57dc"
+    },
+    {
+      "bytes": 324576,
+      "categories": [
+        "edge-case",
+        "multi-page"
+      ],
+      "goldenPages": [
+        1,
+        2
+      ],
+      "id": "docling-skipped-two-pages",
+      "pageCount": 4,
+      "path": "tests/data/pdf/sources/skipped_2pages.pdf",
+      "root": "docling",
+      "sha256": "63c849bc5a6a3e452e4ff06b823288c4b138cde24e7dc5ca57eb19b3c00635e9"
+    },
+    {
+      "bytes": 45661,
+      "categories": [
+        "tables",
+        "figures"
+      ],
+      "goldenPages": [
+        1
+      ],
+      "id": "docling-table-as-picture",
+      "pageCount": 1,
+      "path": "tests/data/pdf/sources/table_mislabeled_as_picture.pdf",
+      "root": "docling",
+      "sha256": "a0d1ed0063db208ccad7ebd54cf549987deaf8f53948d95c3755f6b515925ce7"
+    },
+    {
+      "bytes": 4819,
+      "categories": [
+        "single-column",
+        "headings"
+      ],
+      "goldenPages": [
+        1
+      ],
+      "id": "docling-bookmarks",
+      "pageCount": 3,
+      "path": "tests/data/pdf/bookmark_sample.pdf",
+      "root": "docling",
+      "sha256": "6d7a48cfb2c4979bcd9de4a4e2153bae98c1a4e00c5d799be18d4d47481a36d2"
+    },
+    {
+      "bytes": 1723,
+      "categories": [
+        "single-column"
+      ],
+      "goldenPages": [
+        1
+      ],
+      "id": "rosetta-simple",
+      "pageCount": 1,
+      "path": "rosetta-app/src-tauri/fixtures/pdf/simple-one-page.pdf",
+      "root": "rosetta",
+      "sha256": "0c2b5dc1169e7c0a0ac00b97e29747052002b3275b8265a8a988b2eb810e3ffe"
+    },
+    {
+      "bytes": 12609,
+      "categories": [
+        "single-column",
+        "office"
+      ],
+      "goldenPages": [
+        1
+      ],
+      "id": "rosetta-libreoffice",
+      "pageCount": 1,
+      "path": "rosetta-app/src-tauri/fixtures/pdf/002-trivial-libre-office-writer.pdf",
+      "root": "rosetta",
+      "sha256": "fc67ce4f76ffb44e818ebe4f673dbeb6002ad93a59f3856ff14fb1d3625f10a5"
+    },
+    {
+      "bytes": 80100,
+      "categories": [
+        "office",
+        "lists",
+        "tables"
+      ],
+      "goldenPages": [
+        1
+      ],
+      "id": "rosetta-google-doc",
+      "pageCount": 1,
+      "path": "rosetta-app/src-tauri/fixtures/pdf/google-doc-document.pdf",
+      "root": "rosetta",
+      "sha256": "69f6b7f493b1bc55d518942976cbeadc4ec0a36f6d8a6dc24feffc516d35b2c9"
+    },
+    {
+      "bytes": 78657,
+      "categories": [
+        "multi-column"
+      ],
+      "goldenPages": [
+        1
+      ],
+      "id": "rosetta-multicolumn",
+      "pageCount": 3,
+      "path": "rosetta-app/src-tauri/fixtures/pdf/multicolumn.pdf",
+      "root": "rosetta",
+      "sha256": "bdb495e95b3e1afae95013099dc59b0cea047f1fa70f677ee9cb33f10faa1c6c"
+    },
+    {
+      "bytes": 74061,
+      "categories": [
+        "figures",
+        "captions"
+      ],
+      "goldenPages": [
+        1
+      ],
+      "id": "rosetta-pdflatex-image",
+      "pageCount": 1,
+      "path": "rosetta-app/src-tauri/fixtures/pdf/pdflatex-image.pdf",
+      "root": "rosetta",
+      "sha256": "64c5bc35008015936ef3ff60f6ad268a713b5271727b72ef308f87b9b495646f"
+    },
+    {
+      "bytes": 5321132,
+      "categories": [
+        "report",
+        "figures",
+        "tables"
+      ],
+      "goldenPages": [
+        1
+      ],
+      "id": "rosetta-geotopo",
+      "pageCount": 117,
+      "path": "rosetta-app/src-tauri/fixtures/pdf/GeoTopo.pdf",
+      "root": "rosetta",
+      "sha256": "a0b9242aef9b5a2c4850160cc9aaf64f5c7b8be705d6872ae28aebf5ab512540"
+    },
+    {
+      "bytes": 1590242,
+      "categories": [
+        "paper",
+        "multi-column",
+        "long"
+      ],
+      "goldenPages": [
+        1
+      ],
+      "id": "rosetta-paper-2305",
+      "pageCount": 30,
+      "path": "rosetta-app/src-tauri/fixtures/pdf/2305.13048v2.pdf",
+      "root": "rosetta",
+      "sha256": "57d18c40bdbb4bc1ab69c078a304f97e31657b4f543c408d8a5520e672a3fab0"
+    }
+  ],
+  "redistributeDocuments": false,
+  "schema": "rosetta-pdf-markdown-corpus/1"
+}

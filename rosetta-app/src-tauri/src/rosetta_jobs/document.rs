@@ -130,10 +130,12 @@ pub(crate) fn sync_document_file_translation_statuses(
             .target_lang
             .clone()
             .unwrap_or_else(|| document.target_lang.clone());
-        let Some(translation_file) = translation_files
-            .iter()
-            .find(|file| file.source_file_id == source_file.id && file.target_lang == target_lang)
-        else {
+        let Some(translation_file) = translation_files.iter().find(|file| {
+            file.source_file_id == source_file.id
+                && file.target_lang == target_lang
+                && (file.output_format.is_empty()
+                    || file.output_format.eq_ignore_ascii_case(&source_file.format))
+        }) else {
             continue;
         };
 
