@@ -2,7 +2,7 @@
 
 Date: 2026-08-06
 
-Status: Checkpoint 0 Go; Checkpoint 1 model and migration implemented
+Status: Checkpoint 0 Go; Checkpoints 1-2 implemented; Checkpoint 2 artifact publication pending
 
 Decision authority: [ADR 0078](../decisions/0078-pdf-markdown-pymupdf4llm-layout.md)
 
@@ -596,6 +596,54 @@ Primary files:
 Implement profiles, install/repair/status, worker supervision, process-group
 cancellation, version preflight and bounded protocol decoding. Prove by test
 that the two workers resolve their respective PyMuPDF versions concurrently.
+
+#### Checkpoint 2 execution record (2026-08-07)
+
+- Added a standalone `managed_pdf_markdown` lifecycle. Its overlay, download,
+  manifest, worker script, process state and `PYTHONPATH` are disjoint from the
+  production `pdf2zh` pack and worker. The only shared resource is a read-only
+  locator for the profile-owned CPython 3.12 host after the production pack
+  passes its existing manifest checks.
+- Pinned all three release profiles to PyMuPDF4LLM, Layout and PyMuPDF 1.28.0
+  with exact archive byte count, unpacked byte count, file count and SHA-256.
+  The installer enforces the 400 MiB compressed input ceiling, a 160 MiB
+  unpacked ceiling, safe archive members, no links, staging writes and
+  recoverable atomic replacement.
+- Added explicit install, repair, status, progress and cancellation commands.
+  A valid local manifest reopens without network access. Install and repair
+  stop only the Markdown worker and never mutate or stop the production
+  `pdf2zh` worker.
+- Added an isolated JSONL worker whose sole extraction call is
+  `pymupdf4llm.to_json()`, once per page in a window of at most 10 pages. Its
+  preflight checks exact package versions and the Layout model session's
+  actual `CPUExecutionProvider`. Python, virtual-environment, CUDA and proxy
+  variables are sanitized before the overlay path is added.
+- Requests are capped at 64 KiB and responses at 64 MiB. Both sides reject
+  unknown request fields, Rust decodes a strict event-type schema, source PDFs
+  and temp directories must resolve beneath the checked jobs root, stderr is
+  discarded, and public status/errors contain neither document content nor
+  absolute document paths.
+- Cancellation terminates the worker process group or Windows process tree
+  through an atomic PID outside the worker mutex, so a blocked `to_json()` can
+  be interrupted. A stopping gate prevents concurrent prewarm from replacing
+  the process while cancellation is cleaning it up.
+
+Native verification used the exact Checkpoint 0 artifacts. Windows x64,
+macOS arm64 and Linux x64 each passed the focused managed-component tests, the
+exact-archive install/offline-reopen test and the runtime-isolation probe.
+The production interpreter reported PyMuPDF 1.25.2 before, during and after a
+concurrent Markdown worker; the Markdown worker reported 1.28.0 with only
+`CPUExecutionProvider` on every platform.
+
+The target release tag
+`pdf-markdown-overlay-v2026.08.06.1` does not yet exist in
+`LeoLin4258/rosetta-assets`. Exact local-archive installation proves the
+artifact and lifecycle but does not prove the default HTTP download URLs.
+Publishing those three already-measured artifacts remains an explicit release
+gate and was not performed as part of this repository-only checkpoint. The
+ordinary PDF end-to-end visual regression with the overlay installed and
+absent also remains a release verification gate; version and process isolation
+are verified, but are not recorded as a substitute for visual comparison.
 
 ### Checkpoint 3: Extraction store and normalizer
 

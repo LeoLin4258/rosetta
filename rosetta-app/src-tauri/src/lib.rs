@@ -1,6 +1,7 @@
 mod app_log;
 mod local_data_reset;
 mod managed_pdf2zh;
+mod managed_pdf_markdown;
 mod managed_rwkv;
 mod onboarding;
 mod rosetta_jobs;
@@ -51,6 +52,8 @@ pub fn run() {
         .manage(managed_rwkv::InstallStateRegistry::default())
         .manage(managed_pdf2zh::InstallStateRegistry::default())
         .manage(managed_pdf2zh::Pdf2zhWorkerState::default())
+        .manage(managed_pdf_markdown::PdfMarkdownInstallRegistry::default())
+        .manage(managed_pdf_markdown::PdfMarkdownWorkerState::default())
         .manage(rosetta_jobs::PdfTranslationCancelState::default())
         .manage(rosetta_jobs::PdfPngCache::default())
         .plugin(tauri_plugin_dialog::init())
@@ -220,6 +223,14 @@ pub fn run() {
             managed_pdf2zh::prewarm_pdf2zh_worker,
             managed_pdf2zh::get_pdf2zh_worker_status,
             managed_pdf2zh::get_pdf2zh_prepare_cache_status,
+            managed_pdf_markdown::cancel_pdf_markdown_install,
+            managed_pdf_markdown::cancel_pdf_markdown_worker,
+            managed_pdf_markdown::get_pdf_markdown_install_progress,
+            managed_pdf_markdown::get_pdf_markdown_status,
+            managed_pdf_markdown::get_pdf_markdown_worker_status,
+            managed_pdf_markdown::install_pdf_markdown_component,
+            managed_pdf_markdown::prewarm_pdf_markdown_worker,
+            managed_pdf_markdown::repair_pdf_markdown_component,
             local_data_reset::clear_rosetta_local_data,
             onboarding::complete_onboarding_and_open_main,
             onboarding::get_onboarding_decision,
@@ -286,6 +297,7 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     managed_rwkv::shutdown_managed_rwkv_runtime_for_exit(&app).await;
                     managed_pdf2zh::shutdown_worker_for_exit(&app).await;
+                    managed_pdf_markdown::shutdown_worker_for_exit(&app).await;
                     app.exit(exit_code);
                 });
                 return;

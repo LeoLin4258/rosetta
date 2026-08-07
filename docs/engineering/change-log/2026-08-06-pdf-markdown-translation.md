@@ -2,14 +2,15 @@
 
 Date: 2026-08-06
 
-Status: Checkpoint 0 Go; Checkpoint 1 model and migration implemented
+Status: Checkpoint 0 Go; Checkpoints 1-2 implemented; Checkpoint 2 artifact publication pending
 
 ## Scope
 
 This aggregate change log tracks the implementation authorized by ADR 0078 and
 `plans/2026-08-06-pdf-markdown-translation.md`. The delivered scope includes
-the release-quality spike plus Checkpoint 1 data-model migration. It does not
-add a managed component, extraction derivative or frontend output selector.
+the release-quality spike, Checkpoint 1 data-model migration and Checkpoint 2
+managed component/isolated worker. It does not add an extraction derivative or
+frontend output selector.
 
 ## Changes
 
@@ -43,6 +44,23 @@ add a managed component, extraction derivative or frontend output selector.
 - Added persisted per-source output selection and output-qualified active
   translation lookup in the Zustand store, retaining a read fallback for old
   pair-key preferences.
+- Added a standalone `managed_pdf_markdown` component with exact Windows x64,
+  macOS arm64 and Linux x64 profiles for PyMuPDF4LLM/Layout/PyMuPDF 1.28.0.
+- Added install, repair, status, progress, cancellation and offline manifest
+  validation without changing the production `pdf2zh` pack. Archive installs
+  enforce exact hash/inventory, compressed and unpacked limits, path/link
+  safety, staging writes and recoverable atomic replacement.
+- Added a private isolated worker using `to_json()` as its sole integration
+  boundary, exact CPU-only version preflight, a sanitized process environment,
+  64 KiB request and 64 MiB response limits, strict event schemas and checked
+  jobs-root paths.
+- Added process-group/process-tree cancellation through an atomic PID outside
+  the worker mutex, plus a stopping gate that prevents prewarm/shutdown races.
+  Public state and error surfaces do not expose document content or absolute
+  document paths, and worker stderr is discarded.
+- Added protocol/path tests, native runtime-isolation tooling and focused Rust
+  coverage for status, install/repair rollback, cancellation, traversal,
+  offline reopen and production-pack separation.
 
 ## Validation
 
@@ -71,6 +89,17 @@ add a managed component, extraction derivative or frontend output selector.
 - `cargo test rosetta_jobs`: passed, 93 tests including legacy
   PDF/Markdown/TXT inference, output ID qualification, format-matrix rejection
   and PDF/Markdown progress isolation.
+- Windows `cargo test managed_pdf_markdown`: 15 passed, 1 exact-artifact test
+  ignored by default; the ignored exact Windows archive test passed when given
+  the 29,985,992-byte release artifact.
+- Native macOS arm64 and Linux x64 `cargo check` and focused
+  `managed_pdf_markdown` tests passed. Each platform passed 15 tests with the
+  exact-artifact test ignored by default, then passed that test explicitly
+  against its exact release archive and reopened from only the local manifest.
+- The worker protocol/path suite passed 5 tests on Windows, macOS and Linux.
+- Native concurrent isolation passed on all three platforms: production
+  PyMuPDF remained 1.25.2 before/during/after, while the Markdown worker loaded
+  1.28.0 and reported only `CPUExecutionProvider`.
 
 ## Remaining Verification
 
@@ -83,7 +112,12 @@ MiB over the release corpus. Thread-limit environment variables did not
 materially reduce either measurement, and the pinned package already disables
 the ONNX CPU memory arena.
 
-Checkpoint 1 model and migration work is implemented. Managed install, repair,
-cancellation, offline restart and ordinary PDF regression remain for the later
-worker/managed-component release checkpoint. ONNX session tuning and worker
-recycling stay as a separate bounded optimization, not a release-size blocker.
+Checkpoint 2 managed install, repair, cancellation, offline restart and
+cross-platform runtime isolation are implemented and verified against the
+exact local release artifacts. The configured release tag
+`pdf-markdown-overlay-v2026.08.06.1` has not been published, so the default
+online download path remains a release gate rather than a claimed pass. The
+ordinary PDF end-to-end visual regression with the overlay installed and
+absent also remains pending; PyMuPDF/process isolation has passed but is not a
+substitute for visual comparison. ONNX session tuning and worker recycling stay
+as a separate bounded optimization, not a release-size blocker.

@@ -188,6 +188,23 @@ impl Pdf2zhLayout {
     }
 }
 
+/// Resolve the profile-owned CPython host without exposing or mutating the
+/// production worker environment. Optional components may use this host only
+/// after the complete PDF pack has passed its own manifest checks.
+pub(crate) fn locate_managed_python_host(app: &AppHandle) -> Result<PathBuf, String> {
+    let profile = super::profile::current_profile()
+        .ok_or_else(|| "current platform has no managed PDF runtime".to_string())?;
+    let layout = Pdf2zhLayout::from_app(app, profile)?;
+    if !layout.managed_pack_ready(profile) {
+        return Err("managed PDF runtime is not installed or needs repair".to_string());
+    }
+    let python = layout.python_path(profile);
+    if !python.is_file() {
+        return Err("managed PDF runtime is missing its Python host".to_string());
+    }
+    Ok(python)
+}
+
 fn is_lowercase_sha256(value: &str) -> bool {
     value.len() == 64
         && value
