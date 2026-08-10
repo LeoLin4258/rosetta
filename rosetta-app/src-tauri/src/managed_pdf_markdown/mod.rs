@@ -11,7 +11,7 @@ pub use install::{
     PdfMarkdownInstallResult,
 };
 pub use status::PdfMarkdownStatus;
-pub use worker::{PdfMarkdownWorkerState, PdfMarkdownWorkerStatus};
+pub use worker::{cancel, extract_window, PdfMarkdownWorkerState, PdfMarkdownWorkerStatus};
 
 #[tauri::command]
 pub fn get_pdf_markdown_status(app: AppHandle) -> Result<PdfMarkdownStatus, String> {

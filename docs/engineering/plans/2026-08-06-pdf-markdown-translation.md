@@ -2,7 +2,7 @@
 
 Date: 2026-08-06
 
-Status: Checkpoint 0 Go; Checkpoints 1-2 implemented; Checkpoint 2 artifact publication pending
+Status: Checkpoint 0 Go; Checkpoints 1-4 implemented; Checkpoint 2 artifacts published; visual regression pending
 
 Decision authority: [ADR 0078](../decisions/0078-pdf-markdown-pymupdf4llm-layout.md)
 
@@ -226,7 +226,7 @@ Use a versioned manifest containing at least:
     "pymupdfLayout": "1.28.0",
     "pymupdf": "1.28.0"
   },
-  "policyVersion": "rosetta-pdf-markdown-normalizer/1",
+  "policyVersion": "rosetta-pdf-markdown-normalizer/2",
   "useOcr": false,
   "forceText": false,
   "writeImages": true,
@@ -635,17 +635,15 @@ The production interpreter reported PyMuPDF 1.25.2 before, during and after a
 concurrent Markdown worker; the Markdown worker reported 1.28.0 with only
 `CPUExecutionProvider` on every platform.
 
-The target release tag
-`pdf-markdown-overlay-v2026.08.06.1` does not yet exist in
-`LeoLin4258/rosetta-assets`. Exact local-archive installation proves the
-artifact and lifecycle but does not prove the default HTTP download URLs.
-Publishing those three already-measured artifacts remains an explicit release
-gate and was not performed as part of this repository-only checkpoint. The
-ordinary PDF end-to-end visual regression with the overlay installed and
-absent also remains a release verification gate; version and process isolation
-are verified, but are not recorded as a substitute for visual comparison.
+Release tag `pdf-markdown-overlay-v2026.08.06.1` is published in
+`LeoLin4258/rosetta-assets` with all three measured artifacts. GitHub's stored
+asset sizes and SHA-256 digests match the profiles, and full downloads through
+each profile's primary configured URL reproduced the exact bytes and hashes.
+The ordinary PDF end-to-end visual regression with the overlay installed and
+absent remains a release verification gate; version and process isolation are
+verified, but are not recorded as a substitute for visual comparison.
 
-### Checkpoint 3: Extraction store and normalizer
+### Checkpoint 3: Extraction store and normalizer (implemented)
 
 Primary files:
 
@@ -657,6 +655,16 @@ Primary files:
 Implement the manifest, page shards, image canonicalization, resume, stale
 detection, normalization and atomic IR projection. Add narrow Tauri commands
 for status, start and cancel; emit content-free progress events.
+
+Implemented in `rosetta_jobs/formats/pdf_markdown/`: versioned manifest and
+bounded gzip page shards, deterministic image references, source/policy stale
+invalidation, resumable 8-page windows through the isolated worker,
+deterministic block/segment normalization and recoverable document/segment IR
+projection. Registered commands are `get_pdf_markdown_extraction_status`,
+`start_pdf_markdown_extraction` and `cancel_pdf_markdown_extraction`; job
+deletion cancels an active Markdown extraction before removing its root.
+Focused tests cover stable IDs, stale manifests, corrupt gzip, image traversal
+and content-free status payloads.
 
 ### Checkpoint 4: Translation and Markdown rendering
 
@@ -671,6 +679,29 @@ Reuse the ordinary segment translation runner for Markdown output. Add a
 single deterministic renderer shared by workbench preview and export semantics
 for headings, lists, captions, footnotes, images and simple/complex tables.
 Ensure formulas and image references are skipped by translation scheduling.
+
+#### Checkpoint 4 execution record (2026-08-10)
+
+- Reused the ordinary source-segment translation path for the PDF Markdown
+  sibling. Normalization creates source segments only for textual blocks and
+  non-empty table cells; pictures, formulas and empty table cells therefore
+  never enter translation scheduling.
+- Corrected normalization against the pinned `to_json()` table schema
+  (`table.extract`, `table.cells`, `row_count`, `col_count`) and reduced block
+  style data to a versioned Rosetta-owned rendering payload. Vendor Markdown
+  and raw vendor objects are not persisted as rendering authority. The
+  normalizer policy advances to `/2`, so `/1` derivatives are stale rather
+  than being mixed with the new IR.
+- Added one deterministic renderer that returns serializable rendered block
+  groups for later virtualized preview use and is also the export authority.
+  It handles headings, nested ordered/unordered lists, captions, footnotes,
+  pictures, formulas and defensive Markdown escaping.
+- Rectangular no-span tables render as GFM pipe tables. Spanned, incomplete or
+  otherwise unsafe grids render as deterministic inline HTML without dropping
+  cell text. Missing or invalid media references render explicit placeholders.
+- Translation-file export now selects rendering semantics from
+  `translationFile.outputFormat`, while retaining the PDF source identity.
+  PDF Markdown bilingual export remains rejected because it is outside v1.
 
 ### Checkpoint 5: Workbench integration
 

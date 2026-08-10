@@ -87,6 +87,7 @@ fn ensure_project_relative_path(root: &Path, path: &Path) -> Result<(), String> 
 
 pub(crate) mod markdown;
 pub(crate) mod pdf;
+pub(crate) mod pdf_markdown;
 pub(crate) mod txt;
 
 use crate::rosetta_jobs::model::{RosettaBlock, Segment};

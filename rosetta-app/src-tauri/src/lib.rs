@@ -54,6 +54,7 @@ pub fn run() {
         .manage(managed_pdf2zh::Pdf2zhWorkerState::default())
         .manage(managed_pdf_markdown::PdfMarkdownInstallRegistry::default())
         .manage(managed_pdf_markdown::PdfMarkdownWorkerState::default())
+        .manage(rosetta_jobs::formats::pdf_markdown::PdfMarkdownExtractionState::default())
         .manage(rosetta_jobs::PdfTranslationCancelState::default())
         .manage(rosetta_jobs::PdfPngCache::default())
         .plugin(tauri_plugin_dialog::init())
@@ -231,6 +232,9 @@ pub fn run() {
             managed_pdf_markdown::install_pdf_markdown_component,
             managed_pdf_markdown::prewarm_pdf_markdown_worker,
             managed_pdf_markdown::repair_pdf_markdown_component,
+            rosetta_jobs::formats::pdf_markdown::get_pdf_markdown_extraction_status,
+            rosetta_jobs::formats::pdf_markdown::start_pdf_markdown_extraction,
+            rosetta_jobs::formats::pdf_markdown::cancel_pdf_markdown_extraction,
             local_data_reset::clear_rosetta_local_data,
             onboarding::complete_onboarding_and_open_main,
             onboarding::get_onboarding_decision,

@@ -2617,9 +2617,11 @@ pub fn rename_rosetta_job(
 pub async fn delete_rosetta_job(
     app: AppHandle,
     cancel_state: State<'_, PdfTranslationCancelState>,
+    extraction_state: State<'_, formats::pdf_markdown::PdfMarkdownExtractionState>,
     job_id: String,
 ) -> Result<RosettaJobDeleteResult, String> {
     cancel_state.request_cancel_for_job(&job_id);
+    formats::pdf_markdown::cancel_for_job(&app, &extraction_state, &job_id).await;
     let root = path::jobs_root(&app)?;
     path::checked_job_dir(&root, &job_id)?;
     import::delete_job(&app, &job_id)

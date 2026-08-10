@@ -1318,3 +1318,52 @@ session IDs. Nonterminal runs, active leases and any scheduler, runtime,
 PageGraph, patch or source identity mismatch are rejected before atomic
 destination replacement. Preserved pages remain source content; a run with no
 translated pages uses verified atomic source copy.
+
+## PDF Markdown Extraction Derivatives
+
+PDF Markdown extraction is a disposable derivative of the immutable
+`<job>/source.pdf`. Its authority is `<job>/pdf-markdown/manifest.json`, whose
+schema is `rosetta-pdf-markdown-extraction/1` and whose identity includes the
+canonical source fingerprint, page count, pinned CPU engine versions and
+normalizer policy version. The current policy is
+`rosetta-pdf-markdown-normalizer/2`; older derivatives are stale. A committed
+page is represented by one gzip shard at
+`extraction/pages/page-0001.json.gz`; incomplete windows never update
+`committedPages`.
+
+Vendor JSON is consumed only through `to_json()`. Image references are copied
+to deterministic job-relative files under `pdf-markdown/images/` after strict
+run-root, extension and byte-limit validation. Shards are rejected on source,
+policy, page identity, coordinate, gzip-size, image-reference or defensive
+block/character-limit mismatch. Manifest, shard, image and IR projection
+writes stage a temporary file, flush it, then use recoverable atomic
+replacement. Public extraction status/progress contains IDs, counts and
+reason codes only; it never contains document text or absolute paths.
+
+## PDF Markdown Normalized Rendering Data
+
+PDF Markdown blocks keep `document.format` and their source-file format as
+`pdf`. Rendering metadata is owned by Rosetta and stored only under
+`block.style.pdfMarkdown`; raw vendor objects and vendor-generated Markdown are
+not rendering authority.
+
+The payload schema version is `1` and always contains `page`, `boxClass`,
+`bbox`, and a bounded `extra` object. Relevant `extra` fields are:
+
+- headings: `headingLevel`;
+- lists: `listLevel`, `listMarker`, and `ordered`;
+- table cells: `tableId`, zero-based `row` and `column`, positive `rowSpan` and
+  `columnSpan`, `header`, `rowCount`, and `columnCount`;
+- pictures/formulas: checked job-relative `assetPath`, `width`, and `height`.
+
+Empty table cells are retained as skipped blocks so the grid stays complete,
+but they do not receive source or translation segments. Picture and formula
+blocks are also skipped and never receive translation segments. All other
+plain textual payloads use the ordinary source segments and output-qualified
+translation files.
+
+The deterministic renderer groups one or more source block IDs into a
+serializable `{ blockIds, kind, markdown }` projection. Export joins exactly
+that projection, and the Markdown workbench preview must consume the same
+projection rather than reconstructing syntax in React. Rectangular no-span
+tables use GFM; spanned or unsafe grids use deterministic inline HTML.

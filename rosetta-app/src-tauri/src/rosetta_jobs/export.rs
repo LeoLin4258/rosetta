@@ -8,6 +8,10 @@ use crate::rosetta_jobs::{
         document_files, ensure_document_files, segments_by_block, sync_document_file_statuses,
         sync_job_counts, sync_job_source_files,
     },
+    formats::pdf_markdown::render::{
+        is_pdf_markdown_block, join_blocks as join_pdf_markdown_blocks,
+        render_blocks as render_pdf_markdown_blocks,
+    },
     model::{
         RosettaBlock, RosettaDocument, RosettaExportKind, RosettaExportResult, Segment,
         TranslationSegment,
@@ -120,6 +124,14 @@ pub(crate) fn export_translation_file(
         .into_iter()
         .find(|file| file.id == translation_file.source_file_id)
         .ok_or_else(|| "当前源文件不存在，无法导出。".to_string())?;
+    if source_file.format.eq_ignore_ascii_case("pdf")
+        && translation_file
+            .output_format
+            .eq_ignore_ascii_case("markdown")
+        && kind == RosettaExportKind::Bilingual
+    {
+        return Err("PDF Markdown 暂不支持双语导出。".to_string());
+    }
     let translation_segments = read_translation_segments(&dir, translation_file_id)?;
     ensure_translation_file_ready_for_export(&translation_segments)?;
 
@@ -141,7 +153,7 @@ pub(crate) fn export_translation_file(
         &file_blocks,
         &file_segments,
         kind.as_str(),
-        &source_file.format,
+        &translation_file.output_format,
     );
 
     if let Some(parent) = target_path.parent() {
@@ -243,16 +255,30 @@ pub(crate) fn render_export_blocks(
     blocks: &[RosettaBlock],
     segments: &[Segment],
     kind: &str,
-    source_format: &str,
+    output_format: &str,
 ) -> String {
     let by_block = segments_by_block(segments);
-    if source_format == "markdown" {
-        return render_markdown_export_blocks(document, blocks, &by_block, kind, source_format);
+    if output_format == "markdown" && blocks.iter().any(is_pdf_markdown_block) {
+        let text_by_block = blocks
+            .iter()
+            .map(|block| {
+                let text = if block.should_translate {
+                    block_translation(block, &by_block, &document.target_lang)
+                } else {
+                    block.source_text.clone()
+                };
+                (block.id.clone(), text)
+            })
+            .collect::<HashMap<_, _>>();
+        return join_pdf_markdown_blocks(&render_pdf_markdown_blocks(blocks, &text_by_block));
+    }
+    if output_format == "markdown" {
+        return render_markdown_export_blocks(document, blocks, &by_block, kind, output_format);
     }
 
     let output_blocks = blocks
         .iter()
-        .map(|block| render_export_block(document, block, &by_block, kind, source_format))
+        .map(|block| render_export_block(document, block, &by_block, kind, output_format))
         .collect::<Vec<_>>();
     trim_excess_blank_blocks(output_blocks).join("\n\n")
 }
@@ -262,13 +288,13 @@ pub(crate) fn render_markdown_export_blocks(
     blocks: &[RosettaBlock],
     by_block: &HashMap<String, Vec<Segment>>,
     kind: &str,
-    source_format: &str,
+    output_format: &str,
 ) -> String {
     let mut output = String::new();
     let mut previous_type: Option<&str> = None;
 
     for block in blocks {
-        let rendered = render_export_block(document, block, by_block, kind, source_format);
+        let rendered = render_export_block(document, block, by_block, kind, output_format);
         let rendered = rendered.trim_matches('\n');
 
         if rendered.trim().is_empty() {
@@ -301,7 +327,7 @@ fn render_export_block(
     block: &RosettaBlock,
     by_block: &HashMap<String, Vec<Segment>>,
     kind: &str,
-    source_format: &str,
+    output_format: &str,
 ) -> String {
     if !block.should_translate {
         return block.source_text.clone();
@@ -309,9 +335,9 @@ fn render_export_block(
 
     let translation = block_translation(block, by_block, &document.target_lang);
     if kind == "bilingual" {
-        render_bilingual_block(block, &translation, source_format)
+        render_bilingual_block(block, &translation, output_format)
     } else {
-        render_translation_block(block, &translation, source_format)
+        render_translation_block(block, &translation, output_format)
     }
 }
 
@@ -352,9 +378,9 @@ pub(crate) fn block_translation(
 pub(crate) fn render_translation_block(
     block: &RosettaBlock,
     translation: &str,
-    source_format: &str,
+    output_format: &str,
 ) -> String {
-    if source_format != "markdown" {
+    if output_format != "markdown" {
         return translation.to_string();
     }
 
@@ -369,13 +395,13 @@ pub(crate) fn render_translation_block(
 pub(crate) fn render_bilingual_block(
     block: &RosettaBlock,
     translation: &str,
-    source_format: &str,
+    output_format: &str,
 ) -> String {
-    if source_format == "markdown" {
+    if output_format == "markdown" {
         return format!(
             "> Original: {}\n\n{}",
             block.source_text,
-            render_translation_block(block, translation, source_format)
+            render_translation_block(block, translation, output_format)
         );
     }
 

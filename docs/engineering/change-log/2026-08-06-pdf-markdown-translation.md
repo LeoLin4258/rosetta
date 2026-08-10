@@ -2,15 +2,16 @@
 
 Date: 2026-08-06
 
-Status: Checkpoint 0 Go; Checkpoints 1-2 implemented; Checkpoint 2 artifact publication pending
+Status: Checkpoint 0 Go; Checkpoints 1-4 implemented; Checkpoint 2 artifacts published; visual regression pending
 
 ## Scope
 
 This aggregate change log tracks the implementation authorized by ADR 0078 and
 `plans/2026-08-06-pdf-markdown-translation.md`. The delivered scope includes
-the release-quality spike, Checkpoint 1 data-model migration and Checkpoint 2
-managed component/isolated worker. It does not add an extraction derivative or
-frontend output selector.
+the release-quality spike, output-qualified data model, managed
+component/isolated worker, extraction derivative and deterministic Markdown
+rendering. It does not add the frontend output selector or multi-file Markdown
+asset export.
 
 ## Changes
 
@@ -61,6 +62,25 @@ frontend output selector.
 - Added protocol/path tests, native runtime-isolation tooling and focused Rust
   coverage for status, install/repair rollback, cancellation, traversal,
   offline reopen and production-pack separation.
+- Published release `pdf-markdown-overlay-v2026.08.06.1` in
+  `LeoLin4258/rosetta-assets` with the exact Windows x64, macOS arm64 and Linux
+  x64 overlay archives referenced by the managed-component profiles.
+- Added the versioned extraction manifest, bounded gzip page shards,
+  canonical image references, resumable window commits and recoverable atomic
+  source-IR projection for PDF Markdown derivatives.
+- Normalized the pinned `to_json()` table matrix into complete row/column cell
+  blocks, retaining empty cells for structure while scheduling only non-empty
+  textual cells. Pictures and formulas remain non-translatable blocks with
+  checked job-relative asset references. Advanced the normalizer policy to
+  `/2` so earlier derivatives are invalidated instead of mixed with the new IR.
+- Added a deterministic, serializable Markdown block renderer for headings,
+  nested lists, captions, footnotes, pictures, formulas, GFM rectangular
+  tables and inline-HTML complex/unsafe tables. Text and asset paths are
+  escaped or validated at the renderer boundary.
+- Changed translation-file export rendering to use the selected
+  `outputFormat`, so a PDF source's Markdown sibling consumes the ordinary
+  translated source segments without changing PDF source identity or native
+  PDF behavior.
 
 ## Validation
 
@@ -86,9 +106,14 @@ frontend output selector.
   zero invalid page identities and zero unknown box classes.
 - `pnpm typecheck`: passed after the output-qualified frontend/store changes.
 - `cargo check`: passed with existing dead-code warnings only.
-- `cargo test rosetta_jobs`: passed, 93 tests including legacy
+- `cargo test rosetta_jobs`: passed, 103 tests including legacy
   PDF/Markdown/TXT inference, output ID qualification, format-matrix rejection
-  and PDF/Markdown progress isolation.
+  and PDF/Markdown progress isolation, pinned `to_json()` normalization,
+  translation compatibility and deterministic Markdown rendering.
+- Focused `cargo test managed_pdf_markdown`: 15 passed; the exact native
+  release-archive test remains ignored unless its explicit artifact environment
+  variable is supplied. Worker protocol tests passed 5/5 and the Checkpoint 0
+  Python suite passed 6/6.
 - Windows `cargo test managed_pdf_markdown`: 15 passed, 1 exact-artifact test
   ignored by default; the ignored exact Windows archive test passed when given
   the 29,985,992-byte release artifact.
@@ -100,6 +125,9 @@ frontend output selector.
 - Native concurrent isolation passed on all three platforms: production
   PyMuPDF remained 1.25.2 before/during/after, while the Markdown worker loaded
   1.28.0 and reported only `CPUExecutionProvider`.
+- GitHub reported all three release assets as uploaded with the expected byte
+  counts and SHA-256 digests. Full public downloads through each profile's
+  primary configured URL reproduced the exact archive bytes and hashes.
 
 ## Remaining Verification
 
@@ -114,10 +142,31 @@ the ONNX CPU memory arena.
 
 Checkpoint 2 managed install, repair, cancellation, offline restart and
 cross-platform runtime isolation are implemented and verified against the
-exact local release artifacts. The configured release tag
-`pdf-markdown-overlay-v2026.08.06.1` has not been published, so the default
-online download path remains a release gate rather than a claimed pass. The
-ordinary PDF end-to-end visual regression with the overlay installed and
-absent also remains pending; PyMuPDF/process isolation has passed but is not a
-substitute for visual comparison. ONNX session tuning and worker recycling stay
-as a separate bounded optimization, not a release-size blocker.
+exact release artifacts. The configured release tag is published, and the
+primary online download path has passed full byte/hash verification on all
+three assets. The ordinary PDF end-to-end visual regression with the overlay
+installed and absent remains pending; PyMuPDF/process isolation has passed but
+is not a substitute for visual comparison. ONNX session tuning and worker
+recycling stay as a separate bounded optimization, not a release-size blocker.
+
+Checkpoint 3 adds the extraction store and normalizer. Each PDF job now has a
+versioned, fingerprint-bound manifest and bounded gzip page shards under
+`pdf-markdown/`, with deterministic canonical image copies and resumable
+missing/corrupt-page recovery. The isolated worker remains the only vendor
+boundary (`to_json()`), and a page-window is committed only after identity,
+coordinate, path, size and defensive-count validation.
+
+Normalization produces stable page/box/table-cell block and segment IDs,
+omits headers/footers, preserves pictures/formulas as non-translatable
+metadata/code, and projects `document.json` plus `segments.json` through a
+recoverable staged replacement. Narrow extraction status/start/cancel commands
+and content-free progress events were registered; deleting a job stops its
+Markdown extraction before cleanup. No UI or production `pdf2zh` behavior was
+changed.
+
+Checkpoint 4 reuses the ordinary translation-file runner and makes
+`translationFile.outputFormat` the export rendering authority. The shared
+renderer emits deterministic structured block groups and covers headings,
+lists, captions, footnotes, media placeholders and both GFM and inline-HTML
+table modes. Frontend preview integration and atomic multi-file image export
+remain Checkpoints 5 and 6.
