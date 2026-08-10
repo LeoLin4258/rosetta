@@ -7,10 +7,10 @@ use crate::rosetta_jobs::model::RosettaBlock;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct RenderedMarkdownBlock {
-    pub(crate) block_ids: Vec<String>,
-    pub(crate) kind: String,
-    pub(crate) markdown: String,
+pub struct RenderedMarkdownBlock {
+    pub block_ids: Vec<String>,
+    pub kind: String,
+    pub markdown: String,
 }
 
 #[derive(Debug)]

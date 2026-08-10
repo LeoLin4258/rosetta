@@ -426,7 +426,9 @@ export function TranslationPreviewPage() {
             hoveredBlockId={hoveredBlockId}
             onBlockHover={setHoveredBlockId}
             onBlockLeave={() => setHoveredBlockId(null)}
-            onToggleBlockSelection={toggleBlockSelection}
+            onToggleBlockSelection={(blockIds) => {
+              for (const blockId of blockIds) toggleBlockSelection(blockId);
+            }}
             selectedBlockIds={selectedBlockIds}
             selectionEnabled={!isRetranslating}
             sourceFile={sourceFile}

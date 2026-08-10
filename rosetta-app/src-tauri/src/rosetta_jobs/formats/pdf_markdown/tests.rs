@@ -114,6 +114,43 @@ fn image_path_traversal_is_rejected_and_canonicalized() {
 }
 
 #[test]
+fn preview_assets_enforce_flat_image_paths_types_and_size() {
+    let dir = temp("preview-assets");
+    let images = images_root(&dir);
+    fs::create_dir_all(&images).unwrap();
+    let valid = images.join("page-0001-picture-01.png");
+    fs::write(&valid, b"png").unwrap();
+
+    assert_eq!(
+        resolve_preview_asset(&dir, "pdf-markdown/images/page-0001-picture-01.png").unwrap(),
+        valid.canonicalize().unwrap()
+    );
+    assert_eq!(
+        resolve_preview_asset(&dir, "pdf-markdown/images/../outside.png").unwrap_err(),
+        "pdf-markdown-asset-path-invalid"
+    );
+    assert_eq!(
+        resolve_preview_asset(&dir, "pdf-markdown/images/nested/picture.png").unwrap_err(),
+        "pdf-markdown-asset-path-invalid"
+    );
+    assert_eq!(
+        resolve_preview_asset(&dir, "pdf-markdown/images/picture.svg").unwrap_err(),
+        "pdf-markdown-asset-type-invalid"
+    );
+
+    let oversized = images.join("oversized.webp");
+    fs::File::create(&oversized)
+        .unwrap()
+        .set_len(MAX_IMAGE_BYTES + 1)
+        .unwrap();
+    assert_eq!(
+        resolve_preview_asset(&dir, "pdf-markdown/images/oversized.webp").unwrap_err(),
+        "pdf-markdown-asset-invalid"
+    );
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
 fn public_progress_payload_is_content_free() {
     let status = PdfMarkdownExtractionStatus {
         job_id: "job-1".into(),

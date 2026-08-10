@@ -2,7 +2,7 @@
 
 Date: 2026-08-06
 
-Status: Checkpoint 0 Go; Checkpoints 1-4 implemented; Checkpoint 2 artifacts published; visual regression pending
+Status: Checkpoint 0 Go; Checkpoints 1-5 implemented; Checkpoint 2 artifacts published; visual regression pending
 
 Decision authority: [ADR 0078](../decisions/0078-pdf-markdown-pymupdf4llm-layout.md)
 
@@ -703,7 +703,7 @@ Ensure formulas and image references are skipped by translation scheduling.
   `translationFile.outputFormat`, while retaining the PDF source identity.
   PDF Markdown bilingual export remains rejected because it is outside v1.
 
-### Checkpoint 5: Workbench integration
+### Checkpoint 5: Workbench integration (implemented)
 
 Primary files:
 
@@ -719,6 +719,32 @@ Branch on `(source format, output format)`, not only `sourceFile.format ===
 "pdf"`. Keep `PdfDocumentPreview` for PDF mode and route Markdown mode through
 the existing virtualized block preview. Verify mode switching during every
 active state and after app restart.
+
+#### Checkpoint 5 execution record (2026-08-10)
+
+- Added a persisted `PDF | Markdown` selector for PDF sources. Workspace
+  translation, retranslation, cancellation, progress and export now branch on
+  the selected output identity; the native PDF path retains its existing page
+  controls, `pdf2zh` runtime and translated-PDF export.
+- Added explicit managed-component install, repair, progress and cancellation
+  actions plus extraction idle, extracting, ready, stale, failed and cancelled
+  states. Downloads and extraction begin only from a user action, and changing
+  output while extraction runs does not force the workbench back to Markdown
+  when it completes.
+- Resolve the active translation file by the exact
+  `(sourceFileId, targetLang, outputFormat)` identity. Output-mode switches
+  isolate active-run progress and restore the matching sibling translation
+  without clearing or cancelling the other output's work.
+- Added a narrow Rust preview command that validates PDF source and Markdown
+  translation identities, then calls the Checkpoint 4 renderer for both panes.
+  The frontend does not recreate Markdown rendering rules.
+- Added a virtualized two-pane Markdown preview with table-group selection,
+  translation activity placeholders and bounded image loading through a
+  job-relative byte command. Asset reads accept only one PNG/JPEG/WebP filename
+  below `pdf-markdown/images`, canonicalize containment and reject files over
+  32 MiB; no absolute document path reaches the frontend.
+- Kept multi-file `.md` plus asset staging, destination rollback and final
+  export hardening in Checkpoint 6.
 
 ### Checkpoint 6: Multi-file export and hardening
 

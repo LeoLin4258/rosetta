@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   RosettaExportKind,
   RosettaExportResult,
@@ -182,6 +183,130 @@ export function ensureRosettaTranslationFile(
     targetLang,
     outputFormat,
   });
+}
+
+export type PdfMarkdownComponentStatus = {
+  state: "unsupported" | "not-installed" | "installed" | "needs-repair";
+  message: string;
+  profile: {
+    id: string;
+    platformOs: string;
+    platformArch: string;
+    archiveBytes: number;
+    unpackedBytes: number;
+    fileCount: number;
+  } | null;
+  cpuOnly: boolean;
+  versions: {
+    pymupdf4llm: string;
+    pymupdfLayout: string;
+    pymupdf: string;
+    protocol: number;
+  };
+};
+
+export type PdfMarkdownInstallProgress = {
+  state: "idle" | "installing" | "ready" | "failed" | "cancelled" | string;
+  downloadedBytes: number;
+  expectedBytes: number;
+};
+
+export type PdfMarkdownInstallResult = {
+  ready: boolean;
+  profileId: string;
+  archiveBytes: number;
+  message: string;
+};
+
+export type PdfMarkdownExtractionStatus = {
+  jobId: string;
+  state: "idle" | "extracting" | "ready" | "failed" | "cancelled" | "stale" | string;
+  completedPages: number;
+  pageCount: number;
+  errorCode: string | null;
+  runId: string | null;
+};
+
+export type PdfMarkdownRenderedBlock = {
+  blockIds: string[];
+  kind: string;
+  markdown: string;
+};
+
+export type PdfMarkdownPreview = {
+  sourceBlocks: PdfMarkdownRenderedBlock[];
+  translationBlocks: PdfMarkdownRenderedBlock[] | null;
+};
+
+export function getPdfMarkdownStatus() {
+  return invoke<PdfMarkdownComponentStatus>("get_pdf_markdown_status");
+}
+
+export function getPdfMarkdownInstallProgress() {
+  return invoke<PdfMarkdownInstallProgress>("get_pdf_markdown_install_progress");
+}
+
+export function installPdfMarkdownComponent() {
+  return invoke<PdfMarkdownInstallResult>("install_pdf_markdown_component", {
+    options: { force: false },
+  });
+}
+
+export function repairPdfMarkdownComponent() {
+  return invoke<PdfMarkdownInstallResult>("repair_pdf_markdown_component");
+}
+
+export function cancelPdfMarkdownInstall() {
+  return invoke<boolean>("cancel_pdf_markdown_install");
+}
+
+export function getPdfMarkdownExtractionStatus(jobId: string) {
+  return invoke<PdfMarkdownExtractionStatus>(
+    "get_pdf_markdown_extraction_status",
+    { jobId },
+  );
+}
+
+export function startPdfMarkdownExtraction(jobId: string) {
+  return invoke<PdfMarkdownExtractionStatus>("start_pdf_markdown_extraction", {
+    jobId,
+  });
+}
+
+export function cancelPdfMarkdownExtraction(jobId: string) {
+  return invoke<boolean>("cancel_pdf_markdown_extraction", { jobId });
+}
+
+export function subscribePdfMarkdownExtractionProgress(
+  handler: (status: PdfMarkdownExtractionStatus) => void,
+): Promise<UnlistenFn> {
+  return listen<PdfMarkdownExtractionStatus>(
+    "rosetta-pdf-markdown-progress",
+    (event) => handler(event.payload),
+  );
+}
+
+export function renderPdfMarkdownPreview(
+  jobId: string,
+  sourceFileId: string,
+  translationFileId?: string | null,
+) {
+  return invoke<PdfMarkdownPreview>("render_pdf_markdown_preview", {
+    jobId,
+    sourceFileId,
+    translationFileId: translationFileId ?? null,
+  });
+}
+
+export async function readPdfMarkdownAsset(
+  jobId: string,
+  assetPath: string,
+): Promise<Uint8Array> {
+  const buffer = await invoke<ArrayBuffer>("read_pdf_markdown_asset", {
+    jobId,
+    assetPath,
+  });
+  return new Uint8Array(buffer);
 }
 
 export function loadRosettaTranslationFile(

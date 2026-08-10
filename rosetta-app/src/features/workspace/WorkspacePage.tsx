@@ -25,7 +25,9 @@ import {
   pauseRosettaPdfRun,
   pickRosettaExportPath,
   preparseRosettaPdfPages,
+  renderPdfMarkdownPreview,
   translateRosettaPdfPages,
+  type PdfMarkdownPreview,
   updateTxtSourceFile,
 } from "@/lib/rosettaJobs";
 import { selectProvider } from "@/lib/providers";
@@ -43,10 +45,13 @@ import { useRosettaStore } from "@/store/useRosettaStore";
 import type {
   RosettaJobBundle,
   RosettaTranslationFileBundle,
+  RosettaTranslationOutputFormat,
 } from "@/types/rosetta";
 import { DocumentPreview } from "@/features/preview/DocumentPreview";
 import { useManagedPdf2zhRuntime } from "@/lib/useManagedPdf2zhRuntime";
+import { usePdfMarkdownRuntime } from "@/lib/usePdfMarkdownRuntime";
 import { type Pdf2zhInstallProgress } from "@/lib/pdf2zhRuntime";
+import { sourceSelectionKey } from "@/lib/rosettaSelection";
 import {
   defaultPdfSelectedPages,
   nextPdfSelectedPages,
@@ -86,6 +91,9 @@ export function WorkspacePage() {
   const pdf2zhWorkerStatus = useRosettaStore((s) => s.pdf2zhWorker);
   const defaultTargetLang = useRosettaStore((s) => s.defaultTargetLang);
   const langByJobId = useRosettaStore((s) => s.langByJobId);
+  const activeOutputFormatBySourceKey = useRosettaStore(
+    (s) => s.activeOutputFormatBySourceKey,
+  );
   const setJobLangs = useRosettaStore((s) => s.setJobLangs);
   const navigate = useNavigate();
 
@@ -98,6 +106,7 @@ export function WorkspacePage() {
   const markTranslationRunCompleted = useRosettaStore((s) => s.markTranslationRunCompleted);
   const markTranslationRunFailed = useRosettaStore((s) => s.markTranslationRunFailed);
   const finishTranslationRun = useRosettaStore((s) => s.finishTranslationRun);
+  const setActiveOutputFormat = useRosettaStore((s) => s.setActiveOutputFormat);
 
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [pageError, setPageError] = useState<string | null>(null);
@@ -119,6 +128,10 @@ export function WorkspacePage() {
   const [isEditingSource, setIsEditingSource] = useState(false);
   const [sourceDraft, setSourceDraft] = useState("");
   const [isSavingSource, setIsSavingSource] = useState(false);
+  const [pdfMarkdownPreview, setPdfMarkdownPreview] =
+    useState<PdfMarkdownPreview | null>(null);
+  const [pdfMarkdownPreviewError, setPdfMarkdownPreviewError] =
+    useState<string | null>(null);
   // Live pdf2zh phase/page progress. Subscribed app-level in AppShell and
   // keyed by jobId, so it survives switching files mid-run.
   const pdfRunProgressByJobId = useRosettaStore((s) => s.pdfRunProgressByJobId);
@@ -144,21 +157,45 @@ export function WorkspacePage() {
   }
 
   const activeJob = jobs.find((j) => j.id === activeJobId) ?? null;
-  const activeTranslationFile =
-    translationFiles.find((f) => f.id === activeTranslationFileId) ?? null;
   const sourceFile =
     activeDocument?.files.find((f) => f.id === activeSourceFileId) ??
     activeDocument?.files[0] ??
     null;
+  const activeOutputFormat: RosettaTranslationOutputFormat =
+    activeJobId && sourceFile
+      ? activeOutputFormatBySourceKey[
+          sourceSelectionKey(activeJobId, sourceFile.id)
+        ] ?? sourceFile.format
+      : sourceFile?.format ?? "txt";
+  const activeTranslationFile =
+    translationFiles.find(
+      (file) =>
+        file.id === activeTranslationFileId &&
+        file.sourceFileId === sourceFile?.id &&
+        file.targetLang === targetLang &&
+        file.outputFormat === activeOutputFormat,
+    ) ??
+    translationFiles.find(
+      (file) =>
+        file.sourceFileId === sourceFile?.id &&
+        file.targetLang === targetLang &&
+        file.outputFormat === activeOutputFormat,
+    ) ??
+    null;
+  const activeRunTranslationFile = activeTranslationRun
+    ? translationFiles.find(
+        (file) => file.id === activeTranslationRun.translationFileId,
+      ) ?? null
+    : null;
   const activeFileTranslationRun =
     activeTranslationRun &&
     activeTranslationRun.jobId === activeJobId &&
-    activeTranslationRun.sourceFileId === activeSourceFileId
+    activeTranslationRun.sourceFileId === activeSourceFileId &&
+    activeRunTranslationFile?.outputFormat === activeOutputFormat
       ? activeTranslationRun
       : null;
   const isTranslating = !!activeFileTranslationRun;
-  const isTranslationBusyElsewhere =
-    !!activeTranslationRun && !activeFileTranslationRun;
+  const isTranslationBusyElsewhere = !!activeTranslationRun && !activeFileTranslationRun;
 
   const completedCount = activeFileTranslationRun?.completedSegmentIds.length ?? 0;
   const totalCount = activeFileTranslationRun?.targetSegmentIds.length ?? 0;
@@ -222,17 +259,22 @@ export function WorkspacePage() {
     [pdfPageCount],
   );
 
-  const isPdfJob = sourceFile?.format === "pdf";
+  const isPdfSource = sourceFile?.format === "pdf";
+  const isPdfOutput = isPdfSource && activeOutputFormat === "pdf";
+  const isPdfMarkdownOutput = isPdfSource && activeOutputFormat === "markdown";
+  const pdfMarkdownRuntime = usePdfMarkdownRuntime(
+    isPdfSource ? activeJobId : null,
+  );
   const pdfProgress =
-    isPdfJob && activeJobId ? pdfRunProgressByJobId[activeJobId] ?? null : null;
-  const pdfActivePages = isPdfJob
+    isPdfOutput && activeJobId ? pdfRunProgressByJobId[activeJobId] ?? null : null;
+  const pdfActivePages = isPdfOutput
     ? pdfPagesForActiveRun(
         activeFileTranslationRun?.targetSegmentIds ?? [],
         pdfSelectedPages,
       )
     : [];
   const pdfEngineUnavailable =
-    isPdfJob &&
+    isPdfOutput &&
     (pdf2zhRuntime.status?.state === "not-installed" ||
       (pdf2zhRuntime.status == null && pdf2zhWorkerStatus?.state === "not-installed"));
   const pdfEngineUnavailableMessage =
@@ -272,7 +314,7 @@ export function WorkspacePage() {
   // work; the backend keeps this content-free and outside durable job state.
   useEffect(() => {
     if (
-      !isPdfJob ||
+      !isPdfOutput ||
       !activeJobId ||
       pdfPageCount <= 0 ||
       pdfSelectedPages.length === 0 ||
@@ -314,7 +356,7 @@ export function WorkspacePage() {
     return () => window.clearTimeout(timer);
   }, [
     activeJobId,
-    isPdfJob,
+    isPdfOutput,
     isTranslating,
     isTranslationBusyElsewhere,
     pdfEngineUnavailable,
@@ -326,9 +368,9 @@ export function WorkspacePage() {
   ]);
 
   useEffect(() => {
-    if (!isPdfJob) return;
+    if (!isPdfOutput) return;
     void pdf2zhRuntime.refreshStatus();
-  }, [isPdfJob, activeJobId, pdf2zhRuntime.refreshStatus]);
+  }, [isPdfOutput, activeJobId, pdf2zhRuntime.refreshStatus]);
 
   useEffect(() => {
     if (!isTranslating) {
@@ -339,14 +381,79 @@ export function WorkspacePage() {
   // After a document is loaded (or switched), restore translation segments if
   // there's a known active translation file but no segments in memory yet.
   useEffect(() => {
-    if (!activeJobId || !activeTranslationFileId || !activeDocument || isTranslating) return;
-    if (translationSegments.length > 0) return;
+    if (!activeJobId || !activeDocument || isTranslating) return;
+    if (!activeTranslationFile) {
+      if (translationSegments.length > 0) updateActiveTranslationSegments([]);
+      return;
+    }
+    if (
+      activeTranslationFileId === activeTranslationFile.id &&
+      translationSegments.length > 0
+    ) {
+      return;
+    }
 
-    void loadRosettaTranslationFile(activeJobId, activeTranslationFileId)
+    void loadRosettaTranslationFile(activeJobId, activeTranslationFile.id)
       .then((bundle) => setActiveTranslationFileBundle(bundle))
       .catch(() => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeDocument?.id, activeTranslationFileId, activeJobId]);
+  }, [
+    activeDocument?.id,
+    activeTranslationFile?.id,
+    activeTranslationFileId,
+    activeJobId,
+    isTranslating,
+    translationSegments.length,
+    updateActiveTranslationSegments,
+  ]);
+
+  useEffect(() => {
+    setSelectedBlockIds([]);
+    setPdfMarkdownPreview(null);
+    setPdfMarkdownPreviewError(null);
+  }, [activeOutputFormat]);
+
+  useEffect(() => {
+    if (
+      !isPdfMarkdownOutput ||
+      !activeJobId ||
+      !sourceFile ||
+      pdfMarkdownRuntime.extractionStatus?.state !== "ready"
+    ) {
+      setPdfMarkdownPreview(null);
+      return;
+    }
+
+    let active = true;
+    setPdfMarkdownPreviewError(null);
+    void renderPdfMarkdownPreview(
+      activeJobId,
+      sourceFile.id,
+      activeTranslationFile?.id ?? null,
+    )
+      .then((preview) => {
+        if (active) setPdfMarkdownPreview(preview);
+      })
+      .catch((error) => {
+        if (active) {
+          setPdfMarkdownPreview(null);
+          setPdfMarkdownPreviewError(
+            errorMessage(error, "Markdown 预览生成失败。"),
+          );
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [
+    activeJobId,
+    activeTranslationFile?.id,
+    isPdfMarkdownOutput,
+    pdfMarkdownRuntime.extractionStatus?.state,
+    sourceFile,
+    translationSegments,
+  ]);
 
   // Register Tauri window file-drop events.
   // Use an `unmounted` flag so the async `.then(fn => ...)` callback can
@@ -376,7 +483,7 @@ export function WorkspacePage() {
           unlisten = fn;
         }
       })
-      .catch(console.error);
+      .catch(() => {});
 
     return () => {
       unmounted = true;
@@ -501,6 +608,56 @@ export function WorkspacePage() {
     runPendingLongPdfTranslation(previewPages);
   }
 
+  function handleOutputFormatChange(outputFormat: RosettaTranslationOutputFormat) {
+    if (!activeJobId || !sourceFile || sourceFile.format !== "pdf") return;
+    if (outputFormat !== "pdf" && outputFormat !== "markdown") return;
+    setPageError(null);
+    setPdfError(null);
+    setActiveOutputFormat(activeJobId, sourceFile.id, outputFormat);
+  }
+
+  async function handleInstallPdfMarkdown(repair = false) {
+    setPageError(null);
+    try {
+      await pdfMarkdownRuntime.install(repair);
+    } catch (error) {
+      setPageError(errorMessage(error, "PDF Markdown 组件安装失败。"));
+    }
+  }
+
+  async function handleStartPdfMarkdownExtraction() {
+    if (!activeJobId || !sourceFile || sourceFile.format !== "pdf") return;
+    setPageError(null);
+    try {
+      const extraction = await pdfMarkdownRuntime.startExtraction();
+      if (extraction?.state !== "ready") return;
+
+      const freshBundle = await loadRosettaJob(activeJobId);
+      refreshJobBundle(freshBundle);
+      const tfBundle = await ensureRosettaTranslationFile(
+        activeJobId,
+        sourceFile.id,
+        useRosettaStore.getState().langByJobId[activeJobId]?.targetLang ??
+          targetLang,
+        "markdown",
+      );
+      const state = useRosettaStore.getState();
+      const selectedOutput =
+        state.activeOutputFormatBySourceKey[
+          sourceSelectionKey(activeJobId, sourceFile.id)
+        ] ?? sourceFile.format;
+      if (
+        state.activeJobId === activeJobId &&
+        state.activeSourceFileId === sourceFile.id &&
+        selectedOutput === "markdown"
+      ) {
+        setActiveTranslationFileBundle(tfBundle);
+      }
+    } catch (error) {
+      setPageError(errorMessage(error, "PDF Markdown 提取失败。"));
+    }
+  }
+
   async function handleTranslate(targetLang: string, srcLang: string) {
     if (!activeJobId || !activeSourceFileId || !sourceFile) return;
     setPageError(null);
@@ -511,7 +668,14 @@ export function WorkspacePage() {
     let runId: string | null = null;
 
     try {
-      if (sourceFile?.format === "pdf") {
+      if (
+        isPdfMarkdownOutput &&
+        pdfMarkdownRuntime.extractionStatus?.state !== "ready"
+      ) {
+        setPageError("请先完成 PDF Markdown 提取。");
+        return;
+      }
+      if (isPdfOutput) {
         const selectedPages =
           pdfSelectedPages.length > 0
             ? pdfSelectedPages
@@ -537,7 +701,7 @@ export function WorkspacePage() {
         activeJobId,
         activeSourceFileId,
         targetLang,
-        sourceFile.format,
+        activeOutputFormat,
       );
       setActiveTranslationFileBundle(tfBundle);
 
@@ -609,7 +773,7 @@ export function WorkspacePage() {
     } catch (err) {
       const msg = errorMessage(err, "");
       if (!msg.includes("已取消")) {
-        if (sourceFile?.format === "pdf") {
+        if (isPdfOutput) {
           setPdfError(errorMessage(err, "翻译出错。"));
         } else {
           setPageError(errorMessage(err, "翻译出错。"));
@@ -708,7 +872,6 @@ export function WorkspacePage() {
       }
       return state;
     } catch (err) {
-      console.error("[pdf-translate] failed", err);
       const msg = errorMessage(err, "");
       if (!msg.includes("已取消")) {
         setPdfError(errorMessage(err, "PDF 按页翻译出错。"));
@@ -730,7 +893,7 @@ export function WorkspacePage() {
     const retranslateTargetLang = activeTranslationFile?.targetLang ?? targetLang;
     setPageError(null);
 
-    if (sourceFile?.format === "pdf") {
+    if (isPdfOutput) {
       if (pdfSelectedPages.length === 0) {
         setPdfError("请选择要重新翻译的页面。");
         return;
@@ -767,7 +930,7 @@ export function WorkspacePage() {
         activeJobId,
         activeSourceFileId,
         retranslateTargetLang,
-        sourceFile.format,
+        activeOutputFormat,
       );
 
       // Use previewSegments from the store (always populated) rather than
@@ -856,7 +1019,7 @@ export function WorkspacePage() {
     let runId: string | null = null;
 
     try {
-      if (sourceFile?.format === "pdf") {
+      if (isPdfOutput) {
         const pageCount = await countRosettaPdfPages(activeJobId, "source");
         if (pageCount <= 0) {
           setPdfError("无法读取 PDF 页数，请重新导入后再试。");
@@ -886,7 +1049,7 @@ export function WorkspacePage() {
         activeJobId,
         activeSourceFileId,
         retranslateTargetLang,
-        sourceFile.format,
+        activeOutputFormat,
       );
 
       const targets = translationTargetsForStatuses({
@@ -958,7 +1121,7 @@ export function WorkspacePage() {
     } catch (err) {
       const msg = errorMessage(err, "");
       if (!msg.includes("已取消")) {
-        if (sourceFile?.format === "pdf") {
+        if (isPdfOutput) {
           setPdfError(errorMessage(err, "重新翻译失败。"));
         } else {
           setPageError(errorMessage(err, "重新翻译失败。"));
@@ -971,21 +1134,21 @@ export function WorkspacePage() {
 
   function handleCancelTranslation() {
     cancelRef.current?.();
-    if (sourceFile?.format !== "pdf") {
+    if (activeRunTranslationFile?.outputFormat !== "pdf") {
       cancelRef.current = null;
     }
   }
 
   async function handleExport(kind: "translation" | "bilingual") {
-    if (!activeJobId || !activeTranslationFileId || !activeSourceFileId || !activeDocument) return;
+    if (!activeJobId || !activeTranslationFile || !activeSourceFileId || !activeDocument) return;
 
     const file = activeDocument.files.find((f) => f.id === activeSourceFileId);
     if (!file) return;
 
-    const exportFmt = exportFormatForSource(file.format);
+    const exportFmt = exportFormatForSource(activeOutputFormat);
     const defaultName = defaultExportFilename(
       file.relativePath,
-      file.format,
+      activeOutputFormat,
       activeTranslationFile?.targetLang ?? "zh-CN",
       kind
     );
@@ -993,7 +1156,7 @@ export function WorkspacePage() {
     try {
       const targetPath = await pickRosettaExportPath(defaultName, exportFmt);
       if (!targetPath) return;
-      if (file.format === "pdf") {
+      if (activeOutputFormat === "pdf") {
         // PDF v1 only ships single-language ("translation") export — the
         // translated PDF on disk is exactly what we'd hand the user. There's
         // no bilingual side-by-side renderer yet.
@@ -1009,7 +1172,7 @@ export function WorkspacePage() {
       } else {
         await exportRosettaTranslationFile(
           activeJobId,
-          activeTranslationFileId,
+          activeTranslationFile.id,
           kind,
           targetPath
         );
@@ -1019,12 +1182,14 @@ export function WorkspacePage() {
     }
   }
 
-  function handleBlockSelect(blockId: string) {
-    setSelectedBlockIds((current) =>
-      current.includes(blockId)
-        ? current.filter((id) => id !== blockId)
-        : [...current, blockId]
-    );
+  function handleBlockSelect(blockIds: string[]) {
+    setSelectedBlockIds((current) => {
+      const shouldDeselect = blockIds.every((id) => current.includes(id));
+      if (shouldDeselect) {
+        return current.filter((id) => !blockIds.includes(id));
+      }
+      return [...new Set([...current, ...blockIds])];
+    });
   }
 
   function sourceTextForEditing() {
@@ -1077,14 +1242,23 @@ export function WorkspacePage() {
           <WorkspaceTopbar
             job={activeJob}
             activeTranslationFile={activeTranslationFile}
+            selectedOutputFormat={activeOutputFormat}
+            pdfMarkdownComponentStatus={pdfMarkdownRuntime.componentStatus}
+            pdfMarkdownInstallProgress={pdfMarkdownRuntime.installProgress}
+            pdfMarkdownExtractionStatus={pdfMarkdownRuntime.extractionStatus}
+            pdfMarkdownError={pdfMarkdownRuntime.lastError}
+            isPdfMarkdownInstalling={pdfMarkdownRuntime.isInstalling}
+            isPdfMarkdownStartingExtraction={
+              pdfMarkdownRuntime.isStartingExtraction
+            }
             isTranslating={isTranslating}
-            isPausingTranslation={sourceFile?.format === "pdf" && isPausingPdfRun}
+            isPausingTranslation={isPdfOutput && isPausingPdfRun}
             isTranslationBusyElsewhere={isTranslationBusyElsewhere}
             isRuntimeStarting={localRuntimeStarting}
             isRuntimeUnavailable={localRuntimeUnavailable}
             runtimeUnavailableMessage={localRuntimeUnavailableMessage}
-            isPdfEngineInstalling={pdf2zhRuntime.isInstalling}
-            isPdfEngineUnavailable={pdfEngineUnavailable}
+            isPdfEngineInstalling={isPdfOutput && pdf2zhRuntime.isInstalling}
+            isPdfEngineUnavailable={isPdfOutput && pdfEngineUnavailable}
             pdfEngineUnavailableMessage={pdfEngineUnavailableMessage}
             isPdfEngineWarming={
               !pdfEngineUnavailable &&
@@ -1118,6 +1292,18 @@ export function WorkspacePage() {
             onDeselectAllPages={() => handlePdfSelectedPagesChange([])}
             onSourceLangChange={handleSourceLangChange}
             onTargetLangChange={handleTargetLangChange}
+            onOutputFormatChange={handleOutputFormatChange}
+            onInstallPdfMarkdown={() => void handleInstallPdfMarkdown()}
+            onRepairPdfMarkdown={() => void handleInstallPdfMarkdown(true)}
+            onCancelPdfMarkdownInstall={() => {
+              void pdfMarkdownRuntime.cancelInstall();
+            }}
+            onStartPdfMarkdownExtraction={() => {
+              void handleStartPdfMarkdownExtraction();
+            }}
+            onCancelPdfMarkdownExtraction={() => {
+              void pdfMarkdownRuntime.cancelExtraction();
+            }}
             onTranslate={(lang, src) => void handleTranslate(lang, src)}
             onCancelTranslation={handleCancelTranslation}
             onExport={(kind) => void handleExport(kind)}
@@ -1171,6 +1357,11 @@ export function WorkspacePage() {
             <DocumentPreview
               jobId={activeJobId}
               document={activeDocument}
+              selectedOutputFormat={activeOutputFormat}
+              pdfMarkdownComponentStatus={pdfMarkdownRuntime.componentStatus}
+              pdfMarkdownExtractionStatus={pdfMarkdownRuntime.extractionStatus}
+              pdfMarkdownPreview={pdfMarkdownPreview}
+              pdfMarkdownPreviewError={pdfMarkdownPreviewError}
               hoveredBlockId={hoveredBlockId}
               isTranslating={isTranslating}
               liveProgress={

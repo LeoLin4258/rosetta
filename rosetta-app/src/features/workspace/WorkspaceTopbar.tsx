@@ -29,7 +29,13 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { pdfPageSelectionLabel } from "@/lib/pdfPageSelectionPolicy";
+import type {
+  PdfMarkdownComponentStatus,
+  PdfMarkdownExtractionStatus,
+  PdfMarkdownInstallProgress,
+} from "@/lib/rosettaJobs";
 import {
   Select,
   SelectContent,
@@ -38,7 +44,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import type { RosettaJobSummary, RosettaTranslationFile } from "@/types/rosetta";
+import type {
+  RosettaJobSummary,
+  RosettaTranslationFile,
+  RosettaTranslationOutputFormat,
+} from "@/types/rosetta";
 
 const TARGET_LANGS = [
   { value: "zh-CN", label: "简体中文" },
@@ -53,6 +63,13 @@ const SOURCE_LANGS = [
 type WorkspaceTopbarProps = {
   job: RosettaJobSummary;
   activeTranslationFile: RosettaTranslationFile | null;
+  selectedOutputFormat: RosettaTranslationOutputFormat;
+  pdfMarkdownComponentStatus?: PdfMarkdownComponentStatus | null;
+  pdfMarkdownInstallProgress?: PdfMarkdownInstallProgress | null;
+  pdfMarkdownExtractionStatus?: PdfMarkdownExtractionStatus | null;
+  pdfMarkdownError?: string | null;
+  isPdfMarkdownInstalling?: boolean;
+  isPdfMarkdownStartingExtraction?: boolean;
   isTranslating: boolean;
   isPausingTranslation?: boolean;
   isTranslationBusyElsewhere?: boolean;
@@ -96,6 +113,12 @@ type WorkspaceTopbarProps = {
   onDeselectAllPages?: () => void;
   onSourceLangChange: (lang: string) => void;
   onTargetLangChange: (lang: string) => void;
+  onOutputFormatChange?: (format: RosettaTranslationOutputFormat) => void;
+  onInstallPdfMarkdown?: () => void;
+  onRepairPdfMarkdown?: () => void;
+  onCancelPdfMarkdownInstall?: () => void;
+  onStartPdfMarkdownExtraction?: () => void;
+  onCancelPdfMarkdownExtraction?: () => void;
   onTranslate: (targetLang: string, sourceLang: string) => void;
   onCancelTranslation: () => void;
   onExport: (kind: "translation" | "bilingual") => void;
@@ -387,6 +410,13 @@ function RollingDigit({ digit }: { digit: number }) {
 export function WorkspaceTopbar({
   job,
   activeTranslationFile,
+  selectedOutputFormat,
+  pdfMarkdownComponentStatus = null,
+  pdfMarkdownInstallProgress = null,
+  pdfMarkdownExtractionStatus = null,
+  pdfMarkdownError = null,
+  isPdfMarkdownInstalling = false,
+  isPdfMarkdownStartingExtraction = false,
   isTranslating,
   isPausingTranslation = false,
   isTranslationBusyElsewhere = false,
@@ -417,6 +447,12 @@ export function WorkspaceTopbar({
   onDeselectAllPages,
   onSourceLangChange,
   onTargetLangChange,
+  onOutputFormatChange,
+  onInstallPdfMarkdown,
+  onRepairPdfMarkdown,
+  onCancelPdfMarkdownInstall,
+  onStartPdfMarkdownExtraction,
+  onCancelPdfMarkdownExtraction,
   onTranslate,
   onCancelTranslation,
   onExport,
@@ -470,17 +506,26 @@ export function WorkspaceTopbar({
     onPdfSelectRange?.(range);
   }
 
+  const isPdfSource = job.format === "pdf";
+  const isPdf = isPdfSource && selectedOutputFormat === "pdf";
+  const isPdfMarkdown = isPdfSource && selectedOutputFormat === "markdown";
+  const markdownComponentReady = pdfMarkdownComponentStatus?.state === "installed";
+  const markdownExtractionReady = pdfMarkdownExtractionStatus?.state === "ready";
+  const markdownExtractionActive = pdfMarkdownExtractionStatus?.state === "extracting";
+  const markdownOperationBusy =
+    isPdfMarkdownInstalling ||
+    isPdfMarkdownStartingExtraction ||
+    markdownExtractionActive;
   const hasTranslation =
     activeTranslationFile &&
-    (job.format === "pdf" ||
+    (isPdf ||
       activeTranslationFile.completedSegments > 0);
   const allTranslated =
     !!activeTranslationFile &&
-    (job.format === "pdf"
+    (isPdf
       ? activeTranslationFile.status === "translated"
       : activeTranslationFile.segmentCount > 0 &&
         activeTranslationFile.completedSegments >= activeTranslationFile.segmentCount);
-  const isPdf = job.format === "pdf";
   const sameLanguage = sourceLang === targetLang;
   const noPdfPagesSelected = isPdf && pdfSelectedPageCount === 0;
   const translateDisabled =
@@ -488,6 +533,7 @@ export function WorkspaceTopbar({
     noPdfPagesSelected ||
     isTranslationBusyElsewhere ||
     isRuntimeUnavailable ||
+    (isPdfMarkdown && !markdownExtractionReady) ||
     (isPdf && isPdfEngineUnavailable) ||
     (isPdf && isPdfEngineWarming);
   const translateTitle = sameLanguage
@@ -500,6 +546,8 @@ export function WorkspaceTopbar({
       ? (pdfEngineUnavailableMessage ?? "PDF 组件未安装，请在设置中安装后再翻译。")
     : isPdf && isPdfEngineWarming
       ? "PDF 引擎预热中，请稍候"
+    : isPdfMarkdown && !markdownExtractionReady
+      ? "请先完成 PDF Markdown 提取"
     : noPdfPagesSelected
       ? "请选择页面"
       : undefined;
@@ -535,6 +583,28 @@ export function WorkspaceTopbar({
     <div className="border-b border-border/50 bg-background/95 px-4 py-2.5" data-window-no-drag>
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
         <div className="flex min-w-0 flex-1 items-center gap-2">
+          {isPdfSource ? (
+            <ToggleGroup
+              type="single"
+              value={selectedOutputFormat}
+              onValueChange={(value) => {
+                if (value === "pdf" || value === "markdown") {
+                  onOutputFormatChange?.(value);
+                }
+              }}
+              variant="outline"
+              size="sm"
+              aria-label="PDF 输出格式"
+              className="h-8 shrink-0 gap-0"
+            >
+              <ToggleGroupItem value="pdf" aria-label="PDF 输出" className="h-8 px-2.5 text-xs">
+                PDF
+              </ToggleGroupItem>
+              <ToggleGroupItem value="markdown" aria-label="Markdown 输出" className="h-8 px-2.5 text-xs">
+                Markdown
+              </ToggleGroupItem>
+            </ToggleGroup>
+          ) : null}
           <AnimatedWidth className="min-w-0" contentClassName="min-w-0">
             {isPdf ? (
               <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
@@ -643,6 +713,52 @@ export function WorkspaceTopbar({
                   </label>
                 </div>
               </div>
+            ) : isPdfMarkdown && !markdownExtractionReady ? (
+              <div className={topbarPanelClass} title={pdfMarkdownError ?? undefined}>
+                {isPdfMarkdownInstalling ? (
+                  <>
+                    <Loader2 className="size-3 animate-spin" />
+                    <span>下载组件</span>
+                    {pdfMarkdownInstallProgress?.expectedBytes ? (
+                      <TopbarBadge>
+                        {Math.min(
+                          100,
+                          Math.round(
+                            (pdfMarkdownInstallProgress.downloadedBytes /
+                              pdfMarkdownInstallProgress.expectedBytes) *
+                              100,
+                          ),
+                        )}%
+                      </TopbarBadge>
+                    ) : null}
+                  </>
+                ) : markdownExtractionActive ? (
+                  <>
+                    <Loader2 className="size-3 animate-spin" />
+                    <span>提取 Markdown</span>
+                    <TopbarBadge>
+                      {pdfMarkdownExtractionStatus?.completedPages ?? 0}/
+                      {pdfMarkdownExtractionStatus?.pageCount || "-"} 页
+                    </TopbarBadge>
+                  </>
+                ) : (
+                  <span className="font-medium text-foreground">
+                    {pdfMarkdownComponentStatus?.state === "unsupported"
+                      ? "当前平台不支持 Markdown"
+                      : pdfMarkdownComponentStatus?.state === "needs-repair"
+                        ? "Markdown 组件需要修复"
+                        : !markdownComponentReady
+                          ? "Markdown 组件未安装"
+                          : pdfMarkdownExtractionStatus?.state === "stale"
+                            ? "源文件已变化，需要重新提取"
+                            : pdfMarkdownExtractionStatus?.state === "failed"
+                              ? "Markdown 提取失败"
+                              : pdfMarkdownExtractionStatus?.state === "cancelled"
+                                ? "Markdown 提取已取消"
+                                : "尚未提取 Markdown"}
+                  </span>
+                )}
+              </div>
             ) : selectedBlockCount > 0 ? (
               <div className={topbarPanelClass}>
                 <span className="!text-xs font-medium !text-foreground">已选段落</span>
@@ -723,7 +839,8 @@ export function WorkspaceTopbar({
                     onClick={() => onExport("translation")}
                     className={cn(topbarButtonClass, "border-border/60 bg-card/80")}
                   >
-                    <Download className="size-3" /> 导出译文
+                    <Download className="size-3" />
+                    {isPdfMarkdown ? "导出 Markdown" : "导出译文"}
                   </Button>
                 </AnimatedWidth>
               )}
@@ -765,7 +882,63 @@ export function WorkspaceTopbar({
               </AnimatedWidth>
 
               <AnimatedWidth>
-                {isPdfEngineInstalling ? (
+                {isPdfMarkdown && !markdownExtractionReady ? (
+                  isPdfMarkdownInstalling ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={onCancelPdfMarkdownInstall}
+                      className={topbarButtonClass}
+                    >
+                      <Square className="size-3" /> 取消下载
+                    </Button>
+                  ) : markdownExtractionActive ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={onCancelPdfMarkdownExtraction}
+                      className={topbarButtonClass}
+                    >
+                      <Square className="size-3" /> 停止提取
+                    </Button>
+                  ) : pdfMarkdownComponentStatus?.state === "unsupported" ? (
+                    <Button size="sm" disabled className={topbarButtonClass}>
+                      当前平台不支持
+                    </Button>
+                  ) : pdfMarkdownComponentStatus?.state === "needs-repair" ? (
+                    <Button
+                      size="sm"
+                      onClick={onRepairPdfMarkdown}
+                      disabled={isTranslationBusyElsewhere || isTranslating || markdownOperationBusy}
+                      className={topbarButtonClass}
+                    >
+                      <RefreshCw className="size-3" /> 修复组件
+                    </Button>
+                  ) : !markdownComponentReady ? (
+                    <Button
+                      size="sm"
+                      onClick={onInstallPdfMarkdown}
+                      disabled={isTranslationBusyElsewhere || isTranslating || markdownOperationBusy}
+                      className={topbarButtonClass}
+                    >
+                      <Download className="size-3" /> 安装 Markdown 组件
+                    </Button>
+                  ) : (
+                    <Button
+                      size="sm"
+                      onClick={onStartPdfMarkdownExtraction}
+                      disabled={isTranslationBusyElsewhere || isTranslating || markdownOperationBusy}
+                      className={topbarButtonClass}
+                    >
+                      {isPdfMarkdownStartingExtraction ? (
+                        <Loader2 className="size-3 animate-spin" />
+                      ) : (
+                        <Play className="size-3" />
+                      )}
+                      {pdfMarkdownExtractionStatus?.state === "stale" ? "重新提取" : "提取 Markdown"}
+                    </Button>
+                  )
+                ) : isPdfEngineInstalling ? (
                   <Button size="sm" disabled className={topbarButtonClass}>
                     <Loader2 className="size-3 animate-spin" />
                     {pdfEngineProgressMessage ?? "正在准备 PDF 引擎…"}

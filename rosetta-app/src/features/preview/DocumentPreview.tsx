@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { RefObject } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import ReactMarkdown from "react-markdown";
@@ -9,6 +9,13 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { languageLabel } from "@/lib/languages";
+import {
+  readPdfMarkdownAsset,
+  type PdfMarkdownComponentStatus,
+  type PdfMarkdownExtractionStatus,
+  type PdfMarkdownPreview,
+  type PdfMarkdownRenderedBlock,
+} from "@/lib/rosettaJobs";
 import { cn } from "@/lib/utils";
 import type {
   RosettaBlock,
@@ -16,6 +23,7 @@ import type {
   RosettaSourceDocumentFormat,
   RosettaSourceFile,
   RosettaTranslationFile,
+  RosettaTranslationOutputFormat,
   Segment,
   TranslationSegment,
 } from "../../types/rosetta";
@@ -27,6 +35,11 @@ type PreviewSide = "source" | "translation";
 export function DocumentPreview({
   jobId = null,
   document,
+  selectedOutputFormat,
+  pdfMarkdownComponentStatus = null,
+  pdfMarkdownExtractionStatus = null,
+  pdfMarkdownPreview = null,
+  pdfMarkdownPreviewError = null,
   hoveredBlockId,
   isTranslating = false,
   liveProgress,
@@ -64,6 +77,11 @@ export function DocumentPreview({
   /// the block-list rendering.
   jobId?: string | null;
   document: RosettaDocument | null;
+  selectedOutputFormat?: RosettaTranslationOutputFormat;
+  pdfMarkdownComponentStatus?: PdfMarkdownComponentStatus | null;
+  pdfMarkdownExtractionStatus?: PdfMarkdownExtractionStatus | null;
+  pdfMarkdownPreview?: PdfMarkdownPreview | null;
+  pdfMarkdownPreviewError?: string | null;
   hoveredBlockId?: string | null;
   /// True while a translation run is actively writing segments. PDF preview
   /// uses this to differentiate "翻译中" from "等待翻译"; other formats ignore.
@@ -75,7 +93,7 @@ export function DocumentPreview({
   layout?: "bilingual" | "source";
   onBlockHover?: (blockId: string) => void;
   onBlockLeave?: () => void;
-  onToggleBlockSelection?: (blockId: string) => void;
+  onToggleBlockSelection?: (blockIds: string[]) => void;
   selectedBlockIds?: string[];
   selectionEnabled?: boolean;
   sourceFile: RosettaSourceFile | null;
@@ -112,7 +130,13 @@ export function DocumentPreview({
   // PDF documents get a dedicated react-pdf-based preview. The temporary
   // markdown-block fallback below is kept as the renderer for txt/md and as
   // the "block list / edit" view that Phase 3 will add a toggle for.
-  if (document && jobId && document.format === "pdf" && layout === "bilingual") {
+  if (
+    document &&
+    jobId &&
+    document.format === "pdf" &&
+    layout === "bilingual" &&
+    selectedOutputFormat !== "markdown"
+  ) {
     // During a live translation, the persisted `translationFile.completedSegments`
     // only updates after the run finishes — relying on it makes the right-pane
     // placeholder stay frozen at "0 / N" until completion. Switch to the live
@@ -139,6 +163,34 @@ export function DocumentPreview({
         onPageCountChange={onPdfPageCountChange ?? (() => {})}
         onCurrentPageChange={onPdfCurrentPageChange ?? (() => {})}
         onSelectedPagesChange={onPdfSelectedPagesChange ?? (() => {})}
+      />
+    );
+  }
+
+  if (
+    document &&
+    jobId &&
+    document.format === "pdf" &&
+    layout === "bilingual" &&
+    selectedOutputFormat === "markdown"
+  ) {
+    return (
+      <PdfMarkdownDocumentPreview
+        jobId={jobId}
+        componentStatus={pdfMarkdownComponentStatus}
+        extractionStatus={pdfMarkdownExtractionStatus}
+        preview={pdfMarkdownPreview}
+        previewError={pdfMarkdownPreviewError}
+        hoveredBlockId={hoveredBlockId ?? null}
+        isTranslating={isTranslating}
+        onBlockHover={onBlockHover}
+        onBlockLeave={onBlockLeave}
+        onToggleBlockSelection={onToggleBlockSelection}
+        selectedBlockIds={selectedBlockIds}
+        selectionEnabled={selectionEnabled}
+        sourceSegments={sourceSegments}
+        translationFile={translationFile}
+        translationSegments={translationSegments}
       />
     );
   }
@@ -300,6 +352,377 @@ export function DocumentPreview({
   );
 }
 
+function PdfMarkdownDocumentPreview({
+  jobId,
+  componentStatus,
+  extractionStatus,
+  preview,
+  previewError,
+  hoveredBlockId,
+  isTranslating,
+  onBlockHover,
+  onBlockLeave,
+  onToggleBlockSelection,
+  selectedBlockIds,
+  selectionEnabled,
+  sourceSegments,
+  translationFile,
+  translationSegments,
+}: {
+  jobId: string;
+  componentStatus: PdfMarkdownComponentStatus | null;
+  extractionStatus: PdfMarkdownExtractionStatus | null;
+  preview: PdfMarkdownPreview | null;
+  previewError: string | null;
+  hoveredBlockId: string | null;
+  isTranslating: boolean;
+  onBlockHover?: (blockId: string) => void;
+  onBlockLeave?: () => void;
+  onToggleBlockSelection?: (blockIds: string[]) => void;
+  selectedBlockIds: string[];
+  selectionEnabled: boolean;
+  sourceSegments: Segment[];
+  translationFile: RosettaTranslationFile | null;
+  translationSegments: TranslationSegment[];
+}) {
+  const statusMessage = pdfMarkdownPreviewStatus(
+    componentStatus,
+    extractionStatus,
+    previewError,
+  );
+  if (statusMessage || !preview) {
+    return (
+      <Card className="flex h-full min-h-0 items-center justify-center py-0">
+        <div className="max-w-md px-8 text-center">
+          <p className="text-sm font-medium text-foreground">
+            {statusMessage?.title ?? "正在生成 Markdown 预览"}
+          </p>
+          {statusMessage?.detail ? (
+            <p className="mt-1.5 text-xs leading-5 text-muted-foreground">
+              {statusMessage.detail}
+            </p>
+          ) : null}
+        </div>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="flex h-full min-h-0 flex-col gap-0 overflow-hidden py-0">
+      <div className="grid grid-cols-2 border-b bg-muted/40 text-sm text-muted-foreground">
+        <div className="border-r px-4 py-3">原文 Markdown</div>
+        <div className="flex items-center justify-between gap-3 px-4 py-3">
+          <span>译文 Markdown</span>
+          {translationFile ? (
+            <Badge variant="outline">
+              {languageLabel(translationFile.targetLang)}
+            </Badge>
+          ) : null}
+        </div>
+      </div>
+      <div className="grid min-h-0 flex-1 grid-cols-2">
+        <PdfMarkdownPane
+          blocks={preview.sourceBlocks}
+          hoveredBlockId={hoveredBlockId}
+          isTranslating={isTranslating}
+          jobId={jobId}
+          onBlockHover={onBlockHover}
+          onBlockLeave={onBlockLeave}
+          onToggleBlockSelection={onToggleBlockSelection}
+          selectedBlockIds={selectedBlockIds}
+          selectionEnabled={selectionEnabled}
+          side="source"
+          sourceSegments={sourceSegments}
+          translationSegments={translationSegments}
+        />
+        {translationFile && preview.translationBlocks ? (
+          <PdfMarkdownPane
+            blocks={preview.translationBlocks}
+            hoveredBlockId={hoveredBlockId}
+            isTranslating={isTranslating}
+            jobId={jobId}
+            onBlockHover={onBlockHover}
+            onBlockLeave={onBlockLeave}
+            onToggleBlockSelection={onToggleBlockSelection}
+            selectedBlockIds={selectedBlockIds}
+            selectionEnabled={selectionEnabled}
+            side="translation"
+            sourceSegments={sourceSegments}
+            translationSegments={translationSegments}
+          />
+        ) : (
+          <div className="flex min-h-0 items-center justify-center bg-background px-8 text-center text-sm text-muted-foreground">
+            选择目标语言后开始翻译。
+          </div>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+function PdfMarkdownPane({
+  blocks,
+  hoveredBlockId,
+  isTranslating,
+  jobId,
+  onBlockHover,
+  onBlockLeave,
+  onToggleBlockSelection,
+  selectedBlockIds,
+  selectionEnabled,
+  side,
+  sourceSegments,
+  translationSegments,
+}: {
+  blocks: PdfMarkdownRenderedBlock[];
+  hoveredBlockId: string | null;
+  isTranslating: boolean;
+  jobId: string;
+  onBlockHover?: (blockId: string) => void;
+  onBlockLeave?: () => void;
+  onToggleBlockSelection?: (blockIds: string[]) => void;
+  selectedBlockIds: string[];
+  selectionEnabled: boolean;
+  side: PreviewSide;
+  sourceSegments: Segment[];
+  translationSegments: TranslationSegment[];
+}) {
+  const paneRef = useRef<HTMLDivElement>(null);
+  const segmentsByBlock = useMemo(
+    () => groupSegmentsByBlock(sourceSegments),
+    [sourceSegments],
+  );
+  const translationBySegmentId = useMemo(
+    () =>
+      new Map(
+        translationSegments.map((segment) => [
+          segment.sourceSegmentId,
+          segment,
+        ]),
+      ),
+    [translationSegments],
+  );
+  const virtualizer = useVirtualizer({
+    count: blocks.length,
+    getScrollElement: () => paneRef.current,
+    estimateSize: () => 112,
+    overscan: 8,
+  });
+
+  return (
+    <ScrollArea
+      className={cn("h-full min-h-0 bg-background", side === "source" && "border-r")}
+      viewportRef={paneRef}
+    >
+      <div className="mx-auto max-w-(--rosetta-reader-max-width) px-6 py-6">
+        <div
+          className="relative w-full"
+          style={{ height: `${virtualizer.getTotalSize()}px` }}
+        >
+          {virtualizer.getVirtualItems().map((item) => {
+            const block = blocks[item.index];
+            const groupSegments = block.blockIds.flatMap(
+              (blockId) => segmentsByBlock.get(blockId) ?? [],
+            );
+            const activity = blockTranslationActivity(
+              groupSegments,
+              translationBySegmentId,
+              isTranslating,
+            );
+            const selected = block.blockIds.some((id) =>
+              selectedBlockIds.includes(id),
+            );
+            const selectable = selectionEnabled && groupSegments.length > 0;
+            const primaryBlockId = block.blockIds[0] ?? null;
+            const emptyTranslation =
+              side === "translation" &&
+              groupSegments.length > 0 &&
+              groupSegments.some(
+                (segment) =>
+                  !translationBySegmentId
+                    .get(segment.id)
+                    ?.translatedText?.trim(),
+              );
+
+            return (
+              <div
+                className="absolute left-0 top-0 w-full"
+                data-index={item.index}
+                key={`${side}-${block.blockIds.join("-")}-${item.index}`}
+                ref={virtualizer.measureElement}
+                style={{ transform: `translateY(${item.start}px)` }}
+              >
+                <div
+                  aria-pressed={selectable ? selected : undefined}
+                  className={cn(
+                    "relative rounded-md px-3 py-2 transition-colors",
+                    selectable && "cursor-pointer",
+                    primaryBlockId === hoveredBlockId && "bg-muted/60",
+                    selected && "bg-primary/10 ring-1 ring-primary/25",
+                    side === "source" &&
+                      activity === "translating" &&
+                      "rosetta-markdown-source-scanning",
+                  )}
+                  onClick={() => {
+                    if (selectable) onToggleBlockSelection?.(block.blockIds);
+                  }}
+                  onKeyDown={(event) => {
+                    if (!selectable || (event.key !== "Enter" && event.key !== " ")) return;
+                    event.preventDefault();
+                    onToggleBlockSelection?.(block.blockIds);
+                  }}
+                  onMouseEnter={() => {
+                    if (primaryBlockId) onBlockHover?.(primaryBlockId);
+                  }}
+                  onMouseLeave={onBlockLeave}
+                  role={selectable ? "button" : undefined}
+                  tabIndex={selectable ? 0 : undefined}
+                  title={selectable ? "点击选择重翻" : undefined}
+                >
+                  {emptyTranslation ? (
+                    isTranslating ? (
+                      <MarkdownTranslationSkeleton active={activity === "translating"} />
+                    ) : (
+                      <p className="min-h-7 text-sm leading-7 text-muted-foreground">
+                        等待翻译
+                      </p>
+                    )
+                  ) : (
+                    <div className="rosetta-markdown-preview">
+                      <ReactMarkdown
+                        remarkPlugins={[remarkGfm]}
+                        components={{
+                          img: (props) => (
+                            <PdfMarkdownImage
+                              jobId={jobId}
+                              src={typeof props.src === "string" ? props.src : undefined}
+                              alt={props.alt}
+                            />
+                          ),
+                        }}
+                      >
+                        {block.markdown}
+                      </ReactMarkdown>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </ScrollArea>
+  );
+}
+
+function PdfMarkdownImage({
+  jobId,
+  src,
+  alt,
+}: {
+  jobId: string;
+  src?: string;
+  alt?: string;
+}) {
+  const [objectUrl, setObjectUrl] = useState<string | null>(null);
+  const [unavailable, setUnavailable] = useState(false);
+
+  useEffect(() => {
+    if (!src) {
+      setUnavailable(true);
+      return;
+    }
+    let active = true;
+    let nextUrl: string | null = null;
+    setObjectUrl(null);
+    setUnavailable(false);
+    void readPdfMarkdownAsset(jobId, src)
+      .then((bytes) => {
+        if (!active) return;
+        nextUrl = URL.createObjectURL(
+          new Blob([bytes.slice().buffer as ArrayBuffer], {
+            type: pdfMarkdownImageMime(src),
+          }),
+        );
+        setObjectUrl(nextUrl);
+      })
+      .catch(() => {
+        if (active) setUnavailable(true);
+      });
+    return () => {
+      active = false;
+      if (nextUrl) URL.revokeObjectURL(nextUrl);
+    };
+  }, [jobId, src]);
+
+  if (unavailable || !src) {
+    return (
+      <span className="block rounded-md border border-dashed px-3 py-6 text-center text-xs text-muted-foreground">
+        图片不可用
+      </span>
+    );
+  }
+  if (!objectUrl) {
+    return <span className="block h-24 animate-pulse rounded-md bg-muted" />;
+  }
+  return (
+    <img
+      src={objectUrl}
+      alt={alt ?? ""}
+      className="h-auto max-w-full rounded-sm"
+      loading="lazy"
+    />
+  );
+}
+
+function pdfMarkdownImageMime(path: string) {
+  const extension = path.split(".").pop()?.toLowerCase();
+  if (extension === "jpg" || extension === "jpeg") return "image/jpeg";
+  if (extension === "webp") return "image/webp";
+  return "image/png";
+}
+
+function pdfMarkdownPreviewStatus(
+  componentStatus: PdfMarkdownComponentStatus | null,
+  extractionStatus: PdfMarkdownExtractionStatus | null,
+  previewError: string | null,
+) {
+  if (previewError) {
+    return { title: "Markdown 预览不可用", detail: previewError };
+  }
+  if (!componentStatus) {
+    return { title: "正在检查 Markdown 组件", detail: null };
+  }
+  if (componentStatus.state === "unsupported") {
+    return { title: "当前平台不支持 Markdown 输出", detail: componentStatus.message };
+  }
+  if (componentStatus.state === "not-installed") {
+    return { title: "Markdown 组件尚未安装", detail: "可从上方工具栏开始下载。" };
+  }
+  if (componentStatus.state === "needs-repair") {
+    return { title: "Markdown 组件需要修复", detail: componentStatus.message };
+  }
+  if (!extractionStatus || extractionStatus.state === "idle") {
+    return { title: "尚未提取 Markdown", detail: "可从上方工具栏开始提取。" };
+  }
+  if (extractionStatus.state === "extracting") {
+    return {
+      title: "正在提取 Markdown",
+      detail: `${extractionStatus.completedPages}/${extractionStatus.pageCount || "-"} 页`,
+    };
+  }
+  if (extractionStatus.state === "stale") {
+    return { title: "源 PDF 已变化", detail: "需要重新提取 Markdown。" };
+  }
+  if (extractionStatus.state === "failed") {
+    return { title: "Markdown 提取失败", detail: "可在上方工具栏重试。" };
+  }
+  if (extractionStatus.state === "cancelled") {
+    return { title: "Markdown 提取已取消", detail: "已完成的临时结果不会作为就绪数据使用。" };
+  }
+  return null;
+}
+
 function SourcePaneHeader({
   canEdit,
   editing,
@@ -389,7 +812,7 @@ function PreviewPane({
   hoveredBlockId: string | null;
   onBlockHover?: (blockId: string) => void;
   onBlockLeave?: () => void;
-  onToggleBlockSelection?: (blockId: string) => void;
+  onToggleBlockSelection?: (blockIds: string[]) => void;
   onScroll: () => void;
   paneRef: RefObject<HTMLDivElement>;
   selectedBlockIds: string[];
@@ -500,7 +923,7 @@ function PreviewBlock({
   hovered: boolean;
   onBlockHover?: (blockId: string) => void;
   onBlockLeave?: () => void;
-  onToggleBlockSelection?: (blockId: string) => void;
+  onToggleBlockSelection?: (blockIds: string[]) => void;
   selected: boolean;
   selectionEnabled: boolean;
   segmentsByBlock: Map<string, Segment[]>;
@@ -548,7 +971,7 @@ function PreviewBlock({
       data-block-id={block.id}
       onClick={() => {
         if (selectable) {
-          onToggleBlockSelection?.(block.id);
+          onToggleBlockSelection?.([block.id]);
         }
       }}
       onKeyDown={(event) => {
@@ -556,7 +979,7 @@ function PreviewBlock({
           return;
         }
         event.preventDefault();
-        onToggleBlockSelection?.(block.id);
+        onToggleBlockSelection?.([block.id]);
       }}
       onMouseEnter={() => onBlockHover?.(block.id)}
       onMouseLeave={onBlockLeave}

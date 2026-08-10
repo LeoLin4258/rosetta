@@ -235,6 +235,8 @@ pub fn run() {
             rosetta_jobs::formats::pdf_markdown::get_pdf_markdown_extraction_status,
             rosetta_jobs::formats::pdf_markdown::start_pdf_markdown_extraction,
             rosetta_jobs::formats::pdf_markdown::cancel_pdf_markdown_extraction,
+            rosetta_jobs::formats::pdf_markdown::render_pdf_markdown_preview,
+            rosetta_jobs::formats::pdf_markdown::read_pdf_markdown_asset,
             local_data_reset::clear_rosetta_local_data,
             onboarding::complete_onboarding_and_open_main,
             onboarding::get_onboarding_decision,

@@ -19,14 +19,17 @@ use tauri::{AppHandle, Emitter, State};
 use crate::{
     managed_pdf_markdown,
     rosetta_jobs::{
-        document::sync_document_file_statuses,
+        document::{block_translation, segments_by_block, sync_document_file_statuses},
         formats::pdf::source_state,
         model::{RosettaBlock, RosettaDocument, RosettaJobBundle, RosettaSourceFile, Segment},
         path::checked_job_dir,
         segmenter::split_long_text,
         store::{load_job_bundle, read_json},
+        translation_files::{load_translation_file_bundle, translated_source_segments},
     },
 };
+
+use self::render::{render_blocks, RenderedMarkdownBlock};
 
 pub const EXTRACTION_SCHEMA: &str = "rosetta-pdf-markdown-extraction/1";
 pub const POLICY_VERSION: &str = "rosetta-pdf-markdown-normalizer/2";
@@ -91,6 +94,13 @@ pub struct PdfMarkdownExtractionStatus {
     pub page_count: u32,
     pub error_code: Option<String>,
     pub run_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PdfMarkdownPreview {
+    pub source_blocks: Vec<RenderedMarkdownBlock>,
+    pub translation_blocks: Option<Vec<RenderedMarkdownBlock>>,
 }
 
 #[derive(Default)]
@@ -949,6 +959,124 @@ pub fn get_pdf_markdown_extraction_status(
     job_id: String,
 ) -> Result<PdfMarkdownExtractionStatus, String> {
     Ok(state.snapshot(&app, &job_id))
+}
+
+#[tauri::command]
+pub fn render_pdf_markdown_preview(
+    app: AppHandle,
+    job_id: String,
+    source_file_id: String,
+    translation_file_id: Option<String>,
+) -> Result<PdfMarkdownPreview, String> {
+    let bundle =
+        load_job_bundle(&app, &job_id).map_err(|_| "pdf-markdown-job-unavailable".to_string())?;
+    let source_file = bundle
+        .document
+        .files
+        .iter()
+        .find(|file| file.id == source_file_id && file.format == "pdf")
+        .ok_or_else(|| "pdf-markdown-source-invalid".to_string())?;
+    let blocks = bundle
+        .document
+        .blocks
+        .iter()
+        .filter(|block| {
+            block.file_id.as_deref().unwrap_or("file-1") == source_file.id
+                && render::is_pdf_markdown_block(block)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let source_text = blocks
+        .iter()
+        .map(|block| (block.id.clone(), block.source_text.clone()))
+        .collect::<HashMap<_, _>>();
+    let source_blocks = render_blocks(&blocks, &source_text);
+
+    let translation_blocks = translation_file_id
+        .map(|translation_file_id| {
+            let translation = load_translation_file_bundle(&app, &job_id, &translation_file_id)
+                .map_err(|_| "pdf-markdown-translation-unavailable".to_string())?;
+            if translation.translation_file.source_file_id != source_file.id
+                || translation.translation_file.output_format != "markdown"
+            {
+                return Err("pdf-markdown-translation-identity-invalid".to_string());
+            }
+            let translated_segments = translated_source_segments(
+                &bundle.segments,
+                &translation.segments,
+                &source_file.id,
+                &translation.translation_file.target_lang,
+            );
+            let by_block = segments_by_block(&translated_segments);
+            let translated_text = blocks
+                .iter()
+                .map(|block| {
+                    let text = if block.should_translate {
+                        block_translation(
+                            block,
+                            &by_block,
+                            &translation.translation_file.target_lang,
+                        )
+                    } else {
+                        block.source_text.clone()
+                    };
+                    (block.id.clone(), text)
+                })
+                .collect::<HashMap<_, _>>();
+            Ok(render_blocks(&blocks, &translated_text))
+        })
+        .transpose()?;
+
+    Ok(PdfMarkdownPreview {
+        source_blocks,
+        translation_blocks,
+    })
+}
+
+#[tauri::command]
+pub fn read_pdf_markdown_asset(
+    app: AppHandle,
+    job_id: String,
+    asset_path: String,
+) -> Result<tauri::ipc::Response, String> {
+    let root = crate::rosetta_jobs::path::jobs_root(&app)?;
+    let job_dir = checked_job_dir(&root, &job_id)?;
+    let path = resolve_preview_asset(&job_dir, &asset_path)?;
+    let bytes = fs::read(path).map_err(|_| "pdf-markdown-asset-unreadable".to_string())?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+fn resolve_preview_asset(job_dir: &Path, asset_path: &str) -> Result<PathBuf, String> {
+    let relative = asset_path
+        .strip_prefix("pdf-markdown/images/")
+        .filter(|relative| {
+            !relative.is_empty() && !relative.contains('/') && !relative.contains('\\')
+        })
+        .ok_or_else(|| "pdf-markdown-asset-path-invalid".to_string())?;
+    let extension = Path::new(relative)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .ok_or_else(|| "pdf-markdown-asset-type-invalid".to_string())?;
+    if !matches!(extension.as_str(), "png" | "jpg" | "jpeg" | "webp") {
+        return Err("pdf-markdown-asset-type-invalid".into());
+    }
+    let image_root = images_root(job_dir)
+        .canonicalize()
+        .map_err(|_| "pdf-markdown-asset-root-missing".to_string())?;
+    let candidate = image_root.join(relative);
+    let canonical = candidate
+        .canonicalize()
+        .map_err(|_| "pdf-markdown-asset-missing".to_string())?;
+    let metadata =
+        fs::metadata(&canonical).map_err(|_| "pdf-markdown-asset-missing".to_string())?;
+    if !canonical.starts_with(&image_root)
+        || !metadata.is_file()
+        || metadata.len() > MAX_IMAGE_BYTES
+    {
+        return Err("pdf-markdown-asset-invalid".into());
+    }
+    Ok(canonical)
 }
 
 #[tauri::command]

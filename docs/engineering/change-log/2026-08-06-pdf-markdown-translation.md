@@ -2,16 +2,16 @@
 
 Date: 2026-08-06
 
-Status: Checkpoint 0 Go; Checkpoints 1-4 implemented; Checkpoint 2 artifacts published; visual regression pending
+Status: Checkpoint 0 Go; Checkpoints 1-5 implemented; Checkpoint 2 artifacts published; visual regression pending
 
 ## Scope
 
 This aggregate change log tracks the implementation authorized by ADR 0078 and
 `plans/2026-08-06-pdf-markdown-translation.md`. The delivered scope includes
 the release-quality spike, output-qualified data model, managed
-component/isolated worker, extraction derivative and deterministic Markdown
-rendering. It does not add the frontend output selector or multi-file Markdown
-asset export.
+component/isolated worker, extraction derivative, deterministic Markdown
+rendering and workbench integration. Multi-file Markdown asset export remains
+outside the delivered scope until Checkpoint 6.
 
 ## Changes
 
@@ -81,6 +81,28 @@ asset export.
   `outputFormat`, so a PDF source's Markdown sibling consumes the ordinary
   translated source segments without changing PDF source identity or native
   PDF behavior.
+- Added a compact persisted `PDF | Markdown` output selector for PDF sources.
+  Native PDF mode keeps the existing page navigation, page-range selection,
+  force-retranslate, progress, preview and export behavior; Markdown mode uses
+  whole-document extraction and ordinary segment translation.
+- Added explicit Markdown component install, repair and cancellation actions,
+  download progress, and extraction idle/extracting/ready/stale/failed/cancelled
+  states. Installation and extraction start only from explicit user actions.
+- Made workspace selection and active-run state output-qualified, including an
+  exact target-language translation-file match. Switching modes does not
+  cancel the sibling run or force a completed extraction to change the user's
+  current output selection.
+- Added a narrow shared-renderer preview command and a virtualized two-pane
+  Markdown workbench preview. Table render groups preserve all block IDs for
+  selection and pending groups never substitute source text as translated
+  content.
+- Added bounded Markdown image preview reads through job-relative byte IPC.
+  The backend accepts only flat PNG/JPEG/WebP references under the canonical
+  per-job image root, rejects traversal, nesting and files over 32 MiB, and
+  never exposes absolute document paths.
+- Changed the enabled single-file translation export write to stage and flush
+  a same-directory temporary file before atomic replacement. Checkpoint 6
+  still owns the multi-file Markdown-plus-assets transaction and rollback.
 
 ## Validation
 
@@ -106,10 +128,12 @@ asset export.
   zero invalid page identities and zero unknown box classes.
 - `pnpm typecheck`: passed after the output-qualified frontend/store changes.
 - `cargo check`: passed with existing dead-code warnings only.
-- `cargo test rosetta_jobs`: passed, 103 tests including legacy
+- `cargo test rosetta_jobs`: passed, 104 tests including legacy
   PDF/Markdown/TXT inference, output ID qualification, format-matrix rejection
   and PDF/Markdown progress isolation, pinned `to_json()` normalization,
   translation compatibility and deterministic Markdown rendering.
+- `python rosetta-app/src-tauri/scripts/test-rosetta-pdf-markdown-worker.py`:
+  passed, 5 worker protocol/path tests.
 - Focused `cargo test managed_pdf_markdown`: 15 passed; the exact native
   release-archive test remains ignored unless its explicit artifact environment
   variable is supplied. Worker protocol tests passed 5/5 and the Checkpoint 0
@@ -168,5 +192,12 @@ Checkpoint 4 reuses the ordinary translation-file runner and makes
 `translationFile.outputFormat` the export rendering authority. The shared
 renderer emits deterministic structured block groups and covers headings,
 lists, captions, footnotes, media placeholders and both GFM and inline-HTML
-table modes. Frontend preview integration and atomic multi-file image export
-remain Checkpoints 5 and 6.
+table modes.
+
+Checkpoint 5 adds the output-qualified Workbench path, managed component and
+extraction lifecycle controls, and the virtualized shared-renderer preview.
+Automated validation covers compilation, existing job behavior, managed
+component isolation and bounded asset-path reads. Manual runtime/visual
+verification was explicitly deferred for this checkpoint. Atomic multi-file
+Markdown plus image export, destination rollback and final corpus/packaging
+hardening remain Checkpoint 6.

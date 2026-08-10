@@ -1,4 +1,16 @@
-use std::{collections::HashMap, fs, path::Path};
+use std::{
+    collections::HashMap,
+    fs,
+    path::Path,
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt;
+#[cfg(windows)]
+use windows_sys::Win32::Storage::FileSystem::{
+    MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+};
 
 use serde_json::Value;
 use tauri::AppHandle;
@@ -71,11 +83,7 @@ pub(crate) fn export_job_file(
         &source_file.format,
     );
 
-    if let Some(parent) = target_path.parent() {
-        fs::create_dir_all(parent).map_err(|error| format!("无法创建导出目录: {error}"))?;
-    }
-    fs::write(target_path, output.as_bytes())
-        .map_err(|error| format!("无法写入导出文件: {error}"))?;
+    write_export_atomically(target_path, output.as_bytes())?;
 
     job.exported_at = Some(timestamp_ms_string());
     job.updated_at = timestamp_ms_string();
@@ -90,6 +98,63 @@ pub(crate) fn export_job_file(
         files_written: 1,
         message: "导出完成。".to_string(),
     })
+}
+
+fn write_export_atomically(target_path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let parent = target_path
+        .parent()
+        .ok_or_else(|| "导出路径无效。".to_string())?;
+    fs::create_dir_all(parent).map_err(|_| "无法创建导出目录。".to_string())?;
+    let filename = target_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("translation");
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let staged = parent.join(format!(".{filename}.{}.{}.tmp", std::process::id(), nonce));
+    fs::write(&staged, bytes).map_err(|_| "无法写入临时导出文件。".to_string())?;
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&staged)
+        .and_then(|file| file.sync_all())
+        .map_err(|_| "无法刷写临时导出文件。".to_string())?;
+    if let Err(error) = replace_export_file(&staged, target_path) {
+        let _ = fs::remove_file(&staged);
+        return Err(error);
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_export_file(staged: &Path, target_path: &Path) -> Result<(), String> {
+    fs::rename(staged, target_path).map_err(|_| "无法提交导出文件。".to_string())
+}
+
+#[cfg(windows)]
+fn replace_export_file(staged: &Path, target_path: &Path) -> Result<(), String> {
+    let staged_wide = staged
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let target_wide = target_path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let moved = unsafe {
+        MoveFileExW(
+            staged_wide.as_ptr(),
+            target_wide.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        return Err("无法提交导出文件。".to_string());
+    }
+    Ok(())
 }
 
 pub(crate) fn export_translation_file(
@@ -156,11 +221,7 @@ pub(crate) fn export_translation_file(
         &translation_file.output_format,
     );
 
-    if let Some(parent) = target_path.parent() {
-        fs::create_dir_all(parent).map_err(|error| format!("无法创建导出目录: {error}"))?;
-    }
-    fs::write(target_path, output.as_bytes())
-        .map_err(|error| format!("无法写入导出文件: {error}"))?;
+    write_export_atomically(target_path, output.as_bytes())?;
 
     let now = timestamp_ms_string();
     translation_files[translation_file_index].exported_at = Some(now.clone());
