@@ -22,8 +22,8 @@ fn shard(page: u32) -> PageShard {
 
 #[test]
 fn protocol_close_is_classified_as_cancellation() {
-    assert!(is_cancelled_extraction_error("worker protocol closed"));
     assert!(is_cancelled_extraction_error("worker-stopping"));
+    assert!(!is_cancelled_extraction_error("worker protocol closed"));
     assert!(!is_cancelled_extraction_error("extraction-failed"));
 }
 

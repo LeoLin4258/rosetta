@@ -127,6 +127,12 @@ outside the delivered scope until Checkpoint 6.
 - Preserved page totals and committed-page progress on extraction failure and
   surfaced the durable error code as actionable workbench copy instead of a
   generic retry-only state.
+- Hardened the post-Checkpoint 6 failure paths found during code review:
+  unexpected worker protocol closure is now a failed extraction rather than a
+  user cancellation, while an explicit stop still maps to `worker-stopping`.
+  Multi-file export now removes destination backups only after a successful
+  commit, preserving the last good `.md` or `.assets` backup if rollback is
+  itself incomplete.
 
 ## Validation
 
@@ -162,6 +168,12 @@ outside the delivered scope until Checkpoint 6.
   Markdown derivative-cleanup case and cancellation error classification.
 - `python rosetta-app/src-tauri/scripts/test-rosetta-pdf-markdown-worker.py`:
   passed, 5 worker protocol/path tests.
+- Post-review local validation on 2026-08-13: `pnpm typecheck`, `cargo check`,
+  `cargo test rosetta_jobs` (112 passed), focused `cargo test
+  managed_pdf_markdown` (18 passed, 1 exact-artifact test ignored), focused PDF
+  Markdown/export tests (12 and 6 passed), the 5-test worker protocol suite and
+  the 6-test Checkpoint 0 harness all passed. Existing unrelated dead-code
+  warnings remain unchanged.
 - Focused `cargo test managed_pdf_markdown`: 15 passed; the exact native
   release-archive test remains ignored unless its explicit artifact environment
   variable is supplied. Worker protocol tests passed 5/5 and the Checkpoint 0

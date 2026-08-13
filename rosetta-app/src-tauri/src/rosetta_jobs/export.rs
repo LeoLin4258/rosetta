@@ -145,6 +145,8 @@ enum PdfMarkdownExportFault {
     None,
     #[cfg(test)]
     AfterMarkdownCommit,
+    #[cfg(test)]
+    AfterMarkdownCommitWithFailedRollback,
 }
 
 struct StagedPdfMarkdownAsset {
@@ -299,8 +301,10 @@ fn write_pdf_markdown_export_with_fault(
     );
     remove_export_path(&staged_markdown);
     remove_export_path(&staged_assets);
-    remove_export_path(&markdown_backup);
-    remove_export_path(&assets_backup);
+    if commit_result.is_ok() {
+        remove_export_path(&markdown_backup);
+        remove_export_path(&assets_backup);
+    }
     commit_result?;
 
     let asset_bytes = assets.iter().try_fold(0u64, |total, asset| {
@@ -461,7 +465,11 @@ fn commit_pdf_markdown_export(
         fs::rename(staged_markdown, target_markdown)
             .map_err(|_| "无法提交 Markdown 导出。".to_string())?;
         #[cfg(test)]
-        if fault == PdfMarkdownExportFault::AfterMarkdownCommit {
+        if matches!(
+            fault,
+            PdfMarkdownExportFault::AfterMarkdownCommit
+                | PdfMarkdownExportFault::AfterMarkdownCommitWithFailedRollback
+        ) {
             return Err("injected-pdf-markdown-export-failure".to_string());
         }
         let _ = fault;
@@ -473,7 +481,14 @@ fn commit_pdf_markdown_export(
         remove_export_path(target_markdown);
         remove_export_path(target_assets);
         if had_markdown {
-            let _ = fs::rename(markdown_backup, target_markdown);
+            #[cfg(test)]
+            let inject_failed_rollback =
+                fault == PdfMarkdownExportFault::AfterMarkdownCommitWithFailedRollback;
+            #[cfg(not(test))]
+            let inject_failed_rollback = false;
+            if !inject_failed_rollback {
+                let _ = fs::rename(markdown_backup, target_markdown);
+            }
         }
         if had_assets {
             let _ = fs::rename(assets_backup, target_assets);
@@ -1109,6 +1124,45 @@ mod pdf_markdown_export_tests {
         assert!(
             leftovers.is_empty(),
             "leftover staging paths: {leftovers:?}"
+        );
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn pdf_markdown_export_preserves_backup_when_rollback_is_incomplete() {
+        let root = temp_dir("pdf-markdown-export-incomplete-rollback");
+        let job_dir = root.join("job");
+        write_job_asset(&job_dir, "page-0001-picture-01.png", b"new-image");
+        let source = "pdf-markdown/images/page-0001-picture-01.png";
+        let target = root.join("document.md");
+        fs::write(&target, b"old markdown").expect("write old markdown");
+
+        write_pdf_markdown_export_with_fault(
+            &job_dir,
+            &target,
+            &[asset_block("picture", "picture", source)],
+            &format!("![Figure]({source})"),
+            "markdown",
+            PdfMarkdownExportFault::AfterMarkdownCommitWithFailedRollback,
+        )
+        .expect_err("injected incomplete rollback");
+
+        let backups = fs::read_dir(&root)
+            .expect("list export root")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        name.starts_with(".document.md.") && name.ends_with(".markdown.bak")
+                    })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(
+            fs::read(&backups[0]).expect("read retained backup"),
+            b"old markdown"
         );
         fs::remove_dir_all(root).ok();
     }

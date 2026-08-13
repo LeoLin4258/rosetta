@@ -1164,7 +1164,7 @@ pub async fn start_pdf_markdown_extraction(
 }
 
 fn is_cancelled_extraction_error(error: &str) -> bool {
-    matches!(error, "worker protocol closed" | "worker-stopping")
+    error == "worker-stopping"
 }
 
 #[tauri::command]

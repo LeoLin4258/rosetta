@@ -270,6 +270,14 @@ fn retryable_start_error(error: &str) -> bool {
     )
 }
 
+fn extraction_read_error(error: String, stopping: bool) -> String {
+    if stopping && error == "worker protocol closed" {
+        "worker-stopping".into()
+    } else {
+        error
+    }
+}
+
 async fn spawn_worker(
     app: &AppHandle,
     state: &PdfMarkdownWorkerState,
@@ -455,6 +463,7 @@ pub async fn extract_window(
         let event = match event {
             Ok(event) => event,
             Err(error) => {
+                let error = extraction_read_error(error, state.stopping.load(Ordering::SeqCst));
                 discard_process(&state, &mut guard).await;
                 state.set_status("failed", Some(&error));
                 return Err(error);
@@ -585,6 +594,22 @@ mod tests {
         assert!(retryable_start_error("worker-protocol-invalid-json"));
         assert!(!retryable_start_error("version-mismatch"));
         assert!(!retryable_start_error("non-cpu-provider"));
+    }
+
+    #[test]
+    fn protocol_close_is_cancellation_only_while_worker_is_stopping() {
+        assert_eq!(
+            extraction_read_error("worker protocol closed".into(), true),
+            "worker-stopping"
+        );
+        assert_eq!(
+            extraction_read_error("worker protocol closed".into(), false),
+            "worker protocol closed"
+        );
+        assert_eq!(
+            extraction_read_error("worker protocol read failed".into(), true),
+            "worker protocol read failed"
+        );
     }
 
     #[test]
