@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { RefObject } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { Badge } from "@/components/ui/badge";
@@ -10,6 +10,7 @@ import { Card } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { languageLabel } from "@/lib/languages";
 import {
+  pdfMarkdownErrorMessage,
   readPdfMarkdownAsset,
   type PdfMarkdownComponentStatus,
   type PdfMarkdownExtractionStatus,
@@ -502,6 +503,18 @@ function PdfMarkdownPane({
       ),
     [translationSegments],
   );
+  const markdownComponents = useMemo<Components>(
+    () => ({
+      img: (props) => (
+        <PdfMarkdownImage
+          jobId={jobId}
+          src={typeof props.src === "string" ? props.src : undefined}
+          alt={props.alt}
+        />
+      ),
+    }),
+    [jobId],
+  );
   const virtualizer = useVirtualizer({
     count: blocks.length,
     getScrollElement: () => paneRef.current,
@@ -591,15 +604,7 @@ function PdfMarkdownPane({
                     <div className="rosetta-markdown-preview">
                       <ReactMarkdown
                         remarkPlugins={[remarkGfm]}
-                        components={{
-                          img: (props) => (
-                            <PdfMarkdownImage
-                              jobId={jobId}
-                              src={typeof props.src === "string" ? props.src : undefined}
-                              alt={props.alt}
-                            />
-                          ),
-                        }}
+                        components={markdownComponents}
                       >
                         {block.markdown}
                       </ReactMarkdown>
@@ -715,7 +720,12 @@ function pdfMarkdownPreviewStatus(
     return { title: "源 PDF 已变化", detail: "需要重新提取 Markdown。" };
   }
   if (extractionStatus.state === "failed") {
-    return { title: "Markdown 提取失败", detail: "可在上方工具栏重试。" };
+    return {
+      title: "Markdown 提取失败",
+      detail:
+        pdfMarkdownErrorMessage(extractionStatus.errorCode) ??
+        "可在上方工具栏重试。",
+    };
   }
   if (extractionStatus.state === "cancelled") {
     return { title: "Markdown 提取已取消", detail: "已完成的临时结果不会作为就绪数据使用。" };

@@ -2628,11 +2628,15 @@ pub async fn delete_rosetta_job(
 }
 
 #[tauri::command]
-pub fn delete_rosetta_job_file(
+pub async fn delete_rosetta_job_file(
     app: AppHandle,
+    cancel_state: State<'_, PdfTranslationCancelState>,
+    extraction_state: State<'_, formats::pdf_markdown::PdfMarkdownExtractionState>,
     job_id: String,
     file_id: String,
 ) -> Result<RosettaJobFileDeleteResult, String> {
+    cancel_state.request_cancel_for_job(&job_id);
+    formats::pdf_markdown::cancel_for_job(&app, &extraction_state, &job_id).await;
     import::delete_job_file(&app, &job_id, &file_id)
 }
 

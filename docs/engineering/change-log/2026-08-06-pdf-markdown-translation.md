@@ -102,7 +102,31 @@ outside the delivered scope until Checkpoint 6.
   never exposes absolute document paths.
 - Changed the enabled single-file translation export write to stage and flush
   a same-directory temporary file before atomic replacement. Checkpoint 6
-  still owns the multi-file Markdown-plus-assets transaction and rollback.
+  now extends that boundary to the multi-file Markdown-plus-assets transaction.
+- Added PDF Markdown `.md` plus sibling `.assets/` export with strict output
+  identity and renderer-link validation, percent-encoded relative links,
+  SHA-256 image deduplication, aggregate result counts and recoverable
+  same-directory destination backups.
+- Streamed image hashing and staging through fixed-size buffers instead of
+  retaining every exported image in memory. Each asset remains capped at 32
+  MiB and is rehashed while copied so a concurrent cache change cannot produce
+  a mismatched staged export.
+- Added fault-injection coverage for rollback after the Markdown file commits,
+  plus invalid/missing/oversized asset, stale destination, deduplication and
+  staging-cleanup coverage.
+- File deletion now cancels the job's PDF and Markdown work before removing a
+  source and deletes PDF Markdown shards and images with the removed PDF.
+- Hardened first extraction after component installation: vendor stdout is
+  isolated from the JSONL protocol at both Python and native file-descriptor
+  levels, transient worker-start failures receive one bounded retry, failed
+  runs clean their temporary image directories, and cancellation uses the
+  worker's actual protocol-close error spelling.
+- Fixed the Rust JSONL event contract so camel-case worker payload fields such
+  as `integrationBoundary` and `cpuOnly` deserialize during the ready
+  handshake. Added a regression fixture for the exact 194-byte ready event.
+- Preserved page totals and committed-page progress on extraction failure and
+  surfaced the durable error code as actionable workbench copy instead of a
+  generic retry-only state.
 
 ## Validation
 
@@ -132,6 +156,10 @@ outside the delivered scope until Checkpoint 6.
   PDF/Markdown/TXT inference, output ID qualification, format-matrix rejection
   and PDF/Markdown progress isolation, pinned `to_json()` normalization,
   translation compatibility and deterministic Markdown rendering.
+- Checkpoint 6 Windows validation: `pnpm typecheck` passed; `cargo check`
+  passed with existing dead-code warnings only; `cargo test rosetta_jobs`
+  passed 111 tests, including five multi-file export/rollback cases, one PDF
+  Markdown derivative-cleanup case and cancellation error classification.
 - `python rosetta-app/src-tauri/scripts/test-rosetta-pdf-markdown-worker.py`:
   passed, 5 worker protocol/path tests.
 - Focused `cargo test managed_pdf_markdown`: 15 passed; the exact native
@@ -199,5 +227,7 @@ extraction lifecycle controls, and the virtualized shared-renderer preview.
 Automated validation covers compilation, existing job behavior, managed
 component isolation and bounded asset-path reads. Manual runtime/visual
 verification was explicitly deferred for this checkpoint. Atomic multi-file
-Markdown plus image export, destination rollback and final corpus/packaging
-hardening remain Checkpoint 6.
+Markdown plus image export, destination rollback and PDF derivative deletion
+are implemented for Checkpoint 6. Final release-corpus export inspection and
+the ordinary PDF visual regression with the overlay installed and absent
+remain pending manual acceptance gates.

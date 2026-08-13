@@ -8,6 +8,7 @@ import {
   getPdfMarkdownInstallProgress,
   getPdfMarkdownStatus,
   installPdfMarkdownComponent,
+  pdfMarkdownErrorMessage,
   repairPdfMarkdownComponent,
   startPdfMarkdownExtraction,
   subscribePdfMarkdownExtractionProgress,
@@ -141,7 +142,8 @@ export function usePdfMarkdownRuntime(jobId: string | null) {
       setExtractionStatus(result);
       return result;
     } catch (error) {
-      setLastError(toMessage(error));
+      const errorCode = toMessage(error);
+      setLastError(pdfMarkdownErrorMessage(errorCode) ?? errorCode);
       await refreshExtractionStatus();
       return null;
     } finally {
@@ -165,7 +167,8 @@ export function usePdfMarkdownRuntime(jobId: string | null) {
     componentStatus,
     installProgress,
     extractionStatus,
-    lastError,
+    lastError:
+      lastError ?? pdfMarkdownErrorMessage(extractionStatus?.errorCode),
     isInstalling,
     isStartingExtraction,
     refreshComponentStatus,

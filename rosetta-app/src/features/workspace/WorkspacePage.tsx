@@ -448,11 +448,13 @@ export function WorkspacePage() {
     };
   }, [
     activeJobId,
+    activeTranslationFile?.completedSegments,
+    activeTranslationFile?.failedSegments,
     activeTranslationFile?.id,
+    activeTranslationFile?.updatedAt,
     isPdfMarkdownOutput,
     pdfMarkdownRuntime.extractionStatus?.state,
-    sourceFile,
-    translationSegments,
+    sourceFile?.id,
   ]);
 
   // Register Tauri window file-drop events.

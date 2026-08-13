@@ -926,11 +926,13 @@ pub(crate) fn delete_job_file(
         .join("sources")
         .join(path_from_relative(&removed_file.relative_path)?);
     if source_path.exists() {
-        fs::remove_file(&source_path)
-            .map_err(|error| format!("无法删除源文件缓存 {}: {error}", source_path.display()))?;
+        fs::remove_file(&source_path).map_err(|_| "无法删除源文件缓存。".to_string())?;
     }
     if let Some(parent) = source_path.parent() {
         cleanup_empty_dirs(parent, &dir.join("sources"))?;
+    }
+    if removed_file.format.eq_ignore_ascii_case("pdf") {
+        remove_pdf_markdown_derivatives(&dir)?;
     }
 
     write_json(&dir.join("document.json"), &document)?;
@@ -964,6 +966,15 @@ pub(crate) fn delete_job_file(
         }),
         message: "文件已删除。".to_string(),
     })
+}
+
+pub(crate) fn remove_pdf_markdown_derivatives(job_dir: &Path) -> Result<(), String> {
+    let derivatives = job_dir.join("pdf-markdown");
+    if derivatives.exists() {
+        fs::remove_dir_all(&derivatives)
+            .map_err(|_| "无法删除 PDF Markdown 派生缓存。".to_string())?;
+    }
+    Ok(())
 }
 
 pub(crate) fn cleanup_pending_job_deletions(app: &AppHandle) -> Result<(), String> {
@@ -1144,4 +1155,30 @@ pub(crate) fn create_welcome_document(app: &AppHandle) -> Result<RosettaJobBundl
     };
     write_job_bundle(app, &bundle, WELCOME_CONTENT)?;
     Ok(bundle)
+}
+
+#[cfg(test)]
+mod pdf_markdown_cleanup_tests {
+    use super::*;
+
+    #[test]
+    fn removes_only_pdf_markdown_derivatives() {
+        let root = std::env::temp_dir().join(format!(
+            "rosetta-pdf-markdown-cleanup-{}-{}",
+            std::process::id(),
+            timestamp_ms_string()
+        ));
+        let derivatives = root.join("pdf-markdown");
+        fs::create_dir_all(derivatives.join("images")).expect("create derivatives");
+        fs::write(derivatives.join("images").join("figure.png"), b"image")
+            .expect("write derivative");
+        fs::create_dir_all(root.join("sources")).expect("create source root");
+        fs::write(root.join("sources").join("document.pdf"), b"source").expect("write source");
+
+        remove_pdf_markdown_derivatives(&root).expect("remove derivatives");
+
+        assert!(!derivatives.exists());
+        assert!(root.join("sources").join("document.pdf").is_file());
+        fs::remove_dir_all(root).ok();
+    }
 }

@@ -17,7 +17,10 @@ WORKER = ROOT / "src" / "managed_pdf_markdown" / "rosetta_pdf_markdown_worker.py
 
 def write_fake_runtime(root: Path, *, pymupdf_version: str = "1.28.0") -> None:
     (root / "pymupdf.py").write_text(
-        f"""__version__ = {pymupdf_version!r}
+        f"""import os
+print('vendor-import-noise')
+os.write(1, b'vendor-native-import-noise\\n')
+__version__ = {pymupdf_version!r}
 class Model:
     _providers = ['CPUExecutionProvider']
 class Wrapper:
@@ -32,7 +35,12 @@ _get_layout = make_get_layout(Wrapper())
     )
     (root / "pymupdf4llm.py").write_text(
         """import json
+import os
+print('vendor-import-noise')
+os.write(1, b'vendor-native-import-noise\\n')
 def to_json(source, *, pages, use_ocr, force_text, write_images, image_path):
+    print('vendor-extraction-noise')
+    os.write(1, b'vendor-native-extraction-noise\\n')
     assert use_ocr is False
     assert force_text is False
     assert write_images is True

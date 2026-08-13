@@ -2,7 +2,7 @@
 
 Date: 2026-08-06
 
-Status: Checkpoint 0 Go; Checkpoints 1-5 implemented; Checkpoint 2 artifacts published; visual regression pending
+Status: Checkpoint 0 Go; Checkpoints 1-5 implemented; Checkpoint 6 code complete; Checkpoint 2 artifacts published; final corpus and visual regression pending
 
 Decision authority: [ADR 0078](../decisions/0078-pdf-markdown-pymupdf4llm-layout.md)
 
@@ -752,6 +752,30 @@ Implement `.md` plus asset export, destination rollback, cleanup, deletion and
 repair behavior. Run the full corpus and packaging matrix. Update one aggregate
 change log for the feature and record final benchmark numbers before enabling
 the mode by default.
+
+#### Checkpoint 6 implementation record (2026-08-10)
+
+- Added staged `.md` plus sibling `.assets/` export for PDF Markdown
+  translation files. Export validates the exact Markdown output identity,
+  rewrites only renderer-declared job-relative asset links, percent-encodes
+  destination path components and reports aggregate file and byte counts.
+- Deduplicates image bytes by SHA-256 while retaining a deterministic logical
+  filename. Image hashing and copying are bounded and streaming, so export
+  memory does not grow with the aggregate image payload. The staged copy is
+  rehashed before commit to reject an asset that changes during export.
+- Replaces prior Markdown and asset outputs through same-directory staging and
+  recoverable sibling backups. Fault-injection coverage verifies that a
+  failure after the Markdown commit restores both previous outputs and removes
+  staging paths.
+- File deletion now stops the job's PDF and Markdown work before mutation and
+  removes `pdf-markdown/` shards and images when the deleted source is a PDF.
+  Whole-job deletion continues to remove the complete job root through the
+  existing trash/cleanup boundary.
+- Automated validation passes on Windows: `pnpm typecheck`, `cargo check`, and
+  `cargo test rosetta_jobs` (111 passed). Final acceptance still requires the
+  release corpus export inspection and ordinary PDF visual regression with the
+  overlay installed and absent; this document does not mark those manual gates
+  complete.
 
 ## 10. Validation Matrix
 

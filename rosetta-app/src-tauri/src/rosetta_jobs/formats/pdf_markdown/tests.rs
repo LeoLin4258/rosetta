@@ -21,6 +21,13 @@ fn shard(page: u32) -> PageShard {
 }
 
 #[test]
+fn protocol_close_is_classified_as_cancellation() {
+    assert!(is_cancelled_extraction_error("worker protocol closed"));
+    assert!(is_cancelled_extraction_error("worker-stopping"));
+    assert!(!is_cancelled_extraction_error("extraction-failed"));
+}
+
+#[test]
 fn gzip_shard_roundtrips_and_ids_are_stable() {
     let dir = temp("stable");
     write_page_shard(&dir, &shard(1)).unwrap();

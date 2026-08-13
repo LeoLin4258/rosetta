@@ -39,7 +39,7 @@ const MAX_SHARD_COMPRESSED: u64 = 64 * 1024 * 1024;
 const MAX_SHARD_DECOMPRESSED: usize = 16 * 1024 * 1024;
 const MAX_PAGE_BLOCKS: usize = 10_000;
 const MAX_PAGE_CHARS: usize = 2_000_000;
-const MAX_IMAGE_BYTES: u64 = 32 * 1024 * 1024;
+pub(crate) const MAX_IMAGE_BYTES: u64 = 32 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -1046,7 +1046,7 @@ pub fn read_pdf_markdown_asset(
     Ok(tauri::ipc::Response::new(bytes))
 }
 
-fn resolve_preview_asset(job_dir: &Path, asset_path: &str) -> Result<PathBuf, String> {
+pub(crate) fn resolve_preview_asset(job_dir: &Path, asset_path: &str) -> Result<PathBuf, String> {
     let relative = asset_path
         .strip_prefix("pdf-markdown/images/")
         .filter(|relative| {
@@ -1111,22 +1111,45 @@ pub async fn start_pdf_markdown_extraction(
     let status = match result {
         Ok(status) => status,
         Err(error) => {
+            let prior_status = state
+                .active
+                .lock()
+                .ok()
+                .and_then(|guard| guard.as_ref().map(|active| active.status.clone()));
             if let Ok(mut g) = state.active.lock() {
                 *g = None;
             }
+            let cancelled = is_cancelled_extraction_error(&error);
+            let failed_status = PdfMarkdownExtractionStatus {
+                job_id: job_id.clone(),
+                state: if cancelled { "cancelled" } else { "failed" }.into(),
+                completed_pages: prior_status
+                    .as_ref()
+                    .map(|status| status.completed_pages)
+                    .unwrap_or(0),
+                page_count: prior_status
+                    .as_ref()
+                    .map(|status| status.page_count)
+                    .unwrap_or(0),
+                error_code: Some(error.clone()),
+                run_id: Some(run.clone()),
+            };
             if let Ok(mut last) = state.last.lock() {
-                *last = Some(PdfMarkdownExtractionStatus {
-                    job_id: job_id.clone(),
-                    state: if error == "worker-protocol-closed" || error == "worker-stopping" {
-                        "cancelled".into()
-                    } else {
-                        "failed".into()
-                    },
-                    completed_pages: 0,
-                    page_count: 0,
-                    error_code: Some(error.clone()),
-                    run_id: Some(run.clone()),
-                });
+                *last = Some(failed_status.clone());
+            }
+            emit_progress(
+                &app,
+                &job_id,
+                &run,
+                &failed_status.state,
+                failed_status.completed_pages,
+                failed_status.page_count,
+                failed_status.error_code.clone(),
+            );
+            if let Ok(jobs_root) = crate::rosetta_jobs::path::jobs_root(&app) {
+                if let Ok(job_dir) = checked_job_dir(&jobs_root, &job_id) {
+                    let _ = fs::remove_dir_all(extraction_root(&job_dir).join(".tmp").join(&run));
+                }
             }
             return Err(error);
         }
@@ -1138,6 +1161,10 @@ pub async fn start_pdf_markdown_extraction(
         *last = Some(status.clone());
     }
     Ok(status)
+}
+
+fn is_cancelled_extraction_error(error: &str) -> bool {
+    matches!(error, "worker protocol closed" | "worker-stopping")
 }
 
 #[tauri::command]

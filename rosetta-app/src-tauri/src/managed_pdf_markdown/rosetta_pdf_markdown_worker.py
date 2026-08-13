@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 import importlib.metadata
+import contextlib
+import io
 import json
 import os
 import sys
 from pathlib import Path
+
+PROTOCOL_OUTPUT = os.fdopen(os.dup(sys.stdout.fileno()), "wb", buffering=0)
+NULL_OUTPUT = os.open(os.devnull, os.O_WRONLY)
+os.dup2(NULL_OUTPUT, sys.stdout.fileno())
+os.close(NULL_OUTPUT)
 
 PROTOCOL = 1
 MAX_REQUEST_BYTES = 64 * 1024
@@ -26,8 +33,7 @@ def emit(payload: dict) -> None:
             {"type": "error", "code": "response-too-large", "message": "worker response exceeded its size limit"},
             separators=(",", ":"),
         ).encode("utf-8")
-    sys.stdout.buffer.write(encoded + b"\n")
-    sys.stdout.buffer.flush()
+    PROTOCOL_OUTPUT.write(encoded + b"\n")
 
 
 def package_versions() -> dict[str, str]:
@@ -38,8 +44,9 @@ def load_engine():
     versions = package_versions()
     if versions != EXPECTED:
         raise RuntimeError("version-mismatch")
-    import pymupdf
-    import pymupdf4llm
+    with contextlib.redirect_stdout(io.StringIO()):
+        import pymupdf
+        import pymupdf4llm
 
     layout_wrapper = pymupdf._get_layout.__closure__[0].cell_contents
     providers = list(layout_wrapper._model._providers)
@@ -86,14 +93,15 @@ def extract_window(engine, request: dict) -> None:
     for completed, page in enumerate(pages, 1):
         image_dir = output / f"page-{page + 1:04d}-images"
         image_dir.mkdir(parents=False, exist_ok=False)
-        raw = engine.to_json(
-            str(source),
-            pages=[page],
-            use_ocr=False,
-            force_text=False,
-            write_images=True,
-            image_path=str(image_dir),
-        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            raw = engine.to_json(
+                str(source),
+                pages=[page],
+                use_ocr=False,
+                force_text=False,
+                write_images=True,
+                image_path=str(image_dir),
+            )
         if isinstance(raw, str):
             raw = json.loads(raw)
         results.append({"pageIndex": page, "json": raw})

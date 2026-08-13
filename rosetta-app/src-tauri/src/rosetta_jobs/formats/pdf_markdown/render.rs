@@ -294,8 +294,15 @@ fn metadata_class(block: &RosettaBlock) -> Option<&str> {
         .as_str()
 }
 
-fn asset_path(block: &RosettaBlock) -> Option<&str> {
-    let path = metadata_extra(block)?.get("assetPath")?.as_str()?;
+pub(crate) fn declared_asset_path(block: &RosettaBlock) -> Option<&str> {
+    if !matches!(metadata_class(block), Some("picture" | "formula")) {
+        return None;
+    }
+    metadata_extra(block)?.get("assetPath")?.as_str()
+}
+
+pub(crate) fn asset_path(block: &RosettaBlock) -> Option<&str> {
+    let path = declared_asset_path(block)?;
     let filename = path.strip_prefix("pdf-markdown/images/")?;
     let extension = path.rsplit_once('.')?.1.to_ascii_lowercase();
     if filename.is_empty()

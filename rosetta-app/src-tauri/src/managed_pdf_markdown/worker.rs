@@ -91,7 +91,12 @@ enum WorkerRequest<'a> {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
 #[allow(dead_code)] // Progress/result fields are consumed by Checkpoint 3.
 pub enum WorkerEvent {
     Ready {
@@ -229,6 +234,9 @@ async fn discard_process(state: &PdfMarkdownWorkerState, process: &mut Option<Wo
 }
 
 fn validate_ready(event: &WorkerEvent) -> Result<(), String> {
+    if let WorkerEvent::Error { code, .. } = event {
+        return Err(code.clone());
+    }
     let WorkerEvent::Ready {
         protocol,
         versions,
@@ -250,6 +258,16 @@ fn validate_ready(event: &WorkerEvent) -> Result<(), String> {
         return Err("worker-version-preflight-failed".into());
     }
     Ok(())
+}
+
+fn retryable_start_error(error: &str) -> bool {
+    matches!(
+        error,
+        "worker protocol closed"
+            | "worker protocol read failed"
+            | "worker-protocol-invalid-json"
+            | "worker-version-preflight-failed"
+    )
 }
 
 async fn spawn_worker(
@@ -353,8 +371,19 @@ pub async fn prewarm(app: &AppHandle) -> Result<bool, String> {
     }
     if guard.is_none() {
         state.set_status("starting", None);
-        match spawn_worker(app, &state).await {
+        let first = spawn_worker(app, &state).await;
+        match first {
             Ok(process) => *guard = Some(process),
+            Err(error) if retryable_start_error(&error) => {
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                match spawn_worker(app, &state).await {
+                    Ok(process) => *guard = Some(process),
+                    Err(retry_error) => {
+                        state.set_status("failed", Some(&retry_error));
+                        return Err(retry_error);
+                    }
+                }
+            }
             Err(error) => {
                 state.set_status("failed", Some(&error));
                 return Err(error);
@@ -545,6 +574,26 @@ mod tests {
         assert!(WORKER_SCRIPT.contains("use_ocr=False"));
         assert!(WORKER_SCRIPT.contains("force_text=False"));
         assert!(WORKER_SCRIPT.contains("write_images=True"));
+        assert!(WORKER_SCRIPT.contains("redirect_stdout"));
+        assert!(WORKER_SCRIPT.contains("os.dup(sys.stdout.fileno())"));
+        assert!(WORKER_SCRIPT.contains("os.dup2(NULL_OUTPUT, sys.stdout.fileno())"));
+    }
+
+    #[test]
+    fn only_transient_start_errors_are_retried() {
+        assert!(retryable_start_error("worker protocol closed"));
+        assert!(retryable_start_error("worker-protocol-invalid-json"));
+        assert!(!retryable_start_error("version-mismatch"));
+        assert!(!retryable_start_error("non-cpu-provider"));
+    }
+
+    #[test]
+    fn worker_preflight_preserves_explicit_worker_error() {
+        let event = WorkerEvent::Error {
+            code: "version-mismatch".into(),
+            message: "failed".into(),
+        };
+        assert_eq!(validate_ready(&event), Err("version-mismatch".into()));
     }
 
     #[test]
@@ -574,6 +623,18 @@ mod tests {
 
     #[test]
     fn worker_event_schema_rejects_unknown_and_cross_type_fields() {
+        let ready = serde_json::from_str::<WorkerEvent>(
+            r#"{"type":"ready","protocol":1,"versions":{"pymupdf4llm":"1.28.0","pymupdf-layout":"1.28.0","PyMuPDF":"1.28.0"},"providers":["CPUExecutionProvider"],"integrationBoundary":"to_json","cpuOnly":true}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            ready,
+            WorkerEvent::Ready {
+                integration_boundary,
+                cpu_only: true,
+                ..
+            } if integration_boundary == "to_json"
+        ));
         assert!(serde_json::from_str::<WorkerEvent>(
             r#"{"type":"error","code":"x","message":"failed","pages":[]}"#
         )

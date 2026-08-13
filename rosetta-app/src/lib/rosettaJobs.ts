@@ -227,6 +227,24 @@ export type PdfMarkdownExtractionStatus = {
   runId: string | null;
 };
 
+const PDF_MARKDOWN_ERROR_MESSAGES: Record<string, string> = {
+  "worker protocol closed": "Markdown 提取进程意外退出。请重试；如果再次失败，请修复 Markdown 组件。",
+  "worker protocol read failed": "无法读取 Markdown 提取进程的响应。请重试。",
+  "worker-protocol-invalid-json": "Markdown 提取进程返回了无效响应。请重试。",
+  "worker-version-preflight-failed": "Markdown 组件版本校验失败，请修复组件后重试。",
+  "worker-ready-timeout": "Markdown 提取进程启动超时，请重试。",
+  "worker-spawn-failed": "无法启动 Markdown 提取进程，请重试。",
+  "version-mismatch": "Markdown 组件版本不匹配，请修复组件后重试。",
+  "non-cpu-provider": "Markdown 组件未使用受支持的 CPU 运行环境，请修复组件。",
+  "extraction-failed": "PDF 解析失败。该文件有文本层时，请重试；重复失败请记录错误代码。",
+  "ocr-required": "该 PDF 没有可用文本层，Markdown v1 暂不支持 OCR。",
+};
+
+export function pdfMarkdownErrorMessage(errorCode: string | null | undefined) {
+  if (!errorCode) return null;
+  return PDF_MARKDOWN_ERROR_MESSAGES[errorCode] ?? `提取失败（错误代码：${errorCode}）。`;
+}
+
 export type PdfMarkdownRenderedBlock = {
   blockIds: string[];
   kind: string;
