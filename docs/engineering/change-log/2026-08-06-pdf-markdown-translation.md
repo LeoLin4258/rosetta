@@ -193,7 +193,7 @@ outside the delivered scope until Checkpoint 6.
   counts and SHA-256 digests. Full public downloads through each profile's
   primary configured URL reproduced the exact archive bytes and hashes.
 
-## Remaining Verification
+## Resource and follow-up notes
 
 The 400 MiB hard gate applies to cumulative downloaded managed PDF components,
 not runtime RSS. Windows base plus overlay is 396,059,375 bytes and passes that
@@ -208,10 +208,10 @@ Checkpoint 2 managed install, repair, cancellation, offline restart and
 cross-platform runtime isolation are implemented and verified against the
 exact release artifacts. The configured release tag is published, and the
 primary online download path has passed full byte/hash verification on all
-three assets. The ordinary PDF end-to-end visual regression with the overlay
-installed and absent remains pending; PyMuPDF/process isolation has passed but
-is not a substitute for visual comparison. ONNX session tuning and worker
-recycling stay as a separate bounded optimization, not a release-size blocker.
+three assets. The ordinary PDF visual regression referenced at this checkpoint
+was subsequently completed in the 2026-08-13 acceptance follow-up below. ONNX
+session tuning and worker recycling stay as a separate bounded optimization,
+not a release-size blocker.
 
 Checkpoint 3 adds the extraction store and normalizer. Each PDF job now has a
 versioned, fingerprint-bound manifest and bounded gzip page shards under
@@ -238,11 +238,11 @@ Checkpoint 5 adds the output-qualified Workbench path, managed component and
 extraction lifecycle controls, and the virtualized shared-renderer preview.
 Automated validation covers compilation, existing job behavior, managed
 component isolation and bounded asset-path reads. Manual runtime/visual
-verification was explicitly deferred for this checkpoint. Atomic multi-file
-Markdown plus image export, destination rollback and PDF derivative deletion
-are implemented for Checkpoint 6. Final release-corpus export inspection and
-the ordinary PDF visual regression with the overlay installed and absent
-remain pending manual acceptance gates.
+verification was deferred at this checkpoint and later completed by the
+2026-08-13 acceptance follow-up. Atomic multi-file Markdown plus image export,
+destination rollback and PDF derivative deletion are implemented for
+Checkpoint 6; the later headless release gate also covers the completed export
+lifecycle and rollback behavior.
 
 ## 2026-08-13 Acceptance Follow-up
 
@@ -270,10 +270,11 @@ remain pending manual acceptance gates.
   managed PDF Markdown tests (one exact-artifact test remains opt-in), five
   worker protocol tests and six Checkpoint 0 harness tests.
 
-The source-PDF visual regression and release corpus gates are now closed. A
-fully translated real-job Markdown export remains an operational acceptance
-step because the available local real job is intentionally incomplete at
-17/419 segments; partial export is correctly unavailable.
+The source-PDF visual regression and release corpus gates are now closed. The
+available local real job remains intentionally incomplete at 17/419 segments,
+so partial export is correctly unavailable. Completed Markdown export and
+rollback are covered by the headless lifecycle below; a fully translated real
+job is an optional platform smoke test rather than an outstanding code gate.
 
 ### Headless release acceptance
 
@@ -329,4 +330,25 @@ The final complete Windows run passed all 10 checks. The corpus completed in
   is actively replacing placeholders, and scheduled ResizeObserver measurement
   through animation frames to remove intermittent right-pane scroll jumps.
 - Added headless coverage for unequal-height proportional mapping, clamping,
-  dead-zone behavior and keyboard intent classification.
+  dead-zone behavior, explicit driver ownership and keyboard intent
+  classification. The portable state-policy suite is part of the required
+  Linux CI gate; installed-component isolation and the 24-document corpus stay
+  on native release machines.
+
+### beta.25 release gate
+
+- Added the portable workspace state-policy suite to the required Linux CI
+  job and added the focused managed PDF Markdown runtime regression alongside
+  the existing production PDF component test.
+- Bumped the application, Cargo package, Tauri configuration and lockfile to
+  `0.1.0-beta.25`; added matching in-app and repository release notes.
+- The final Windows headless acceptance run passed all 10 checks on beta.25.
+  The 24-document / 240-page corpus completed in 84.654 seconds with a 0.271
+  s/page warm median, 0.536 s/page warm p95, 1.289 s cold first page and
+  396,316,672-byte peak RSS. Reviewed structure flags reproduced exactly, with
+  zero invalid page identities and zero unknown box classes.
+- `pnpm typecheck`, `cargo fmt --check`, `cargo check`, the portable state
+  policy test, production-boundary check, complete job/runtime regressions,
+  worker protocol, Checkpoint 0 harness and concurrent runtime isolation all
+  passed. `cargo check` continues to report the five pre-existing dead-code
+  warnings outside this feature.

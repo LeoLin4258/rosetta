@@ -4,6 +4,15 @@ export type PreviewScrollMetrics = {
   clientHeight: number;
 };
 
+export type PreviewScrollSide = "source" | "translation";
+
+export function previewScrollMayDrive(
+  driver: PreviewScrollSide | null,
+  side: PreviewScrollSide,
+): boolean {
+  return driver === side;
+}
+
 export function proportionalPreviewScrollTop(
   source: PreviewScrollMetrics,
   target: Omit<PreviewScrollMetrics, "scrollTop">,

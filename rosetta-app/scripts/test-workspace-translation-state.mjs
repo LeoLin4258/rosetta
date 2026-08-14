@@ -7,6 +7,7 @@ import {
 import { pdfMarkdownNeedsPreparation } from "../src/lib/pdfMarkdownComponentState.ts";
 import {
   isPreviewScrollKey,
+  previewScrollMayDrive,
   previewScrollTargetChanged,
   proportionalPreviewScrollTop,
 } from "../src/lib/previewScrollSync.ts";
@@ -39,12 +40,20 @@ assert.deepEqual(resolveTranslationProgress(null, null, { segmentCount: 12 }), {
   completed: 0,
   total: 12,
 });
+assert.deepEqual(resolveTranslationProgress(null, restoredPartial, null), {
+  completed: 17,
+  total: 419,
+});
 assert.equal(canExportSelectedTranslation(false, restoredPartial), false);
 assert.equal(
   canExportSelectedTranslation(false, { completedSegments: 419, segmentCount: 419 }),
   true,
 );
 assert.equal(canExportSelectedTranslation(false, null), false);
+assert.equal(
+  canExportSelectedTranslation(false, { completedSegments: 0, segmentCount: 0 }),
+  false,
+);
 assert.equal(canExportSelectedTranslation(true, restoredPartial), true);
 
 assert.equal(
@@ -63,6 +72,8 @@ assert.equal(
   "a stale extraction must expose re-extraction",
 );
 assert.equal(pdfMarkdownNeedsPreparation(null, "ready"), true);
+assert.equal(pdfMarkdownNeedsPreparation("unsupported", "ready"), true);
+assert.equal(pdfMarkdownNeedsPreparation("installed", null), true);
 
 assert.equal(
   proportionalPreviewScrollTop(
@@ -87,9 +98,21 @@ assert.equal(
   ),
   0,
 );
+assert.equal(
+  proportionalPreviewScrollTop(
+    { scrollTop: -20, scrollHeight: 1000, clientHeight: 100 },
+    { scrollHeight: 1900, clientHeight: 100 },
+  ),
+  0,
+  "scroll synchronization must clamp a negative source offset",
+);
 assert.equal(previewScrollTargetChanged(100, 101.9), false);
 assert.equal(previewScrollTargetChanged(100, 102), true);
+assert.equal(previewScrollMayDrive(null, "source"), false);
+assert.equal(previewScrollMayDrive("translation", "source"), false);
+assert.equal(previewScrollMayDrive("source", "source"), true);
 assert.equal(isPreviewScrollKey("PageDown"), true);
+assert.equal(isPreviewScrollKey(" "), true);
 assert.equal(isPreviewScrollKey("Enter"), false);
 
 const job = {

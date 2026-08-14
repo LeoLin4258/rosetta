@@ -86,6 +86,9 @@ jobs:
       - name: Typecheck frontend
         run: pnpm typecheck
 
+      - name: Test workspace state policies
+        run: pnpm test:workspace-state
+
       - name: Check production PDF boundary
         run: pnpm check:pdf-production-boundary
 
@@ -100,6 +103,10 @@ jobs:
       - name: Test managed PDF runtime
         working-directory: rosetta-app/src-tauri
         run: cargo test managed_pdf2zh
+
+      - name: Test managed PDF Markdown runtime
+        working-directory: rosetta-app/src-tauri
+        run: cargo test managed_pdf_markdown
 
       - name: Test PDF patch suite
         working-directory: rosetta-app/src-tauri

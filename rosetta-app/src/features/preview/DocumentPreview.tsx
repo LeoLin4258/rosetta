@@ -11,8 +11,10 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { languageLabel } from "@/lib/languages";
 import {
   isPreviewScrollKey,
+  previewScrollMayDrive,
   previewScrollTargetChanged,
   proportionalPreviewScrollTop,
+  type PreviewScrollSide,
 } from "@/lib/previewScrollSync";
 import {
   pdfMarkdownErrorMessage,
@@ -36,7 +38,7 @@ import type {
 
 import { PdfDocumentPreview } from "./PdfDocumentPreview";
 
-type PreviewSide = "source" | "translation";
+type PreviewSide = PreviewScrollSide;
 
 function useSynchronizedPreviewScroll() {
   const sourceRef = useRef<HTMLDivElement>(null);
@@ -65,7 +67,7 @@ function useSynchronizedPreviewScroll() {
     (side: PreviewSide) => {
       // Measurement and programmatic scrolls also emit `scroll`. Only a pane
       // with recent wheel, pointer or keyboard intent may drive its peer.
-      if (driverRef.current !== side) return;
+      if (!previewScrollMayDrive(driverRef.current, side)) return;
       releaseDriverSoon();
       pendingSideRef.current = side;
       if (frameRef.current !== null) return;
@@ -74,7 +76,12 @@ function useSynchronizedPreviewScroll() {
         frameRef.current = null;
         const pendingSide = pendingSideRef.current;
         pendingSideRef.current = null;
-        if (!pendingSide || driverRef.current !== pendingSide) return;
+        if (
+          !pendingSide ||
+          !previewScrollMayDrive(driverRef.current, pendingSide)
+        ) {
+          return;
+        }
 
         const from =
           pendingSide === "source" ? sourceRef.current : translationRef.current;

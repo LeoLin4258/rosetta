@@ -34,6 +34,16 @@ export type ReleaseNote = {
  * appearing in `package.json` (e.g. `"0.1.0-beta.8"`), not semver tuples.
  */
 export const RELEASE_NOTES: Record<string, ReleaseNote> = {
+  "0.1.0-beta.25": {
+    version: "0.1.0-beta.25",
+    highlights: [
+      "PDF 新增 Markdown 输出，可提取标题、段落和图片引用后继续使用现有分段翻译流程",
+      "设置中的 PDF 处理页面可安装、修复、重新安装或离线导入 PDF 转 Markdown 组件",
+      "PDF Markdown 原文与译文支持稳定的双向同步滚动，翻译更新时不再反复跳动",
+      "重启后会恢复 Markdown 翻译进度，只有全部段落完成后才提供导出",
+      "Markdown 与图片资源使用事务式联合导出，覆盖失败时保留上一份完整结果",
+    ],
+  },
   "0.1.0-beta.24": {
     version: "0.1.0-beta.24",
     highlights: [

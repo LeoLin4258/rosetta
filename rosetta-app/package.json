@@ -1,7 +1,7 @@
 {
   "name": "rosetta",
   "private": true,
-  "version": "0.1.0-beta.24",
+  "version": "0.1.0-beta.25",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,6 +9,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "check:pdf-production-boundary": "node scripts/check-pdf-production-boundary.mjs",
+    "test:workspace-state": "node scripts/test-workspace-translation-state.mjs",
     "test:pdf-markdown-release": "python src-tauri/scripts/run-pdf-markdown-release-acceptance.py",
     "test:pdf-markdown-release:fast": "python src-tauri/scripts/run-pdf-markdown-release-acceptance.py --skip-corpus",
     "tauri": "tauri",
