@@ -31,6 +31,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { pdfPageSelectionLabel } from "@/lib/pdfPageSelectionPolicy";
+import { pdfMarkdownNeedsPreparation } from "@/lib/pdfMarkdownComponentState";
 import type {
   PdfMarkdownComponentStatus,
   PdfMarkdownExtractionStatus,
@@ -44,6 +45,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import { canExportSelectedTranslation } from "@/lib/workspaceTranslationState";
 import type {
   RosettaJobSummary,
   RosettaTranslationFile,
@@ -511,21 +513,27 @@ export function WorkspaceTopbar({
   const isPdfMarkdown = isPdfSource && selectedOutputFormat === "markdown";
   const markdownComponentReady = pdfMarkdownComponentStatus?.state === "installed";
   const markdownExtractionReady = pdfMarkdownExtractionStatus?.state === "ready";
+  const markdownNeedsPreparation = pdfMarkdownNeedsPreparation(
+    pdfMarkdownComponentStatus?.state ?? null,
+    pdfMarkdownExtractionStatus?.state,
+  );
   const markdownExtractionActive = pdfMarkdownExtractionStatus?.state === "extracting";
   const markdownOperationBusy =
     isPdfMarkdownInstalling ||
     isPdfMarkdownStartingExtraction ||
     markdownExtractionActive;
-  const hasTranslation =
-    activeTranslationFile &&
-    (isPdf ||
-      activeTranslationFile.completedSegments > 0);
   const allTranslated =
     !!activeTranslationFile &&
     (isPdf
       ? activeTranslationFile.status === "translated"
       : activeTranslationFile.segmentCount > 0 &&
         activeTranslationFile.completedSegments >= activeTranslationFile.segmentCount);
+  // Text-like exports reject pending segments in the backend. Do not expose an
+  // export action for a partial Markdown run that can only end in an error.
+  const canExportTranslation = canExportSelectedTranslation(
+    isPdf,
+    activeTranslationFile,
+  );
   const sameLanguage = sourceLang === targetLang;
   const noPdfPagesSelected = isPdf && pdfSelectedPageCount === 0;
   const translateDisabled =
@@ -713,7 +721,7 @@ export function WorkspaceTopbar({
                   </label>
                 </div>
               </div>
-            ) : isPdfMarkdown && !markdownExtractionReady ? (
+            ) : isPdfMarkdown && markdownNeedsPreparation ? (
               <div className={topbarPanelClass} title={pdfMarkdownError ?? undefined}>
                 {isPdfMarkdownInstalling ? (
                   <>
@@ -745,6 +753,8 @@ export function WorkspaceTopbar({
                   <span className="font-medium text-foreground">
                     {pdfMarkdownComponentStatus?.state === "unsupported"
                       ? "当前平台不支持 Markdown"
+                      : pdfMarkdownComponentStatus == null
+                        ? "正在检查 Markdown 组件"
                       : pdfMarkdownComponentStatus?.state === "needs-repair"
                         ? "Markdown 组件需要修复"
                         : !markdownComponentReady
@@ -831,7 +841,7 @@ export function WorkspaceTopbar({
             </>
           ) : (
             <>
-              {hasTranslation && (
+              {canExportTranslation && (
                 <AnimatedWidth>
                   <Button
                     size="sm"
@@ -882,7 +892,7 @@ export function WorkspaceTopbar({
               </AnimatedWidth>
 
               <AnimatedWidth>
-                {isPdfMarkdown && !markdownExtractionReady ? (
+                {isPdfMarkdown && markdownNeedsPreparation ? (
                   isPdfMarkdownInstalling ? (
                     <Button
                       size="sm"
@@ -904,6 +914,10 @@ export function WorkspaceTopbar({
                   ) : pdfMarkdownComponentStatus?.state === "unsupported" ? (
                     <Button size="sm" disabled className={topbarButtonClass}>
                       当前平台不支持
+                    </Button>
+                  ) : pdfMarkdownComponentStatus == null ? (
+                    <Button size="sm" disabled className={topbarButtonClass}>
+                      <Loader2 className="size-3 animate-spin" /> 检查组件
                     </Button>
                   ) : pdfMarkdownComponentStatus?.state === "needs-repair" ? (
                     <Button

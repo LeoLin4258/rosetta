@@ -218,6 +218,11 @@ export type PdfMarkdownInstallResult = {
   message: string;
 };
 
+export type PdfMarkdownInstallOptions = {
+  force?: boolean;
+  archivePath?: string | null;
+};
+
 export type PdfMarkdownExtractionStatus = {
   jobId: string;
   state: "idle" | "extracting" | "ready" | "failed" | "cancelled" | "stale" | string;
@@ -264,9 +269,11 @@ export function getPdfMarkdownInstallProgress() {
   return invoke<PdfMarkdownInstallProgress>("get_pdf_markdown_install_progress");
 }
 
-export function installPdfMarkdownComponent() {
+export function installPdfMarkdownComponent(
+  options: PdfMarkdownInstallOptions = {},
+) {
   return invoke<PdfMarkdownInstallResult>("install_pdf_markdown_component", {
-    options: { force: false },
+    options: { force: false, ...options },
   });
 }
 

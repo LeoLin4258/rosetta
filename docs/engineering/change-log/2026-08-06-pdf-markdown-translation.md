@@ -2,7 +2,7 @@
 
 Date: 2026-08-06
 
-Status: Checkpoint 0 Go; Checkpoints 1-5 implemented; Checkpoint 2 artifacts published; visual regression pending
+Status: Checkpoint 0 Go; Checkpoints 1-6 implemented; Checkpoint 2 artifacts published; source-PDF visual regression passed
 
 ## Scope
 
@@ -243,3 +243,90 @@ Markdown plus image export, destination rollback and PDF derivative deletion
 are implemented for Checkpoint 6. Final release-corpus export inspection and
 the ordinary PDF visual regression with the overlay installed and absent
 remain pending manual acceptance gates.
+
+## 2026-08-13 Acceptance Follow-up
+
+- Re-ran the exact 24-document / 240-page Checkpoint 0 corpus on Windows with
+  the installed production Python host and the installed `1.28.0` Markdown
+  overlay. Page identity and box-class gates remained clean. The known reviewed
+  structure flags reproduced exactly: six empty-body edge pages, one
+  source-authored adjacent duplicate and one designed picture/body overlap.
+- Recorded 0.290 s/page warm median, 0.495 s/page warm p95, 0.924 s cold worker
+  ready, 1.332 s cold first page and 408,465,408-byte peak RSS. Both performance
+  gates continue to pass.
+- Re-ran concurrent runtime isolation: production PyMuPDF stayed on `1.25.2`
+  before, during and after the Markdown worker, which loaded `1.28.0` with only
+  `CPUExecutionProvider`.
+- Rendered and inspected representative pages 1 and 6 of the real
+  `2604.17278v1-2.pdf` source using Poppler. The two-column reading layout,
+  figure/caption placement, equations and table remained intact.
+- Fixed the Workbench's idle/restart progress summary to use the selected
+  translation file when no in-memory run exists. A partially translated
+  17/419-segment Markdown job no longer falls back to `0 段`.
+- Hid the Markdown export action until every translatable segment is complete,
+  matching the backend export contract that rejects pending segments. Native
+  PDF export remains available under its existing rules.
+- Validation passed: frontend typecheck, all 112 `rosetta_jobs` tests, 18
+  managed PDF Markdown tests (one exact-artifact test remains opt-in), five
+  worker protocol tests and six Checkpoint 0 harness tests.
+
+The source-PDF visual regression and release corpus gates are now closed. A
+fully translated real-job Markdown export remains an operational acceptance
+step because the available local real job is intentionally incomplete at
+17/419 segments; partial export is correctly unavailable.
+
+### Headless release acceptance
+
+The release gate is now executable without launching Rosetta:
+
+```powershell
+cd rosetta-app
+pnpm test:pdf-markdown-release
+```
+
+The command writes a machine-readable report to
+`src-tauri/target/pdf-markdown-release-acceptance/report.json`. It covers
+restored progress and export eligibility, frontend type safety, the production
+PDF boundary, a real temporary-file Markdown lifecycle (partial rejection,
+completed translation restore, render, `.md + .assets` export, replacement,
+fault rollback and derivative cleanup), all Rosetta job tests, managed runtime
+tests, worker protocol, runtime isolation and the 24-document / 240-page
+release corpus. `pnpm test:pdf-markdown-release:fast` runs the same gates except
+the full corpus.
+
+The final complete Windows run passed all 10 checks. The corpus completed in
+91.790 seconds with 0.288 s/page warm median, 0.581 s/page warm p95 and
+392,511,488-byte peak RSS; its reviewed structure flags reproduced exactly.
+
+## 2026-08-14 Component Management Follow-up
+
+- Renamed the Settings navigation entry from `PDF 组件` to `PDF 处理` and
+  separated the page into `PDF 版面翻译组件` and `PDF 转 Markdown 组件`, so the
+  production pdf2zh pack and the isolated Markdown overlay remain visibly and
+  operationally distinct.
+- Added Markdown component status, version and size details plus install,
+  repair, reinstall, cancellation, refresh and offline archive-import actions.
+  User-selected archives still pass the pinned size, SHA-256, inventory and
+  safe-extraction checks before replacing the installed overlay.
+- Added direct install/repair and Settings navigation actions to the Markdown
+  preview error state. Component repair now remains discoverable when a durable
+  extraction from an earlier session is already marked ready.
+- Added a pure state-policy regression for the ready-extraction/repair case and
+  included it in the headless release acceptance suite.
+- Validation passed: frontend typecheck, Rust formatting and `cargo check`, 19
+  managed PDF Markdown tests (one exact-artifact test remains opt-in), all 113
+  `rosetta_jobs` tests and the nine-check fast headless release acceptance.
+
+### Preview scroll synchronization
+
+- Reused one proportional scroll controller for ordinary Markdown and PDF
+  Markdown bilingual previews. Either source or translation can drive the
+  other pane through wheel, scrollbar/touch pointer or keyboard scrolling.
+- Programmatic scroll events and virtual-list measurements no longer become a
+  scroll driver. Updates are coalesced to one write per animation frame with a
+  two-pixel dead zone, preventing feedback loops between the two viewports.
+- Disabled translation-pane anchor correction while a PDF Markdown translation
+  is actively replacing placeholders, and scheduled ResizeObserver measurement
+  through animation frames to remove intermittent right-pane scroll jumps.
+- Added headless coverage for unequal-height proportional mapping, clamping,
+  dead-zone behavior and keyboard intent classification.

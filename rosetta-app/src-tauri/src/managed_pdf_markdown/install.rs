@@ -30,6 +30,8 @@ const MAX_UNPACKED_BYTES: u64 = 160 * 1024 * 1024;
 pub struct PdfMarkdownInstallOptions {
     #[serde(default)]
     pub force: bool,
+    #[serde(default)]
+    pub archive_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -95,6 +97,7 @@ pub async fn install_component(
     layout: &PdfMarkdownLayout,
     profile: &'static PdfMarkdownProfile,
     force: bool,
+    archive_path: Option<&Path>,
 ) -> Result<PdfMarkdownInstallResult, String> {
     let _operation = registry.operation.lock().await;
     layout.ensure_dirs()?;
@@ -114,7 +117,9 @@ pub async fn install_component(
         .downloads_dir
         .join(format!(".{}.part", profile.archive_filename));
     let outcome = async {
-        if let Ok(path) = std::env::var("ROSETTA_PDF_MARKDOWN_COMPONENT_ARCHIVE") {
+        if let Some(path) = archive_path {
+            copy_local_archive(path, &part, profile.archive_bytes, &registry.cancel).await?;
+        } else if let Ok(path) = std::env::var("ROSETTA_PDF_MARKDOWN_COMPONENT_ARCHIVE") {
             copy_local_archive(
                 Path::new(&path),
                 &part,
@@ -681,6 +686,22 @@ pub(crate) mod tests {
     fn profile_inventory_is_below_defensive_limits() {
         assert!(
             crate::managed_pdf_markdown::profile::WINDOWS_X64.unpacked_bytes < MAX_UNPACKED_BYTES
+        );
+    }
+
+    #[test]
+    fn install_options_accept_a_user_selected_archive() {
+        let options: PdfMarkdownInstallOptions = serde_json::from_value(serde_json::json!({
+            "force": true,
+            "archivePath": "C:/Downloads/rosetta-pdf-markdown-windows-x64.zip"
+        }))
+        .unwrap();
+        assert!(options.force);
+        assert_eq!(
+            options.archive_path.as_deref(),
+            Some(Path::new(
+                "C:/Downloads/rosetta-pdf-markdown-windows-x64.zip"
+            ))
         );
     }
 

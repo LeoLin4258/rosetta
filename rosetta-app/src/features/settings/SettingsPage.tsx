@@ -61,6 +61,7 @@ import { cn } from "../../lib/utils";
 import { useRosettaStore } from "../../store/useRosettaStore";
 import { LocalRwkvPanel } from "./LocalRwkvPanel";
 import { Pdf2zhPanel } from "./Pdf2zhPanel";
+import { PdfMarkdownPanel } from "./PdfMarkdownPanel";
 import type {
   AppThemeMode,
   ManagedRuntimeStatus,
@@ -121,7 +122,7 @@ const settingsNavItems: SettingsNavItem[] = [
   },
   {
     id: "document-handling",
-    title: "PDF 组件",
+    title: "PDF 处理",
     icon: FileText,
   },
   {
@@ -187,6 +188,8 @@ export function SettingsPage() {
   useEffect(() => {
     if (searchParams.get("panel") === "local-runtime") {
       setActiveSection("translation-ai");
+    } else if (searchParams.get("panel") === "pdf-processing") {
+      setActiveSection("document-handling");
     }
   }, [searchParams]);
 
@@ -1087,9 +1090,31 @@ function DocumentHandlingSection() {
     <SettingsSection
       icon={<FileText />}
       id="document-handling"
-      title="PDF 组件"
+      title="PDF 处理"
     >
-      <Pdf2zhPanel />
+      <div className="flex flex-col gap-6">
+        <div className="flex flex-col gap-4">
+          <div>
+            <h3 className="text-[0.95rem] font-semibold leading-5">PDF 版面翻译组件</h3>
+            <p className="mt-1 max-w-[72ch] text-sm leading-6 text-muted-foreground">
+              生成尽量保留原始页面布局的译文 PDF。
+            </p>
+          </div>
+          <Pdf2zhPanel />
+        </div>
+
+        <Separator />
+
+        <div className="flex flex-col gap-4">
+          <div>
+            <h3 className="text-[0.95rem] font-semibold leading-5">PDF 转 Markdown 组件</h3>
+            <p className="mt-1 max-w-[72ch] text-sm leading-6 text-muted-foreground">
+              提取结构化 Markdown，用于分段翻译、双栏预览和 Markdown 导出。
+            </p>
+          </div>
+          <PdfMarkdownPanel />
+        </div>
+      </div>
     </SettingsSection>
   );
 }

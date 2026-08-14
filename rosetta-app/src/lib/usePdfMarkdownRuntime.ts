@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 
 import {
   cancelPdfMarkdownExtraction,
@@ -25,10 +26,13 @@ export function usePdfMarkdownRuntime(jobId: string | null) {
   const [extractionStatus, setExtractionStatus] =
     useState<PdfMarkdownExtractionStatus | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
+  const [isRefreshingComponent, setIsRefreshingComponent] = useState(false);
   const [isInstalling, setIsInstalling] = useState(false);
   const [isStartingExtraction, setIsStartingExtraction] = useState(false);
 
   const refreshComponentStatus = useCallback(async () => {
+    setIsRefreshingComponent(true);
+    setLastError(null);
     try {
       const next = await getPdfMarkdownStatus();
       setComponentStatus(next);
@@ -36,6 +40,8 @@ export function usePdfMarkdownRuntime(jobId: string | null) {
     } catch (error) {
       setLastError(toMessage(error));
       return null;
+    } finally {
+      setIsRefreshingComponent(false);
     }
   }, []);
 
@@ -55,12 +61,11 @@ export function usePdfMarkdownRuntime(jobId: string | null) {
   }, [jobId]);
 
   useEffect(() => {
+    void refreshComponentStatus();
     if (!jobId) {
-      setComponentStatus(null);
       setExtractionStatus(null);
       return;
     }
-    void refreshComponentStatus();
     void refreshExtractionStatus();
   }, [jobId, refreshComponentStatus, refreshExtractionStatus]);
 
@@ -102,19 +107,21 @@ export function usePdfMarkdownRuntime(jobId: string | null) {
   }, [isInstalling]);
 
   const install = useCallback(
-    async (repair: boolean) => {
+    async (repair: boolean, archivePath?: string | null) => {
       setIsInstalling(true);
       setLastError(null);
       try {
-        const result = repair
+        const result = archivePath
+          ? await installPdfMarkdownComponent({ force: true, archivePath })
+          : repair
           ? await repairPdfMarkdownComponent()
           : await installPdfMarkdownComponent();
         await refreshComponentStatus();
         return result;
       } catch (error) {
         const message = toMessage(error);
-        setLastError(message);
         await refreshComponentStatus();
+        setLastError(message);
         throw new Error(message);
       } finally {
         setIsInstalling(false);
@@ -123,6 +130,32 @@ export function usePdfMarkdownRuntime(jobId: string | null) {
     },
     [refreshComponentStatus],
   );
+
+  const importFromFile = useCallback(async () => {
+    try {
+      const selection = await openFileDialog({
+        title: "选择 PDF 转 Markdown 组件压缩包",
+        multiple: false,
+        directory: false,
+        filters: [
+          {
+            name: "Markdown 组件 (.zip / .tar.gz / .tgz)",
+            extensions: ["zip", "gz", "tgz"],
+          },
+          { name: "全部文件", extensions: ["*"] },
+        ],
+      });
+      if (selection == null) return null;
+      const isAbsolutePath =
+        selection.startsWith("/") || /^[A-Za-z]:[\\/]/.test(selection);
+      if (!isAbsolutePath) throw new Error(`文件路径不是绝对路径: ${selection}`);
+      return await install(true, selection);
+    } catch (error) {
+      const message = toMessage(error);
+      setLastError(message);
+      throw new Error(message);
+    }
+  }, [install]);
 
   const cancelInstall = useCallback(async () => {
     try {
@@ -169,11 +202,13 @@ export function usePdfMarkdownRuntime(jobId: string | null) {
     extractionStatus,
     lastError:
       lastError ?? pdfMarkdownErrorMessage(extractionStatus?.errorCode),
+    isRefreshingComponent,
     isInstalling,
     isStartingExtraction,
     refreshComponentStatus,
     refreshExtractionStatus,
     install,
+    importFromFile,
     cancelInstall,
     startExtraction,
     cancelExtraction,

@@ -42,11 +42,19 @@ pub async fn install_pdf_markdown_component(
         .ok_or_else(|| "当前平台暂不支持 PDF Markdown 组件。".to_string())?;
     let layout = layout::PdfMarkdownLayout::from_app(&app, profile)?;
     let _ = crate::managed_pdf2zh::layout::locate_managed_python_host(&app)?;
-    let force = options.unwrap_or_default().force;
+    let options = options.unwrap_or_default();
+    let force = options.force || options.archive_path.is_some();
     if force || layout.validate_install(profile).is_err() {
         let _ = worker::shutdown(&app).await;
     }
-    install::install_component(&state, &layout, profile, force).await
+    install::install_component(
+        &state,
+        &layout,
+        profile,
+        force,
+        options.archive_path.as_deref(),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -59,7 +67,7 @@ pub async fn repair_pdf_markdown_component(
     let layout = layout::PdfMarkdownLayout::from_app(&app, profile)?;
     let _ = crate::managed_pdf2zh::layout::locate_managed_python_host(&app)?;
     let _ = worker::shutdown(&app).await;
-    install::install_component(&state, &layout, profile, true).await
+    install::install_component(&state, &layout, profile, true, None).await
 }
 
 #[tauri::command]

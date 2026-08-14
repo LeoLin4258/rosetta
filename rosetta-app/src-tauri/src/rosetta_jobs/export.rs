@@ -963,6 +963,223 @@ mod pdf_markdown_export_tests {
         fs::write(images.join(filename), bytes).expect("write image");
     }
 
+    fn translatable_pdf_markdown_block(
+        id: &str,
+        block_type: &str,
+        source_text: &str,
+        order: usize,
+        extra: Value,
+    ) -> RosettaBlock {
+        RosettaBlock {
+            id: id.to_string(),
+            file_id: Some("file-1".to_string()),
+            block_type: block_type.to_string(),
+            source_text: source_text.to_string(),
+            translated_text: None,
+            should_translate: true,
+            order,
+            path: None,
+            style: Some(json!({
+                "pdfMarkdown": {
+                    "version": 1,
+                    "page": 1,
+                    "boxClass": if block_type == "heading" { "section-header" } else { "text" },
+                    "bbox": [0, 0, 100, 20],
+                    "extra": extra
+                }
+            })),
+            status: "pending".to_string(),
+        }
+    }
+
+    fn source_segment(id: &str, block_id: &str, order: usize, text: &str) -> Segment {
+        Segment {
+            id: id.to_string(),
+            block_id: block_id.to_string(),
+            file_id: Some("file-1".to_string()),
+            order,
+            source_text: text.to_string(),
+            translated_text: None,
+            source_lang: Some("en".to_string()),
+            target_lang: "zh-CN".to_string(),
+            kind: "paragraph".to_string(),
+            preserve_whitespace: false,
+            status: "pending".to_string(),
+            block_order: Some(order),
+            segment_index_in_block: Some(0),
+            error: None,
+            translation_history: Vec::new(),
+        }
+    }
+
+    fn translated_segment(id: &str, status: &str, text: Option<&str>) -> TranslationSegment {
+        TranslationSegment {
+            source_segment_id: id.to_string(),
+            translated_text: text.map(str::to_string),
+            target_lang: "zh-CN".to_string(),
+            status: status.to_string(),
+            error: None,
+            translation_history: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn pdf_markdown_release_acceptance_end_to_end() {
+        let root = temp_dir("pdf-markdown-release-acceptance");
+        let job_dir = root.join("job");
+        let export_dir = root.join("exports");
+        let asset_source = "pdf-markdown/images/page-0001-picture-01.png";
+        write_job_asset(&job_dir, "page-0001-picture-01.png", b"release-image-v1");
+        fs::create_dir_all(job_dir.join("pdf-markdown").join("extraction"))
+            .expect("create extraction derivative");
+        fs::write(
+            job_dir
+                .join("pdf-markdown")
+                .join("extraction")
+                .join("sentinel"),
+            b"derivative",
+        )
+        .expect("write extraction derivative");
+
+        let blocks = vec![
+            translatable_pdf_markdown_block(
+                "heading-1",
+                "heading",
+                "Introduction",
+                1,
+                json!({"headingLevel": 1}),
+            ),
+            translatable_pdf_markdown_block(
+                "paragraph-1",
+                "paragraph",
+                "Source body.",
+                2,
+                json!({}),
+            ),
+            asset_block("picture-1", "picture", asset_source),
+        ];
+        let document = RosettaDocument {
+            schema_version: 1,
+            id: "document-release".to_string(),
+            filename: "release.pdf".to_string(),
+            format: "pdf".to_string(),
+            source_lang: Some("en".to_string()),
+            target_lang: "zh-CN".to_string(),
+            files: Vec::new(),
+            blocks: blocks.clone(),
+            extraction_status: Some("done".to_string()),
+        };
+        let source_segments = vec![
+            source_segment("segment-heading", "heading-1", 1, "Introduction"),
+            source_segment("segment-body", "paragraph-1", 2, "Source body."),
+        ];
+        let partial = vec![
+            translated_segment("segment-heading", "done", Some("引言")),
+            translated_segment("segment-body", "pending", None),
+        ];
+        assert_eq!(
+            ensure_translation_file_ready_for_export(&partial).unwrap_err(),
+            "当前译文文件还没有完成翻译，不能导出。"
+        );
+
+        let completed = vec![
+            translated_segment("segment-heading", "done", Some("引言")),
+            translated_segment("segment-body", "edited", Some("这是完成后的正文。")),
+        ];
+        ensure_translation_file_ready_for_export(&completed).expect("completed translation");
+        let restored_path = job_dir.join("translations").join("release.json");
+        fs::create_dir_all(restored_path.parent().expect("translation parent"))
+            .expect("create translation directory");
+        fs::write(
+            &restored_path,
+            serde_json::to_vec_pretty(&completed).expect("serialize translations"),
+        )
+        .expect("persist translations");
+        let restored: Vec<TranslationSegment> =
+            read_json(&restored_path).expect("restore translations after restart");
+        assert_eq!(restored.len(), completed.len());
+        assert_eq!(restored[0].source_segment_id, "segment-heading");
+        assert_eq!(restored[0].translated_text.as_deref(), Some("引言"));
+        assert_eq!(restored[0].status, "done");
+        assert_eq!(restored[1].source_segment_id, "segment-body");
+        assert_eq!(
+            restored[1].translated_text.as_deref(),
+            Some("这是完成后的正文。")
+        );
+        assert_eq!(restored[1].status, "edited");
+
+        let rendered_segments =
+            translated_source_segments(&source_segments, &restored, "file-1", "zh-CN");
+        let markdown = render_export_blocks(
+            &document,
+            &blocks,
+            &rendered_segments,
+            "translation",
+            "markdown",
+        );
+        assert!(markdown.starts_with("# 引言"));
+        assert!(markdown.contains("这是完成后的正文。"));
+        assert!(markdown.contains(asset_source));
+        assert!(!markdown.contains("Source body."));
+
+        let target = export_dir.join("release paper.zh-CN.md");
+        let first = write_pdf_markdown_export(&job_dir, &target, &blocks, &markdown, "markdown")
+            .expect("first release export");
+        assert_eq!(first.files_written, 2);
+        let exported = fs::read_to_string(&target).expect("read exported markdown");
+        assert!(exported.contains("release%20paper.zh-CN.assets/page-0001-picture-01.png"));
+        let exported_asset = export_dir
+            .join("release paper.zh-CN.assets")
+            .join("page-0001-picture-01.png");
+        assert_eq!(
+            fs::read(&exported_asset).expect("read exported asset"),
+            b"release-image-v1"
+        );
+
+        fs::write(&exported_asset, b"stale-export").expect("seed stale export");
+        write_pdf_markdown_export(&job_dir, &target, &blocks, &markdown, "markdown")
+            .expect("replace existing release export");
+        assert_eq!(
+            fs::read(&exported_asset).expect("read replaced asset"),
+            b"release-image-v1"
+        );
+
+        let prior_markdown = fs::read(&target).expect("snapshot markdown");
+        let prior_asset = fs::read(&exported_asset).expect("snapshot asset");
+        fs::write(
+            job_dir
+                .join("pdf-markdown")
+                .join("images")
+                .join("page-0001-picture-01.png"),
+            b"release-image-v2",
+        )
+        .expect("update source asset");
+        write_pdf_markdown_export_with_fault(
+            &job_dir,
+            &target,
+            &blocks,
+            &markdown.replace("完成后的正文", "不应提交的正文"),
+            "markdown",
+            PdfMarkdownExportFault::AfterMarkdownCommit,
+        )
+        .expect_err("faulted release export must roll back");
+        assert_eq!(
+            fs::read(&target).expect("restored markdown"),
+            prior_markdown
+        );
+        assert_eq!(
+            fs::read(&exported_asset).expect("restored asset"),
+            prior_asset
+        );
+
+        crate::rosetta_jobs::import::remove_pdf_markdown_derivatives(&job_dir)
+            .expect("remove PDF Markdown derivatives");
+        assert!(!job_dir.join("pdf-markdown").exists());
+        assert!(target.is_file());
+        assert!(exported_asset.is_file());
+        fs::remove_dir_all(root).ok();
+    }
+
     #[test]
     fn pdf_markdown_export_requires_exact_output_identity() {
         let root = temp_dir("pdf-markdown-export-identity");

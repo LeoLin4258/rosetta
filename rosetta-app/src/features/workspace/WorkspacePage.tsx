@@ -58,6 +58,7 @@ import {
   normalizePdfPageNumbers,
   shouldConfirmLongPdfTranslation,
 } from "@/lib/pdfPageSelectionPolicy";
+import { resolveTranslationProgress } from "@/lib/workspaceTranslationState";
 
 import { WorkspaceEmpty } from "./WorkspaceEmpty";
 import { WorkspaceTopbar } from "./WorkspaceTopbar";
@@ -197,8 +198,14 @@ export function WorkspacePage() {
   const isTranslating = !!activeFileTranslationRun;
   const isTranslationBusyElsewhere = !!activeTranslationRun && !activeFileTranslationRun;
 
-  const completedCount = activeFileTranslationRun?.completedSegmentIds.length ?? 0;
-  const totalCount = activeFileTranslationRun?.targetSegmentIds.length ?? 0;
+  // The run exists only while translating. Persisted translation-file counts
+  // keep idle and restored PDF -> Markdown jobs from falling back to "0 段".
+  const { completed: completedCount, total: totalCount } =
+    resolveTranslationProgress(
+      activeFileTranslationRun,
+      activeTranslationFile,
+      sourceFile,
+    );
   const pdfEngineProgressMessage = pdfInstallProgressMessage(pdf2zhRuntime.progress);
 
   // Reset block selection when switching documents
@@ -1364,6 +1371,11 @@ export function WorkspacePage() {
               pdfMarkdownExtractionStatus={pdfMarkdownRuntime.extractionStatus}
               pdfMarkdownPreview={pdfMarkdownPreview}
               pdfMarkdownPreviewError={pdfMarkdownPreviewError}
+              pdfMarkdownOperationBusy={
+                pdfMarkdownRuntime.isInstalling ||
+                pdfMarkdownRuntime.isStartingExtraction ||
+                pdfMarkdownRuntime.extractionStatus?.state === "extracting"
+              }
               hoveredBlockId={hoveredBlockId}
               isTranslating={isTranslating}
               liveProgress={
@@ -1398,6 +1410,11 @@ export function WorkspacePage() {
               onPdfPageCountChange={handlePdfPageCountChange}
               onPdfCurrentPageChange={setPdfCurrentPage}
               onPdfSelectedPagesChange={handlePdfSelectedPagesChange}
+              onInstallPdfMarkdown={() => void handleInstallPdfMarkdown()}
+              onRepairPdfMarkdown={() => void handleInstallPdfMarkdown(true)}
+              onOpenPdfMarkdownSettings={() =>
+                navigate("/settings?panel=pdf-processing")
+              }
             />
           </div>
         </>

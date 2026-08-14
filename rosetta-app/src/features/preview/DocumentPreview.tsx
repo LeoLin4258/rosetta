@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { RefObject } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import ReactMarkdown, { type Components } from "react-markdown";
@@ -9,6 +9,11 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { languageLabel } from "@/lib/languages";
+import {
+  isPreviewScrollKey,
+  previewScrollTargetChanged,
+  proportionalPreviewScrollTop,
+} from "@/lib/previewScrollSync";
 import {
   pdfMarkdownErrorMessage,
   readPdfMarkdownAsset,
@@ -33,6 +38,68 @@ import { PdfDocumentPreview } from "./PdfDocumentPreview";
 
 type PreviewSide = "source" | "translation";
 
+function useSynchronizedPreviewScroll() {
+  const sourceRef = useRef<HTMLDivElement>(null);
+  const translationRef = useRef<HTMLDivElement>(null);
+  const driverRef = useRef<PreviewSide | null>(null);
+  const driverTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const frameRef = useRef<number | null>(null);
+  const pendingSideRef = useRef<PreviewSide | null>(null);
+
+  const releaseDriverSoon = useCallback(() => {
+    if (driverTimeoutRef.current) clearTimeout(driverTimeoutRef.current);
+    driverTimeoutRef.current = setTimeout(() => {
+      driverRef.current = null;
+    }, 180);
+  }, []);
+
+  const markScrollIntent = useCallback(
+    (side: PreviewSide) => {
+      driverRef.current = side;
+      releaseDriverSoon();
+    },
+    [releaseDriverSoon],
+  );
+
+  const syncScroll = useCallback(
+    (side: PreviewSide) => {
+      // Measurement and programmatic scrolls also emit `scroll`. Only a pane
+      // with recent wheel, pointer or keyboard intent may drive its peer.
+      if (driverRef.current !== side) return;
+      releaseDriverSoon();
+      pendingSideRef.current = side;
+      if (frameRef.current !== null) return;
+
+      frameRef.current = window.requestAnimationFrame(() => {
+        frameRef.current = null;
+        const pendingSide = pendingSideRef.current;
+        pendingSideRef.current = null;
+        if (!pendingSide || driverRef.current !== pendingSide) return;
+
+        const from =
+          pendingSide === "source" ? sourceRef.current : translationRef.current;
+        const to =
+          pendingSide === "source" ? translationRef.current : sourceRef.current;
+        if (!from || !to) return;
+
+        const targetScrollTop = proportionalPreviewScrollTop(from, to);
+        if (!previewScrollTargetChanged(to.scrollTop, targetScrollTop)) return;
+        to.scrollTop = targetScrollTop;
+      });
+    },
+    [releaseDriverSoon],
+  );
+
+  useEffect(() => {
+    return () => {
+      if (driverTimeoutRef.current) clearTimeout(driverTimeoutRef.current);
+      if (frameRef.current !== null) window.cancelAnimationFrame(frameRef.current);
+    };
+  }, []);
+
+  return { sourceRef, translationRef, markScrollIntent, syncScroll } as const;
+}
+
 export function DocumentPreview({
   jobId = null,
   document,
@@ -41,6 +108,7 @@ export function DocumentPreview({
   pdfMarkdownExtractionStatus = null,
   pdfMarkdownPreview = null,
   pdfMarkdownPreviewError = null,
+  pdfMarkdownOperationBusy = false,
   hoveredBlockId,
   isTranslating = false,
   liveProgress,
@@ -69,6 +137,9 @@ export function DocumentPreview({
   onPdfPageCountChange,
   onPdfCurrentPageChange,
   onPdfSelectedPagesChange,
+  onInstallPdfMarkdown,
+  onRepairPdfMarkdown,
+  onOpenPdfMarkdownSettings,
   pdfCurrentPage = 1,
   pdfNavigationRequest = null,
 }: {
@@ -83,6 +154,7 @@ export function DocumentPreview({
   pdfMarkdownExtractionStatus?: PdfMarkdownExtractionStatus | null;
   pdfMarkdownPreview?: PdfMarkdownPreview | null;
   pdfMarkdownPreviewError?: string | null;
+  pdfMarkdownOperationBusy?: boolean;
   hoveredBlockId?: string | null;
   /// True while a translation run is actively writing segments. PDF preview
   /// uses this to differentiate "翻译中" from "等待翻译"; other formats ignore.
@@ -125,9 +197,13 @@ export function DocumentPreview({
   onPdfPageCountChange?: (count: number) => void;
   onPdfCurrentPageChange?: (pageNumber: number) => void;
   onPdfSelectedPagesChange?: (pages: number[]) => void;
+  onInstallPdfMarkdown?: () => void;
+  onRepairPdfMarkdown?: () => void;
+  onOpenPdfMarkdownSettings?: () => void;
   pdfCurrentPage?: number;
   pdfNavigationRequest?: { pageNumber: number; requestId: number } | null;
 }) {
+  const synchronizedScroll = useSynchronizedPreviewScroll();
   // PDF documents get a dedicated react-pdf-based preview. The temporary
   // markdown-block fallback below is kept as the renderer for txt/md and as
   // the "block list / edit" view that Phase 3 will add a toggle for.
@@ -182,11 +258,15 @@ export function DocumentPreview({
         extractionStatus={pdfMarkdownExtractionStatus}
         preview={pdfMarkdownPreview}
         previewError={pdfMarkdownPreviewError}
+        operationBusy={pdfMarkdownOperationBusy}
         hoveredBlockId={hoveredBlockId ?? null}
         isTranslating={isTranslating}
         onBlockHover={onBlockHover}
         onBlockLeave={onBlockLeave}
         onToggleBlockSelection={onToggleBlockSelection}
+        onInstallComponent={onInstallPdfMarkdown}
+        onRepairComponent={onRepairPdfMarkdown}
+        onOpenSettings={onOpenPdfMarkdownSettings}
         selectedBlockIds={selectedBlockIds}
         selectionEnabled={selectionEnabled}
         sourceSegments={sourceSegments}
@@ -195,17 +275,6 @@ export function DocumentPreview({
       />
     );
   }
-  const sourceRef = useRef<HTMLDivElement>(null);
-  const translationRef = useRef<HTMLDivElement>(null);
-  const scrollDriverRef = useRef<PreviewSide | null>(null);
-  const scrollDriverTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (scrollDriverTimeoutRef.current) clearTimeout(scrollDriverTimeoutRef.current);
-    };
-  }, []);
-
   if (!document || !sourceFile) {
     return (
       <Card className="flex h-full min-h-0 py-0">
@@ -242,7 +311,7 @@ export function DocumentPreview({
               onBlockLeave={onBlockLeave}
               onToggleBlockSelection={onToggleBlockSelection}
               onScroll={() => {}}
-              paneRef={sourceRef}
+              paneRef={synchronizedScroll.sourceRef}
               selectedBlockIds={selectedBlockIds}
               selectionEnabled={selectionEnabled}
               side="source"
@@ -254,34 +323,6 @@ export function DocumentPreview({
         </div>
       </Card>
     );
-  }
-
-  function syncScroll(side: PreviewSide) {
-    // Ignore scroll events fired by the pane we just programmatically scrolled.
-    if (scrollDriverRef.current !== null && scrollDriverRef.current !== side) return;
-
-    const from = side === "source" ? sourceRef.current : translationRef.current;
-    const to = side === "source" ? translationRef.current : sourceRef.current;
-    if (!from || !to) return;
-
-    const maxFrom = from.scrollHeight - from.clientHeight;
-    const maxTo = to.scrollHeight - to.clientHeight;
-    const ratio = maxFrom > 0 ? from.scrollTop / maxFrom : 0;
-    const targetScrollTop = ratio * Math.max(maxTo, 0);
-
-    // Dead-zone: skip tiny adjustments that the virtualizer triggers as it
-    // re-measures items — these cause the 5-second tail of continued scrolling.
-    if (Math.abs(to.scrollTop - targetScrollTop) < 2) return;
-
-    // Mark this side as the scroll driver for 150 ms.  Any scroll events from
-    // the other pane during that window are treated as programmatic echoes.
-    scrollDriverRef.current = side;
-    if (scrollDriverTimeoutRef.current) clearTimeout(scrollDriverTimeoutRef.current);
-    scrollDriverTimeoutRef.current = setTimeout(() => {
-      scrollDriverRef.current = null;
-    }, 150);
-
-    to.scrollTop = targetScrollTop;
   }
 
   return (
@@ -316,8 +357,9 @@ export function DocumentPreview({
             onBlockHover={onBlockHover}
             onBlockLeave={onBlockLeave}
             onToggleBlockSelection={onToggleBlockSelection}
-            onScroll={() => syncScroll("source")}
-            paneRef={sourceRef}
+            onScroll={() => synchronizedScroll.syncScroll("source")}
+            onScrollIntent={() => synchronizedScroll.markScrollIntent("source")}
+            paneRef={synchronizedScroll.sourceRef}
             selectedBlockIds={selectedBlockIds}
             selectionEnabled={selectionEnabled}
             side="source"
@@ -334,8 +376,9 @@ export function DocumentPreview({
             onBlockHover={onBlockHover}
             onBlockLeave={onBlockLeave}
             onToggleBlockSelection={onToggleBlockSelection}
-            onScroll={() => syncScroll("translation")}
-            paneRef={translationRef}
+            onScroll={() => synchronizedScroll.syncScroll("translation")}
+            onScrollIntent={() => synchronizedScroll.markScrollIntent("translation")}
+            paneRef={synchronizedScroll.translationRef}
             selectedBlockIds={selectedBlockIds}
             selectionEnabled={selectionEnabled}
             side="translation"
@@ -359,11 +402,15 @@ function PdfMarkdownDocumentPreview({
   extractionStatus,
   preview,
   previewError,
+  operationBusy,
   hoveredBlockId,
   isTranslating,
   onBlockHover,
   onBlockLeave,
   onToggleBlockSelection,
+  onInstallComponent,
+  onRepairComponent,
+  onOpenSettings,
   selectedBlockIds,
   selectionEnabled,
   sourceSegments,
@@ -375,17 +422,22 @@ function PdfMarkdownDocumentPreview({
   extractionStatus: PdfMarkdownExtractionStatus | null;
   preview: PdfMarkdownPreview | null;
   previewError: string | null;
+  operationBusy: boolean;
   hoveredBlockId: string | null;
   isTranslating: boolean;
   onBlockHover?: (blockId: string) => void;
   onBlockLeave?: () => void;
   onToggleBlockSelection?: (blockIds: string[]) => void;
+  onInstallComponent?: () => void;
+  onRepairComponent?: () => void;
+  onOpenSettings?: () => void;
   selectedBlockIds: string[];
   selectionEnabled: boolean;
   sourceSegments: Segment[];
   translationFile: RosettaTranslationFile | null;
   translationSegments: TranslationSegment[];
 }) {
+  const synchronizedScroll = useSynchronizedPreviewScroll();
   const statusMessage = pdfMarkdownPreviewStatus(
     componentStatus,
     extractionStatus,
@@ -402,6 +454,36 @@ function PdfMarkdownDocumentPreview({
             <p className="mt-1.5 text-xs leading-5 text-muted-foreground">
               {statusMessage.detail}
             </p>
+          ) : null}
+          {(componentStatus?.state === "needs-repair" && onRepairComponent) ||
+          (componentStatus?.state === "not-installed" && onInstallComponent) ? (
+            <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+              <Button
+                onClick={
+                  componentStatus.state === "needs-repair"
+                    ? onRepairComponent
+                    : onInstallComponent
+                }
+                disabled={operationBusy}
+                size="sm"
+                type="button"
+              >
+                {componentStatus.state === "needs-repair"
+                  ? "修复组件"
+                  : "安装组件"}
+              </Button>
+              {onOpenSettings ? (
+                <Button
+                  onClick={onOpenSettings}
+                  disabled={operationBusy}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  在设置中管理
+                </Button>
+              ) : null}
+            </div>
           ) : null}
         </div>
       </Card>
@@ -430,6 +512,9 @@ function PdfMarkdownDocumentPreview({
           onBlockHover={onBlockHover}
           onBlockLeave={onBlockLeave}
           onToggleBlockSelection={onToggleBlockSelection}
+          onScroll={() => synchronizedScroll.syncScroll("source")}
+          onScrollIntent={() => synchronizedScroll.markScrollIntent("source")}
+          paneRef={synchronizedScroll.sourceRef}
           selectedBlockIds={selectedBlockIds}
           selectionEnabled={selectionEnabled}
           side="source"
@@ -445,6 +530,9 @@ function PdfMarkdownDocumentPreview({
             onBlockHover={onBlockHover}
             onBlockLeave={onBlockLeave}
             onToggleBlockSelection={onToggleBlockSelection}
+            onScroll={() => synchronizedScroll.syncScroll("translation")}
+            onScrollIntent={() => synchronizedScroll.markScrollIntent("translation")}
+            paneRef={synchronizedScroll.translationRef}
             selectedBlockIds={selectedBlockIds}
             selectionEnabled={selectionEnabled}
             side="translation"
@@ -469,6 +557,9 @@ function PdfMarkdownPane({
   onBlockHover,
   onBlockLeave,
   onToggleBlockSelection,
+  onScroll,
+  onScrollIntent,
+  paneRef,
   selectedBlockIds,
   selectionEnabled,
   side,
@@ -482,13 +573,15 @@ function PdfMarkdownPane({
   onBlockHover?: (blockId: string) => void;
   onBlockLeave?: () => void;
   onToggleBlockSelection?: (blockIds: string[]) => void;
+  onScroll: () => void;
+  onScrollIntent: () => void;
+  paneRef: RefObject<HTMLDivElement>;
   selectedBlockIds: string[];
   selectionEnabled: boolean;
   side: PreviewSide;
   sourceSegments: Segment[];
   translationSegments: TranslationSegment[];
 }) {
-  const paneRef = useRef<HTMLDivElement>(null);
   const segmentsByBlock = useMemo(
     () => groupSegmentsByBlock(sourceSegments),
     [sourceSegments],
@@ -520,11 +613,26 @@ function PdfMarkdownPane({
     getScrollElement: () => paneRef.current,
     estimateSize: () => 112,
     overscan: 8,
+    useAnimationFrameWithResizeObserver: true,
   });
+
+  useEffect(() => {
+    virtualizer.shouldAdjustScrollPositionOnItemSizeChange =
+      side === "translation" && isTranslating ? () => false : undefined;
+    return () => {
+      virtualizer.shouldAdjustScrollPositionOnItemSizeChange = undefined;
+    };
+  }, [isTranslating, side, virtualizer]);
 
   return (
     <ScrollArea
       className={cn("h-full min-h-0 bg-background", side === "source" && "border-r")}
+      onKeyDownCapture={(event) => {
+        if (isPreviewScrollKey(event.key)) onScrollIntent();
+      }}
+      onPointerDownCapture={onScrollIntent}
+      onScroll={onScroll}
+      onWheelCapture={onScrollIntent}
       viewportRef={paneRef}
     >
       <div className="mx-auto max-w-(--rosetta-reader-max-width) px-6 py-6">
@@ -809,6 +917,7 @@ function PreviewPane({
   onBlockLeave,
   onToggleBlockSelection,
   onScroll,
+  onScrollIntent,
   paneRef,
   selectedBlockIds,
   selectionEnabled,
@@ -824,6 +933,7 @@ function PreviewPane({
   onBlockLeave?: () => void;
   onToggleBlockSelection?: (blockIds: string[]) => void;
   onScroll: () => void;
+  onScrollIntent?: () => void;
   paneRef: RefObject<HTMLDivElement>;
   selectedBlockIds: string[];
   selectionEnabled: boolean;
@@ -861,7 +971,12 @@ function PreviewPane({
   return (
     <ScrollArea
       className={cn("h-full min-h-0 bg-background", side === "source" && "border-r")}
+      onKeyDownCapture={(event) => {
+        if (isPreviewScrollKey(event.key)) onScrollIntent?.();
+      }}
+      onPointerDownCapture={onScrollIntent}
       onScroll={onScroll}
+      onWheelCapture={onScrollIntent}
       viewportRef={paneRef}
     >
       <div className="mx-auto max-w-(--rosetta-reader-max-width) px-6 py-6">
